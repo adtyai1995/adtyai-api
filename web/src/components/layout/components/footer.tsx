@@ -17,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Link } from '@tanstack/react-router'
-import { Fragment } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { HtmlContent } from '@/components/html-content'
@@ -82,7 +81,8 @@ function FooterLinkItem(props: { link: FooterLink }) {
   )
 }
 
-function LegalLinks(props: { leadingSeparator?: boolean }) {
+/** The site legal pages that are switched on, as one titled footer column. */
+function LegalColumn() {
   const { t } = useTranslation()
   const { status } = useStatus()
   const refundPolicyEnabled = useAdtySite().data?.refund_policy_enabled === true
@@ -112,23 +112,23 @@ function LegalLinks(props: { leadingSeparator?: boolean }) {
     return null
   }
   return (
-    <>
-      {items.map((item, index) => (
-        <Fragment key={item.key}>
-          {(props.leadingSeparator || index > 0) && (
-            <span aria-hidden='true' className='text-border px-0.5'>
-              ·
-            </span>
-          )}
-          <Link
-            to={item.href}
-            className='text-muted-foreground hover:text-foreground transition-colors duration-200'
-          >
-            {item.label}
-          </Link>
-        </Fragment>
-      ))}
-    </>
+    <nav aria-labelledby='footer-legal-title' className='min-w-40'>
+      <p id='footer-legal-title' className='text-muted-foreground text-sm'>
+        {t('Legal')}
+      </p>
+      <ul className='mt-5 space-y-3.5'>
+        {items.map((item) => (
+          <li key={item.key}>
+            <Link
+              to={item.href}
+              className='text-foreground/85 hover:text-primary text-[15px] transition-colors duration-200'
+            >
+              {item.label}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </nav>
   )
 }
 
@@ -141,7 +141,8 @@ export function Footer(props: FooterProps) {
     demoSiteEnabled,
   } = useSystemConfig()
 
-  const displayLogo = systemLogo || (subsiteDocument() ? '' : props.logo || '/logo.png')
+  const displayLogo =
+    systemLogo || (subsiteDocument() ? '' : props.logo || '/logo.png')
   const displayName = systemName || props.name || ADTY_BRAND_NAME
   const isDemoSiteMode = Boolean(demoSiteEnabled)
   const currentYear = new Date().getFullYear()
@@ -151,26 +152,30 @@ export function Footer(props: FooterProps) {
     <footer
       className={cn('border-border bg-background border-t', props.className)}
     >
-      <div className='mx-auto w-full max-w-[1180px] px-5 py-12 sm:px-10 md:py-14'>
-        <div className='flex flex-col justify-between gap-10 md:flex-row md:items-start'>
+      <div className='mx-auto w-full max-w-[1320px] px-5 pt-16 pb-10 sm:px-8 md:px-10 md:pt-20'>
+        <div className='flex flex-col justify-between gap-12 md:flex-row md:items-start'>
           <div className='shrink-0'>
             <Link to='/' className='group flex items-center gap-2.5'>
               {/* The default ADTY artwork already carries the wordmark, so the
                   name is not repeated next to it; a site-configured logo keeps
                   the accessible name through `alt`. */}
-              {!displayLogo && <span>{displayName}</span>}
+              {!displayLogo && (
+                <span className='text-2xl font-bold tracking-tight'>
+                  {displayName}
+                </span>
+              )}
               {displayLogo === DEFAULT_LOGO && (
                 <>
                   <img
                     src={displayLogo}
                     alt={displayName}
-                    className='h-7 w-auto max-w-none object-contain dark:hidden'
+                    className='h-10 w-auto max-w-none object-contain dark:hidden'
                   />
                   <img
                     src='/logo-dark.png'
                     alt=''
                     aria-hidden='true'
-                    className='dark:block hidden h-7 w-auto max-w-none object-contain'
+                    className='hidden h-10 w-auto max-w-none object-contain dark:block'
                   />
                 </>
               )}
@@ -178,23 +183,23 @@ export function Footer(props: FooterProps) {
                 <img
                   src={displayLogo}
                   alt={displayName}
-                  className='h-7 w-auto max-w-none object-contain dark:bg-white/10 dark:rounded-md dark:px-1 dark:py-0.5'
+                  className='h-10 w-auto max-w-none object-contain dark:rounded-md dark:bg-white/10 dark:px-1 dark:py-0.5'
                 />
               )}
             </Link>
-            <p className='text-muted-foreground mt-3 max-w-[260px] text-[13px] leading-relaxed'>
+            <p className='text-muted-foreground mt-5 max-w-[300px] text-[15px] leading-relaxed'>
               {t('One API key for every model')}
             </p>
           </div>
 
-          {isDemoSiteMode && displayColumns.length > 0 && (
-            <div className='grid grid-cols-2 gap-8 sm:grid-cols-3 md:gap-16'>
-              {displayColumns.map((column) => (
+          <div className='flex flex-wrap gap-12 md:gap-20'>
+            {isDemoSiteMode &&
+              displayColumns.map((column) => (
                 <div key={column.title}>
-                  <p className='text-muted-foreground mb-3 text-[11px] font-semibold tracking-[0.08em]'>
+                  <p className='text-muted-foreground text-sm'>
                     {t(column.title)}
                   </p>
-                  <ul className='space-y-2.5'>
+                  <ul className='mt-5 space-y-3.5'>
                     {column.links.map((link) => (
                       <li key={`${link.href}:${link.text}`}>
                         <FooterLinkItem link={link} />
@@ -203,26 +208,21 @@ export function Footer(props: FooterProps) {
                   </ul>
                 </div>
               ))}
-            </div>
-          )}
+            <LegalColumn />
+          </div>
         </div>
 
         {footerHtml && (
           <HtmlContent
             content={footerHtml}
-            className='custom-footer text-muted-foreground mt-8 text-[13px]'
+            className='custom-footer text-muted-foreground mt-10 text-[13px]'
           />
         )}
 
-        <div className='border-border text-muted-foreground mt-10 flex flex-col gap-2 border-t pt-6 text-xs sm:flex-row sm:items-center sm:justify-between'>
-          <span>
-            &copy; {currentYear} {displayName}.{' '}
-            {props.copyright ?? t('footer.defaultCopyright')}
-          </span>
-          <div className='flex flex-wrap items-center gap-y-1'>
-            <LegalLinks />
-          </div>
-        </div>
+        <p className='border-border text-muted-foreground mt-14 border-t pt-6 text-center text-xs'>
+          &copy; {currentYear} {displayName}.{' '}
+          {props.copyright ?? t('footer.defaultCopyright')}
+        </p>
       </div>
     </footer>
   )

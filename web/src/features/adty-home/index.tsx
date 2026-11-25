@@ -20,10 +20,13 @@ import { useApiBaseUrl } from '@/features/adty-site/api'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { AffiliateBanner } from './components/affiliate-banner'
-import { ClosingCta } from './components/closing-cta'
-import { EndpointsSection } from './components/endpoints-section'
+import { BillingSection } from './components/billing-section'
+import { CapabilityBento } from './components/capability-bento'
+import { FaqSection } from './components/faq-section'
+import { FeatureCards } from './components/feature-cards'
 import { Hero } from './components/hero'
-import { MigrationSection } from './components/migration-section'
+import { ModelWall } from './components/model-wall'
+import { QuickStart } from './components/quick-start'
 import { useLandingData, type LandingData } from './hooks/use-landing-data'
 
 /**
@@ -37,16 +40,22 @@ export function LandingSections(props: {
   baseUrl: string
   data: LandingData
 }) {
+  // Before the site address loads (or when it cannot), show the same
+  // placeholder the build-time render uses instead of a bare "/v1".
+  const baseUrl = props.baseUrl.trim() || '<BASE_URL>'
   return (
     <>
       <Hero signedIn={props.signedIn} />
-      <MigrationSection baseUrl={props.baseUrl} />
-      <EndpointsSection baseUrl={props.baseUrl} />
+      <ModelWall />
+      <FeatureCards baseUrl={baseUrl} />
+      <BillingSection />
+      <CapabilityBento />
+      <FaqSection />
       <AffiliateBanner
         open={props.data.affiliate.open}
         rate={props.data.affiliate.rate}
       />
-      <ClosingCta signedIn={props.signedIn} />
+      <QuickStart signedIn={props.signedIn} baseUrl={baseUrl} />
     </>
   )
 }

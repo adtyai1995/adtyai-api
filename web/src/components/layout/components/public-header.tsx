@@ -126,14 +126,14 @@ export function PublicHeader(props: PublicHeaderProps) {
   let authContent = (
     <Button
       size='sm'
-      className='h-8 rounded-lg px-3.5 text-xs font-medium'
+      className='h-9 rounded-full px-5 text-sm font-semibold'
       render={<Link to='/sign-in' />}
     >
       {t('Sign in')}
     </Button>
   )
   if (isAuthenticated) authContent = <ProfileDropdown />
-  if (loading) authContent = <Skeleton className='h-8 w-20 rounded-lg' />
+  if (loading) authContent = <Skeleton className='h-9 w-20 rounded-full' />
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 20)
@@ -216,14 +216,16 @@ export function PublicHeader(props: PublicHeaderProps) {
         <div
           className={cn(
             'pointer-events-auto mx-auto transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]',
-            scrolled ? 'max-w-[52rem] px-3 pt-3' : 'max-w-7xl px-4 pt-0 md:px-6'
+            scrolled
+              ? 'max-w-[82rem] px-3 pt-3'
+              : 'max-w-[82rem] px-4 pt-2 md:px-6'
           )}
         >
           <nav
             className={cn(
               'flex items-center justify-between gap-2 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]',
               scrolled
-                ? 'bg-background/60 ring-border/50 h-12 rounded-2xl pr-1.5 pl-4 shadow-[0_2px_16px_-6px_rgba(0,0,0,0.08),0_0_0_0.5px_rgba(0,0,0,0.02)] ring-[0.5px] backdrop-blur-2xl dark:shadow-[0_2px_16px_-6px_rgba(0,0,0,0.4)]'
+                ? 'bg-background/85 ring-border h-14 rounded-full pr-2 pl-5 shadow-[0_12px_32px_-16px_rgba(11,18,32,0.22)] ring-1 backdrop-blur-xl dark:shadow-[0_12px_32px_-16px_rgba(0,0,0,0.6)]'
                 : 'h-16 px-2'
             )}
           >
@@ -266,7 +268,7 @@ export function PublicHeader(props: PublicHeaderProps) {
                       tabIndex={link.disabled ? -1 : undefined}
                       onClick={(event) => handleNavLinkClick(event, link)}
                       className={cn(
-                        'text-muted-foreground hover:text-foreground shrink-0 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-sm font-medium transition-colors duration-200',
+                        'text-foreground/70 hover:text-foreground shrink-0 whitespace-nowrap rounded-full px-3.5 py-1.5 text-[15px] font-medium transition-colors duration-200',
                         link.disabled && 'pointer-events-none opacity-50'
                       )}
                     >
@@ -282,10 +284,10 @@ export function PublicHeader(props: PublicHeaderProps) {
                     disabled={link.disabled}
                     onClick={(event) => handleNavLinkClick(event, link)}
                     className={cn(
-                      'shrink-0 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-sm font-medium transition-colors duration-200',
+                      'shrink-0 whitespace-nowrap rounded-full px-3.5 py-1.5 text-[15px] font-medium transition-colors duration-200',
                       isActive
-                        ? 'text-foreground'
-                        : 'text-muted-foreground hover:text-foreground',
+                        ? 'text-primary font-semibold'
+                        : 'text-foreground/70 hover:text-foreground',
                       link.disabled && 'pointer-events-none opacity-50'
                     )}
                   >

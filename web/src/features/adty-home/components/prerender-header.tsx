@@ -19,7 +19,8 @@ For commercial licensing, please contact support@quantumnous.com
 import { ADTY_BRAND_NAME } from '@/lib/adty-brand'
 
 /**
- * Static header with the same logo position and height as the public header, with the
+ * Static header with the same logo position and height as the public header at
+ * the top of the page (transparent, before scrolling), with the
  * logo and the site name; the real header replaces it on mount.
  */
 export function PrerenderHeader({
@@ -28,8 +29,8 @@ export function PrerenderHeader({
   siteTemplate?: boolean
 }) {
   return (
-    <header className='border-border bg-background/85 fixed inset-x-0 top-0 z-50 border-b backdrop-blur-[10px]'>
-      <div className='mx-auto flex h-[66px] w-full max-w-[1180px] items-center px-5 sm:px-10'>
+    <header className='fixed inset-x-0 top-0 z-50'>
+      <div className='mx-auto flex h-16 w-full max-w-[82rem] items-center px-6 pt-2 md:px-8'>
         {siteTemplate ? (
           <span className='flex h-7 max-w-full items-center truncate text-sm font-semibold tracking-tight'>
             __ADTY_SITE_BRAND__

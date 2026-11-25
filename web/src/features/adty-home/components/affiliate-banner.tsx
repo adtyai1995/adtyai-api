@@ -19,44 +19,61 @@ For commercial licensing, please contact support@quantumnous.com
 import { useTranslation } from 'react-i18next'
 
 import { buttonVariants } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
+
+import { HOME_CONTAINER, HOME_PRIMARY_BUTTON } from './home-styles'
 
 /**
- * Referral strip between the endpoints and the closing card. Hidden while the
- * program is off or its settings are unknown; without a default rate it
- * promises no number.
+ * Referral card before the quick start. Hidden while the program is off or
+ * its settings are unknown; without a default rate it promises no number.
  */
 export function AffiliateBanner(props: { open: boolean; rate: number | null }) {
   const { t } = useTranslation()
   if (!props.open) return null
-
   return (
-    <section
-      id='affiliate'
-      aria-labelledby='affiliate-title'
-      className='px-6 pb-24 md:px-10 md:pb-28'
-    >
-      <div className='border-border mx-auto flex max-w-[1180px] flex-wrap items-center justify-between gap-6 border-t pt-10'>
-        <div className='space-y-2'>
-          <h2 id='affiliate-title' className='text-[15px] font-semibold'>
-            {t('Invite friends, earn on every top-up')}
-          </h2>
-          <p className='text-muted-foreground max-w-2xl text-sm leading-[1.7]'>
-            {props.rate !== null
-              ? t(
-                  'Earn {{rate}}% of every top-up the people you invite make, for as long as they stay.',
-                  { rate: props.rate }
-                )
-              : t(
-                  'Earn a commission on every top-up the people you invite make, for as long as they stay.'
-                )}
-          </p>
+    <section aria-labelledby='affiliate-title' className='pb-24 md:pb-28'>
+      <div className={HOME_CONTAINER}>
+        <div className='bg-muted grid gap-8 overflow-hidden rounded-[28px] px-7 py-12 md:grid-cols-[minmax(0,1fr)_auto] md:items-center md:px-14 md:py-16'>
+          <div>
+            <h2
+              id='affiliate-title'
+              className='text-[clamp(1.9rem,3.4vw,2.8rem)] leading-[1.12] font-extrabold tracking-[-0.03em] text-balance'
+            >
+              {t('Invite friends, earn on every top-up')}
+            </h2>
+            <p className='text-muted-foreground mt-4 max-w-2xl text-[16px] leading-[1.8]'>
+              {props.rate !== null
+                ? t(
+                    'Earn {{rate}}% of every top-up the people you invite make, for as long as they stay.',
+                    { rate: props.rate }
+                  )
+                : t(
+                    'Earn a commission on every top-up the people you invite make, for as long as they stay.'
+                  )}
+            </p>
+          </div>
+          {props.rate !== null && (
+            <p
+              aria-hidden
+              className='text-primary text-[clamp(4rem,9vw,7rem)] leading-none font-extrabold tracking-[-0.05em] md:order-none'
+            >
+              {props.rate}
+              <span className='text-foreground/30 align-super text-[0.4em]'>
+                %
+              </span>
+            </p>
+          )}
+          <a
+            href='/affiliate'
+            className={cn(
+              buttonVariants({ size: 'lg' }),
+              HOME_PRIMARY_BUTTON,
+              'justify-self-start md:col-span-2'
+            )}
+          >
+            {t('Affiliate Program')}
+          </a>
         </div>
-        <a
-          href='/affiliate'
-          className={buttonVariants({ variant: 'outline', size: 'lg' })}
-        >
-          {t('Affiliate Program')}
-        </a>
       </div>
     </section>
   )
