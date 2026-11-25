@@ -36,9 +36,10 @@ This Code of Conduct applies within all community spaces, and also applies when 
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement at:
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the ADTY AI maintainer (`adtyai1995`) via the official repository:
 
-**Email:** support@quantumnous.com
+- **Private Report (GitHub Security Advisories):** [https://github.com/adtyai1995/adtyai-api/security/advisories](https://github.com/adtyai1995/adtyai-api/security/advisories)
+- **Official Repository:** [https://github.com/adtyai1995/adtyai-api](https://github.com/adtyai1995/adtyai-api)
 
 All complaints will be reviewed and investigated promptly and fairly.
 

@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -111,9 +112,14 @@ func AdtyMainLegalDocEnabled(doc string) bool {
 
 // AdtyLegalConsentRequiredForRequest reports whether sign-up on the current request's
 // site requires accepting legal terms. Subsites never inherit main site legal settings.
+// Corrupted legal_docs JSON fails closed (requires consent) instead of silently bypassing.
 func AdtyLegalConsentRequiredForRequest(c *gin.Context) bool {
 	if site := AdtySiteForRequest(c); site != nil {
-		legal := AdtySiteLegalFor(site)
+		legal, err := AdtySiteLegalForWithError(site)
+		if err != nil {
+			common.SysError(common.LogText("decode site %d legal_docs failed: %s", site.Id, err.Error()))
+			return true
+		}
 		return AdtyHasLegalText(legal.UserAgreement) || AdtyHasLegalText(legal.PrivacyPolicy)
 	}
 	return AdtyMainLegalConsentRequired()
@@ -174,19 +180,32 @@ func sanitizeAdtySiteLegalMap(in map[string]string) (map[string]string, error) {
 	return out, nil
 }
 
-// AdtySiteLegalFor decodes a subsite's own legal documents with guaranteed non-nil maps
-// and normalized formal language keys (en, zh-CN). It never reads main site settings.
-func AdtySiteLegalFor(site *model.AdtySite) model.AdtySiteLegalDocs {
+// AdtySiteLegalForWithError decodes a subsite's own legal documents and surfaces
+// JSON corruption errors to callers that must fail closed.
+func AdtySiteLegalForWithError(site *model.AdtySite) (model.AdtySiteLegalDocs, error) {
 	var parsed model.AdtySiteLegalDocs
 	if site != nil && strings.TrimSpace(site.LegalDocs) != "" {
-		_ = common.UnmarshalJsonStr(site.LegalDocs, &parsed)
+		if err := common.UnmarshalJsonStr(site.LegalDocs, &parsed); err != nil {
+			return model.AdtySiteLegalDocs{
+				UserAgreement: map[string]string{},
+				PrivacyPolicy: map[string]string{},
+				RefundPolicy:  map[string]string{},
+			}, err
+		}
 	}
 	return model.AdtySiteLegalDocs{
 		UserAgreement:       normalizeAdtySiteLegalMap(parsed.UserAgreement),
 		PrivacyPolicy:       normalizeAdtySiteLegalMap(parsed.PrivacyPolicy),
 		RefundPolicy:        normalizeAdtySiteLegalMap(parsed.RefundPolicy),
 		RefundPolicyEnabled: parsed.RefundPolicyEnabled,
-	}
+	}, nil
+}
+
+// AdtySiteLegalFor decodes a subsite's own legal documents with guaranteed non-nil maps
+// and normalized formal language keys (en, zh-CN). It never reads main site settings.
+func AdtySiteLegalFor(site *model.AdtySite) model.AdtySiteLegalDocs {
+	docs, _ := AdtySiteLegalForWithError(site)
+	return docs
 }
 
 func adtyLegalNonEmptyLangs(texts map[string]string) []string {
@@ -238,6 +257,7 @@ func SaveAdtySiteLegal(siteId, ownerUserId int, input model.AdtySiteLegalDocs) e
 	if err != nil {
 		return err
 	}
+	var auditEvent *model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
@@ -260,18 +280,40 @@ func SaveAdtySiteLegal(siteId, ownerUserId int, input model.AdtySiteLegalDocs) e
 		if err := tx.Model(&site).Update("legal_docs", string(raw)).Error; err != nil {
 			return err
 		}
-		return recordSiteCompatibilityAuditTx(
+		oldSummary := adtySiteLegalAuditSummary(oldDocs)
+		newSummary := adtySiteLegalAuditSummary(sanitized)
+		if err := recordSiteCompatibilityAuditTx(
 			tx,
 			site.Id,
 			"legal_update",
 			ownerUserId,
-			adtySiteLegalAuditSummary(oldDocs),
-			adtySiteLegalAuditSummary(sanitized),
+			oldSummary,
+			newSummary,
 			"",
+		); err != nil {
+			return err
+		}
+		var auditErr error
+		auditEvent, auditErr = appendAdtyOfficialAuditTx(
+			tx,
+			ownerUserId,
+			site.Id,
+			"site_legal",
+			strconv.Itoa(site.Id),
+			"adty.site.legal_update",
+			"",
+			"",
+			oldSummary,
+			newSummary,
+			model.AuditResultSuccess,
 		)
+		return auditErr
 	})
 	if err != nil {
 		return err
+	}
+	if auditEvent != nil {
+		deliverAdtyCommittedAudit(*auditEvent)
 	}
 	InvalidateAdtySiteCache()
 	return nil

@@ -219,7 +219,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.POST("/adty/tickets/:id/images", middleware.UserAuth(), controller.PostAdtyTicketImage)
 	apiRouter.GET("/adty/tickets/:id/images/:imageId", middleware.UserAuth(), controller.GetAdtyTicketImage)
 	apiRouter.DELETE("/adty/tickets/:id/images/:imageId", middleware.UserAuth(), controller.DeleteAdtyTicketImage)
-	apiRouter.GET("/adty/groups/health", middleware.UserAuth(), controller.GetAdtyGroupHealth)
+	apiRouter.GET("/adty/groups/health", middleware.UserAuth(), controller.GetAdtyAdminGroupHealth)
 }
 
 // registerAdtyTopUpRoutes 挂钱包的充值接口（任务 3.3），令牌规则照上游钱包接口。
@@ -651,8 +651,6 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/sites/:id/wallets", "scope", "option:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/sites/:id/wallet-ledgers", "scope", "option:read")
 	rootWallets := apiRouter.Group("/adty/admin/sites", middleware.RootAuth())
-	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/sites/owner-candidates", "scope", "option:read")
-	rootWallets.GET("/owner-candidates", controller.GetAdtyAdminSiteOwnerCandidates)
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/sites/paused-repairs", "scope", "option:read")
 	rootWallets.GET("/paused-repairs", controller.ListAdtyPausedSiteRepairs)
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/sites/:id/paused-repair", "scope", "option:write")

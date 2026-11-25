@@ -23,10 +23,19 @@ import { useTranslation } from 'react-i18next'
 import { ErrorState } from '@/components/error-state'
 import { SectionPageLayout } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
-import { Card, CardContent } from '@/components/ui/card'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
+import { SiteCommissionPanel } from '@/features/wallet/adty/site-commission-panel'
+import { useStatus } from '@/hooks/use-status'
 import { toIntlLocale } from '@/i18n/languages'
+import { readReferralEnabledFromStatus } from '@/lib/status-query'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { getReferralProfile, referralQueryKeys } from './api'
@@ -91,14 +100,22 @@ function ReferralRules(props: { profile: ReferralProfile }) {
 export function Referral() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const { status } = useStatus()
   const user = useAuthStore((state) => state.auth.user)
   const isSubsiteCustomer =
     (user?.site_id ?? 0) > 0 && !(user?.staff_site_id ?? 0)
+  const hasLegacySiteCommissions =
+    !isSubsiteCustomer &&
+    !(user?.staff_site_id ?? 0) &&
+    user?.adty_has_legacy_site_commissions === true
+  const referralEnabledFlag =
+    readReferralEnabledFromStatus(status) ?? user?.adty_referral_enabled
+  const mainReferralEnabled = referralEnabledFlag !== false
   const [withdrawing, setWithdrawing] = useState(false)
   const profileQuery = useQuery({
     queryKey: referralQueryKeys.profile,
     queryFn: getReferralProfile,
-    enabled: !isSubsiteCustomer,
+    enabled: !isSubsiteCustomer && mainReferralEnabled,
   })
   const refresh = () =>
     queryClient.invalidateQueries({ queryKey: referralQueryKeys.all })
@@ -120,56 +137,90 @@ export function Referral() {
     )
   }
 
+  const legacySiteCommissionsCard = hasLegacySiteCommissions ? (
+    <Card>
+      <CardHeader>
+        <CardTitle className='text-base'>
+          {t('Historical sub-site commissions')}
+        </CardTitle>
+        <CardDescription>
+          {t(
+            'Commissions earned on closed sub-sites before migration can still be converted to balance or withdrawn here.'
+          )}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <SiteCommissionPanel
+          onConverted={() => {
+            void queryClient.invalidateQueries({
+              queryKey: ['adty-site-commissions'],
+            })
+            if (mainReferralEnabled) {
+              void refresh()
+            }
+          }}
+        />
+      </CardContent>
+    </Card>
+  ) : null
+
   return (
     <SectionPageLayout>
       <SectionPageLayout.Title>{t('Referral')}</SectionPageLayout.Title>
       <SectionPageLayout.Description>
-        {t(
-          'Earn rewards when users join through your referral link. Transfer accumulated rewards to your balance anytime.'
-        )}
+        {!mainReferralEnabled && hasLegacySiteCommissions
+          ? t(
+              'Manage and withdraw commissions earned on closed sub-sites before your account moved to the main site.'
+            )
+          : t(
+              'Earn rewards when users join through your referral link. Transfer accumulated rewards to your balance anytime.'
+            )}
       </SectionPageLayout.Description>
       <SectionPageLayout.Content>
-        {profileQuery.isLoading && <LoadingState />}
-        {profileQuery.isError && (
-          <ErrorState onRetry={() => void profileQuery.refetch()} />
-        )}
-        {profile && (
-          <div className='flex flex-col gap-4'>
-            <ReferralLinkCard profile={profile} />
-            <ReferralStats
-              profile={profile}
-              onWithdraw={() => setWithdrawing(true)}
-            />
-            <Tabs defaultValue='commissions'>
-              <TabsList>
-                <TabsTrigger value='commissions'>
-                  {t('Commission details')}
-                </TabsTrigger>
-                <TabsTrigger value='withdrawals'>
-                  {t('Withdrawal records')}
-                </TabsTrigger>
-                <TabsTrigger value='rules'>{t('Program rules')}</TabsTrigger>
-              </TabsList>
-              <TabsContent value='commissions'>
-                <CommissionTable />
-              </TabsContent>
-              <TabsContent value='withdrawals'>
-                <WithdrawalTable
-                  cancelWindowMinutes={profile.cancel_window_minutes}
-                />
-              </TabsContent>
-              <TabsContent value='rules'>
-                <ReferralRules profile={profile} />
-              </TabsContent>
-            </Tabs>
-            <WithdrawDrawer
-              open={withdrawing}
-              onOpenChange={setWithdrawing}
-              profile={profile}
-              onDone={refresh}
-            />
-          </div>
-        )}
+        <div className='flex flex-col gap-4'>
+          {mainReferralEnabled && profileQuery.isLoading && <LoadingState />}
+          {mainReferralEnabled && profileQuery.isError && (
+            <ErrorState onRetry={() => void profileQuery.refetch()} />
+          )}
+          {mainReferralEnabled && profile && (
+            <>
+              <ReferralLinkCard profile={profile} />
+              <ReferralStats
+                profile={profile}
+                onWithdraw={() => setWithdrawing(true)}
+              />
+              <Tabs defaultValue='commissions'>
+                <TabsList>
+                  <TabsTrigger value='commissions'>
+                    {t('Commission details')}
+                  </TabsTrigger>
+                  <TabsTrigger value='withdrawals'>
+                    {t('Withdrawal records')}
+                  </TabsTrigger>
+                  <TabsTrigger value='rules'>{t('Program rules')}</TabsTrigger>
+                </TabsList>
+                <TabsContent value='commissions'>
+                  <CommissionTable />
+                </TabsContent>
+                <TabsContent value='withdrawals'>
+                  <WithdrawalTable
+                    cancelWindowMinutes={profile.cancel_window_minutes}
+                  />
+                </TabsContent>
+                <TabsContent value='rules'>
+                  <ReferralRules profile={profile} />
+                </TabsContent>
+              </Tabs>
+              <WithdrawDrawer
+                open={withdrawing}
+                onOpenChange={setWithdrawing}
+                profile={profile}
+                onDone={refresh}
+              />
+            </>
+          )}
+          {legacySiteCommissionsCard}
+        </div>
       </SectionPageLayout.Content>
     </SectionPageLayout>
   )

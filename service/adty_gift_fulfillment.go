@@ -58,7 +58,7 @@ var adtyNotifyGiftFulfillmentFulfilled = func(row *model.AdtyGiftFulfillment, qu
 	if row == nil || quota <= 0 {
 		return
 	}
-	usd := decimal.NewFromInt(quota).Div(decimal.NewFromFloat(common.QuotaPerUnit)).Round(2).StringFixed(2)
+	usd := decimal.NewFromInt(quota).Div(common.QuotaPerUnitDecimal()).Round(2).StringFixed(2)
 	var customer model.User
 	if err := model.DB.Select("id", "email", "setting", "status").First(&customer, row.UserId).Error; err != nil {
 		common.SysLog(common.LogText("gift fulfillment: load customer %d: %s", row.UserId, err.Error()))

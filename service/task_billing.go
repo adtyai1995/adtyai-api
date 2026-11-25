@@ -423,10 +423,7 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 		return false
 	}
 
-	finalGroupRatioDec, hasUserGroupRatio := ratio_setting.GetGroupGroupRatioDecimal(group, group)
-	if !hasUserGroupRatio {
-		finalGroupRatioDec = ratio_setting.GetGroupRatioDecimal(group)
-	}
+	finalGroupRatioDec := ratio_setting.GetGroupRatioDecimal(group)
 	finalGroupRatioDec = adtyTaskRecalcGroupRatioDecimal(task, group, finalGroupRatioDec) // 二开：分站倍率 k（任务 11.4）
 	finalGroupRatio := finalGroupRatioDec.InexactFloat64()
 

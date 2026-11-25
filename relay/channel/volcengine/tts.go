@@ -5,13 +5,13 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -153,13 +153,9 @@ func handleTTSResponse(c *gin.Context, resp *http.Response, info *relaycommon.Re
 		)
 	}
 	defer service.CloseResponseBodyGracefully(resp)
-	body, readErr := io.ReadAll(resp.Body)
+	body, readErr := helper.ReadResponseBody(c, resp, types.ErrorCodeReadResponseBodyFailed)
 	if readErr != nil {
-		return nil, types.NewErrorWithStatusCode(
-			errors.New("failed to read volcengine response"),
-			types.ErrorCodeReadResponseBodyFailed,
-			http.StatusInternalServerError,
-		)
+		return nil, readErr
 	}
 
 	var volcResp VolcengineTTSResponse

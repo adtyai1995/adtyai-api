@@ -27,10 +27,18 @@ import {
   canonicalWithdrawNetworks,
 } from '@/features/admin-referral/lib/settings'
 import { WithdrawalPanel } from '@/features/admin-referral/components/withdrawal-panel'
+import { payoutText } from '@/features/admin-referral/lib/payout'
 import { SiteInviteWithdrawPanel } from '@/features/wallet/adty/site-invite-withdraw-panel'
 import { api } from '@/lib/api'
 
 import { WithdrawDrawer } from '../components/withdraw-drawer'
+import { formatUsdtAmount, usdtNetAmount } from '../lib/address'
+import {
+  clearSiteInviteCookie,
+  ensureDeviceCookie,
+  readSiteInviteCookie,
+  storeSiteInviteCookie,
+} from '../lib/click'
 import {
   availableUsdtNetworks,
   availableWithdrawalTargets,
@@ -427,5 +435,139 @@ describe('referral withdraw config helpers (R-36 #1)', () => {
     // Opening Mark as paid shows Alipay payee summary inside the dialog.
     fireEvent.click(screen.getByRole('button', { name: 'Mark as paid' }))
     expect(screen.getByText('Alipay payee details')).toBeTruthy()
+  })
+
+  it('resets Mark-as-Paid and Reject modal fields across different rows (R1-49)', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: {
+        success: true,
+        data: {
+          page: 1,
+          page_size: 20,
+          total: 2,
+          items: [
+            {
+              id: 81,
+              affiliate_id: 2,
+              user_id: 11,
+              username: 'alice',
+              amount: 20.123456,
+              fee_amount: 1,
+              net_amount: 19.123456,
+              account_type: 'usdt',
+              account_name: '',
+              account_no: 'T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb',
+              account_network: 'TRC20',
+              qr_image_url: '',
+              cny_rate: '',
+              cny_amount: '',
+              admin_note: '',
+              payment_txn_no: '',
+              payment_proof_url: '',
+              status: 'approved',
+              reject_reason: '',
+              submitted_at: 1700000000,
+              paid_at: 0,
+            },
+            {
+              id: 82,
+              affiliate_id: 3,
+              user_id: 12,
+              username: 'bob',
+              amount: 30,
+              fee_amount: 1,
+              net_amount: 29,
+              account_type: 'usdt',
+              account_name: '',
+              account_no: 'T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb',
+              account_network: 'TRC20',
+              qr_image_url: '',
+              cny_rate: '',
+              cny_amount: '',
+              admin_note: '',
+              payment_txn_no: '',
+              payment_proof_url: '',
+              status: 'approved',
+              reject_reason: '',
+              submitted_at: 1700000100,
+              paid_at: 0,
+            },
+          ],
+        },
+      },
+    })
+
+    render(
+      <QueryClientProvider client={createClient()}>
+        <WithdrawalPanel canReview canPayout status='approved' />
+      </QueryClientProvider>
+    )
+
+    await waitFor(() => expect(screen.getByText('19.123456 USDT')).toBeTruthy())
+
+    const payButtons = screen.getAllByRole('button', { name: 'Mark as paid' })
+    fireEvent.click(payButtons[0])
+    const txnInput = screen.getByLabelText('Transaction hash') as HTMLInputElement
+    fireEvent.change(txnInput, { target: { value: '0xstale-hash' } })
+    expect(txnInput.value).toBe('0xstale-hash')
+
+    // Opening row #2 must clear the stale transaction hash from row #1.
+    fireEvent.click(payButtons[1])
+    expect(
+      (screen.getByLabelText('Transaction hash') as HTMLInputElement).value
+    ).toBe('')
+  })
+
+  it('preserves 6-decimal USDT precision in helpers and payoutText (R1-50)', () => {
+    expect(usdtNetAmount(20.123456, 1)).toBe(19.123456)
+    expect(formatUsdtAmount(19.123456)).toBe('19.123456')
+    expect(formatUsdtAmount(19.5)).toBe('19.50')
+    expect(formatUsdtAmount(19)).toBe('19.00')
+    expect(
+      payoutText(
+        {
+          id: 1,
+          affiliate_id: 1,
+          user_id: 1,
+          amount: 20.123456,
+          fee_amount: 1,
+          net_amount: 19.123456,
+          account_type: 'usdt',
+          account_name: '',
+          account_no: 'T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb',
+          account_network: 'TRC20',
+          qr_image_url: '',
+          cny_rate: '',
+          cny_amount: '',
+          admin_note: '',
+          payment_txn_no: '',
+          payment_proof_url: '',
+          status: 'approved',
+          reject_reason: '',
+          submitted_at: 1700000000,
+          paid_at: 0,
+        },
+        '$20.123456'
+      )
+    ).toBe('19.123456 USDT')
+  })
+
+  it('writes adty_did cookie even on subsite documents and round-trips adty_site_invite cookie (R1-13, R1-46)', () => {
+    document.documentElement.dataset.adtySite = '1'
+    document.cookie = 'adty_did=; Max-Age=0; Path=/'
+    clearSiteInviteCookie(document)
+
+    ensureDeviceCookie(document)
+    expect(document.cookie).toContain('adty_did=')
+
+    storeSiteInviteCookie('SITE-CODE-99', document, 1700000123)
+    expect(readSiteInviteCookie(document)).toEqual({
+      code: 'SITE-CODE-99',
+      capturedAt: 1700000123,
+    })
+
+    clearSiteInviteCookie(document)
+    expect(readSiteInviteCookie(document)).toBeNull()
+    delete document.documentElement.dataset.adtySite
   })
 })

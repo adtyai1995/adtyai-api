@@ -40,8 +40,34 @@ func GetAdtyOwnerPricingHistory(c *gin.Context) {
 	}
 	page, offset, limit := adtyPage(c)
 	items, total, err := service.ListAdtySitePricingHistory(site.Id, userID, offset, limit)
-	if err != nil { common.ApiError(c, err); return }
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	type priceHistoryView struct {
+		model.AdtyPriceRevision
+		ActorUsername string `json:"actor_username,omitempty"`
+		Username      string `json:"username,omitempty"`
+	}
+	lookupIDs := make([]int, 0, len(items)*2)
+	for _, item := range items {
+		if item.ActorId > 0 {
+			lookupIDs = append(lookupIDs, item.ActorId)
+		}
+		if item.UserId > 0 {
+			lookupIDs = append(lookupIDs, item.UserId)
+		}
+	}
+	usernames := model.LookupUsernamesByIDs(model.DB, lookupIDs)
+	views := make([]priceHistoryView, 0, len(items))
+	for _, item := range items {
+		views = append(views, priceHistoryView{
+			AdtyPriceRevision: item,
+			ActorUsername:     usernames[item.ActorId],
+			Username:          usernames[item.UserId],
+		})
+	}
 	page.SetTotal(int(total))
-	page.SetItems(items)
+	page.SetItems(views)
 	common.ApiSuccess(c, page)
 }

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/shopspring/decimal"
 )
@@ -176,17 +176,12 @@ func parseNestedDecimalObject(jsonStr string) (map[string]map[string]decimal.Dec
 }
 
 func decodeJSONObject(jsonStr string) (map[string]any, error) {
-	dec := json.NewDecoder(strings.NewReader(jsonStr))
-	dec.UseNumber()
-	var raw map[string]any
-	if err := dec.Decode(&raw); err != nil {
+	raw, err := common.DecodeJsonObjectUseNumber(jsonStr)
+	if err != nil {
+		if err == io.ErrUnexpectedEOF {
+			return nil, fmt.Errorf("invalid trailing data")
+		}
 		return nil, err
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		return nil, fmt.Errorf("invalid trailing data")
-	}
-	if raw == nil {
-		return map[string]any{}, nil
 	}
 	return raw, nil
 }

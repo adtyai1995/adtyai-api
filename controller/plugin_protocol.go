@@ -42,6 +42,7 @@ type pluginProtocolBridgeDeps struct {
 	admissionTimeout   time.Duration
 	getByTaskId        func(int, string) (*model.Task, bool, error)
 	resolvePlugin      func(constant.TaskPlatform) (*pluginruntime.LoadedPlugin, *pluginruntime.RoutingGeneration, bool)
+	resolveTaskPlugin  func(*model.Task) (*pluginruntime.LoadedPlugin, *pluginruntime.RoutingGeneration, bool)
 	// imagePollInterval, pollTask and downloadImage serve the synchronous
 	// OpenAI Images protocol: an asynchronous upstream image task is polled
 	// inside the request, and b64_json responses download each image URL.
@@ -139,8 +140,8 @@ func (d pluginProtocolBridgeDeps) withDefaults() pluginProtocolBridgeDeps {
 	if d.getByTaskId == nil {
 		d.getByTaskId = defaults.getByTaskId
 	}
-	if d.resolvePlugin == nil {
-		d.resolvePlugin = defaults.resolvePlugin
+	if d.resolvePlugin == nil && d.resolveTaskPlugin == nil {
+		d.resolveTaskPlugin = resolveTaskPluginForTaskRetrieve
 	}
 	if d.imagePollInterval <= 0 {
 		d.imagePollInterval = defaults.imagePollInterval
@@ -157,6 +158,18 @@ func (d pluginProtocolBridgeDeps) withDefaults() pluginProtocolBridgeDeps {
 func resolveTaskPluginForProtocolRetrieve(platform constant.TaskPlatform) (*pluginruntime.LoadedPlugin, *pluginruntime.RoutingGeneration, bool) {
 	generation := pluginruntime.DefaultRegistry.Generation()
 	plugin, ok := relay.ResolveTaskPluginForPlatform(generation, platform)
+	return plugin, generation, ok
+}
+
+func resolveTaskPluginForTaskRetrieve(task *model.Task) (*pluginruntime.LoadedPlugin, *pluginruntime.RoutingGeneration, bool) {
+	if task == nil {
+		return nil, nil, false
+	}
+	generation := pluginruntime.DefaultRegistry.Generation()
+	if plugin, ok := relay.ResolveTaskPluginForTask(task, task.Platform); ok && plugin != nil {
+		return plugin, generation, true
+	}
+	plugin, ok := relay.ResolveTaskPluginForPlatform(generation, task.Platform)
 	return plugin, generation, ok
 }
 
@@ -969,7 +982,18 @@ func retrieveTaskPluginResponse(c *gin.Context, deps pluginProtocolBridgeDeps) {
 		return
 	}
 
-	plugin, generation, ok := deps.resolvePlugin(task.Platform)
+	var (
+		plugin     *pluginruntime.LoadedPlugin
+		generation *pluginruntime.RoutingGeneration
+		ok         bool
+	)
+	if deps.resolveTaskPlugin != nil {
+		plugin, generation, ok = deps.resolveTaskPlugin(task)
+	} else if deps.resolvePlugin != nil {
+		plugin, generation, ok = deps.resolvePlugin(task.Platform)
+	} else {
+		plugin, generation, ok = resolveTaskPluginForTaskRetrieve(task)
+	}
 	if !ok || plugin == nil {
 		writeTaskPluginResponseNotFound(c, responseID, "no_plugin")
 		return

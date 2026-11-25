@@ -346,6 +346,11 @@ func sendPasswordResetInstructions(c *gin.Context, user *model.User) error {
 	}
 	email := model.NormalizeEmail(current.Email)
 	site := service.AdtySiteById(current.SiteId)
+	if current.SiteId == 0 {
+		if reqSite := service.AdtySiteForRequest(c); reqSite != nil && reqSite.OwnerUserId == current.Id && reqSite.Status != model.AdtySiteStatusClosed {
+			site = reqSite
+		}
+	}
 	if current.SiteId > 0 && !service.AdtySiteServesCustomers(site) {
 		return common.NewMessage("Site not found")
 	}

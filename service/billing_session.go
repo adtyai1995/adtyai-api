@@ -19,6 +19,7 @@ import (
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 )
 
 // ---------------------------------------------------------------------------
@@ -389,7 +390,11 @@ func (s *BillingSession) shouldTrust(c *gin.Context) bool {
 		return false
 	}
 
-	trustQuota := operation_setting.GetQuotaSetting().TrustQuotaUSD * common.QuotaPerUnit
+	trustUSD := operation_setting.GetQuotaSetting().TrustQuotaUSD
+	if trustUSD <= 0 || math.IsNaN(trustUSD) || math.IsInf(trustUSD, 0) {
+		return false
+	}
+	trustQuota := decimal.NewFromFloat(trustUSD).Mul(common.QuotaPerUnitDecimal()).InexactFloat64()
 	if trustQuota <= 0 || math.IsNaN(trustQuota) || math.IsInf(trustQuota, 0) {
 		return false
 	}

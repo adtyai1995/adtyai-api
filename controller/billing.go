@@ -6,6 +6,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 )
 
 func GetSubscription(c *gin.Context) {
@@ -50,16 +51,16 @@ func GetSubscription(c *gin.Context) {
 	amount := float64(quota)
 	// OpenAI 兼容接口中的 *_USD 字段含义保持“额度单位”对应值：
 	// 我们将其解释为以“站点展示类型”为准：
-	// - USD: 直接除以 QuotaPerUnit
+	// - USD: 直接除以 QuotaPerUnitDecimal
 	// - CNY: 先转 USD 再乘汇率
 	// - TOKENS: 直接使用 tokens 数量
 	switch operation_setting.GetQuotaDisplayType() {
 	case operation_setting.QuotaDisplayTypeCNY:
-		amount = amount / common.QuotaPerUnit * operation_setting.GetUSDExchangeRate()
+		amount = decimal.NewFromInt(int64(quota)).Div(common.QuotaPerUnitDecimal()).Mul(decimal.NewFromFloat(operation_setting.GetUSDExchangeRate())).InexactFloat64()
 	case operation_setting.QuotaDisplayTypeTokens:
 		// amount 保持 tokens 数值
 	default:
-		amount = amount / common.QuotaPerUnit
+		amount = decimal.NewFromInt(int64(quota)).Div(common.QuotaPerUnitDecimal()).InexactFloat64()
 	}
 	if token != nil && token.UnlimitedQuota {
 		amount = 100000000
@@ -111,11 +112,11 @@ func GetUsage(c *gin.Context) {
 	amount := float64(quota)
 	switch operation_setting.GetQuotaDisplayType() {
 	case operation_setting.QuotaDisplayTypeCNY:
-		amount = amount / common.QuotaPerUnit * operation_setting.GetUSDExchangeRate()
+		amount = decimal.NewFromInt(int64(quota)).Div(common.QuotaPerUnitDecimal()).Mul(decimal.NewFromFloat(operation_setting.GetUSDExchangeRate())).InexactFloat64()
 	case operation_setting.QuotaDisplayTypeTokens:
 		// tokens 保持原值
 	default:
-		amount = amount / common.QuotaPerUnit
+		amount = decimal.NewFromInt(int64(quota)).Div(common.QuotaPerUnitDecimal()).InexactFloat64()
 	}
 	usage := OpenAIUsageResponse{
 		Object:     "list",

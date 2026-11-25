@@ -18,7 +18,13 @@ func adtyOwnerDashboardAllowed(c *gin.Context, user *model.UserBase) bool {
 	if user == nil || user.Role >= common.RoleAdminUser || user.StaffSiteId > 0 {
 		return true
 	}
-	if !service.AdtyIsSiteOwner(user.Id) {
+	isOwner, err := service.AdtyIsSiteOwnerStrict(user.Id)
+	if err != nil {
+		common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Service temporarily unavailable"))
+		c.Abort()
+		return false
+	}
+	if !isOwner {
 		return true
 	}
 	fullPath := c.FullPath()
@@ -34,6 +40,8 @@ func adtyOwnerDashboardAllowed(c *gin.Context, user *model.UserBase) bool {
 		isBlocked("/api/log/self") ||
 		isBlocked("/api/mj/self") ||
 		isBlocked("/api/task/self") ||
+		isBlocked("/api/data/self") ||
+		isBlocked("/api/adty/orders") ||
 		rawPath == "/api/adty/site/wallets/earning-to-personal" ||
 		rawPath == "/api/adty/site/wallets/self-use" ||
 		isBlocked("/api/adty/site/self-use") {
@@ -41,8 +49,9 @@ func adtyOwnerDashboardAllowed(c *gin.Context, user *model.UserBase) bool {
 		c.Abort()
 		return false
 	}
-	// Block non-margin personal top-up info requests for site owners; margin top-up stays allowed.
-	if rawPath == "/api/adty/topup/info" && strings.TrimSpace(c.Query("business")) != model.AdtyBusinessOwnerMarginTopup {
+	// Block non-margin personal top-up queries for site owners; margin top-up stays allowed.
+	if (rawPath == "/api/adty/topup/info" || rawPath == "/api/adty/topup/pending" || rawPath == "/api/adty/topup/self") &&
+		strings.TrimSpace(c.Query("business")) != model.AdtyBusinessOwnerMarginTopup {
 		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Site owner accounts are management-only and cannot access consumer or API features"))
 		c.Abort()
 		return false

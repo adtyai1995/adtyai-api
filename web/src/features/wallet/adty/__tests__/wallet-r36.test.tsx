@@ -35,7 +35,12 @@ import { ROLE } from '@/lib/roles'
 import { Route as BillingSectionRoute } from '@/routes/_authenticated/system-settings/billing/$section'
 import { useAuthStore } from '@/stores/auth-store'
 
-import type { AdtyTopupInfo } from '../api'
+import {
+  formatBonusRateFraction,
+  formatBonusRatePercent,
+  resolveMethodBonusPercent,
+  type AdtyTopupInfo,
+} from '../api'
 import { AdtyOnlineTopup } from '../components/adty-online-topup'
 import { AdtyRechargeCard } from '../components/adty-recharge-card'
 import { VoucherRedeemCard } from '../voucher-redeem-card'
@@ -379,5 +384,71 @@ describe('R-36 Items 2, 3, and 4', () => {
         replace: true,
       }),
     })
+  })
+
+  it('formats bonus rate percentages <= 1% without multiplying by 100 and scales fraction rates by 100 (R1-09)', async () => {
+    expect(formatBonusRatePercent('0.5')).toBe('0.5')
+    expect(formatBonusRatePercent('1')).toBe('1')
+    expect(formatBonusRatePercent('2.5')).toBe('2.5')
+    expect(formatBonusRateFraction('0.005')).toBe('0.5')
+    expect(formatBonusRateFraction('0.01')).toBe('1')
+    expect(formatBonusRateFraction('0.05')).toBe('5')
+    expect(resolveMethodBonusPercent('usdt.trc20', { usdt: '0.005' })).toBe(
+      '0.5'
+    )
+
+    quoteAdtyTopupMock.mockResolvedValueOnce({
+      available: true,
+      quote: {
+        amount_usd: '100',
+        face_usd: '100',
+        bonus_rate: '0.5',
+        bonus_usd: '0.50',
+        credit_quota: 50_250_000,
+        pay_amount: '700.00',
+        pay_currency: 'CNY',
+        price_cny_per_usd: '7.00',
+      },
+    })
+
+    renderWithQuery(
+      <AdtyRechargeCard
+        info={SINGLE_SCENE_INFO}
+        loading={false}
+        paying={false}
+        onPay={vi.fn()}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '$10' }))
+    fireEvent.click(screen.getByRole('button', { name: /Alipay/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/\(\+0\.5%\)/)).toBeTruthy()
+    })
+    expect(screen.queryByText(/\(\+50%\)/)).toBeNull()
+  })
+
+  it('shows Referral sidebar entry for migrated main-site user with adty_has_legacy_site_commissions even when referral is off (R1-12)', () => {
+    useAuthStore.getState().auth.setUser({
+      id: 99,
+      username: 'migrated',
+      role: ROLE.USER,
+      site_id: 0,
+      adty_referral_enabled: false,
+      adty_has_legacy_site_commissions: true,
+    })
+
+    let personalUrls: string[] = []
+    function Probe() {
+      const data = useSidebarData()
+      const personal = data.navGroups.find((group) => group.id === 'personal')
+      personalUrls = (personal?.items ?? []).map((item) =>
+        'url' in item && item.url ? String(item.url) : ''
+      )
+      return null
+    }
+    render(<Probe />)
+    expect(personalUrls).toContain('/referral')
   })
 })

@@ -42,6 +42,7 @@ import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -182,8 +183,10 @@ export function GiftFulfillmentsPanel() {
                     },
                     {
                       id: 'customer',
-                      header: t('Customer ID'),
-                      cell: (row) => row.user_id,
+                      header: t('User'),
+                      cellClassName: 'tabular-nums',
+                      cell: (row) =>
+                        formatUserIdentity(row.user_id, row.username),
                     },
                     {
                       id: 'bonus',

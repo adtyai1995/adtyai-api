@@ -182,10 +182,14 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	var containAudioTokens = usageObj.CompletionTokenDetails.AudioTokens > 0 || usageObj.PromptTokensDetails.AudioTokens > 0
 	var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
 
+	var settleErr error
 	if containAudioTokens && containsAudioRatios {
-		service.PostAudioConsumeQuota(c, info, usageObj, nil)
+		settleErr = service.PostAudioConsumeQuota(c, info, usageObj, nil)
 	} else {
-		service.PostTextConsumeQuota(c, info, usageObj, nil)
+		settleErr = service.PostTextConsumeQuota(c, info, usageObj, nil)
+	}
+	if settleErr != nil {
+		return types.NewError(settleErr, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 	}
 	return nil
 }

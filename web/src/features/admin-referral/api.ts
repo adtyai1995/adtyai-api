@@ -195,11 +195,6 @@ export const fetchAdminReferralCommissions = (
 export const getAdminCommissions = (params: AdminReferralCommissionsParams) =>
   fetchAdminReferralCommissions(params)
 
-export const reviewPartner = (
-  userId: number,
-  body: { approve: boolean; rate?: string; reason: string }
-) => post(`/affiliates/${userId}/partner`, body)
-
 export const updateAffiliate = (
   userId: number,
   body: {

@@ -96,6 +96,9 @@ func SaveAdtyPaymentScenes(actorID int, expected int64, scenes []model.AdtyPayme
 				return nil, common.NewMessage("Invalid parameters")
 			}
 		}
+		if scene.Business == model.AdtyBusinessTeamTopup && (scene.SiteScope != "main" || len(scene.SiteIDs) != 0) {
+			return nil, common.NewMessage("Invalid parameters")
+		}
 		if scene.Business == model.AdtyBusinessOwnerMarginTopup &&
 			(!slices.Contains([]string{"all_sites", "selected"}, scene.SiteScope) || len(scene.UserTypes) != 1 || scene.UserTypes[0] != "site_owner") {
 			return nil, common.NewMessage("Invalid parameters")

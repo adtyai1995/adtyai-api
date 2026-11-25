@@ -1054,6 +1054,32 @@ func DeleteAdtyGroup(id string) error {
 		if err != nil {
 			return err
 		}
+		if tx.Migrator().HasTable(&Option{}) {
+			var uptimeOpt Option
+			if findErr := lockForUpdate(tx).Where(commonKeyCol+" = ?", "console_setting.uptime_kuma_groups").Limit(1).Find(&uptimeOpt).Error; findErr != nil {
+				return findErr
+			}
+			if trimmed := strings.TrimSpace(uptimeOpt.Value); trimmed != "" {
+				var rawGroups []map[string]any
+				if unmarshalErr := common.UnmarshalJsonStr(trimmed, &rawGroups); unmarshalErr == nil {
+					filtered := make([]map[string]any, 0, len(rawGroups))
+					changed := false
+					for _, entry := range rawGroups {
+						gid, _ := entry["groupId"].(string)
+						if strings.TrimSpace(gid) == id {
+							changed = true
+							continue
+						}
+						filtered = append(filtered, entry)
+					}
+					if changed {
+						if encoded, marshalErr := common.Marshal(filtered); marshalErr == nil {
+							values["console_setting.uptime_kuma_groups"] = string(encoded)
+						}
+					}
+				}
+			}
+		}
 		if err := tx.Where("id = ?", id).Delete(&AdtyGroup{}).Error; err != nil {
 			return err
 		}

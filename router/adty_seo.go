@@ -358,21 +358,18 @@ func adtyMainSEO(base *url.URL, noindex bool) adtySEOHeadInput {
 	}
 }
 
-// adtySiteSEO 是分站首页的头部：标题是站名（有标语时加上），描述是标语，分享图是 Logo。
+// adtySiteSEO 是分站首页的头部：标题优先用站长自定义 title，否则用站名，分享图是 Logo。
 // 没开 SeoIndex 时 noindex，不写 canonical；开了时 canonical 指向分站自己的地址，不指向主站。
 func adtySiteSEO(site *model.AdtySite) adtySEOHeadInput {
 	brand := service.AdtyBrandFor(site)
 	title := brand.Name
-	if tagline := strings.TrimSpace(brand.Tagline); tagline != "" {
-		title = brand.Name + " - " + tagline
-	}
 	if customTitle := strings.TrimSpace(brand.Title); customTitle != "" {
 		title = customTitle
 	}
 	input := adtySEOHeadInput{
 		siteName:    brand.Name,
 		title:       func(string) string { return title },
-		description: func(string) string { return strings.TrimSpace(brand.Tagline) },
+		description: func(string) string { return "" },
 		image:       brand.LogoURL,
 		noindex:     !site.SeoIndex,
 	}

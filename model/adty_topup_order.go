@@ -705,23 +705,49 @@ func adtyPendingBusinessScope(query *gorm.DB, ownerSiteID int, business string) 
 // ReplaceAdtyTopUpAfterLock freezes a pending order the user is abandoning by
 // starting another payment. A later success callback is reviewed instead of
 // credited, unlike a user-canceled order that may still settle under PAY-06.
+// External payment-provider confirmation runs outside the DB lock transaction,
+// followed by a short CAS lock transaction to commit the terminal state.
 func ReplaceAdtyTopUpAfterLock(tradeNo string, userId int, confirm func(*AdtyTopupOrder) error) (*AdtyTopupOrder, error) {
+	return transitionPendingAdtyTopUpWithConfirm(tradeNo, userId, TopUpStatusReplaced, confirm)
+}
+
+func transitionPendingAdtyTopUpWithConfirm(tradeNo string, userId int, targetStatus string, confirm func(*AdtyTopupOrder) error) (*AdtyTopupOrder, error) {
+	var topUp TopUp
+	if err := DB.Where("trade_no = ?", tradeNo).First(&topUp).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrTopUpNotFound
+		}
+		return nil, err
+	}
+	if topUp.UserId != userId {
+		return nil, ErrTopUpNotFound
+	}
+	if topUp.Status != common.TopUpStatusPending {
+		return nil, ErrAdtyTopUpNotCancel
+	}
+	var snapshot AdtyTopupOrder
+	if err := DB.Where("trade_no = ?", tradeNo).First(&snapshot).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrTopUpNotFound
+		}
+		return nil, err
+	}
+	if confirm != nil {
+		if err := confirm(&snapshot); err != nil {
+			return nil, err
+		}
+	}
 	var ext *AdtyTopupOrder
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		topUp, locked, err := lockAdtyTopUpTx(tx, tradeNo)
+		lockedTop, locked, err := lockAdtyTopUpTx(tx, tradeNo)
 		if err != nil {
 			return err
 		}
-		if topUp.UserId != userId {
+		if lockedTop.UserId != userId {
 			return ErrTopUpNotFound
 		}
-		if topUp.Status != common.TopUpStatusPending {
+		if lockedTop.Status != common.TopUpStatusPending {
 			return ErrAdtyTopUpNotCancel
-		}
-		if confirm != nil {
-			if err := confirm(locked); err != nil {
-				return err
-			}
 		}
 		ext = locked
 		if AdtyReleaseTopUpReserveTx != nil {
@@ -729,7 +755,7 @@ func ReplaceAdtyTopUpAfterLock(tradeNo string, userId int, confirm func(*AdtyTop
 				return err
 			}
 		}
-		return tx.Model(&TopUp{}).Where("id = ?", topUp.Id).Update("status", TopUpStatusReplaced).Error
+		return tx.Model(&TopUp{}).Where("id = ? AND status = ?", lockedTop.Id, common.TopUpStatusPending).Update("status", targetStatus).Error
 	})
 	return ext, err
 }
@@ -764,35 +790,10 @@ func FailPendingAdtyTopUp(tradeNo, expectedPaymentProvider string) error {
 	})
 }
 
-// CancelAdtyTopUpAfterLock 先锁住订单。confirm 在锁内调用，用来问支付商。
+// CancelAdtyTopUpAfterLock 先校验待支付订单并在锁外询问支付商，随后短事务行锁 CAS 落终态。
 // confirm 返回错误时本地状态不变。订单已经不是 pending 时不会调用 confirm。
 func CancelAdtyTopUpAfterLock(tradeNo string, userId int, confirm func(*AdtyTopupOrder) error) (*AdtyTopupOrder, error) {
-	var ext *AdtyTopupOrder
-	err := DB.Transaction(func(tx *gorm.DB) error {
-		topUp, locked, err := lockAdtyTopUpTx(tx, tradeNo)
-		if err != nil {
-			return err
-		}
-		if topUp.UserId != userId {
-			return ErrTopUpNotFound
-		}
-		if topUp.Status != common.TopUpStatusPending {
-			return ErrAdtyTopUpNotCancel
-		}
-		if confirm != nil {
-			if err := confirm(locked); err != nil {
-				return err
-			}
-		}
-		ext = locked
-		if AdtyReleaseTopUpReserveTx != nil {
-			if err := AdtyReleaseTopUpReserveTx(tx, locked); err != nil {
-				return err
-			}
-		}
-		return tx.Model(&TopUp{}).Where("id = ?", topUp.Id).Update("status", TopUpStatusCanceled).Error
-	})
-	return ext, err
+	return transitionPendingAdtyTopUpWithConfirm(tradeNo, userId, TopUpStatusCanceled, confirm)
 }
 
 // ExpiredAdtyTopUp 是被过期任务改成 expired 的订单（5.3 按通道计数要用）。

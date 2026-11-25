@@ -819,22 +819,9 @@ func GetAdtyTranslationUsage(c *gin.Context) {
 	common.ApiSuccess(c, usage)
 }
 
+// GetAdtyGroupHealth 分组健康监控已停用（R1-58，与管理端保持一致）。
 func GetAdtyGroupHealth(c *gin.Context) {
-	usable := service.GetUserUsableGroups(c.GetString("group"))
-	allowed := make([]string, 0, len(usable))
-	for group := range usable {
-		allowed = append(allowed, group)
-	}
-	rows, err := service.ListAdtyGroupHealthForUserOnSite(c.GetInt("id"), service.AdtyRequestSiteID(c), c.GetString("group"), c.Query("model"), allowed, time.Now())
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	scope := "platform"
-	if len(rows) > 0 {
-		scope = rows[0].Scope
-	}
-	common.ApiSuccess(c, gin.H{"scope": scope, "groups": rows})
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Group health monitoring has been disabled"))
 }
 
 // GetAdtyAdminGroupHealth 分组健康配置管理已停用（R-32 #5）。

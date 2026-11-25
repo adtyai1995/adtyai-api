@@ -53,11 +53,15 @@ const ALLOWED_NOTIFICATION_TAGS = [
   'br',
   'strong',
   'b',
+  'em',
+  'i',
+  'u',
   'span',
   'font',
   'ul',
   'ol',
   'li',
+  'blockquote',
 ]
 
 const FONT_SIZE_LEGACY_MAP: Record<string, NotificationFontSize> = {
@@ -246,7 +250,9 @@ export function isHtmlNotificationContent(
 ): boolean {
   if (contentFormat === 'html') return true
   if (!content) return false
-  return /^\s*<(?:h[1-6]|p|div|span|strong|b|ul|ol|li|br)\b/i.test(content)
+  return /^\s*<(?:h[1-6]|p|div|span|strong|b|em|i|u|ul|ol|li|br|blockquote)\b/i.test(
+    content
+  )
 }
 
 function escapeHtml(text: string): string {

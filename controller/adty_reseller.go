@@ -116,27 +116,9 @@ func GetAdtySiteSenderDomain(c *gin.Context) {
 	common.ApiSuccess(c, domain)
 }
 
-// AddAdtySiteSenderDomain 设置发件域名：POST /api/adty/site/sender-domain {domain}（任务 11.3）。
+// AddAdtySiteSenderDomain 托管 Resend 发件域名已退役（R-37 #5），请改用站长自有 Resend API Key 或自定义 SMTP。
 func AddAdtySiteSenderDomain(c *gin.Context) {
-	var body struct {
-		Domain string `json:"domain"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	domain, err := service.AddAdtySiteSenderDomain(c.Request.Context(), c.GetInt("id"), body.Domain)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if domain != nil {
-		sanitized := *domain
-		sanitized.DisabledByPlatform = sanitized.DisabledBy > 0
-		sanitized.DisabledBy = 0
-		domain = &sanitized
-	}
-	common.ApiSuccess(c, domain)
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Managed Resend sender domains have been retired. Configure your own Resend API key or SMTP in site email settings"))
 }
 
 // RemoveAdtySiteSenderDomain 删除发件域名，回到平台发件地址：DELETE /api/adty/site/sender-domain（任务 11.3）。

@@ -55,7 +55,7 @@ export function CloseSiteDialog(props: {
 
   const revising=props.site.status==='closing'
   const [deadline,setDeadline]=useState('')
-  const executeAt=Date.parse(deadline)/1000
+  const executeAt = Math.floor(Date.parse(deadline) / 1000)
   const close = useMutation({
     mutationFn: () => {
       if (useAuthStore.getState().auth.user?.role !== ROLE.SUPER_ADMIN) {

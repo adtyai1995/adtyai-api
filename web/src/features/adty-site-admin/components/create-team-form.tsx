@@ -32,8 +32,17 @@ import { validTeamDiscount } from '@/features/adty-team-registration/discount'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { searchUsers } from '@/features/users/api'
 import { api } from '@/lib/api'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 import { requireServerSuccess } from '@/lib/server-error-message'
+
+function isActiveSiteOwner(user: {
+  id: number
+  adty_site_owner?: boolean
+  is_site_owner?: boolean
+}): boolean {
+  return Boolean(user.adty_site_owner || user.is_site_owner)
+}
 
 export function CreateTeamForm() {
   const { t } = useTranslation()
@@ -120,11 +129,13 @@ export function CreateTeamForm() {
           onChange={(event) => setLeader(event.target.value)}
         >
           <NativeSelectOption value=''>{t('Select user')}</NativeSelectOption>
-          {candidates.data?.items.map((user) => (
-            <NativeSelectOption key={user.id} value={user.id}>
-              {user.username} (#{user.id})
-            </NativeSelectOption>
-          ))}
+          {(candidates.data?.items ?? [])
+            .filter((user) => !isActiveSiteOwner(user))
+            .map((user) => (
+              <NativeSelectOption key={user.id} value={user.id}>
+                {formatUserIdentity(user.id, user.username)}
+              </NativeSelectOption>
+            ))}
         </NativeSelect>
         {candidates.isError && (
           <ErrorState onRetry={() => void candidates.refetch()} />

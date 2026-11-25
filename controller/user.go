@@ -16,7 +16,6 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
 	passkeysvc "github.com/QuantumNous/new-api/service/passkey"
-	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
@@ -334,6 +333,7 @@ func Register(c *gin.Context) {
 		Password:    user.Password,
 		DisplayName: user.Username,
 		Role:        common.RoleCommonUser, // 明确设置角色为普通用户
+		Group:       "",
 		SiteId:      siteId,
 	}
 	if common.GetEmailVerificationEnabled() {
@@ -371,11 +371,23 @@ func Register(c *gin.Context) {
 	service.AdtyAfterRegister(c, &insertedUser)
 	if insertedUser.SiteId > 0 {
 		siteInviteCode := strings.TrimSpace(payload.SiteInviteCode)
+		explicitQueryCode := strings.TrimSpace(c.Query("site_invite"))
 		if siteInviteCode == "" {
-			siteInviteCode = strings.TrimSpace(c.Query("site_invite"))
+			siteInviteCode = explicitQueryCode
+		}
+		cookieRaw, _ := c.Cookie("adty_site_invite")
+		cookieCode, cookieCapturedAt := service.ParseAdtySiteInviteCookie(cookieRaw)
+		fromCookie := false
+		if siteInviteCode == "" && cookieCode != "" {
+			siteInviteCode = cookieCode
+			fromCookie = true
+		} else if explicitQueryCode == "" && cookieCode != "" && strings.EqualFold(siteInviteCode, cookieCode) {
+			fromCookie = true
 		}
 		if siteInviteCode != "" {
-			if bindErr := service.BindSiteInviteByCodeFromIP(insertedUser.SiteId, siteInviteCode, insertedUser.Id, service.HashReferralRiskValue(c.ClientIP())); bindErr != nil {
+			if fromCookie && service.AdtySiteInviteCookieExpired(insertedUser.SiteId, cookieCapturedAt, common.GetTimestamp()) {
+				common.SysLog(common.LogText("site invite bind on register skipped user_id=%d site_id=%d: invite cookie expired", insertedUser.Id, insertedUser.SiteId))
+			} else if bindErr := service.BindSiteInviteByCodeFromIP(insertedUser.SiteId, siteInviteCode, insertedUser.Id, service.HashReferralRiskValue(c.ClientIP())); bindErr != nil {
 				common.SysLog(common.LogText("site invite bind on register skipped user_id=%d site_id=%d: %s", insertedUser.Id, insertedUser.SiteId, bindErr.Error()))
 			}
 		}
@@ -404,9 +416,6 @@ func Register(c *gin.Context) {
 			ModelLimitsEnabled: false,
 		}
 		token.AllowUserQuotaQuery = true
-		if setting.GetDefaultUseAutoGroup() {
-			token.Group = "auto"
-		}
 		if err := token.InsertWithLimit(operation_setting.GetMaxUserTokens()); err != nil && !errors.Is(err, model.ErrTokenLimit) {
 			common.ApiErrorT(c, "Failed to create default token")
 			return
@@ -732,10 +741,11 @@ func buildSelfUserData(user *model.User) map[string]any {
 		"stripe_customer":          user.StripeCustomer,
 		"sidebar_modules":          userSetting.SidebarModules, // 正确提取sidebar_modules字段
 		"permissions":              permissions,
-		"adty_archived_site_owner": service.AdtyHasArchivedSite(user.Id),
-		"adty_site_owner":          service.AdtyIsSiteOwner(user.Id), // 二开：侧边栏只对站长显示站长中心（任务 11.6）
-		"adty_has_team":            service.AdtyUserHasTeam(user.Id),
-		"adty_referral_enabled":    service.IsAdtyReferralEnabledForSite(user.SiteId),
+		"adty_archived_site_owner":        service.AdtyHasArchivedSite(user.Id),
+		"adty_site_owner":                 service.AdtyIsSiteOwner(user.Id), // 二开：侧边栏只对站长显示站长中心（任务 11.6）
+		"adty_has_team":                   service.AdtyUserHasTeam(user.Id),
+		"adty_referral_enabled":           service.IsAdtyReferralEnabledForSite(user.SiteId),
+		"adty_has_legacy_site_commissions": service.AdtyUserHasLegacySiteCommissions(user.Id),
 		"site_id":                  user.SiteId,
 		"staff_site_id":            user.StaffSiteId,
 		"site_terms_required":      required,
@@ -1513,10 +1523,10 @@ func DeleteSelf(c *gin.Context) {
 		writeSecurityOperationError(c, err)
 		return
 	}
-	if _, _, ok := consumeAccountDeletionCode(c, account.Id, account.Email); !ok {
+	if middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: service.VerificationScopeAccountDelete}) == nil {
 		return
 	}
-	if middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: service.VerificationScopeAccountDelete}) == nil {
+	if _, _, ok := consumeAccountDeletionCode(c, account.Id, account.Email); !ok {
 		return
 	}
 	if revokedAccessTokens, err = model.DeleteUserForSession(identity); err != nil {
@@ -1810,6 +1820,15 @@ func ManageUser(c *gin.Context) {
 			return
 		}
 		if user.SiteId > 0 || user.StaffSiteId > 0 {
+			common.ApiErrorStatus(c, http.StatusForbidden, model.ErrCannotPromoteScopedUser)
+			return
+		}
+		isSiteOwner, ownerErr := service.AdtyIsSiteOwnerStrict(user.Id)
+		if ownerErr != nil {
+			common.ApiError(c, ownerErr)
+			return
+		}
+		if isSiteOwner {
 			common.ApiErrorStatus(c, http.StatusForbidden, model.ErrCannotPromoteScopedUser)
 			return
 		}

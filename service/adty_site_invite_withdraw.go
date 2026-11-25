@@ -345,18 +345,21 @@ func siteInviteCommissionFree(row *model.AdtySiteInviteCommission) decimal.Decim
 // ReviewAdtySiteInviteWithdrawal approves or rejects a pending cash withdrawal.
 // Only the owner of that withdrawal's site may review it.
 func ReviewAdtySiteInviteWithdrawal(ownerID int, withdrawalID int64, approve bool, reason string) error {
-	_, _, err := reviewSiteInviteWithdrawalWithAudit(ownerID, 0, false, withdrawalID, approve, reason, false, "")
+	return ReviewAdtySiteInviteWithdrawalWithClientMeta(ownerID, withdrawalID, approve, reason, "", "")
+}
+func ReviewAdtySiteInviteWithdrawalWithClientMeta(ownerID int, withdrawalID int64, approve bool, reason, ip, ua string) error {
+	_, _, err := reviewSiteInviteWithdrawalWithAudit(ownerID, 0, false, withdrawalID, approve, reason, false, "", ip, ua)
 	return err
 }
 func ReviewClosedAdtySiteInviteWithdrawal(ownerID int, withdrawalID int64, approve bool, reason string) error {
-	_, _, err := reviewSiteInviteWithdrawalWithAudit(ownerID, 0, false, withdrawalID, approve, reason, true, model.AdtySiteInviteWithdrawPending)
+	_, _, err := reviewSiteInviteWithdrawalWithAudit(ownerID, 0, false, withdrawalID, approve, reason, true, model.AdtySiteInviteWithdrawPending, "", "")
 	return err
 }
 func ReviewClosedAdtySiteInviteWithdrawalWithAudit(ownerID int, withdrawalID int64, approve bool, reason string) (string, bool, error) {
 	return ReviewClosedAdtySiteInviteWithdrawalWithAuditForActor(ownerID, 0, false, withdrawalID, approve, reason)
 }
 func ReviewClosedAdtySiteInviteWithdrawalWithAuditForActor(ownerID, actorRole int, denyAdminTarget bool, withdrawalID int64, approve bool, reason string) (string, bool, error) {
-	return reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole, denyAdminTarget, withdrawalID, approve, reason, true, model.AdtySiteInviteWithdrawPending)
+	return reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole, denyAdminTarget, withdrawalID, approve, reason, true, model.AdtySiteInviteWithdrawPending, "", "")
 }
 func ConfirmClosedSiteInvitePayoutFailure(actor int, id int64, approve bool, reason string) error {
 	_, _, err := ConfirmClosedSiteInvitePayoutFailureWithAudit(actor, id, approve, reason)
@@ -369,7 +372,7 @@ func ConfirmClosedSiteInvitePayoutFailureWithAuditForActor(actor, actorRole int,
 	if approve {
 		return "", false, common.NewMessage("Invalid parameters")
 	}
-	return reviewSiteInviteWithdrawalWithAudit(actor, actorRole, denyAdminTarget, id, false, reason, true, model.AdtySiteInviteWithdrawApproved)
+	return reviewSiteInviteWithdrawalWithAudit(actor, actorRole, denyAdminTarget, id, false, reason, true, model.AdtySiteInviteWithdrawApproved, "", "")
 }
 // lockSiteInviteWithdrawalCanonicalTx acquires locks in canonical global order
 // (AdtySite -> User -> AdtySiteInviteCommission(id ASC) -> AdtySiteInviteWithdrawal)
@@ -434,7 +437,7 @@ func lockSiteInviteWithdrawalCanonicalForActorTx(tx *gorm.DB, withdrawalID int64
 	return &row, nil
 }
 
-func reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bool, withdrawalID int64, approve bool, reason string, platform bool, requiredStatus string) (string, bool, error) {
+func reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bool, withdrawalID int64, approve bool, reason string, platform bool, requiredStatus, ip, ua string) (string, bool, error) {
 	var auditEvent *model.AuditLog
 	replayed := false
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -476,7 +479,7 @@ func reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget
 				return auditErr
 			}
 			if !platform {
-				return recordSiteReferralAuditTx(tx, row.SiteId, "withdrawal_approve", row.UserId, ownerID, strings.TrimSpace(reason), "", "", beforeSnap, map[string]any{"id": row.Id, "status": model.AdtySiteInviteWithdrawApproved})
+				return recordSiteReferralAuditTx(tx, row.SiteId, "withdrawal_approve", row.UserId, ownerID, strings.TrimSpace(reason), ip, ua, beforeSnap, map[string]any{"id": row.Id, "status": model.AdtySiteInviteWithdrawApproved})
 			}
 			return nil
 		}
@@ -501,7 +504,7 @@ func reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget
 			return auditErr
 		}
 		if !platform {
-			return recordSiteReferralAuditTx(tx, row.SiteId, "withdrawal_reject", row.UserId, ownerID, strings.TrimSpace(reason), "", "", beforeSnap, map[string]any{"id": row.Id, "status": model.AdtySiteInviteWithdrawRejected})
+			return recordSiteReferralAuditTx(tx, row.SiteId, "withdrawal_reject", row.UserId, ownerID, strings.TrimSpace(reason), ip, ua, beforeSnap, map[string]any{"id": row.Id, "status": model.AdtySiteInviteWithdrawRejected})
 		}
 		return nil
 	})
@@ -519,20 +522,23 @@ func reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget
 // MarkAdtySiteInviteWithdrawalPaid records the owner's offline payment.
 // It moves the freeze to withdrawn commission and does not credit quota.
 func MarkAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txID, proof string) error {
-	_, _, err := paySiteInviteWithdrawalWithAudit(ownerID, 0, false, withdrawalID, txID, proof, false)
+	return MarkAdtySiteInviteWithdrawalPaidWithClientMeta(ownerID, withdrawalID, txID, proof, "", "")
+}
+func MarkAdtySiteInviteWithdrawalPaidWithClientMeta(ownerID int, withdrawalID int64, txID, proof, ip, ua string) error {
+	_, _, err := paySiteInviteWithdrawalWithAudit(ownerID, 0, false, withdrawalID, txID, proof, false, ip, ua)
 	return err
 }
 func MarkClosedAdtySiteInviteWithdrawalPaid(ownerID int, withdrawalID int64, txID, proof string) error {
-	_, _, err := paySiteInviteWithdrawalWithAudit(ownerID, 0, false, withdrawalID, txID, proof, true)
+	_, _, err := paySiteInviteWithdrawalWithAudit(ownerID, 0, false, withdrawalID, txID, proof, true, "", "")
 	return err
 }
 func MarkClosedAdtySiteInviteWithdrawalPaidWithAudit(ownerID int, withdrawalID int64, txID, proof string) (string, bool, error) {
 	return MarkClosedAdtySiteInviteWithdrawalPaidWithAuditForActor(ownerID, 0, false, withdrawalID, txID, proof)
 }
 func MarkClosedAdtySiteInviteWithdrawalPaidWithAuditForActor(ownerID, actorRole int, denyAdminTarget bool, withdrawalID int64, txID, proof string) (string, bool, error) {
-	return paySiteInviteWithdrawalWithAudit(ownerID, actorRole, denyAdminTarget, withdrawalID, txID, proof, true)
+	return paySiteInviteWithdrawalWithAudit(ownerID, actorRole, denyAdminTarget, withdrawalID, txID, proof, true, "", "")
 }
-func paySiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bool, withdrawalID int64, txID, proof string, platform bool) (string, bool, error) {
+func paySiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bool, withdrawalID int64, txID, proof string, platform bool, ip, ua string) (string, bool, error) {
 	txID = strings.TrimSpace(txID)
 	var auditEvent *model.AuditLog
 	replayed := false
@@ -625,7 +631,7 @@ func paySiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bo
 			return auditErr
 		}
 		if !platform {
-			return recordSiteReferralAuditTx(tx, row.SiteId, "withdrawal_pay", row.UserId, ownerID, cleanProof, "", "",
+			return recordSiteReferralAuditTx(tx, row.SiteId, "withdrawal_pay", row.UserId, ownerID, cleanProof, ip, ua,
 				map[string]any{"id": row.Id, "status": row.Status, "amount_usd": row.AmountUSD.String()},
 				map[string]any{"id": row.Id, "status": model.AdtySiteInviteWithdrawPaid, "tx_id": txID})
 		}

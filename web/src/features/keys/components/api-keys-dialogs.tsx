@@ -16,12 +16,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useChatPresets } from '@/features/chat/hooks/use-chat-presets'
+import { useApiBaseUrl } from '@/features/adty-site/api'
+import { useStatus } from '@/hooks/use-status'
 
 import { ApiKeysDeleteDialog } from './api-keys-delete-dialog'
 import { ApiKeysMutateDrawer } from './api-keys-mutate-drawer'
 import { useApiKeys } from './api-keys-provider'
 import { CCSwitchDialog } from './dialogs/cc-switch-dialog'
+
+function normalizeServerAddress(raw: unknown): string {
+  return typeof raw === 'string' ? raw.trim().replace(/\/+$/, '') : ''
+}
 
 export function ApiKeysDialogs() {
   const {
@@ -32,7 +37,12 @@ export function ApiKeysDialogs() {
     setInitialCreateGroup,
     resolvedKey,
   } = useApiKeys()
-  const { serverAddress } = useChatPresets()
+  const { status } = useStatus()
+  const apiBaseUrl = useApiBaseUrl()
+  const serverAddress =
+    normalizeServerAddress(apiBaseUrl) ||
+    normalizeServerAddress(status?.server_address) ||
+    normalizeServerAddress(status?.data?.server_address)
 
   return (
     <>

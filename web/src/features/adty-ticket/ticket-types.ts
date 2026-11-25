@@ -75,6 +75,7 @@ export type TicketImageItem = {
   height?: number
   sha256?: string
   created_at?: number
+  can_delete?: boolean
 }
 
 export type TicketEvent = {
@@ -145,6 +146,7 @@ export const TICKET_AUTHOR_ROLE_LABELS: Record<string, string> = {
   owner: 'Site owner',
   platform: 'Platform support',
   platform_main: 'Platform support',
+  unconfirmed: 'Historical author role unconfirmed',
 }
 
 export const TICKET_COMMON_REPLIES = [

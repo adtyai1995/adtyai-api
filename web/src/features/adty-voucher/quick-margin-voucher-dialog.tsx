@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -63,14 +63,16 @@ export function QuickMarginVoucherDialog(props: {
   const [amount, setAmount] = useState('')
   const [countRaw, setCountRaw] = useState('1')
   const [reason, setReason] = useState('')
-  const [intentKey, setIntentKey] = useState(() =>
-    createVoucherBatchIntentKey()
-  )
+  const intentRef = useRef<{ signature: string; key: string } | null>(null)
   const [reconciled, setReconciled] = useState<VoucherBatchIssued | null>(null)
   const [batchResult, setBatchResult] = useState<NormalizedVoucherBatch | null>(
     null
   )
   const [resultOpen, setResultOpen] = useState(false)
+
+  useEffect(() => {
+    setReconciled(null)
+  }, [props.siteId])
 
   const batchSummary = computeVoucherBatchTotal(amount, countRaw)
 
@@ -81,30 +83,37 @@ export function QuickMarginVoucherDialog(props: {
   }
 
   const issue = useMutation({
-    mutationFn: () =>
+    mutationFn: (input: {
+      siteId: number
+      amountUsd: string
+      count: number
+      reason: string
+      intentKey: string
+      targetSiteLabel: string
+    }) =>
       issueAdminVoucherBatch({
         purpose: 'site_margin',
-        site_id: props.siteId,
-        amount_usd: amount.trim(),
-        count: batchSummary.count,
-        reason: reason.trim(),
-        intent_key: intentKey,
+        site_id: input.siteId,
+        amount_usd: input.amountUsd,
+        count: input.count,
+        reason: input.reason,
+        intent_key: input.intentKey,
       }),
-    onSuccess: (issued) => {
+    onSuccess: (issued, input) => {
       const normalized = normalizeVoucherBatchResult(issued, {
-        fallbackReason: reason.trim(),
-        targetSiteLabel: `${props.siteLabel} (${props.ownerLabel})`,
+        fallbackReason: input.reason,
+        targetSiteLabel: input.targetSiteLabel,
       })
       if (issued.replayed || !normalized) {
         setReconciled(issued)
         refresh()
         return
       }
+      intentRef.current = null
       setReconciled(null)
       setAmount('')
       setCountRaw('1')
       setReason('')
-      setIntentKey(createVoucherBatchIntentKey())
       props.onOpenChange(false)
       setBatchResult(normalized)
       setResultOpen(true)
@@ -121,13 +130,46 @@ export function QuickMarginVoucherDialog(props: {
   const cancelReconciled = useMutation({
     mutationFn: (id: number) => cancelAdminVoucherById(id),
     onSuccess: () => {
+      intentRef.current = null
       setReconciled(null)
-      setIntentKey(createVoucherBatchIntentKey())
       toast.success(t('Code cancelled'))
       refresh()
     },
     onError: (error) => handleServerError(error),
   })
+
+  const handleSubmit = () => {
+    const trimmedAmount = amount.trim()
+    const trimmedReason = reason.trim()
+    if (
+      issue.isPending ||
+      reconciled !== null ||
+      !batchSummary.valid ||
+      trimmedReason === ''
+    ) {
+      return
+    }
+    const signature = `site_margin:${props.siteId}:${trimmedAmount}:${batchSummary.count}:${trimmedReason}`
+    if (intentRef.current?.signature !== signature) {
+      intentRef.current = {
+        signature,
+        key: createVoucherBatchIntentKey(),
+      }
+    }
+    issue.mutate({
+      siteId: props.siteId,
+      amountUsd: trimmedAmount,
+      count: batchSummary.count,
+      reason: trimmedReason,
+      intentKey: intentRef.current.key,
+      targetSiteLabel: `${props.siteLabel} (${props.ownerLabel})`,
+    })
+  }
+
+  const replayedCount = reconciled
+    ? (reconciled.count ?? reconciled.items?.length ?? 1)
+    : 0
+  const isBatchReplay = replayedCount > 1
 
   return (
     <>
@@ -161,7 +203,7 @@ export function QuickMarginVoucherDialog(props: {
                 !batchSummary.valid ||
                 reason.trim() === ''
               }
-              onClick={() => issue.mutate()}
+              onClick={handleSubmit}
             >
               {batchSummary.count > 1
                 ? t('Issue {{count}} margin codes', {
@@ -188,7 +230,10 @@ export function QuickMarginVoucherDialog(props: {
                 inputMode='decimal'
                 placeholder='100.00'
                 value={amount}
-                onChange={(event) => setAmount(event.target.value)}
+                onChange={(event) => {
+                  setAmount(event.target.value)
+                  setReconciled(null)
+                }}
               />
             </div>
             <div className='flex flex-col gap-1.5'>
@@ -203,7 +248,10 @@ export function QuickMarginVoucherDialog(props: {
                 max={VOUCHER_BATCH_MAX_COUNT}
                 step={1}
                 value={countRaw}
-                onChange={(event) => setCountRaw(event.target.value)}
+                onChange={(event) => {
+                  setCountRaw(event.target.value)
+                  setReconciled(null)
+                }}
               />
             </div>
           </div>
@@ -235,48 +283,88 @@ export function QuickMarginVoucherDialog(props: {
               id='quick-margin-reason'
               placeholder={t('e.g. Offline bank transfer margin deposit')}
               value={reason}
-              onChange={(event) => setReason(event.target.value)}
+              onChange={(event) => {
+                setReason(event.target.value)
+                setReconciled(null)
+              }}
             />
           </div>
 
           {reconciled && (
-            <div className='border-border bg-muted/40 flex flex-col gap-2 rounded-md border p-3 text-sm'>
-              <p>
-                {t(
-                  'Previous issuance request already created code #{{id}} (tail {{tail}}). Full codes are shown once.',
-                  {
-                    id: reconciled.id,
-                    tail: reconciled.code_tail,
-                  }
-                )}
-              </p>
-              <div className='flex flex-wrap gap-2'>
-                {reconciled.id > 0 &&
-                  (!reconciled.status ||
-                    reconciled.status === 'pending' ||
-                    reconciled.status === 'frozen') && (
+            <div
+              data-testid='quick-margin-reconcile-banner'
+              className='border-border bg-muted/40 flex flex-col gap-2 rounded-md border p-3 text-sm'
+            >
+              {isBatchReplay ? (
+                <>
+                  <p>
+                    {reconciled.batch_no
+                      ? t(
+                          'Previous issuance request already created batch {{batchNo}} ({{count}} codes). Full codes are shown once. Filter by this batch number in the list below to manage or cancel them.',
+                          {
+                            batchNo: reconciled.batch_no,
+                            count: replayedCount,
+                          }
+                        )
+                      : t(
+                          'Previous issuance request already created {{count}} codes. Full codes are shown once. Manage or cancel them in the list below.',
+                          { count: replayedCount }
+                        )}
+                  </p>
+                  <div className='flex flex-wrap gap-2'>
                     <Button
                       type='button'
                       size='sm'
                       variant='outline'
-                      disabled={cancelReconciled.isPending}
-                      onClick={() => cancelReconciled.mutate(reconciled.id)}
+                      onClick={() => {
+                        intentRef.current = null
+                        setReconciled(null)
+                      }}
                     >
-                      {t('Cancel code and replace')}
+                      {t('Prepare replacement batch')}
                     </Button>
-                  )}
-                <Button
-                  type='button'
-                  size='sm'
-                  variant='outline'
-                  onClick={() => {
-                    setReconciled(null)
-                    setIntentKey(createVoucherBatchIntentKey())
-                  }}
-                >
-                  {t('Prepare replacement code')}
-                </Button>
-              </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p>
+                    {t(
+                      'Previous issuance request already created code #{{id}} (tail {{tail}}). Full codes are shown once.',
+                      {
+                        id: reconciled.id,
+                        tail: reconciled.code_tail,
+                      }
+                    )}
+                  </p>
+                  <div className='flex flex-wrap gap-2'>
+                    {reconciled.id > 0 &&
+                      (!reconciled.status ||
+                        reconciled.status === 'pending' ||
+                        reconciled.status === 'frozen') && (
+                        <Button
+                          type='button'
+                          size='sm'
+                          variant='outline'
+                          disabled={cancelReconciled.isPending}
+                          onClick={() => cancelReconciled.mutate(reconciled.id)}
+                        >
+                          {t('Cancel code and replace')}
+                        </Button>
+                      )}
+                    <Button
+                      type='button'
+                      size='sm'
+                      variant='outline'
+                      onClick={() => {
+                        intentRef.current = null
+                        setReconciled(null)
+                      }}
+                    >
+                      {t('Prepare replacement code')}
+                    </Button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>

@@ -65,7 +65,6 @@ type AdtySiteBrandInput struct {
 // 品牌字段的字数上限（按字符数，不是字节）。
 const (
 	adtyBrandNameMax    = 40
-	adtyBrandTaglineMax = 80
 	adtyBrandNoticeMax  = 500
 	adtyBrandSupportMax = 200
 	adtyTawkIDMax       = 64
@@ -73,10 +72,9 @@ const (
 	AdtySiteAssetPrefix = "/uploads/site-assets/"
 )
 
-var ErrAdtySiteBrandInvalid = common.NewMessage("Site name up to 40 characters, tagline up to 80, notice up to 500 and support contact up to 200; the logo must be an uploaded image")
+var ErrAdtySiteBrandInvalid = common.NewMessage("Site name up to 40 characters, notice up to 500 and support contact up to 200; the logo must be an uploaded image")
 
 var (
-	adtyBrandColor  = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 	adtyTawkIDRegex = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 )
 
@@ -112,13 +110,13 @@ func adtyPlainText(value string, keepNewlines bool) string {
 func NormalizeAdtySiteBrand(input AdtySiteBrandInput) (AdtySiteBrandInput, error) {
 	out := AdtySiteBrandInput{
 		Name:               adtyPlainText(input.Name, false),
-		Tagline:            adtyPlainText(input.Tagline, false),
+		Tagline:            "",
 		Notice:             adtyPlainText(input.Notice, true),
 		SupportContact:     adtyPlainText(input.SupportContact, false),
 		LogoURL:            strings.TrimSpace(input.LogoURL),
 		Title:              adtyPlainText(input.Title, false),
 		FaviconURL:         strings.TrimSpace(input.FaviconURL),
-		ThemeColor:         strings.TrimSpace(input.ThemeColor),
+		ThemeColor:         "",
 		TawkPropertyID:     strings.TrimSpace(input.TawkPropertyID),
 		TawkWidgetID:       strings.TrimSpace(input.TawkWidgetID),
 		WalletNotice:       adtyPlainText(input.WalletNotice, true),
@@ -136,16 +134,13 @@ func NormalizeAdtySiteBrand(input AdtySiteBrandInput) (AdtySiteBrandInput, error
 			return out, common.NewMessage("Voucher purchase link must be a valid http:// or https:// URL")
 		}
 	}
-	if out.ThemeColor != "" && !adtyBrandColor.MatchString(out.ThemeColor) {
-		return out, common.NewMessage("Theme color must use #RRGGBB")
-	}
 	if err := ValidateAdtyTawkID(out.TawkPropertyID); err != nil {
 		return out, err
 	}
 	if err := ValidateAdtyTawkID(out.TawkWidgetID); err != nil {
 		return out, err
 	}
-	if utf8.RuneCountInString(out.Name) > adtyBrandNameMax || utf8.RuneCountInString(out.Tagline) > adtyBrandTaglineMax ||
+	if utf8.RuneCountInString(out.Name) > adtyBrandNameMax ||
 		utf8.RuneCountInString(out.Notice) > adtyBrandNoticeMax || utf8.RuneCountInString(out.SupportContact) > adtyBrandSupportMax {
 		return out, ErrAdtySiteBrandInvalid
 	}
@@ -211,12 +206,15 @@ func SaveAdtyBrandPatch(siteID, ownerID int, fields, expected map[string]string,
 				}
 			}
 			values := map[string]*string{
-				"name": &brand.Name, "title": &brand.Title, "tagline": &brand.Tagline, "notice": &brand.Notice,
+				"name": &brand.Name, "title": &brand.Title, "notice": &brand.Notice,
 				"support_contact": &brand.SupportContact, "logo_url": &brand.LogoURL, "favicon_url": &brand.FaviconURL,
-				"theme_color": &brand.ThemeColor, "tawk_property_id": &brand.TawkPropertyID, "tawk_widget_id": &brand.TawkWidgetID,
+				"tawk_property_id": &brand.TawkPropertyID, "tawk_widget_id": &brand.TawkWidgetID,
 				"wallet_notice": &brand.WalletNotice, "voucher_purchase_url": &brand.VoucherPurchaseURL,
 			}
 			for key, value := range fields {
+				if key == "tagline" || key == "theme_color" {
+					continue
+				}
 				dest, ok := values[key]
 				if !ok {
 					return ErrAdtySiteBrandInvalid

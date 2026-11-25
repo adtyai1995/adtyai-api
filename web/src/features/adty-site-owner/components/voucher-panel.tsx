@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ErrorState } from '@/components/error-state'
@@ -85,6 +85,9 @@ export function VoucherPanel(props: { siteId: number }) {
     tail: string
     amountUsd: string
     status?: string
+    batchNo?: string
+    count: number
+    replayed: boolean
   } | null>(null)
 
   const [statusFilter, setStatusFilter] = useState('')
@@ -148,11 +151,20 @@ export function VoucherPanel(props: { siteId: number }) {
         fallbackReason: vars.reason,
       })
       if (issued.replayed || !normalized) {
+        let resolvedCount = vars.count
+        if (issued.count && issued.count > 0) {
+          resolvedCount = issued.count
+        } else if (Array.isArray(issued.items) && issued.items.length > 0) {
+          resolvedCount = issued.items.length
+        }
         setReconciled({
           id: issued.id,
           tail: issued.code_tail,
           amountUsd: issued.amount_usd,
           status: issued.status,
+          batchNo: issued.batch_no,
+          count: resolvedCount,
+          replayed: Boolean(issued.replayed),
         })
         invalidateVoucherQueries()
         return
@@ -204,6 +216,104 @@ export function VoucherPanel(props: { siteId: number }) {
   })
 
   const rows = list.data?.items ?? []
+
+  let reconciledBanner: ReactNode = null
+  if (reconciled) {
+    if (reconciled.count > 1) {
+      const batchSummaryText = reconciled.batchNo
+        ? t(
+            'Previous batch issuance request already created {{count}} codes in batch {{batchNo}}. Full codes are shown once. Filter by this batch number in the list below to review or cancel them.',
+            {
+              count: reconciled.count,
+              batchNo: reconciled.batchNo,
+            }
+          )
+        : t(
+            'Previous batch issuance request already created {{count}} codes. Full codes are shown once. Review or cancel them in the list below.',
+            { count: reconciled.count }
+          )
+      reconciledBanner = (
+        <div
+          role='status'
+          className='border-border bg-muted/40 flex flex-col gap-2 rounded-md border p-3 text-sm'
+        >
+          <p>{batchSummaryText}</p>
+          <div className='flex flex-wrap gap-2'>
+            {reconciled.batchNo && (
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                onClick={() => {
+                  setBatchNoFilter(reconciled.batchNo ?? '')
+                  setPage(1)
+                }}
+              >
+                {t('Filter by batch {{batchNo}}', {
+                  batchNo: reconciled.batchNo,
+                })}
+              </Button>
+            )}
+            <Button
+              type='button'
+              size='sm'
+              variant='outline'
+              onClick={() => {
+                intentRef.current = null
+                setReconciled(null)
+              }}
+            >
+              {t('Prepare replacement code')}
+            </Button>
+          </div>
+        </div>
+      )
+    } else {
+      reconciledBanner = (
+        <div
+          role='status'
+          className='border-border bg-muted/40 flex flex-col gap-2 rounded-md border p-3 text-sm'
+        >
+          <p>
+            {t(
+              'Previous issuance request already created code #{{id}} (tail {{tail}}, {{amount}} USD). Full codes are shown once.',
+              {
+                id: reconciled.id,
+                tail: reconciled.tail,
+                amount: reconciled.amountUsd,
+              }
+            )}
+          </p>
+          <div className='flex flex-wrap gap-2'>
+            {(!reconciled.status ||
+              reconciled.status === 'pending' ||
+              reconciled.status === 'frozen') && (
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                disabled={cancelAndReplace.isPending}
+                onClick={() => cancelAndReplace.mutate(reconciled.id)}
+              >
+                {t('Cancel code and replace')}
+              </Button>
+            )}
+            <Button
+              type='button'
+              size='sm'
+              variant='outline'
+              onClick={() => {
+                intentRef.current = null
+                setReconciled(null)
+              }}
+            >
+              {t('Prepare replacement code')}
+            </Button>
+          </div>
+        </div>
+      )
+    }
+  }
 
   return (
     <div className='flex flex-col gap-5'>
@@ -334,49 +444,7 @@ export function VoucherPanel(props: { siteId: number }) {
               )}
             </div>
 
-            {reconciled && (
-              <div
-                role='status'
-                className='border-border bg-muted/40 flex flex-col gap-2 rounded-md border p-3 text-sm'
-              >
-                <p>
-                  {t(
-                    'Previous issuance request already created code #{{id}} (tail {{tail}}, {{amount}} USD). Full codes are shown once.',
-                    {
-                      id: reconciled.id,
-                      tail: reconciled.tail,
-                      amount: reconciled.amountUsd,
-                    }
-                  )}
-                </p>
-                <div className='flex flex-wrap gap-2'>
-                  {(!reconciled.status ||
-                    reconciled.status === 'pending' ||
-                    reconciled.status === 'frozen') && (
-                    <Button
-                      type='button'
-                      size='sm'
-                      variant='outline'
-                      disabled={cancelAndReplace.isPending}
-                      onClick={() => cancelAndReplace.mutate(reconciled.id)}
-                    >
-                      {t('Cancel code and replace')}
-                    </Button>
-                  )}
-                  <Button
-                    type='button'
-                    size='sm'
-                    variant='outline'
-                    onClick={() => {
-                      intentRef.current = null
-                      setReconciled(null)
-                    }}
-                  >
-                    {t('Prepare replacement code')}
-                  </Button>
-                </div>
-              </div>
-            )}
+            {reconciledBanner}
           </form>
         </CardContent>
       </Card>

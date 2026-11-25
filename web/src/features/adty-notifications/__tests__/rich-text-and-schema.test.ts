@@ -29,6 +29,7 @@ import {
 import {
   createNotificationSchema,
   formatNotificationRecipients,
+  resolveInitialTargets,
 } from '../lib/schema'
 
 const identityT = ((key: string) => key) as unknown as TFunction
@@ -129,7 +130,7 @@ describe('notification multi-recipient schema validation', () => {
     expect(overLimit.success).toBe(false)
   })
 
-  it('formats multi-audience recipients cleanly for display', () => {
+  it('formats multi-audience recipients cleanly for display and parses JSON-string fallbacks', () => {
     expect(
       formatNotificationRecipients(
         {
@@ -141,5 +142,51 @@ describe('notification multi-recipient schema validation', () => {
     ).toBe(
       'Main-site users · Subsite users (alpha.example.com, beta.example.com)'
     )
+
+    expect(
+      resolveInitialTargets('root', {
+        audience: 'multi',
+        target_audiences: '["all_site_owners","site_users"]',
+        target_site_ids: '[2,5]',
+      })
+    ).toEqual({
+      target_audiences: ['all_site_owners', 'site_users'],
+      target_site_ids: [2, 5],
+    })
+
+    expect(
+      formatNotificationRecipients(
+        {
+          audience: 'multi',
+          target_audiences: '["main_teams","site_users"]',
+          target_site_ids: '[3]',
+        },
+        identityT
+      )
+    ).toBe('Main-site teams · Subsite users (#3)')
+  })
+
+  it('allows private Telegram sync without a public channel for targeted root and owner notifications', () => {
+    const rootSchema = createNotificationSchema('root', false)
+    const ownerSchema = createNotificationSchema('owner', false)
+
+    expect(
+      rootSchema.safeParse({
+        ...baseValid,
+        target_audiences: ['main_teams'],
+        sync_telegram: true,
+        telegram_channel: '',
+      }).success
+    ).toBe(true)
+
+    expect(
+      ownerSchema.safeParse({
+        ...baseValid,
+        audience: 'site',
+        target_audiences: ['site_users'],
+        sync_telegram: true,
+        telegram_channel: '',
+      }).success
+    ).toBe(true)
   })
 })

@@ -39,14 +39,6 @@ const defaultAuthSettings: AuthSettings = {
   TurnstileSiteKey: '',
   TurnstileSecretKey: '',
   TurnstileSecretConfigured: false,
-  'passkey.enabled': false,
-  'passkey.rp_display_name': '',
-  'passkey.rp_id': '',
-  'passkey.legacy_rp_ids': '',
-  'passkey.origins': '',
-  'passkey.allow_insecure_origin': false,
-  'passkey.user_verification': 'preferred',
-  'passkey.attachment_preference': '',
 }
 
 export function AuthSettings() {

@@ -125,7 +125,6 @@ function GroupDetailSheet(props: GroupDetailSheetProps) {
 
     return {
       ratio: entry?.ratio,
-      selectable: Object.hasOwn(usableMap, name),
       description: String(usableMap[name] ?? ''),
     }
   }, [name, props.registry, props.userUsableGroups])
@@ -155,15 +154,7 @@ function GroupDetailSheet(props: GroupDetailSheetProps) {
                   <dt className='text-muted-foreground'>{t('Ratio')}</dt>
                   <dd className='font-medium'>{detail.ratio ?? '-'}</dd>
                 </div>
-                <div className='flex justify-between'>
-                  <dt className='text-muted-foreground'>
-                    {t('User selectable')}
-                  </dt>
-                  <dd className='font-medium'>
-                    {detail.selectable ? t('Yes') : t('No')}
-                  </dd>
-                </div>
-                {detail.selectable && detail.description && (
+                {detail.description && (
                   <div className='flex justify-between gap-4'>
                     <dt className='text-muted-foreground'>
                       {t('Description')}

@@ -316,6 +316,9 @@ type TaskPluginDeleteResult struct {
 func DeleteTaskPluginVersion(key, version string) (TaskPluginDeleteResult, error) {
 	result := TaskPluginDeleteResult{}
 	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockTaskPluginKey(tx, key); err != nil {
+			return err
+		}
 		var plugin TaskPlugin
 		if err := lockForUpdate(tx).Where(&TaskPlugin{Key: key, Version: version}).First(&plugin).Error; err != nil {
 			return err

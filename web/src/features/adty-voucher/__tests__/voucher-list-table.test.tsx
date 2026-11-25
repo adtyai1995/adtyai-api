@@ -37,7 +37,7 @@ describe('VoucherListTable empty states', () => {
     cleanup()
   })
 
-  it('shows redemption code empty text for general/customer voucher tables', () => {
+  it('shows redemption code empty text and header for general/customer voucher tables', () => {
     render(
       <VoucherListTable
         label='Main-site user redemption codes'
@@ -48,9 +48,49 @@ describe('VoucherListTable empty states', () => {
       />
     )
     expect(screen.getByText('No redemption codes')).toBeTruthy()
+    expect(
+      screen.getByRole('columnheader', { name: 'Redemption code' })
+    ).toBeTruthy()
   })
 
-  it('shows margin recharge code empty text when targeting subsites', () => {
+  it('shows margin recharge code empty text, Recharge code header, and redeemer identity when targeting subsites', () => {
+    render(
+      <VoucherListTable
+        label='Margin recharge codes'
+        rows={[
+          {
+            id: 9,
+            code_tail: 'MGN9',
+            purpose: 'site_margin',
+            status: 'redeemed',
+            amount_usd: '100.00',
+            quota: 50000000,
+            source_kind: 'platform',
+            source_site_id: 0,
+            target_site_id: 4,
+            issuer_id: 1,
+            redeemer_id: 42,
+            redeemer_username: 'owner42',
+            inherited_by_main: false,
+            trade_no: 'T-9',
+            created_at: 1700000000,
+            redeemed_at: 1700003600,
+          },
+        ]}
+        busy={false}
+        showTargetSite
+        onFreeze={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    )
+    expect(
+      screen.getByRole('columnheader', { name: 'Recharge code' })
+    ).toBeTruthy()
+    expect(screen.getByText(/42 \/ owner42/)).toBeTruthy()
+    expect(screen.queryByText(/#42/)).toBeNull()
+  })
+
+  it('shows margin recharge code empty text when targeting subsites with empty rows', () => {
     render(
       <VoucherListTable
         label='Margin recharge codes'
@@ -62,6 +102,9 @@ describe('VoucherListTable empty states', () => {
       />
     )
     expect(screen.getByText('No margin recharge codes')).toBeTruthy()
+    expect(
+      screen.getByRole('columnheader', { name: 'Recharge code' })
+    ).toBeTruthy()
   })
 
   it('honors explicit emptyText override', () => {

@@ -433,35 +433,43 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 	// InsertWithLimit locks the owner too: a token created before this lock is
 	// revoked with the migration; one created afterwards belongs to the new site.
 	var users []User
-	userQ := lockForUpdate(tx).Select("id", "site_id")
+	userQ := lockForUpdate(tx).Select("id", "site_id", "staff_site_id")
 	if migrateOwnerSelfUse {
-		userQ = userQ.Where("site_id = ? OR id = ?", fromSite, ownerUserID)
+		userQ = userQ.Where("site_id = ? OR staff_site_id = ? OR id = ?", fromSite, fromSite, ownerUserID)
 	} else {
-		userQ = userQ.Where("site_id = ?", fromSite)
+		userQ = userQ.Where("site_id = ? OR staff_site_id = ?", fromSite, fromSite)
 	}
 	if err := userQ.Order("id").Find(&users).Error; err != nil {
 		return nil, 0, err
 	}
 	ids := make([]int, 0, len(users))
+	staffIDs := make([]int, 0)
 	ownerLocked := false
 	for i := range users {
-		if users[i].SiteId == fromSite {
+		if users[i].StaffSiteId == fromSite {
+			staffIDs = append(staffIDs, users[i].Id)
+			continue
+		}
+		if users[i].SiteId == fromSite && users[i].StaffSiteId == 0 {
 			ids = append(ids, users[i].Id)
 		}
 		if migrateOwnerSelfUse && users[i].Id == ownerUserID {
 			ownerLocked = true
 		}
 	}
-	if len(ids) == 0 && !ownerLocked {
+	if len(ids) == 0 && len(staffIDs) == 0 && !ownerLocked {
 		return nil, 0, nil
 	}
+	tokenTargetIDs := make([]int, 0, len(ids)+len(staffIDs))
+	tokenTargetIDs = append(tokenTargetIDs, ids...)
+	tokenTargetIDs = append(tokenTargetIDs, staffIDs...)
 	var tokens []Token
 	tokenQ := lockForUpdate(tx).Select("id", commonKeyCol)
 	switch {
-	case len(ids) > 0 && ownerLocked:
-		tokenQ = tokenQ.Where("user_id IN ? OR (user_id = ? AND owner_self_use_site_id = ?)", ids, ownerUserID, fromSite)
-	case len(ids) > 0:
-		tokenQ = tokenQ.Where("user_id IN ?", ids)
+	case len(tokenTargetIDs) > 0 && ownerLocked:
+		tokenQ = tokenQ.Where("user_id IN ? OR (user_id = ? AND owner_self_use_site_id = ?)", tokenTargetIDs, ownerUserID, fromSite)
+	case len(tokenTargetIDs) > 0:
+		tokenQ = tokenQ.Where("user_id IN ?", tokenTargetIDs)
 	default:
 		tokenQ = tokenQ.Where("user_id = ? AND owner_self_use_site_id = ?", ownerUserID, fromSite)
 	}
@@ -480,6 +488,32 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 		// token edits cannot reactivate the original secret at the destination.
 		if err := tx.Where("id IN ?", tokenIDs).Delete(&Token{}).Error; err != nil {
 			return nil, 0, err
+		}
+	}
+	// Subsite staff belong strictly to the closing subsite and must never migrate
+	// to the main site as customers: disable their accounts, revoke PATs, and bump auth_version.
+	if len(staffIDs) > 0 {
+		for _, sid := range staffIDs {
+			if _, err := IncrementUserAuthVersionWithTx(tx, sid); err != nil {
+				return nil, 0, err
+			}
+		}
+		if err := tx.Model(&User{}).Where("id IN ?", staffIDs).Updates(map[string]any{
+			"status":       common.UserStatusDisabled,
+			"access_token": "",
+		}).Error; err != nil {
+			return nil, 0, err
+		}
+		if tx.Migrator().HasTable(&UserAccessToken{}) {
+			if err := tx.Where("user_id IN ?", staffIDs).Delete(&UserAccessToken{}).Error; err != nil {
+				return nil, 0, err
+			}
+		}
+		if tx.Migrator().HasTable(&AdtySiteStaff{}) {
+			if err := tx.Model(&AdtySiteStaff{}).Where("site_id = ? AND user_id IN ?", fromSite, staffIDs).
+				Update("status", "disabled").Error; err != nil {
+				return nil, 0, err
+			}
 		}
 	}
 	var movedPrincipal int64

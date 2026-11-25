@@ -36,17 +36,51 @@ func AdtyOwnerSite(userId int) (*model.AdtySite, error) {
 	return &sites[0], nil
 }
 
-// AdtyIsSiteOwner 说明用户现在有没有对客户开放的站（站长中心入口的显示条件）。分站功能关着时一律 false，不查库。
-func AdtyIsSiteOwner(userId int) bool {
-	if userId <= 0 || !resellerSetting().Enabled {
-		return false
+// AdtyIsSiteOwnerStrict reports whether userId owns an open subsite
+// (active, paused, or closing) independently of the global reseller switch.
+// Security/isolation callers MUST use this and fail closed when err != nil.
+func AdtyIsSiteOwnerStrict(userId int) (bool, error) {
+	if userId <= 0 {
+		return false, nil
+	}
+	if model.DB == nil {
+		return false, errors.New("database is unavailable")
 	}
 	var count int64
 	if err := model.DB.Model(&model.AdtySite{}).Where("owner_user_id = ? AND status IN ?", userId,
 		[]string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// AdtyIsSiteOwnerStrictTx is the transactional variant of AdtyIsSiteOwnerStrict.
+func AdtyIsSiteOwnerStrictTx(tx *gorm.DB, userId int) (bool, error) {
+	if userId <= 0 {
+		return false, nil
+	}
+	if tx == nil {
+		tx = model.DB
+	}
+	if tx == nil {
+		return false, errors.New("database is unavailable")
+	}
+	var count int64
+	if err := tx.Model(&model.AdtySite{}).Where("owner_user_id = ? AND status IN ?", userId,
+		[]string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// AdtyIsSiteOwner 说明用户现在有没有对客户开放的站（站长中心入口与纯管理隔离判定）。
+// 不依赖全局分站总开关，避免总开关临时关闭时在营站长绕过纯管理端隔离。
+func AdtyIsSiteOwner(userId int) bool {
+	isOwner, err := AdtyIsSiteOwnerStrict(userId)
+	if err != nil {
 		return false
 	}
-	return count > 0
+	return isOwner
 }
 
 // ArchivedAdtyOwnerSites limits the accounting selector to a closed current

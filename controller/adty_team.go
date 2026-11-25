@@ -32,7 +32,7 @@ type adtyTeamMineResponse struct {
 	SiteId       int                          `json:"site_id"`
 	SourceSiteId int                          `json:"source_site_id"`
 	Role         string                       `json:"role"`
-	Discount     decimal.Decimal              `json:"discount"`
+	Discount     *decimal.Decimal             `json:"discount,omitempty"`
 	SharedQuota  int64                        `json:"shared_quota"`
 	Status       string                       `json:"status"`
 	ClosedAt     int64                        `json:"closed_at,omitempty"`
@@ -97,13 +97,18 @@ func enrichAdtyTeamMine(mine *service.AdtyTeamMine) *adtyTeamMineResponse {
 	if mine == nil {
 		return nil
 	}
+	var discount *decimal.Decimal
+	if mine.SiteId == 0 && mine.SourceSiteId == 0 {
+		d := mine.Discount
+		discount = &d
+	}
 	return &adtyTeamMineResponse{
 		TeamId:       mine.TeamId,
 		Name:         mine.Name,
 		SiteId:       mine.SiteId,
 		SourceSiteId: mine.SourceSiteId,
 		Role:         mine.Role,
-		Discount:     mine.Discount,
+		Discount:     discount,
 		SharedQuota:  mine.SharedQuota,
 		Status:       mine.Status,
 		ClosedAt:     mine.ClosedAt,

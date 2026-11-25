@@ -21,6 +21,10 @@ import { useTranslation } from 'react-i18next'
 import { Dialog } from '@/components/dialog'
 import { RichContent } from '@/components/rich-content'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  isHtmlNotificationContent,
+  sanitizeNotificationHtml,
+} from '@/features/adty-notifications/lib/rich-text'
 import { formatDateTimeObject } from '@/lib/time'
 
 interface AnnouncementDetailModalProps {
@@ -28,7 +32,10 @@ interface AnnouncementDetailModalProps {
   onOpenChange: (open: boolean) => void
   announcement: {
     title?: string
+    title_en?: string
     content?: string
+    content_en?: string
+    content_format?: string
     tag?: string
     publishDate?: string
     extra?: string
@@ -40,7 +47,22 @@ export function AnnouncementDetailModal({
   onOpenChange,
   announcement,
 }: AnnouncementDetailModalProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const isEnglish = !(i18n.resolvedLanguage || i18n.language || '')
+    .toLowerCase()
+    .startsWith('zh')
+  const rawContent =
+    (isEnglish && announcement?.content_en?.trim()) ||
+    announcement?.content ||
+    ''
+  const contentMode = isHtmlNotificationContent(
+    rawContent,
+    announcement?.content_format
+  )
+    ? 'html'
+    : 'markdown'
+  const safeContent =
+    contentMode === 'html' ? sanitizeNotificationHtml(rawContent) : rawContent
   return (
     <Dialog
       open={open}
@@ -57,10 +79,10 @@ export function AnnouncementDetailModal({
     >
       <ScrollArea className='max-h-[min(58vh,520px)] pr-4'>
         <div className='space-y-4'>
-          {announcement?.content && (
+          {safeContent && (
             <div>
               <h4 className='mb-2 font-medium'>{t('Content')}</h4>
-              <RichContent breaks content={announcement.content} />
+              <RichContent mode={contentMode} breaks content={safeContent} />
             </div>
           )}
           {announcement?.extra && (

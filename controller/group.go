@@ -74,10 +74,15 @@ func GetUserGroups(c *gin.Context) {
 		}
 		groupRatios[groupName] = service.GetUserGroupRatio(userGroup, groupName)
 	}
+	rawGroupRatios := make(map[string]float64, len(groupRatios))
+	for k, v := range groupRatios {
+		rawGroupRatios[k] = v
+	}
 	if err := service.AdtyApplySitePricing(c, groupRatios); err != nil {
 		common.ApiErrorStatus(c, http.StatusServiceUnavailable, err)
 		return
 	}
+	applyPricingTeamMultiplier(c, userId, siteID, rawGroupRatios, groupRatios, nil)
 	for groupName, ratio := range groupRatios {
 		usableGroups[groupName] = map[string]any{
 			"ratio": ratio,

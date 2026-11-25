@@ -321,10 +321,11 @@ func ollamaEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	}
 	defer service.CloseResponseBodyGracefully(resp)
 	var oResp OllamaEmbeddingResponse
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	body, readErr := helper.ReadResponseBody(c, resp, types.ErrorCodeBadResponseBody)
+	if readErr != nil {
+		return nil, readErr
 	}
+	var err error
 	if err = common.Unmarshal(body, &oResp); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}

@@ -64,6 +64,22 @@ export const paymentSceneSchema = z
     max_usd: money,
   })
   .superRefine((scene, context) => {
+    if (scene.business === 'team_topup') {
+      if (scene.site_scope !== 'main') {
+        context.addIssue({
+          code: 'custom',
+          path: ['site_scope'],
+          message: 'Invalid parameters',
+        })
+      }
+      if (scene.site_ids.length > 0) {
+        context.addIssue({
+          code: 'custom',
+          path: ['site_ids'],
+          message: 'Invalid parameters',
+        })
+      }
+    }
     if (scene.business === 'owner_margin_topup') {
       if (scene.site_scope !== 'all_sites' && scene.site_scope !== 'selected') {
         context.addIssue({

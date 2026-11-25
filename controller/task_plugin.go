@@ -437,16 +437,15 @@ func DeleteTaskPluginVersion(c *gin.Context) {
 		common.ApiError(c, lookupErr)
 		return
 	}
-	if plugin.Active && !taskPluginHasFactory(key) {
-		channels, inFlight, usageErr := model.GetTaskPluginUsage(key)
-		if usageErr != nil {
-			common.ApiError(c, usageErr)
-			return
-		}
-		if (len(channels) > 0 || inFlight > 0) && c.Query("force") != "true" {
-			common.ApiErrorStatus(c, http.StatusOK, common.NewMessage("Plugin is still in use"), gin.H{"data": gin.H{"channels": channels, "in_flight_count": inFlight}})
-			return
-		}
+	channels, inFlight, usageErr := model.GetTaskPluginUsage(key)
+	if usageErr != nil {
+		common.ApiError(c, usageErr)
+		return
+	}
+	needsConfirm := inFlight > 0 || (plugin.Active && !taskPluginHasFactory(key) && len(channels) > 0)
+	if needsConfirm && c.Query("force") != "true" {
+		common.ApiErrorStatus(c, http.StatusOK, common.NewMessage("Plugin is still in use"), gin.H{"data": gin.H{"channels": channels, "in_flight_count": inFlight}})
+		return
 	}
 	_, err := model.DeleteTaskPluginVersion(key, version)
 	if err != nil {

@@ -48,7 +48,22 @@ export function isValidUsdtAddress(
   return PATTERNS[network].test(address.trim())
 }
 
-/** USDT received after the fixed network fee, never below zero. */
+/** USDT received after the fixed network fee, never below zero, aligned to 6-decimal USDT precision. */
 export function usdtNetAmount(amount: number, fee: number): number {
-  return Math.max(0, Math.round((amount - fee) * 100) / 100)
+  return Math.max(0, Math.round((amount - fee) * 1_000_000) / 1_000_000)
+}
+
+/**
+ * Formats a USDT amount keeping at least 2 and up to 6 fractional digits so
+ * 6-decimal USDT values are never truncated by `.toFixed(2)`.
+ */
+export function formatUsdtAmount(value: number | string): string {
+  const num =
+    typeof value === 'number' ? value : Number(String(value).trim())
+  if (!Number.isFinite(num)) return String(value)
+  const fixed = num.toFixed(6)
+  const [whole, frac = ''] = fixed.split('.')
+  const trimmedFrac = frac.replace(/0+$/, '')
+  const displayFrac = trimmedFrac.length < 2 ? frac.slice(0, 2) : trimmedFrac
+  return `${whole}.${displayFrac}`
 }

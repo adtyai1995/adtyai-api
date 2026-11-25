@@ -891,6 +891,17 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 			if current.SiteId > 0 || current.StaffSiteId > 0 {
 				return false, ErrCannotPromoteScopedUser
 			}
+			if tx.Migrator().HasTable(&AdtySite{}) {
+				var ownerCount int64
+				if err := tx.Model(&AdtySite{}).
+					Where("owner_user_id = ? AND status <> ?", current.Id, AdtySiteStatusClosed).
+					Count(&ownerCount).Error; err != nil {
+					return false, err
+				}
+				if ownerCount > 0 {
+					return false, ErrCannotPromoteScopedUser
+				}
+			}
 			if tx.Migrator().HasTable(&AdtyTeamMember{}) {
 				var empCount int64
 				if err := tx.Model(&AdtyTeamMember{}).
@@ -939,6 +950,14 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 	next, err := IncrementUserAuthVersionWithTx(tx, user.Id)
 	if err != nil {
 		return false, err
+	}
+	if (user.Status == common.UserStatusDisabled && user.Status != current.Status) ||
+		(user.Role != 0 && user.Role < current.Role) {
+		if _, err := DeleteUserAccessTokensWithTx(tx, user.Id); err != nil {
+			return false, err
+		}
+		updates["access_token"] = nil
+		updates["access_token_created_at"] = nil
 	}
 	if err := tx.Model(&User{}).Where("id = ?", user.Id).Updates(updates).Error; err != nil {
 		return false, err
@@ -1300,9 +1319,8 @@ func LookupLoginCandidateUserID(identifier string, siteID int) (int, bool) {
 	}
 	var ids []int
 	if strings.Contains(identifier, "@") {
-		norm := NormalizeEmail(identifier)
-		if err := DB.Model(&User{}).Where("site_id = ? AND LOWER(email) = ?", siteID, norm).Limit(2).Pluck("id", &ids).Error; err == nil && len(ids) == 1 {
-			return ids[0], true
+		if matched, err := GetUniqueUserOrSiteOwnerByEmail(identifier, siteID); err == nil && matched != nil && matched.Id > 0 {
+			return matched.Id, true
 		}
 	}
 	ids = nil
@@ -1541,7 +1559,7 @@ func (user *User) ValidateAndFill() (err error) {
 	if err == nil {
 		*user = *matched
 	} else if errors.Is(err, gorm.ErrRecordNotFound) {
-		matched, emailErr := GetUniqueUserByEmail(username, siteID)
+		matched, emailErr := GetUniqueUserOrSiteOwnerByEmail(username, siteID)
 		switch {
 		case emailErr == nil:
 			*user = *matched

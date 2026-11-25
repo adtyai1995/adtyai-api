@@ -103,7 +103,11 @@ func validReferralQR(raw string) bool {
 // 幂等键先查后写（审阅重点 3、10）。
 func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) (*model.ReferralWithdrawal, error) {
 	cfg := referralSetting()
-	amount := input.Amount.Round(2)
+	scale := int32(2)
+	if input.AccountType == model.ReferralWithdrawToUSDT {
+		scale = 6
+	}
+	amount := input.Amount.Round(scale)
 	if !amount.IsPositive() {
 		return nil, common.NewMessage("Enter a withdrawal amount")
 	}
@@ -183,6 +187,9 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 		if !affiliate.WithdrawalEnabled || affiliate.Status != model.ReferralAffiliateStatusApproved {
 			return ErrReferralWithdrawBlocked
 		}
+		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: 0, AccountID: input.UserId}); err != nil {
+			return err
+		}
 		switch input.AccountType {
 		case model.ReferralWithdrawToBalance:
 			withdrawal.Status = model.ReferralWithdrawalStatusPaid
@@ -201,8 +208,8 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 			if !ValidateUSDTAddress(normalizedNetwork, trimmedAccountNo) {
 				return common.NewMessage("The address does not match the {{network}} network", map[string]any{"network": normalizedNetwork})
 			}
-			fee := decimal.NewFromFloat(*cfg.USDTWithdrawFee).Round(2)
-			net := amount.Sub(fee)
+			fee := decimal.NewFromFloat(*cfg.USDTWithdrawFee).Round(6)
+			net := amount.Sub(fee).Round(6)
 			if !net.IsPositive() {
 				return common.NewMessage("The amount must be larger than the network fee")
 			}
@@ -1025,20 +1032,39 @@ func (s *ReferralService) SaveReferralSettings(values map[string]string, rawRate
 	}
 	written := map[string]string{}
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		if err := validatePartnerRateBoundsTx(tx, values); err != nil {
-			return err
-		}
 		if err := referralProgramCanStayOn(tx, values); err != nil {
 			return err
 		}
 		if err := validateReferralWithdrawSettingsTx(tx, values, writeRate); err != nil {
 			return err
 		}
+		oldValues := map[string]string{}
+		for key := range values {
+			if raw, ok, readErr := model.ReadOptionForUpdate(tx, key); readErr != nil {
+				return readErr
+			} else if ok {
+				oldValues[key] = raw
+			}
+		}
 		if err := model.SaveOptionsTx(tx, values); err != nil {
 			return err
 		}
 		for key, value := range values {
 			written[key] = value
+		}
+		if len(values) > 0 {
+			oldJSON, _ := common.Marshal(oldValues)
+			newJSON, _ := common.Marshal(values)
+			if err := tx.Create(&model.ReferralAdminAuditLog{
+				Action:      "settings_update",
+				AdminUserId: adminId,
+				Ip:          ip,
+				UserAgent:   truncateText(ua, 512),
+				OldValue:    string(oldJSON),
+				NewValue:    string(newJSON),
+			}).Error; err != nil {
+				return err
+			}
 		}
 		if !writeRate {
 			return nil

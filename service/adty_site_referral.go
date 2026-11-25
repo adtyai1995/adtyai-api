@@ -736,6 +736,46 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 	return profile, nil
 }
 
+// ParseAdtySiteInviteCookie decodes the same-host adty_site_invite cookie written
+// by the frontend (`<urlEncodedCode>|<capturedUnix>` or legacy `<urlEncodedCode>`).
+func ParseAdtySiteInviteCookie(raw string) (code string, capturedAt int64) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", 0
+	}
+	codePart := raw
+	if idx := strings.LastIndex(raw, "|"); idx > 0 {
+		codePart = raw[:idx]
+		if ts, err := strconv.ParseInt(strings.TrimSpace(raw[idx+1:]), 10, 64); err == nil && ts > 0 {
+			capturedAt = ts
+		}
+	}
+	decoded, err := url.QueryUnescape(codePart)
+	if err != nil {
+		decoded = codePart
+	}
+	code = strings.ToUpper(strings.TrimSpace(decoded))
+	return code, capturedAt
+}
+
+// AdtySiteInviteCookieExpired reports whether a subsite invite cookie captured at
+// capturedAt has exceeded the site's configured CookieTTLDays (default 30 days).
+func AdtySiteInviteCookieExpired(siteID int, capturedAt, nowUnix int64) bool {
+	if siteID <= 0 || capturedAt <= 0 {
+		return false
+	}
+	ttlDays := int64(30)
+	if model.DB != nil {
+		var site model.AdtySite
+		if err := model.DB.Select("id", "invite_cookie_ttl_days").First(&site, siteID).Error; err == nil {
+			if site.MarketingPolicy.CookieTTLDays != nil && *site.MarketingPolicy.CookieTTLDays > 0 {
+				ttlDays = *site.MarketingPolicy.CookieTTLDays
+			}
+		}
+	}
+	return nowUnix-capturedAt > ttlDays*86400
+}
+
 // BindSiteInviteByCodeFromIP resolves a subsite customer invite code within siteID
 // and delegates binding to BindSiteInviteFromIP (same site, enabled referral, before first paid order).
 func BindSiteInviteByCodeFromIP(siteID int, code string, inviteeID int, ipHash string) error {
@@ -1506,28 +1546,22 @@ func upsertSiteReferralAffiliateRiskTx(tx *gorm.DB, siteID, userID int, freezeSe
 	if tx == nil || siteID <= 0 || userID <= 0 || !tx.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
 		return nil
 	}
-	var row model.AdtySiteReferralAffiliate
-	lookup := model.AdtyLockForUpdate(tx).Where("site_id = ? AND user_id = ?", siteID, userID).Limit(1).Find(&row)
-	if lookup.Error != nil {
-		return lookup.Error
+	seed := model.AdtySiteReferralAffiliate{
+		SiteId:            siteID,
+		UserId:            userID,
+		Status:            model.AdtySiteAffiliateStatusApproved,
+		SettlementEnabled: true,
+		WithdrawalEnabled: true,
 	}
-	if lookup.RowsAffected == 0 {
-		row = model.AdtySiteReferralAffiliate{
-			SiteId:            siteID,
-			UserId:            userID,
-			Status:            model.AdtySiteAffiliateStatusApproved,
-			SettlementEnabled: !freezeSettlement,
-			WithdrawalEnabled: true,
-			RiskReason:        riskReason,
-			RiskNote:          riskNote,
-		}
-		if err := tx.Create(&row).Error; err != nil {
-			return err
-		}
-		if freezeSettlement {
-			return tx.Model(&model.AdtySiteReferralAffiliate{}).Where("id = ?", row.Id).Update("settlement_enabled", false).Error
-		}
-		return nil
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "site_id"}, {Name: "user_id"}},
+		DoNothing: true,
+	}).Create(&seed).Error; err != nil {
+		return err
+	}
+	var row model.AdtySiteReferralAffiliate
+	if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND user_id = ?", siteID, userID).First(&row).Error; err != nil {
+		return err
 	}
 	updates := map[string]any{}
 	if freezeSettlement {
@@ -1589,22 +1623,22 @@ func UpdateAdtyOwnerSiteReferralAffiliate(siteID, ownerID, targetUserID int, inp
 		if !belongs {
 			return common.NewMessage("No permission to perform this action")
 		}
-		var aff model.AdtySiteReferralAffiliate
-		lookup := model.AdtyLockForUpdate(tx).Where("site_id = ? AND user_id = ?", siteID, targetUserID).Limit(1).Find(&aff)
-		if lookup.Error != nil {
-			return lookup.Error
+		seed := model.AdtySiteReferralAffiliate{
+			SiteId:            siteID,
+			UserId:            targetUserID,
+			Status:            model.AdtySiteAffiliateStatusApproved,
+			SettlementEnabled: true,
+			WithdrawalEnabled: true,
 		}
-		if lookup.RowsAffected == 0 {
-			aff = model.AdtySiteReferralAffiliate{
-				SiteId:            siteID,
-				UserId:            targetUserID,
-				Status:            model.AdtySiteAffiliateStatusApproved,
-				SettlementEnabled: true,
-				WithdrawalEnabled: true,
-			}
-			if err := tx.Create(&aff).Error; err != nil {
-				return err
-			}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "site_id"}, {Name: "user_id"}},
+			DoNothing: true,
+		}).Create(&seed).Error; err != nil {
+			return err
+		}
+		var aff model.AdtySiteReferralAffiliate
+		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND user_id = ?", siteID, targetUserID).First(&aff).Error; err != nil {
+			return err
 		}
 		var oldRatePct *float64
 		if aff.RateOverride != nil {

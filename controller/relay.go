@@ -156,20 +156,20 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
-	generalSettings := operation_setting.GetGeneralSetting()
-	// 二开：所有流式格式在请求上游之前就开始保活，推理模型首字慢时 Cloudflare 不会 524 断开（任务 7.5）。
-	// Realtime 走 WebSocket，不发 SSE 注释行。
-	if relayFormat != types.RelayFormatOpenAIRealtime && relayInfo.IsStream && generalSettings.PingIntervalEnabled {
-		stopKeepAlive := helper.StartStreamKeepAlive(c, time.Duration(generalSettings.PingIntervalSeconds)*time.Second)
-		defer stopKeepAlive()
-	}
-
 	if newAPIError = relay.PrepareRequestBilling(c, relayInfo); newAPIError != nil {
 		return
 	}
 	defer func() {
 		newAPIError = relay.RefundFailedRequestBilling(c, relayInfo, newAPIError)
 	}()
+
+	generalSettings := operation_setting.GetGeneralSetting()
+	// 二开：所有流式格式在预扣准入通过后再开始保活，避免余额不足等准入失败被 SSE 200 头劫持；
+	// 同时推理模型首字慢时 Cloudflare 不会 524 断开（任务 7.5）。Realtime 走 WebSocket，不发 SSE 注释行。
+	if relayFormat != types.RelayFormatOpenAIRealtime && relayInfo.IsStream && generalSettings.PingIntervalEnabled {
+		stopKeepAlive := helper.StartStreamKeepAlive(c, time.Duration(generalSettings.PingIntervalSeconds)*time.Second)
+		defer stopKeepAlive()
+	}
 
 	retryParam := &service.RetryParam{
 		Ctx:         c,

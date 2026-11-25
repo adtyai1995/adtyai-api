@@ -167,29 +167,6 @@ export function SetupWizard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusResponse, navigate, form])
 
-  useEffect(() => {
-    if (!setupStatus) return
-
-    // Reset admin fields when backend reports they are already initialized
-    if (setupStatus.root_init) {
-      form.setValue('username', '', {
-        shouldDirty: false,
-        shouldTouch: false,
-        shouldValidate: false,
-      })
-      form.setValue('password', '', {
-        shouldDirty: false,
-        shouldTouch: false,
-        shouldValidate: false,
-      })
-      form.setValue('confirmPassword', '', {
-        shouldDirty: false,
-        shouldTouch: false,
-        shouldValidate: false,
-      })
-    }
-  }, [setupStatus, form])
-
   const currentStepComponent = useMemo(() => {
     if (currentStep === 0) {
       return <DatabaseStep status={setupStatus} />
@@ -209,8 +186,6 @@ export function SetupWizard() {
   }, [currentStep, setupStatus, form, watchedValues])
 
   const validateAdminStep = () => {
-    if (setupStatus?.root_init) return true
-
     const username = form.getValues('username')?.trim()
     const password = form.getValues('password')
     const confirmPassword = form.getValues('confirmPassword')
@@ -222,6 +197,18 @@ export function SetupWizard() {
       })
       toast.error(t('Please enter an administrator username'))
       return false
+    }
+
+    if (setupStatus?.root_init) {
+      if (!password) {
+        form.setError('password', {
+          type: 'manual',
+          message: t('Please enter your password'),
+        })
+        toast.error(t('Please enter your password'))
+        return false
+      }
+      return true
     }
 
     if (!accountPasswordSchema.safeParse(password).success) {

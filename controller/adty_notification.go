@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -147,6 +148,68 @@ func adtyNotificationIssuer(c *gin.Context) (*model.AdtySite, bool) {
 	return adtyOwnerSiteOr403(c)
 }
 
+type adtyManagedNotificationDTO struct {
+	Id              int      `json:"id"`
+	IssuerSiteId    int      `json:"issuer_site_id"`
+	PublisherId     int      `json:"publisher_id"`
+	PublisherName   string   `json:"publisher_name"`
+	Audience        string   `json:"audience"`
+	TargetAudiences []string `json:"target_audiences"`
+	TargetSiteIDs   []int    `json:"target_site_ids"`
+	TargetSiteId    int      `json:"target_site_id"`
+	TargetSiteName  string   `json:"target_site_name"`
+	Kind            string   `json:"kind"`
+	Title           string   `json:"title"`
+	Content         string   `json:"content"`
+	ContentFormat   string   `json:"content_format"`
+	Business        string   `json:"business"`
+	Status          string   `json:"status"`
+	Revision        int64    `json:"revision"`
+	PublishedAt     int64    `json:"published_at"`
+	UpdatedAt       int64    `json:"updated_at"`
+	UpdatedBy       int      `json:"updated_by"`
+	TelegramChannel string   `json:"telegram_channel"`
+	TelegramAt      int64    `json:"telegram_at"`
+}
+
+func toAdtyManagedNotificationDTO(row model.AdtyNotificationPublication, normalizedContent string) adtyManagedNotificationDTO {
+	targetAudiences := row.ParsedTargetAudiences()
+	if targetAudiences == nil {
+		targetAudiences = []string{}
+	}
+	targetSiteIDs := row.ParsedTargetSiteIDs()
+	if targetSiteIDs == nil {
+		targetSiteIDs = []int{}
+	}
+	contentFormat := strings.ToLower(strings.TrimSpace(row.ContentFormat))
+	if contentFormat == "" {
+		contentFormat = "markdown"
+	}
+	return adtyManagedNotificationDTO{
+		Id:              row.Id,
+		IssuerSiteId:    row.IssuerSiteId,
+		PublisherId:     row.PublisherId,
+		PublisherName:   row.PublisherName,
+		Audience:        row.Audience,
+		TargetAudiences: targetAudiences,
+		TargetSiteIDs:   targetSiteIDs,
+		TargetSiteId:    row.TargetSiteId,
+		TargetSiteName:  row.TargetSiteName,
+		Kind:            row.Kind,
+		Title:           row.Title,
+		Content:         normalizedContent,
+		ContentFormat:   contentFormat,
+		Business:        row.Business,
+		Status:          row.Status,
+		Revision:        row.Revision,
+		PublishedAt:     row.PublishedAt,
+		UpdatedAt:       row.UpdatedAt,
+		UpdatedBy:       row.UpdatedBy,
+		TelegramChannel: row.TelegramChannel,
+		TelegramAt:      row.TelegramAt,
+	}
+}
+
 func GetAdtyManagedNotifications(c *gin.Context) {
 	issuer, ok := adtyNotificationIssuer(c)
 	if !ok {
@@ -162,9 +225,14 @@ func GetAdtyManagedNotifications(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	normalized := service.NormalizeAdtyNotificationSourceContents(items)
+	dtos := make([]adtyManagedNotificationDTO, 0, len(items))
+	for _, row := range items {
+		dtos = append(dtos, toAdtyManagedNotificationDTO(row, normalized[row.Id]))
+	}
 	c.Header("Cache-Control", "no-store")
 	page.SetTotal(int(total))
-	page.SetItems(items)
+	page.SetItems(dtos)
 	common.ApiSuccess(c, page)
 }
 
@@ -202,7 +270,12 @@ func WriteAdtyManagedNotification(c *gin.Context) {
 		rememberPreparedAuditEvent(c, eventID)
 		markAuditLogged(c)
 	}
-	common.ApiSuccess(c, row)
+	if row == nil {
+		common.ApiSuccess(c, nil)
+		return
+	}
+	dto := toAdtyManagedNotificationDTO(*row, service.NormalizeAdtyNotificationSourceContent(row.Id, row.Content))
+	common.ApiSuccess(c, dto)
 }
 
 func ReadAdtyNotifications(c *gin.Context) {

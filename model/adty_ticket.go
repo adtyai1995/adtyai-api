@@ -121,6 +121,7 @@ type AdtyTicketImage struct {
 	SHA256        string  `json:"sha256" gorm:"type:varchar(64)"`
 	Storage       string  `json:"-" gorm:"type:varchar(128)"`
 	CreatedAt     int64   `json:"created_at" gorm:"autoCreateTime"`
+	CanDelete     bool    `json:"can_delete" gorm:"-"`
 }
 
 func (AdtyTicketImage) TableName() string { return "adty_ticket_images" }

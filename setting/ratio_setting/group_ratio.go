@@ -19,11 +19,7 @@ var groupRatioMap = types.NewRWMap[string, float64]()
 var groupRatioDecimals = types.NewRWMap[string, decimal.Decimal]()
 var groupRatioStore = newRatioJSONMap(groupRatioMap, groupRatioDecimals)
 
-var defaultGroupGroupRatio = map[string]map[string]float64{
-	"vip": {
-		"edit_this": 0.9,
-	},
-}
+var defaultGroupGroupRatio = map[string]map[string]float64{}
 
 var groupGroupRatioMap = types.NewRWMap[string, map[string]float64]()
 var groupGroupRatioDecimals = types.NewRWMap[string, map[string]decimal.Decimal]()

@@ -76,12 +76,16 @@ export function VoucherBatchResultDialog(props: {
   const hasFundingSplit =
     batch.frozen_earnings_usd !== undefined ||
     batch.frozen_margin_usd !== undefined
+  const isMargin = batch.purpose === 'site_margin'
+  const dialogTitle = isMargin
+    ? t('Generated margin recharge codes')
+    : t('Generated redemption codes')
 
   return (
     <Dialog
       open={props.open}
       onOpenChange={props.onOpenChange}
-      title={t('Generated redemption codes')}
+      title={dialogTitle}
       description={t(
         'Save or export these plaintext codes now before closing this window.'
       )}
@@ -214,7 +218,7 @@ export function VoucherBatchResultDialog(props: {
         </div>
 
         <div
-          aria-label={t('Generated redemption codes')}
+          aria-label={dialogTitle}
           className='border-border divide-border max-h-72 divide-y overflow-y-auto rounded-xl border'
         >
           {batch.items.map((item, index) => (

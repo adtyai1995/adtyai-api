@@ -108,8 +108,16 @@ function refineNotificationInput(
     })
   }
 
-  const isPrivateTarget = value.audience === 'team' || value.audience === 'user'
-  if (value.sync_telegram && !isPrivateTarget && value.telegram_channel === '') {
+  const supportsPrivateTelegram =
+    options.mode === 'owner' ||
+    value.audience === 'team' ||
+    value.audience === 'user' ||
+    value.target_audiences.length > 0
+  if (
+    value.sync_telegram &&
+    !supportsPrivateTelegram &&
+    value.telegram_channel === ''
+  ) {
     ctx.addIssue({
       code: 'custom',
       path: ['telegram_channel'],
@@ -203,13 +211,64 @@ export function deriveLegacyAudience(
   return { audience: 'all_users', target_site_id: 0 }
 }
 
+function parseTargetStringList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter(Boolean)
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return []
+    try {
+      const parsed: unknown = JSON.parse(trimmed)
+      if (Array.isArray(parsed)) {
+        return parsed
+          .filter((item): item is string => typeof item === 'string')
+          .map((item) => item.trim())
+          .filter(Boolean)
+      }
+    } catch {
+      return []
+    }
+  }
+  return []
+}
+
+function parseTargetSiteIdList(value: unknown): number[] {
+  let raw: unknown[] = []
+  if (Array.isArray(value)) {
+    raw = value
+  } else if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return []
+    try {
+      const parsed: unknown = JSON.parse(trimmed)
+      if (Array.isArray(parsed)) {
+        raw = parsed
+      }
+    } catch {
+      return []
+    }
+  }
+  const out: number[] = []
+  for (const item of raw) {
+    const id = typeof item === 'number' ? item : Number(item)
+    if (Number.isInteger(id) && id > 0 && !out.includes(id)) {
+      out.push(id)
+    }
+  }
+  return out
+}
+
 export function resolveInitialTargets(
   mode: 'root' | 'owner',
   row: {
     audience?: string
-    target_audiences?: string[]
+    target_audiences?: string[] | string
     target_site_id?: number
-    target_site_ids?: number[]
+    target_site_ids?: number[] | string
   } | null
 ): {
   target_audiences: NotificationTargetAudience[]
@@ -218,15 +277,11 @@ export function resolveInitialTargets(
   const allowed = new Set<string>(
     mode === 'root' ? ROOT_TARGET_AUDIENCES : OWNER_TARGET_AUDIENCES
   )
-  const rawAudiences = Array.isArray(row?.target_audiences)
-    ? row.target_audiences.filter((item): item is NotificationTargetAudience =>
-        allowed.has(item)
-      )
-    : []
+  const rawAudiences = parseTargetStringList(row?.target_audiences).filter(
+    (item): item is NotificationTargetAudience => allowed.has(item)
+  )
 
-  const rawSiteIds = Array.isArray(row?.target_site_ids)
-    ? row.target_site_ids.filter((id) => Number.isInteger(id) && id > 0)
-    : []
+  const rawSiteIds = parseTargetSiteIdList(row?.target_site_ids)
 
   if (rawAudiences.length > 0) {
     let resolvedSiteIds = rawSiteIds
@@ -276,17 +331,19 @@ export function resolveInitialTargets(
 export function formatNotificationRecipients(
   row: {
     audience?: string
-    target_audiences?: string[]
+    target_audiences?: string[] | string
     target_site_name?: string
     target_site_names?: string[]
-    target_site_ids?: number[]
+    target_site_ids?: number[] | string
     target_team_id?: number
     target_user_id?: number
   },
   t: TFunction
 ): string {
-  if (Array.isArray(row.target_audiences) && row.target_audiences.length > 0) {
-    const labels = row.target_audiences.map((aud) => {
+  const parsedAudiences = parseTargetStringList(row.target_audiences)
+  const parsedSiteIds = parseTargetSiteIdList(row.target_site_ids)
+  if (parsedAudiences.length > 0) {
+    const labels = parsedAudiences.map((aud) => {
       if (aud === 'site_users') {
         if (
           Array.isArray(row.target_site_names) &&
@@ -297,11 +354,8 @@ export function formatNotificationRecipients(
         if (row.target_site_name) {
           return `${t(notificationAudienceLabels.site_users)} (${row.target_site_name})`
         }
-        if (
-          Array.isArray(row.target_site_ids) &&
-          row.target_site_ids.length > 0
-        ) {
-          return `${t(notificationAudienceLabels.site_users)} (${row.target_site_ids.map((id) => `#${id}`).join(', ')})`
+        if (parsedSiteIds.length > 0) {
+          return `${t(notificationAudienceLabels.site_users)} (${parsedSiteIds.map((id) => `#${id}`).join(', ')})`
         }
       }
       const key = notificationAudienceLabels[aud]

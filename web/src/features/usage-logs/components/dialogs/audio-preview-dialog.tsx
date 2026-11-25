@@ -29,6 +29,7 @@ import { IconBadge } from '@/components/ui/icon-badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/ui/spinner'
 
+import { toSafeHttpUrl } from '../../lib/task-artifacts'
 import type { AudioClip } from '../../types'
 
 export type { AudioClip }
@@ -63,8 +64,9 @@ function AudioClipCard({ clip }: { clip: AudioClip }) {
   const title = clip.title || t('Untitled')
   const tags = clip.tags || clip.metadata?.tags || ''
   const duration = clip.duration || clip.metadata?.duration
-  const imageUrl = clip.image_url || clip.image_large_url
-  const audioUrl = clip.audio_url
+  const imageUrl =
+    toSafeHttpUrl(clip.image_url) || toSafeHttpUrl(clip.image_large_url)
+  const audioUrl = toSafeHttpUrl(clip.audio_url)
 
   if (!audioUrl) return null
 
@@ -106,7 +108,9 @@ function AudioClipCard({ clip }: { clip: AudioClip }) {
               variant='outline'
               size='sm'
               className='h-7 gap-1 text-xs'
-              onClick={() => window.open(audioUrl, '_blank')}
+              onClick={() =>
+                window.open(audioUrl, '_blank', 'noopener,noreferrer')
+              }
             >
               <ExternalLink className='h-3 w-3' />
               {t('Open in new tab')}
@@ -141,7 +145,9 @@ function AudioClipCard({ clip }: { clip: AudioClip }) {
 
 export function AudioPreviewDialog(props: AudioPreviewDialogProps) {
   const { t } = useTranslation()
-  const clips = Array.isArray(props.clips) ? props.clips : []
+  const clips = Array.isArray(props.clips)
+    ? props.clips.filter((clip) => Boolean(toSafeHttpUrl(clip.audio_url)))
+    : []
 
   let body = (
     <ScrollArea className='max-h-[60vh]'>

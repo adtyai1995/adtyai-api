@@ -56,35 +56,58 @@ type OfficialAuditWrite struct {
 	Other       AuditOther
 }
 
-var auditSecretText = regexp.MustCompile(`(?i)(sk-[A-Za-z0-9_\-]{8,}|bot\d{6,}:[A-Za-z0-9_\-]{10,}|\d{6,12}:[A-Za-z0-9_\-]{20,}|api[_-]?key\s*[:=]\s*\S+|password\s*[:=]\s*\S+|验证码\s*[:=]\s*\S+)`)
+var auditSecretPEM = regexp.MustCompile(`(?is)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
+
+var auditSecretJSONKV = regexp.MustCompile(`(?i)("(?:password|passwd|secret|token|api[_-]?key|apikey|access[_-]?token|bot[_-]?token|authorization|private[_-]?key|client[_-]?secret|verification[_-]?code|verify[_-]?code|otp|session[_-]?token|payment[_-]?secret|payment[_-]?key|merchant[_-]?key|merchant[_-]?private[_-]?key|webhook[_-]?secret|refresh[_-]?token|bearer|backup[_-]?codes?|smtp[_-]?token|smtp[_-]?password|mail[_-]?password|resend[_-]?api[_-]?key|gotify[_-]?token|generated[_-]?password|new[_-]?password|old[_-]?password|original[_-]?password|totp[_-]?secret|recovery[_-]?codes?|reset[_-]?token|email[_-]?code|cf[_-]?api[_-]?token|alidns[_-]?access[_-]?key[_-]?secret|access[_-]?key[_-]?secret|epay[_-]?private[_-]?key|signing[_-]?secret|secret[_-]?key|key[_-]?secret)"\s*:\s*)"(?:[^"\\]|\\.)*"`)
+
+var auditSecretText = regexp.MustCompile(`(?i)(sk-[A-Za-z0-9_\-]{8,}|nap_[A-Za-z0-9_\-]{12,}|bot\d{6,}:[A-Za-z0-9_\-]{10,}|\d{6,12}:[A-Za-z0-9_\-]{20,}|(?:api[_-]?key|password|passwd|secret|token)\s*[:=：]\s*\S+|验证码\s*[:=：]\s*\S+)`)
 
 var auditSecretKeyNames = map[string]struct{}{
-	"password":             {},
-	"passwd":               {},
-	"secret":               {},
-	"token":                {},
-	"api_key":              {},
-	"apikey":               {},
-	"access_token":         {},
-	"bot_token":            {},
-	"authorization":        {},
-	"private_key":          {},
-	"client_secret":        {},
-	"verification_code":    {},
-	"verify_code":          {},
-	"otp":                  {},
-	"session_token":        {},
-	"payment_secret":       {},
-	"payment_key":          {},
-	"merchant_key":         {},
-	"merchant_private_key": {},
-	"webhook_secret":       {},
-	"refresh_token":        {},
-	"bearer":               {},
-	"backup_codes":         {},
-	"backup_code":          {},
-	"smtp_token":           {},
-	"resend_api_key":       {},
+	"password":                 {},
+	"passwd":                   {},
+	"secret":                   {},
+	"token":                    {},
+	"api_key":                  {},
+	"apikey":                   {},
+	"access_token":             {},
+	"bot_token":                {},
+	"authorization":            {},
+	"private_key":              {},
+	"client_secret":            {},
+	"verification_code":        {},
+	"verify_code":              {},
+	"otp":                      {},
+	"session_token":            {},
+	"payment_secret":           {},
+	"payment_key":              {},
+	"merchant_key":             {},
+	"merchant_private_key":     {},
+	"webhook_secret":           {},
+	"refresh_token":            {},
+	"bearer":                   {},
+	"backup_codes":             {},
+	"backup_code":              {},
+	"smtp_token":               {},
+	"smtp_password":            {},
+	"mail_password":            {},
+	"resend_api_key":           {},
+	"gotify_token":             {},
+	"generated_password":       {},
+	"new_password":             {},
+	"old_password":             {},
+	"original_password":        {},
+	"totp_secret":              {},
+	"recovery_code":            {},
+	"recovery_codes":           {},
+	"reset_token":              {},
+	"email_code":               {},
+	"cf_api_token":             {},
+	"alidns_access_key_secret": {},
+	"access_key_secret":        {},
+	"epay_private_key":         {},
+	"signing_secret":           {},
+	"secret_key":               {},
+	"key_secret":               {},
 }
 
 // PrepareOfficialAuditLog validates G.13.2 first-class fields, redacts secrets,
@@ -477,20 +500,62 @@ func redactAuditValue(value any) any {
 		}
 		return redacted
 	default:
-		return value
+		switch value.(type) {
+		case bool,
+			int, int8, int16, int32, int64,
+			uint, uint8, uint16, uint32, uint64,
+			float32, float64,
+			json.Number:
+			return value
+		}
+		raw, err := common.Marshal(value)
+		if err != nil {
+			return value
+		}
+		var normalized any
+		if err := common.Unmarshal(raw, &normalized); err != nil {
+			return redactAuditText(string(raw))
+		}
+		return redactAuditValue(normalized)
 	}
+}
+
+// RedactAuditText masks secrets from free-form or serialized audit text.
+func RedactAuditText(text string) string {
+	return redactAuditText(text)
+}
+
+// RedactAuditJSON encodes any audit payload after recursive key/value redaction.
+func RedactAuditJSON(value any) string {
+	if value == nil {
+		return ""
+	}
+	encoded, err := encodeOfficialAuditValue(value)
+	if err != nil {
+		return redactAuditText(common.GetJsonString(value))
+	}
+	return encoded
 }
 
 func redactAuditText(text string) string {
 	if text == "" {
 		return text
 	}
+	text = auditSecretPEM.ReplaceAllString(text, "[redacted]")
+	text = auditSecretJSONKV.ReplaceAllString(text, `$1"[redacted]"`)
 	return auditSecretText.ReplaceAllString(text, "[redacted]")
 }
 
 func isOfficialAuditSecretKey(key string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(key))
 	normalized = strings.ReplaceAll(normalized, "-", "_")
-	_, ok := auditSecretKeyNames[normalized]
-	return ok
+	if _, ok := auditSecretKeyNames[normalized]; ok {
+		return true
+	}
+	for _, suffix := range []string{"_password", "_passwd", "_secret", "_private_key", "_api_key", "_apikey"} {
+		if strings.HasSuffix(normalized, suffix) {
+			return true
+		}
+	}
+	return false
 }

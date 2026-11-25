@@ -183,7 +183,7 @@ function siteAuditActionLabel(t: TFunction, action: string): string {
     case 'freeze_withdrawal':
       return t('Froze withdrawals')
     case 'restore_withdrawal':
-      return t('Restore withdrawals')
+      return t('Restored withdrawals')
     default:
       return action
   }

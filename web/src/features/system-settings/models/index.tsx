@@ -56,15 +56,8 @@ const defaultModelSettings: ModelSettings = {
   'billing_setting.billing_expr': '{}',
   'billing_setting.plugin_billing_expr': '{}',
   'tool_price_setting.prices': '{}',
-  TopupGroupRatio: '',
   GroupRatio: '',
   UserUsableGroups: '',
-  GroupGroupRatio: '',
-  AutoGroups: '',
-  MaxTokenAutoGroups: 5,
-  DefaultUseAutoGroup: false,
-  'group_ratio_setting.group_special_usable_group': '{}',
-  GroupModelAllow: '{}',
 }
 
 export function ModelSettings() {

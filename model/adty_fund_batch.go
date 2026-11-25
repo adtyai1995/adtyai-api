@@ -1339,6 +1339,9 @@ func adtyFundBatchLess(a, b AdtyFundBatch) bool {
 	if a.CreatedAt != b.CreatedAt {
 		return a.CreatedAt < b.CreatedAt
 	}
+	if a.Source != b.Source {
+		return a.Source < b.Source
+	}
 	return a.Id < b.Id
 }
 

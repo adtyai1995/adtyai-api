@@ -52,6 +52,7 @@ import {
 } from '../api'
 import {
   ADDRESS_HINTS,
+  formatUsdtAmount,
   isValidUsdtAddress,
   usdtNetAmount,
   usdtNetworkLabel,
@@ -172,7 +173,8 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
         accountNo = alipayAccount.trim()
       }
       return createReferralWithdrawal({
-        amount: value.toFixed(2),
+        amount:
+          target === 'usdt' ? formatUsdtAmount(value) : value.toFixed(2),
         account_type: target,
         account_network: target === 'usdt' ? network : undefined,
         account_no: accountNo,
@@ -258,7 +260,7 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
               id='withdraw-amount'
               type='number'
               min={0}
-              step='0.01'
+              step={target === 'usdt' ? '0.000001' : '0.01'}
               value={amount}
               onChange={(event) => setAmount(event.target.value)}
             />
@@ -308,8 +310,8 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
               </div>
               <p className='text-muted-foreground text-sm'>
                 {t('Network fee {{fee}} USDT, you receive {{net}} USDT', {
-                  fee,
-                  net: net.toFixed(2),
+                  fee: formatUsdtAmount(fee),
+                  net: formatUsdtAmount(net),
                 })}
               </p>
             </>
@@ -424,7 +426,7 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
               <span className='font-mono break-all'>{address}</span>
             </p>
             <p data-testid='usdt-net'>
-              {t('You receive {{net}} USDT', { net: net.toFixed(2) })}
+              {t('You receive {{net}} USDT', { net: formatUsdtAmount(net) })}
             </p>
             <p className='text-destructive'>
               {t('A wrong network or address cannot be recovered.')}

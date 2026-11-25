@@ -477,7 +477,7 @@ func PageAdtyAnomalyDispositions(siteID int, status, order, kind string, offset,
 	}
 	q := model.DB.Model(&model.AdtyAnomalyDisposition{})
 	if siteID == 0 {
-		q = q.Where("site_id = 0 AND team_id > 0")
+		q = q.Where("site_id = 0 AND (team_id > 0 OR ref LIKE ? OR order_ref <> '' OR account_id > 0)", "main:%")
 	} else {
 		q = q.Where("(site_id = ? OR (site_id = 0 AND team_id = 0 AND ref = ?))", siteID, strconv.Itoa(siteID))
 	}
@@ -1077,12 +1077,12 @@ func adtySiteTierHigher(a, b model.AdtySiteTier) bool {
 }
 
 // SelectAdtySiteTier returns the highest enabled grade whose three lifetime
-// thresholds are all met. Monthly spend is not a criterion.
+// thresholds are all met and whose supply discount is positive. Monthly spend is not a criterion.
 func SelectAdtySiteTier(tiers []model.AdtySiteTier, stats AdtySiteTierStats) *model.AdtySiteTier {
 	var selected *model.AdtySiteTier
 	for i := range tiers {
 		tier := &tiers[i]
-		if !tier.Enabled || !stats.Meets(*tier) {
+		if !tier.Enabled || !tier.CostFactor.IsPositive() || !stats.Meets(*tier) {
 			continue
 		}
 		if selected == nil || adtySiteTierHigher(*tier, *selected) {
@@ -1346,7 +1346,11 @@ func SetAdtySiteTier(siteID int, code, mode string, now int64) (*model.AdtySite,
 	if mode != AdtySiteTierModeAuto && mode != AdtySiteTierModeManual {
 		return nil, ErrAdtySiteTierMode
 	}
+	if mode == AdtySiteTierModeManual && code == "" {
+		return nil, ErrAdtySiteTierNotFound
+	}
 	var site model.AdtySite
+	costChanged := false
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteID).First(&site).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1354,6 +1358,7 @@ func SetAdtySiteTier(siteID int, code, mode string, now int64) (*model.AdtySite,
 			}
 			return err
 		}
+		oldFactor, oldHasFactor := AdtySiteCostFactor(&site)
 		// Read the definition after acquiring the site lock so a concurrent
 		// Root configuration update cannot be overwritten with an old copy.
 		var selected *model.AdtySiteTier
@@ -1364,6 +1369,9 @@ func SetAdtySiteTier(siteID int, code, mode string, now int64) (*model.AdtySite,
 					return ErrAdtySiteTierNotFound
 				}
 				return err
+			}
+			if !selected.CostFactor.IsPositive() {
+				return ErrAdtySiteTierInvalid
 			}
 		} else if mode == AdtySiteTierModeAuto {
 			stats, err := loadAdtySiteTierStatsTx(tx, siteID)
@@ -1382,35 +1390,38 @@ func SetAdtySiteTier(siteID int, code, mode string, now int64) (*model.AdtySite,
 				code = selected.Code
 			}
 		}
+		if selected == nil || !selected.CostFactor.IsPositive() {
+			return common.NewMessage("Keep at least one enabled site level with a positive supply discount while reseller sites are active")
+		}
 		if err := ensureAdtySiteWalletsTx(tx, siteID); err != nil {
 			return err
 		}
 		updates := map[string]any{
 			"tier_code": code, "tier_mode": mode, "tier_updated_at": now,
+			"tier_cost_factor": selected.CostFactor,
 			"pending_tier_cost_factor": nil, "pending_tier_cost_factor_at": 0,
 		}
-		if selected == nil {
-			updates["tier_cost_factor"] = nil
-			if err := tx.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", siteID, model.AdtySiteWalletMargin).
-				Update("required_balance", decimal.Zero).Error; err != nil {
-				return err
-			}
-		} else {
-			updates["tier_cost_factor"] = selected.CostFactor
-			if err := tx.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", siteID, model.AdtySiteWalletMargin).
-				Update("required_balance", selected.DepositUSD).Error; err != nil {
-				return err
-			}
+		if err := tx.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", siteID, model.AdtySiteWalletMargin).
+			Update("required_balance", selected.DepositUSD).Error; err != nil {
+			return err
 		}
 		if err := tx.Model(&model.AdtySite{}).Where("id = ?", siteID).Updates(updates).Error; err != nil {
 			return err
 		}
 		site = model.AdtySite{}
-		return tx.Where("id = ?", siteID).First(&site).Error
+		if err := tx.Where("id = ?", siteID).First(&site).Error; err != nil {
+			return err
+		}
+		newFactor, newHasFactor := AdtySiteCostFactor(&site)
+		costChanged = oldHasFactor != newHasFactor || !newFactor.Equal(oldFactor)
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	InvalidateAdtySiteCache()
+	if costChanged && AdtyOnSiteCostFactorChanged != nil {
+		AdtyOnSiteCostFactorChanged(&site)
+	}
 	return &site, nil
 }

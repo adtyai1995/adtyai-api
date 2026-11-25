@@ -124,12 +124,6 @@ export function AffiliateDetails(props: AffiliateDetailsProps) {
         'For as long as their account exists. Each person can only be invited once, and the link they opened last before signing up counts.'
       ),
     },
-    {
-      q: t('Can I get a higher rate?'),
-      a: t(
-        'Partners with a large audience can apply for a higher rate on the Referrals page.'
-      ),
-    },
   ]
 
   return (

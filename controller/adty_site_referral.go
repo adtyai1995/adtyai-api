@@ -341,7 +341,9 @@ func PostAdtyOwnerSiteInviteWithdrawalReview(c *gin.Context) {
 	if _, ok := adtyOwnerSiteOr403(c); !ok {
 		return
 	}
-	processSiteWithdrawalReview(c, service.ReviewAdtySiteInviteWithdrawal)
+	processSiteWithdrawalReview(c, func(ownerID int, id int64, approve bool, reason string) error {
+		return service.ReviewAdtySiteInviteWithdrawalWithClientMeta(ownerID, id, approve, reason, c.ClientIP(), c.Request.UserAgent())
+	})
 }
 func PostClosedSiteInviteWithdrawalReview(c *gin.Context) {
 	processClosedSiteWithdrawalReview(c, service.ReviewClosedAdtySiteInviteWithdrawalWithAuditForActor)
@@ -399,7 +401,9 @@ func PostAdtyOwnerSiteInviteWithdrawalPaid(c *gin.Context) {
 	if _, ok := adtyOwnerSiteOr403(c); !ok {
 		return
 	}
-	processSiteWithdrawalPaid(c, service.MarkAdtySiteInviteWithdrawalPaid)
+	processSiteWithdrawalPaid(c, func(ownerID int, id int64, txID, proof string) error {
+		return service.MarkAdtySiteInviteWithdrawalPaidWithClientMeta(ownerID, id, txID, proof, c.ClientIP(), c.Request.UserAgent())
+	})
 }
 func PostClosedSiteInviteWithdrawalFailed(c *gin.Context) {
 	processClosedSiteWithdrawalReview(c, service.ConfirmClosedSiteInvitePayoutFailureWithAuditForActor)
@@ -515,7 +519,7 @@ func PostAdtyOwnerSiteCoverageResume(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := service.ResumeAdtySiteInviteCoverage(site.Id, time.Now()); err != nil {
+	if err := service.ResumeAdtySiteInviteCoverageWithAudit(site.Id, c.GetInt("id"), time.Now(), c.ClientIP(), c.Request.UserAgent()); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -689,7 +693,7 @@ func PostAdtyOwnerSiteInvite(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.BindAdtyOwnerSiteInviteFromIPWithAudit(site.Id, c.GetInt("id"), body.InviterID, body.InviteeID, service.HashReferralRiskValue(c.ClientIP()), c.ClientIP(), c.Request.UserAgent()); err != nil {
+	if err := service.BindAdtyOwnerSiteInviteFromIPWithAudit(site.Id, c.GetInt("id"), body.InviterID, body.InviteeID, "", c.ClientIP(), c.Request.UserAgent()); err != nil {
 		common.ApiError(c, err)
 		return
 	}

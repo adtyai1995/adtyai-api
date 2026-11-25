@@ -748,7 +748,7 @@ func createIndependentTeamEmployeeTx(tx *gorm.DB, team *model.AdtyTeam, username
 		DisplayName: displayName,
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
-		Group:       "default",
+		Group:       "",
 		AuthVersion: 1,
 		SiteId:      team.SiteId,
 		StaffSiteId: 0,
@@ -1140,7 +1140,7 @@ func createAdtyTeamTx(tx *gorm.DB, leaderId, siteId int, name string, discount d
 	if leader.SiteId != siteId || leader.StaffSiteId != 0 {
 		return nil, ErrAdtyTeamForbidden
 	}
-	if err := rejectTeamStaffIdentityTx(tx, leader.Id); err != nil {
+	if err := rejectTeamStaffOrOwnerIdentityTx(tx, leader.Id); err != nil {
 		return nil, err
 	}
 	if err := rejectActiveTeamMembership(tx, leader.Id); err != nil {

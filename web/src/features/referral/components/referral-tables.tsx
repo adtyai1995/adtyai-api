@@ -38,7 +38,7 @@ import {
   REFERRAL_PAGE_SIZE,
   referralQueryKeys,
 } from '../api'
-import { usdtNetworkLabel } from '../lib/address'
+import { formatUsdtAmount, usdtNetworkLabel } from '../lib/address'
 import {
   COMMISSION_STATUS_LABELS,
   COMMISSION_STATUS_VARIANTS,
@@ -193,8 +193,8 @@ export function WithdrawalTable(props: { cancelWindowMinutes: number }) {
             cell: (row) => {
               if (row.account_type === 'usdt') {
                 return t('{{amount}} → {{net}} USDT', {
-                  amount: formatUsd(row.amount, locale),
-                  net: row.net_amount.toFixed(2),
+                  amount: formatUsd(row.amount, locale, 6),
+                  net: formatUsdtAmount(row.net_amount),
                 })
               }
               if (row.cny_amount) {

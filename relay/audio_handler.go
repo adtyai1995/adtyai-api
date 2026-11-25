@@ -71,10 +71,14 @@ func AudioHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 	if !ok || usageDto == nil {
 		return types.NewError(fmt.Errorf("unexpected usage type %T", usage), types.ErrorCodeBadResponseBody)
 	}
+	var settleErr error
 	if usageDto.CompletionTokenDetails.AudioTokens > 0 || usageDto.PromptTokensDetails.AudioTokens > 0 {
-		service.PostAudioConsumeQuota(c, info, usageDto, nil)
+		settleErr = service.PostAudioConsumeQuota(c, info, usageDto, nil)
 	} else {
-		service.PostTextConsumeQuota(c, info, usageDto, nil)
+		settleErr = service.PostTextConsumeQuota(c, info, usageDto, nil)
+	}
+	if settleErr != nil {
+		return types.NewError(settleErr, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 	}
 
 	return nil

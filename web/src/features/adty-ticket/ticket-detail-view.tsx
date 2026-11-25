@@ -405,9 +405,10 @@ export function TicketDetailView(props: {
           <div className='flex flex-col gap-3'>
             {detail.messages.map((message) => {
               const isInternal = message.visibility === 'internal'
-              const isSupport = Boolean(
-                message.author_role && message.author_role !== 'customer'
-              )
+              const isUnconfirmed =
+                !message.author_role || message.author_role === 'unconfirmed'
+              const isSupport =
+                !isUnconfirmed && message.author_role !== 'customer'
               const roleLabel = t(
                 TICKET_AUTHOR_ROLE_LABELS[message.author_role ?? ''] ??
                   'Historical author role unconfirmed'
@@ -421,6 +422,8 @@ export function TicketDetailView(props: {
               let cardTone = 'border-border bg-muted/20'
               if (isInternal) {
                 cardTone = 'border-warning/35 bg-warning-soft/50'
+              } else if (isUnconfirmed) {
+                cardTone = 'border-border border-dashed bg-muted/35'
               } else if (isSupport) {
                 cardTone = 'border-brand/20 bg-brand-soft/40'
               }
@@ -443,9 +446,18 @@ export function TicketDetailView(props: {
                 >
                   <div className='flex flex-wrap items-center justify-between gap-2 text-xs'>
                     <div className='flex flex-wrap items-center gap-2'>
-                      <span className='text-foreground font-medium'>
-                        {roleLabel}
-                      </span>
+                      {isUnconfirmed ? (
+                        <Badge
+                          variant='secondary'
+                          className='text-muted-foreground rounded-full text-[11px]'
+                        >
+                          {roleLabel}
+                        </Badge>
+                      ) : (
+                        <span className='text-foreground font-medium'>
+                          {roleLabel}
+                        </span>
+                      )}
                       {authorLabel && (
                         <span className='text-muted-foreground'>
                           {authorLabel}
@@ -490,14 +502,7 @@ export function TicketDetailView(props: {
                   {messageImages.length > 0 && (
                     <div className='flex flex-wrap gap-4 pt-1'>
                       {messageImages.map((image) => {
-                        const canDelete =
-                          !terminal &&
-                          (detail.can_manage ||
-                            (image.visibility === 'public' &&
-                              !isSupport &&
-                              (detail.can_control ||
-                                detail.ticket.user_id === props.userId ||
-                                message.author_id === props.userId)))
+                        const canDelete = !terminal && Boolean(image.can_delete)
                         return (
                           <TicketImage
                             key={image.id}
@@ -531,12 +536,7 @@ export function TicketDetailView(props: {
               </p>
               <div className='flex flex-wrap gap-4'>
                 {unattachedImages.map((image) => {
-                  const canDelete =
-                    !terminal &&
-                    (detail.can_manage ||
-                      (image.visibility === 'public' &&
-                        (detail.can_control ||
-                          detail.ticket.user_id === props.userId)))
+                  const canDelete = !terminal && Boolean(image.can_delete)
                   return (
                     <TicketImage
                       key={image.id}

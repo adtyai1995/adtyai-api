@@ -24,6 +24,13 @@ import { subsiteDocument } from '@/lib/subsite-document'
 import { recordReferralClick } from '../api'
 
 const DEVICE_COOKIE = 'adty_did'
+export const SITE_INVITE_COOKIE = 'adty_site_invite'
+const SITE_INVITE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+
+export type CapturedSiteInvite = {
+  code: string
+  capturedAt: number
+}
 
 /** Records a referral click; failures (bad code, rate limit) are ignored. */
 export async function trackReferral(
@@ -40,9 +47,11 @@ export async function trackReferral(
   }
 }
 
-/** Writes a random device ID once (one year, SameSite=Lax) for the self-invite check. */
+/**
+ * Writes a random device ID once (one year, SameSite=Lax) for the self-invite
+ * check on both the main site and reseller sub-sites.
+ */
 export function ensureDeviceCookie(doc: Document = document): void {
-  if (subsiteDocument()) return
   if (
     doc.cookie.split('; ').some((part) => part.startsWith(`${DEVICE_COOKIE}=`))
   ) {
@@ -54,17 +63,77 @@ export function ensureDeviceCookie(doc: Document = document): void {
 }
 
 /**
- * Root-level referral handling (adty tasks 6.2, 6.5): writes the device cookie
- * once, and on any page with ?ref= records the click and drops the parameter.
+ * Stores a sub-site `?site_invite=` code in a same-host cookie with its capture
+ * timestamp so `SignUpForm` can read it after cross-page navigation.
+ */
+export function storeSiteInviteCookie(
+  code: string,
+  doc: Document = document,
+  nowSeconds: number = Math.floor(Date.now() / 1000)
+): void {
+  const trimmed = code.trim()
+  if (!trimmed) return
+  const secure = doc.location?.protocol === 'https:' ? '; Secure' : ''
+  const encoded = `${encodeURIComponent(trimmed)}|${Math.max(0, Math.floor(nowSeconds))}`
+  doc.cookie = `${SITE_INVITE_COOKIE}=${encoded}; Max-Age=${SITE_INVITE_MAX_AGE_SECONDS}; Path=/; SameSite=Lax${secure}`
+}
+
+/** Reads the captured sub-site invite code and timestamp from the same-host cookie. */
+export function readSiteInviteCookie(
+  doc: Document = document
+): CapturedSiteInvite | null {
+  const prefix = `${SITE_INVITE_COOKIE}=`
+  const match = doc.cookie
+    .split('; ')
+    .find((part) => part.startsWith(prefix))
+  if (!match) return null
+  const raw = match.slice(prefix.length).trim()
+  if (!raw) return null
+  const pipeIndex = raw.lastIndexOf('|')
+  if (pipeIndex > 0) {
+    const codePart = raw.slice(0, pipeIndex)
+    const tsPart = Number(raw.slice(pipeIndex + 1))
+    try {
+      const code = decodeURIComponent(codePart).trim()
+      if (!code) return null
+      return {
+        code,
+        capturedAt: Number.isFinite(tsPart) && tsPart > 0 ? tsPart : 0,
+      }
+    } catch {
+      return null
+    }
+  }
+  try {
+    const code = decodeURIComponent(raw).trim()
+    return code ? { code, capturedAt: 0 } : null
+  } catch {
+    return null
+  }
+}
+
+/** Clears the captured sub-site invite cookie on the current host. */
+export function clearSiteInviteCookie(doc: Document = document): void {
+  const secure = doc.location?.protocol === 'https:' ? '; Secure' : ''
+  doc.cookie = `${SITE_INVITE_COOKIE}=; Max-Age=0; Path=/; SameSite=Lax${secure}`
+}
+
+/**
+ * Root-level referral handling (adty tasks 6.2, 6.5):
+ * - Writes the `adty_did` device cookie once on both main-site and sub-site hosts.
+ * - On the main site, captures `?ref=`, reports the click, and drops the parameter.
+ * - On a sub-site, captures `?site_invite=` into a same-host cookie with timestamp
+ *   and drops the parameter without reporting to the main-site click endpoint.
  */
 export function useReferralCapture(): void {
   const navigate = useNavigate()
   const location = useRouterState({ select: (state) => state.location })
   const search = location.search as Record<string, unknown>
   const ref = typeof search.ref === 'string' ? search.ref : ''
+  const siteInvite =
+    typeof search.site_invite === 'string' ? search.site_invite.trim() : ''
 
   useEffect(() => {
-    if (subsiteDocument()) return
     ensureDeviceCookie()
   }, [])
 
@@ -81,4 +150,18 @@ export function useReferralCapture(): void {
       replace: true,
     })
   }, [ref, location.pathname, navigate])
+
+  useEffect(() => {
+    if (!siteInvite || !subsiteDocument()) return
+    storeSiteInviteCookie(siteInvite)
+    void navigate({
+      to: '.',
+      search: (prev: Record<string, unknown>) => {
+        const next = { ...prev }
+        delete next.site_invite
+        return next
+      },
+      replace: true,
+    })
+  }, [siteInvite, navigate])
 }

@@ -42,24 +42,76 @@ interface AdminStepProps {
   rootInitialized?: boolean
 }
 
-export function AdminStep({ form, rootInitialized }: AdminStepProps) {
+export function AdminStep(props: AdminStepProps) {
   const { t } = useTranslation()
+  const form = props.form
   const passwordValue = useWatch({ control: form.control, name: 'password' })
   const confirmationValue = useWatch({
     control: form.control,
     name: 'confirmPassword',
   })
 
-  if (rootInitialized) {
+  if (props.rootInitialized) {
     return (
-      <Alert className='border-sky-200 bg-sky-50 dark:border-sky-900/60 dark:bg-sky-950/40'>
-        <AlertDescription className='flex items-start gap-2'>
-          <ShieldCheck className='mt-0.5 size-4 text-sky-500' />
-          {t(
-            'The administrator account is already initialized. You can keep your existing credentials and continue to the next step.'
-          )}
-        </AlertDescription>
-      </Alert>
+      <div className='space-y-4'>
+        <Alert className='border-sky-200 bg-sky-50 dark:border-sky-900/60 dark:bg-sky-950/40'>
+          <AlertDescription className='flex items-start gap-2'>
+            <ShieldCheck
+              className='mt-0.5 size-4 shrink-0 text-sky-500'
+              aria-hidden='true'
+            />
+            {t(
+              'The administrator account is already initialized. Enter the existing Root username and password to verify your identity and finish setup.'
+            )}
+          </AlertDescription>
+        </Alert>
+
+        <div className='grid gap-4 sm:grid-cols-2'>
+          <FormField
+            control={form.control}
+            name='username'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Administrator username')}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    placeholder={t('Enter existing Root username')}
+                    autoComplete='username'
+                    onChange={(event) => {
+                      form.clearErrors('username')
+                      field.onChange(event)
+                    }}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='password'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Password')}</FormLabel>
+                <FormControl>
+                  <PasswordInput
+                    {...field}
+                    placeholder={t('Enter existing Root password')}
+                    autoComplete='current-password'
+                    onChange={(event) => {
+                      form.clearErrors('password')
+                      field.onChange(event)
+                    }}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
+      </div>
     )
   }
 

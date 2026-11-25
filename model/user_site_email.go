@@ -31,6 +31,83 @@ func PasswordResetCodeKey(user *User) string {
 	return fmt.Sprintf("%s:%d:%s:%d", SiteEmailCodeKey(user.Email, user.SiteId), user.Id, NormalizeUsername(user.Username), user.InheritedFromSiteId)
 }
 
+func findSiteOwnerForEmailChallenge(email string, siteID int) (*User, error) {
+	if siteID <= 0 || DB == nil || !DB.Migrator().HasTable(&AdtySite{}) {
+		return nil, ErrEmailNotFound
+	}
+	var site AdtySite
+	if err := DB.Select("id", "owner_user_id", "status").Where("id = ? AND status <> ?", siteID, AdtySiteStatusClosed).First(&site).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrEmailNotFound
+		}
+		return nil, err
+	}
+	if site.OwnerUserId <= 0 {
+		return nil, ErrEmailNotFound
+	}
+	var owner User
+	if err := DB.Where("id = ? AND site_id = 0 AND LOWER(email) = ?", site.OwnerUserId, email).First(&owner).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrEmailNotFound
+		}
+		return nil, err
+	}
+	return &owner, nil
+}
+
+func isActiveSiteOwnerForSite(userID, siteID int) (bool, error) {
+	if userID <= 0 || siteID <= 0 || DB == nil || !DB.Migrator().HasTable(&AdtySite{}) {
+		return false, nil
+	}
+	var count int64
+	if err := DB.Model(&AdtySite{}).
+		Where("id = ? AND owner_user_id = ? AND status <> ?", siteID, userID, AdtySiteStatusClosed).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// GetUniqueUserOrSiteOwnerByEmail resolves a unique account matching email on siteID.
+// On sub-sites (siteID > 0), the site's independent owner account (users.site_id = 0)
+// is also eligible so site owners can sign in and recover passwords on their own domain.
+func GetUniqueUserOrSiteOwnerByEmail(email string, siteID int) (*User, error) {
+	email = NormalizeEmail(email)
+	if email == "" {
+		return nil, ErrEmailNotFound
+	}
+	var users []User
+	if err := DB.Where("LOWER(email) = ? AND site_id = ?", email, siteID).Limit(2).Find(&users).Error; err != nil {
+		return nil, err
+	}
+	if siteID > 0 {
+		owner, err := findSiteOwnerForEmailChallenge(email, siteID)
+		if err != nil && !errors.Is(err, ErrEmailNotFound) {
+			return nil, err
+		}
+		if owner != nil {
+			duplicate := false
+			for i := range users {
+				if users[i].Id == owner.Id {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				users = append(users, *owner)
+			}
+		}
+	}
+	switch len(users) {
+	case 0:
+		return nil, ErrEmailNotFound
+	case 1:
+		return &users[0], nil
+	default:
+		return nil, ErrEmailAmbiguous
+	}
+}
+
 // ResolveUserForEmailChallenge locates the account a login or reset challenge
 // should bind to. Email alone is accepted only when it uniquely identifies a
 // user on the site. When the same site has more than one account with that
@@ -46,7 +123,19 @@ func ResolveUserForEmailChallenge(email, username string, siteID int) (*User, er
 			}
 			return nil, err
 		}
-		if user.SiteId != siteID || (email != "" && NormalizeEmail(user.Email) != email) {
+		if user.SiteId != siteID {
+			if !(siteID > 0 && user.SiteId == 0) {
+				return nil, ErrEmailNotFound
+			}
+			isOwner, ownerErr := isActiveSiteOwnerForSite(user.Id, siteID)
+			if ownerErr != nil {
+				return nil, ownerErr
+			}
+			if !isOwner {
+				return nil, ErrEmailNotFound
+			}
+		}
+		if email != "" && NormalizeEmail(user.Email) != email {
 			return nil, ErrEmailNotFound
 		}
 		return user, nil
@@ -54,7 +143,7 @@ func ResolveUserForEmailChallenge(email, username string, siteID int) (*User, er
 	if email == "" {
 		return nil, ErrEmailNotFound
 	}
-	return GetUniqueUserByEmail(email, siteID)
+	return GetUniqueUserOrSiteOwnerByEmail(email, siteID)
 }
 
 func siteIDForUser(tx *gorm.DB, userID int) (int, error) {

@@ -24,15 +24,12 @@ import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { toIntlLocale } from '@/i18n/languages'
-import { formatNumber, formatTimestampToDate } from '@/lib/format'
 
 import { getResellerUsage, siteAdminKeys } from '../api'
 
-/** Resend sender domain slots and Turnstile widget slots (tasks 11.3, 11.8). Read-only. */
+/** Turnstile widget slots (task 11.8). Read-only. */
 export function UsagePanel() {
-  const { t, i18n } = useTranslation()
-  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const { t } = useTranslation()
   const query = useQuery({
     queryKey: siteAdminKeys.list('usage', {}),
     queryFn: getResellerUsage,
@@ -44,40 +41,8 @@ export function UsagePanel() {
   if (!usage) return null
 
   return (
-    <div className='grid max-w-3xl gap-4 sm:grid-cols-2'>
+    <div className='flex max-w-3xl flex-col gap-4'>
       {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('Sender domains (Resend)')}</CardTitle>
-        </CardHeader>
-        <CardContent className='grid gap-2 text-sm'>
-          <dl className='grid grid-cols-2 gap-1'>
-            <dt className='text-muted-foreground'>{t('Using a slot')}</dt>
-            <dd>{formatNumber(usage.sender.in_use, locale)}</dd>
-            <dt className='text-muted-foreground'>{t('Verified')}</dt>
-            <dd>{formatNumber(usage.sender.verified, locale)}</dd>
-            <dt className='text-muted-foreground'>
-              {t('Verification failed')}
-            </dt>
-            <dd>{formatNumber(usage.sender.failed, locale)}</dd>
-          </dl>
-          <p className='text-muted-foreground text-xs'>
-            {t(
-              'Each domain uses one slot of the Resend plan (Pro 10, Scale 1,000) until it is deleted.'
-            )}
-          </p>
-          {usage.sender.quota_full_at > 0 && (
-            <Alert variant='destructive'>
-              <AlertDescription>
-                {t(
-                  'The last sender domain request was refused because no Resend slots were left ({{time}}).',
-                  { time: formatTimestampToDate(usage.sender.quota_full_at) }
-                )}
-              </AlertDescription>
-            </Alert>
-          )}
-        </CardContent>
-      </Card>
       <Card>
         <CardHeader>
           <CardTitle>{t('Turnstile widgets')}</CardTitle>

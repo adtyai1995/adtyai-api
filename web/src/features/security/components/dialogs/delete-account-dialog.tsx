@@ -30,6 +30,7 @@ import { Label } from '@/components/ui/label'
 import { SecureVerificationDialog } from '@/features/auth/secure-verification'
 import { deleteUserAccount, sendAccountDeletionCode } from '@/features/profile/api'
 import { clearAuthentication } from '@/lib/api'
+import { handleServerError } from '@/lib/handle-server-error'
 
 import { useAccountSecurity } from '../../hooks/use-account-security'
 
@@ -143,7 +144,9 @@ export function DeleteAccountDialog(props: DeleteAccountDialogProps) {
                 setSendingCode(true)
                 void sendAccountDeletionCode()
                   .then(() => toast.success(t('Code sent')))
-                  .catch(() => toast.error(t('Failed to send email')))
+                  .catch((err) =>
+                    handleServerError(err, t('Failed to send email'))
+                  )
                   .finally(() => setSendingCode(false))
               }}
             >

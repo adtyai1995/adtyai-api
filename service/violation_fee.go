@@ -82,17 +82,22 @@ func shouldChargeViolationFee(err *types.NewAPIError) bool {
 }
 
 func calcViolationFeeQuota(amount float64, groupRatio decimal.Decimal) int {
+	quota, _ := calcViolationFeeQuotaChecked(amount, groupRatio)
+	return quota
+}
+
+func calcViolationFeeQuotaChecked(amount float64, groupRatio decimal.Decimal) (int, *common.QuotaClamp) {
 	if amount <= 0 || !groupRatio.IsPositive() {
-		return 0
+		return 0, nil
 	}
-	quota := common.QuotaFromDecimal(decimal.NewFromFloat(amount).
+	quota, clamp := common.QuotaFromDecimalChecked(decimal.NewFromFloat(amount).
 		Mul(common.QuotaPerUnitDecimal()).
 		Mul(groupRatio).
 		Round(0))
 	if quota <= 0 {
-		return 0
+		return 0, clamp
 	}
-	return quota
+	return quota, clamp
 }
 
 // ChargeViolationFeeIfNeeded charges an additional fee after the normal flow finishes (including refund).
@@ -113,7 +118,8 @@ func ChargeViolationFeeIfNeeded(ctx *gin.Context, relayInfo *relaycommon.RelayIn
 
 	groupRatioDec := relayInfo.PriceData.GroupRatioInfo.BilledGroupRatio()
 	groupRatio := relayInfo.PriceData.GroupRatioInfo.GroupRatio
-	feeQuota := calcViolationFeeQuota(settings.ViolationDeductionAmount, groupRatioDec)
+	feeQuota, clamp := calcViolationFeeQuotaChecked(settings.ViolationDeductionAmount, groupRatioDec)
+	noteQuotaClamp(relayInfo, clamp)
 	if feeQuota <= 0 {
 		return false, nil
 	}

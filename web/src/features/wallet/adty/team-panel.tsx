@@ -100,8 +100,10 @@ const memberStatusLabels: Record<string, string> = {
 type TeamMine = {
   team_id: number
   name: string
+  site_id?: number
+  source_site_id?: number
   role: string
-  discount: string
+  discount?: string
   shared_quota: number
   status: string
   closed_at?: number
@@ -401,12 +403,14 @@ export function TeamPanel() {
                   {formatQuota(team.shared_quota)}
                 </dd>
               </div>
-              <div className='flex flex-col gap-1'>
-                <dt className='text-muted-foreground'>
-                  {t('Post-discount payment ratio')}
-                </dt>
-                <dd className='tabular-nums'>{team.discount}</dd>
-              </div>
+              {(team.site_id ?? 0) === 0 && Boolean(team.discount?.trim()) && (
+                <div className='flex flex-col gap-1'>
+                  <dt className='text-muted-foreground'>
+                    {t('Post-discount payment ratio')}
+                  </dt>
+                  <dd className='tabular-nums'>{team.discount}</dd>
+                </div>
+              )}
               <div className='flex flex-col gap-1'>
                 <dt className='text-muted-foreground'>{t('Role')}</dt>
                 <dd>{team.role === 'leader' ? t('Leader') : t('Member')}</dd>

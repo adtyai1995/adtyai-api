@@ -51,6 +51,10 @@ func PostAdtyTranslationComplete(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	recordManageAudit(c, "adty.translation.complete", map[string]any{
+		"object_key": body.ObjectKey,
+		"version":    body.Version,
+	})
 	common.ApiSuccess(c, gin.H{"completed": true})
 }
 

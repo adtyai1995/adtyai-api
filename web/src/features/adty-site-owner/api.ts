@@ -58,6 +58,7 @@ export type PriceRevision = {
   site_id: number
   user_id: number
   actor_id: number
+  actor_username?: string
   group: string
   model: string
   kind: string
@@ -482,6 +483,7 @@ export async function markOwnerCommissionWithdrawalPaid(
 export type OwnerEarningLine = {
   id: number
   user_id?: number
+  username?: string
   model_name: string
   group: string
   request_id: string

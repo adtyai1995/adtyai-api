@@ -42,7 +42,8 @@ var (
 	adtyWordRunToken        = regexp.MustCompile(`[A-Za-z]+`)
 	adtyCurrencySymbolToken = regexp.MustCompile(`[$¥￥€£]`)
 	adtyNegationSource      = regexp.MustCompile(`不|未|禁止|没有|勿`)
-	adtyNegationTarget      = regexp.MustCompile(`(?i)\b(not|no|never|without|cannot|can't|do not)\b`)
+	adtyNegationTarget      = regexp.MustCompile(`(?i)\b(not|no|never|without|cannot|can['’]t|do not|don['’]t|doesn['’]t|didn['’]t|isn['’]t|aren['’]t|wasn['’]t|weren['’]t|won['’]t|wouldn['’]t|shouldn['’]t|couldn['’]t|mustn['’]t|haven['’]t|hasn['’]t|hadn['’]t|unable|unavailable|prohibited|forbidden|invalid|denied|blocked|disallowed|refused|none|neither|nor)\b`)
+	adtyHTMLTagPattern      = regexp.MustCompile(`(?i)</?(?:p|br|div|span|strong|b|em|i|u|h[1-6]|ul|ol|li|blockquote|font)\b[^>]*>`)
 
 	adtyProtectedCurrencies = map[string]struct{}{
 		"USD":  {},
@@ -179,12 +180,24 @@ func SaveAdtyTranslationConfig(input AdtyTranslationInput, audits ...model.Audit
 		if err := rejectAdtyTranslationSelf(input.BaseURL, input.RequestHost, input.Token); err != nil {
 			return nil, err
 		}
-	} else if input.Protocol != "" {
-		protocol, err := adtyTranslationProtocolName(input.Protocol)
-		if err != nil {
-			return nil, err
+	} else {
+		if input.Protocol != "" {
+			protocol, err := adtyTranslationProtocolName(input.Protocol)
+			if err != nil {
+				return nil, err
+			}
+			input.Protocol = protocol
 		}
-		input.Protocol = protocol
+		for _, candidateModel := range []string{input.ModelName, input.BackupModel} {
+			if candidateModel == "" {
+				continue
+			}
+			if _, _, _, _, _, err := resolveAdtyPlatformChannel(candidateModel, input.RequestHost); err != nil {
+				if errors.Is(err, ErrAdtyTranslationUnsupportedChannel) || errors.Is(err, ErrAdtyTranslationSelf) {
+					return nil, err
+				}
+			}
+		}
 	}
 	var saved model.AdtyTranslationConfig
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -264,7 +277,7 @@ func TestAdtyTranslation(requestHost string) (*AdtyTranslationView, error) {
 			return nil, err
 		}
 	case model.AdtyTranslationModeSet:
-		if _, _, _, _, _, err := resolveAdtyPlatformChannel(cfg.ModelName, requestHost); errors.Is(err, ErrAdtyTranslationSelf) {
+		if _, _, _, _, _, err := resolveAdtyPlatformChannel(cfg.ModelName, requestHost); errors.Is(err, ErrAdtyTranslationSelf) || errors.Is(err, ErrAdtyTranslationUnsupportedChannel) {
 			return nil, err
 		}
 	default:
@@ -510,6 +523,9 @@ func executeAdtyReservedTranslationWithGuard(objectKey, source string, siteId, v
 	}
 
 	english, modelName, callErr := translateWithBackup(cfg, source)
+	if callErr == nil && adtyIsHTMLTranslation(model.DB, objectKey, source) {
+		english = SanitizeAdtyNotificationHTML(english)
+	}
 	if callErr != nil || !adtyTranslationKeepsFacts(source, english) {
 		return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, modelName, notifPubID, notifRevision)
 	}
@@ -784,6 +800,9 @@ func CompleteAdtyTranslationJob(objectKey string, version int, english string) e
 				return ErrAdtyTranslationInvalid
 			}
 		}
+		if adtyIsHTMLTranslation(tx, objectKey, head.Source) {
+			english = SanitizeAdtyNotificationHTML(english)
+		}
 		if !adtyTranslationKeepsFactsWithDB(tx, head.Source, english) {
 			return ErrAdtyTranslationInvalid
 		}
@@ -821,6 +840,22 @@ func EditAdtyTranslation(objectKey, english string) error {
 		// on secret-bearing ZH announcements strip the prior English cleanly instead of
 		// appending duplicates and breaking adtyTranslationHeadMatchesSource.
 		oldEnglish := strings.TrimSpace(head.English)
+		var pub model.AdtyNotificationPublication
+		hasPub := false
+		if suffix, ok := strings.CutPrefix(objectKey, "notification:"); ok && !strings.Contains(suffix, ":") {
+			if pubID, err := strconv.Atoi(suffix); err == nil && pubID > 0 && tx.Migrator().HasTable(&model.AdtyNotificationPublication{}) {
+				if model.AdtyLockForUpdate(tx).Where("id = ?", pubID).Limit(1).Find(&pub).RowsAffected > 0 {
+					hasPub = true
+				}
+			}
+		}
+		isHTML := (hasPub && strings.EqualFold(strings.TrimSpace(pub.ContentFormat), "html")) || adtyLooksLikeHTML(head.Source)
+		if isHTML {
+			english = SanitizeAdtyNotificationHTML(english)
+			if strings.TrimSpace(english) == "" {
+				return ErrAdtyTranslationInvalid
+			}
+		}
 		if err := tx.Model(&head).Updates(map[string]any{
 			"english":      english,
 			"human_edited": true,
@@ -830,30 +865,18 @@ func EditAdtyTranslation(objectKey, english string) error {
 		}).Error; err != nil {
 			return err
 		}
-		if strings.HasPrefix(objectKey, "notification:") {
-			suffix := strings.TrimPrefix(objectKey, "notification:")
-			if !strings.Contains(suffix, ":") {
-				if pubID, err := strconv.Atoi(suffix); err == nil && pubID > 0 && tx.Migrator().HasTable(&model.AdtyNotificationPublication{}) {
-					var pub model.AdtyNotificationPublication
-					if model.AdtyLockForUpdate(tx).Where("id = ?", pubID).Limit(1).Find(&pub).RowsAffected > 0 && pub.Status == "published" {
-						liveSource := strings.TrimSpace(pub.Content)
-						if oldEnglish != "" {
-							liveSource = strings.TrimSpace(strings.TrimSuffix(liveSource, "\n\n"+oldEnglish))
-						}
-						liveSource = strings.TrimSpace(strings.TrimSuffix(liveSource, "\n\n"+AdtyTranslationNotReady))
-						// R10-035: Only rewrite publication body when the translation head
-						// still matches the live published source text.
-						if liveSource != "" && adtyTranslationHeadMatchesSource(head, liveSource) {
-							nextContent := liveSource
-							if !strings.Contains(liveSource, english) {
-								nextContent = liveSource + "\n\n" + english
-							}
-							if nextContent != pub.Content {
-								if err := tx.Model(&pub).Update("content", nextContent).Error; err != nil {
-									return err
-								}
-							}
-						}
+		if hasPub && pub.Status == "published" {
+			liveSource := stripAdtyNotificationTranslationSuffix(pub.Content, oldEnglish)
+			// R10-035: Only rewrite publication body when the translation head
+			// still matches the live published source text.
+			if liveSource != "" && adtyTranslationHeadMatchesSource(head, liveSource) {
+				nextContent := liveSource
+				if !strings.Contains(liveSource, english) {
+					nextContent = liveSource + "\n\n" + english
+				}
+				if nextContent != pub.Content {
+					if err := tx.Model(&pub).Update("content", nextContent).Error; err != nil {
+						return err
 					}
 				}
 			}
@@ -1276,6 +1299,25 @@ func fallbackAdtyTranslationWithGuard(objectKey, source string, siteId, version 
 	}, nil
 }
 
+func adtyLooksLikeHTML(text string) bool {
+	return strings.TrimSpace(text) != "" && adtyHTMLTagPattern.MatchString(text)
+}
+
+func adtyIsHTMLTranslation(db *gorm.DB, objectKey, source string) bool {
+	if adtyLooksLikeHTML(source) {
+		return true
+	}
+	if suffix, ok := strings.CutPrefix(strings.TrimSpace(objectKey), "notification:"); ok && !strings.Contains(suffix, ":") {
+		if pubID, err := strconv.Atoi(suffix); err == nil && pubID > 0 && db != nil && db.Migrator().HasTable(&model.AdtyNotificationPublication{}) {
+			var pub model.AdtyNotificationPublication
+			if db.Select("content_format").Where("id = ?", pubID).Limit(1).Find(&pub).RowsAffected > 0 {
+				return strings.EqualFold(strings.TrimSpace(pub.ContentFormat), "html")
+			}
+		}
+	}
+	return false
+}
+
 func adtyTranslationKeepsFacts(source, english string) bool {
 	return adtyTranslationKeepsFactsWithDB(model.DB, source, english)
 }
@@ -1284,15 +1326,26 @@ func adtyTranslationKeepsFactsWithDB(db *gorm.DB, source, english string) bool {
 	if strings.TrimSpace(english) == "" {
 		return false
 	}
-	if !adtyEqualTokenCounts(adtyURLToken.FindAllString(source, -1), adtyURLToken.FindAllString(english, -1)) {
+	sourceCheck := source
+	englishCheck := english
+	if adtyLooksLikeHTML(source) {
+		sourceCheck = AdtyNotificationHTMLToPlainText(source)
+	}
+	if adtyLooksLikeHTML(english) {
+		englishCheck = AdtyNotificationHTMLToPlainText(english)
+	}
+	if strings.TrimSpace(englishCheck) == "" {
 		return false
 	}
-	if !adtyEqualTokenCounts(adtyPlaceholderToken.FindAllString(source, -1), adtyPlaceholderToken.FindAllString(english, -1)) {
+	if !adtyEqualTokenCounts(adtyURLToken.FindAllString(sourceCheck, -1), adtyURLToken.FindAllString(englishCheck, -1)) {
+		return false
+	}
+	if !adtyEqualTokenCounts(adtyPlaceholderToken.FindAllString(sourceCheck, -1), adtyPlaceholderToken.FindAllString(englishCheck, -1)) {
 		return false
 	}
 
-	cleanSource := adtyStripProtectedSpans(source, adtyURLToken, adtyPlaceholderToken)
-	cleanEnglish := adtyStripProtectedSpans(english, adtyURLToken, adtyPlaceholderToken)
+	cleanSource := adtyStripProtectedSpans(sourceCheck, adtyURLToken, adtyPlaceholderToken)
+	cleanEnglish := adtyStripProtectedSpans(englishCheck, adtyURLToken, adtyPlaceholderToken)
 
 	if !adtyEqualTokenCounts(adtyOrderToken.FindAllString(cleanSource, -1), adtyOrderToken.FindAllString(cleanEnglish, -1)) {
 		return false
@@ -1308,10 +1361,10 @@ func adtyTranslationKeepsFactsWithDB(db *gorm.DB, source, english string) bool {
 		return false
 	}
 
-	if adtyNegationSource.MatchString(source) && !adtyNegationTarget.MatchString(english) {
+	if adtyNegationSource.MatchString(sourceCheck) && !adtyNegationTarget.MatchString(englishCheck) {
 		return false
 	}
-	return adtyTranslationKeepsGlossaryWithDB(db, source, english)
+	return adtyTranslationKeepsGlossaryWithDB(db, sourceCheck, englishCheck)
 }
 
 func adtyStripProtectedSpans(input string, patterns ...*regexp.Regexp) string {

@@ -34,8 +34,9 @@ const (
 )
 
 var (
-	errAdtyTranslationNoReply  = common.NewMessage("The translation service did not return English")
-	ErrAdtyTranslationDisabled = common.NewMessage("The translator is not enabled")
+	errAdtyTranslationNoReply            = common.NewMessage("The translation service did not return English")
+	ErrAdtyTranslationDisabled           = common.NewMessage("The translator is not enabled")
+	ErrAdtyTranslationUnsupportedChannel = common.NewMessage("The selected model's channel protocol is not supported for system translation. Only standard OpenAI-compatible and Anthropic channels are supported")
 )
 
 // AdtyPlatformChannelTranslateFunc 允许 main.go 或测试在不引入 service -> relay 循环依赖的前提下
@@ -191,6 +192,7 @@ func resolveAdtyPlatformChannel(modelName, requestHost string) (*model.Channel, 
 	}
 
 	var selected *model.Channel
+	sawUnsupported := false
 	if model.DB.Migrator().HasTable(&model.Ability{}) {
 		var channelIDs []int
 		err := model.DB.Table("abilities").
@@ -203,6 +205,10 @@ func resolveAdtyPlatformChannel(modelName, requestHost string) (*model.Channel, 
 			for _, id := range channelIDs {
 				var ch model.Channel
 				if err := model.DB.First(&ch, id).Error; err == nil && ch.Status == common.ChannelStatusEnabled {
+					if _, protoErr := adtyChannelProtocol(ch.Type); protoErr != nil {
+						sawUnsupported = true
+						continue
+					}
 					selected = &ch
 					break
 				}
@@ -219,6 +225,10 @@ func resolveAdtyPlatformChannel(modelName, requestHost string) (*model.Channel, 
 		}
 		for i := range channels {
 			if _, ok := adtyChannelSupportsModel(&channels[i], modelName); ok {
+				if _, protoErr := adtyChannelProtocol(channels[i].Type); protoErr != nil {
+					sawUnsupported = true
+					continue
+				}
 				selected = &channels[i]
 				break
 			}
@@ -226,6 +236,9 @@ func resolveAdtyPlatformChannel(modelName, requestHost string) (*model.Channel, 
 	}
 
 	if selected == nil {
+		if sawUnsupported {
+			return nil, "", "", "", "", ErrAdtyTranslationUnsupportedChannel
+		}
 		return nil, "", "", "", "", ErrAdtyTranslationInvalid
 	}
 
@@ -242,6 +255,9 @@ func resolveAdtyPlatformChannel(modelName, requestHost string) (*model.Channel, 
 	baseURL := strings.TrimSpace(selected.GetBaseURL())
 	if baseURL == "" {
 		baseURL = strings.TrimSpace(constant.GetChannelBaseURL(selected.Type))
+	}
+	if selected.Type == constant.ChannelTypeOpenRouter && strings.TrimSuffix(baseURL, "/") == "https://openrouter.ai/api" {
+		baseURL = "https://openrouter.ai/api/v1"
 	}
 	endpoint, err := adtyTranslationEndpoint(baseURL, protocol)
 	if err != nil {
@@ -286,14 +302,35 @@ func adtyChannelSupportsModel(ch *model.Channel, modelName string) (string, bool
 }
 
 func adtyChannelProtocol(channelType int) (string, error) {
-	apiType, ok := common.ChannelType2APIType(channelType)
-	if !ok && channelType == constant.ChannelTypeTaskPlugin {
-		return "", ErrAdtyTranslationInvalid
-	}
-	if channelType == constant.ChannelTypeAnthropic || apiType == constant.APITypeAnthropic {
+	switch channelType {
+	case constant.ChannelTypeAnthropic:
 		return adtyTranslationProtocolAnthropic, nil
+	case constant.ChannelTypeOpenAI,
+		constant.ChannelTypeCustom,
+		constant.ChannelTypeOpenAIMax,
+		constant.ChannelTypeOhMyGPT,
+		constant.ChannelTypeAILS,
+		constant.ChannelTypeAIProxy,
+		constant.ChannelTypeAPI2GPT,
+		constant.ChannelTypeAIGC2D,
+		constant.ChannelType360,
+		constant.ChannelTypeOpenRouter,
+		constant.ChannelTypeMoonshot,
+		constant.ChannelTypeLingYiWanWu,
+		constant.ChannelTypeSiliconFlow,
+		constant.ChannelTypeMistral,
+		constant.ChannelTypeDeepSeek,
+		constant.ChannelTypeXinference,
+		constant.ChannelTypeXai,
+		constant.ChannelTypeSubmodel,
+		constant.ChannelTypeSub2API,
+		constant.ChannelTypeNewAPI,
+		constant.ChannelTypeVLLM,
+		constant.ChannelTypeSGLang:
+		return adtyTranslationProtocolOpenAI, nil
+	default:
+		return "", ErrAdtyTranslationUnsupportedChannel
 	}
-	return adtyTranslationProtocolOpenAI, nil
 }
 
 func adtyTranslationProtocolName(raw string) (string, error) {

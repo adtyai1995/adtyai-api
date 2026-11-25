@@ -16,11 +16,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { formatUsdtAmount } from '@/features/referral/lib/address'
 import type { ReferralWithdrawal } from '@/features/referral/types'
 
 /** What the admin must pay: USDT net of the fee, CNY at the locked rate, or nothing for balance. */
 export function payoutText(row: ReferralWithdrawal, usd: string): string {
-  if (row.account_type === 'usdt') return `${row.net_amount.toFixed(2)} USDT`
+  if (row.account_type === 'usdt') {
+    return `${formatUsdtAmount(row.net_amount)} USDT`
+  }
   if (row.cny_amount) return `¥${row.cny_amount} (1 USD = ${row.cny_rate} CNY)`
   return usd
 }

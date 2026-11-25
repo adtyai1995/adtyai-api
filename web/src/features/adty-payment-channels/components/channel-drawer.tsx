@@ -303,9 +303,13 @@ export function ChannelDrawer(props: ChannelDrawerProps) {
                   )
                 }
               >
-                <option value='api'>{t('API (mapi.php)')}</option>
+                <option value='api'>
+                  {isRSA ? t('API (/api/pay/create)') : t('API (mapi.php)')}
+                </option>
                 <option value='submit'>
-                  {t('Page redirect (submit.php)')}
+                  {isRSA
+                    ? t('Page redirect (/api/pay/submit)')
+                    : t('Page redirect (submit.php)')}
                 </option>
               </NativeSelect>
             </div>
@@ -317,9 +321,19 @@ export function ChannelDrawer(props: ChannelDrawerProps) {
                 onChange={(e) => set('probe_mode', e.target.value)}
               >
                 <option value='off'>{t('Off')}</option>
-                <option value='query'>act=query</option>
-                <option value='balance'>act=balance</option>
-                <option value='order'>{t('Query a missing order')}</option>
+                <option value='query'>
+                  {isRSA ? t('Merchant info (/api/merchant/info)') : 'act=query'}
+                </option>
+                <option value='balance'>
+                  {isRSA
+                    ? t('Merchant balance (/api/merchant/info)')
+                    : 'act=balance'}
+                </option>
+                <option value='order'>
+                  {isRSA
+                    ? t('Query a missing order (/api/pay/query)')
+                    : t('Query a missing order')}
+                </option>
               </NativeSelect>
             </div>
           </div>

@@ -418,7 +418,16 @@ func adtyDashboardSiteBound(c *gin.Context, user *model.UserBase, identity servi
 	}
 	issued, ok := identity.IssuedSite()
 	if !ok {
-		return requestSiteID == 0
+		if requestSiteID == 0 {
+			return true
+		}
+		// Scoped PATs do not carry an issuance-site claim; allow a site owner's
+		// PAT on their own sub-site while keeping legacy browser sessions main-only.
+		if _, isPAT := model.ParseAccessTokenSessionID(identity.SessionID); isPAT {
+			site := service.AdtySiteForRequest(c)
+			return site != nil && site.Id == requestSiteID && site.OwnerUserId == user.Id
+		}
+		return false
 	}
 	if issued != requestSiteID {
 		return false
@@ -602,15 +611,31 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 			c.Abort()
 			return
 		}
+		if token.OwnerSelfUseSiteId > 0 {
+			common.ApiErrorStatus(c, http.StatusForbidden, errors.New(i18n.T(c, i18n.MsgAdtyAPIKeySiteMismatch)))
+			c.Abort()
+			return
+		}
+		if userCache.Role < common.RoleAdminUser {
+			isOwner, ownerErr := service.AdtyIsSiteOwnerStrict(token.UserId)
+			if ownerErr != nil {
+				common.SysLog(common.LogText("TokenAuthReadOnly AdtyIsSiteOwnerStrict error for user %d: %v", token.UserId, ownerErr))
+				common.ApiErrorStatus(c, http.StatusInternalServerError, errors.New(common.TranslateMessage(c, i18n.MsgDatabaseError)))
+				c.Abort()
+				return
+			}
+			if isOwner {
+				common.ApiErrorStatus(c, http.StatusForbidden, errors.New(i18n.T(c, i18n.MsgAdtyAPIKeySiteMismatch)))
+				c.Abort()
+				return
+			}
+		}
 		if !service.AdtyHostAllowsRelay(c.Request.Host) {
 			common.ApiErrorStatus(c, http.StatusForbidden, errors.New(i18n.T(c, i18n.MsgAdtyRelayHostDisallowed)))
 			c.Abort()
 			return
 		}
-		if status := service.AdtyAPIKeyHostStatus(userCache.SiteId, c.Request.Host); status != 0 || token.OwnerSelfUseSiteId > 0 {
-			if status == 0 {
-				status = http.StatusForbidden
-			}
+		if status := service.AdtyAPIKeyHostStatus(userCache.SiteId, c.Request.Host); status != 0 {
 			common.ApiErrorStatus(c, status, errors.New(i18n.T(c, i18n.MsgAdtyAPIKeySiteMismatch)))
 			c.Abort()
 			return
@@ -731,9 +756,21 @@ func TokenAuth() func(c *gin.Context) {
 			return
 		}
 		// R-32 (#25): Site owner accounts are pure management-only and cannot invoke model APIs.
-		if token.OwnerSelfUseSiteId > 0 || (userCache.Role < common.RoleAdminUser && service.AdtyIsSiteOwner(token.UserId)) {
+		if token.OwnerSelfUseSiteId > 0 {
 			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAdtyAPIKeySiteMismatch), types.ErrorCodeAccessDenied)
 			return
+		}
+		if userCache.Role < common.RoleAdminUser {
+			isOwner, ownerErr := service.AdtyIsSiteOwnerStrict(token.UserId)
+			if ownerErr != nil {
+				common.SysLog(common.LogText("TokenAuth AdtyIsSiteOwnerStrict error for user %d: %v", token.UserId, ownerErr))
+				abortWithOpenAiMessage(c, http.StatusInternalServerError, common.TranslateMessage(c, i18n.MsgDatabaseError))
+				return
+			}
+			if isOwner {
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAdtyAPIKeySiteMismatch), types.ErrorCodeAccessDenied)
+				return
+			}
 		}
 		billingSiteID := userCache.SiteId
 		if !service.AdtyHostAllowsRelay(c.Request.Host) {

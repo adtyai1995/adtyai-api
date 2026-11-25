@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -12,7 +14,9 @@ import (
 // DeleteAdtySiteWithAudit handles R-32 (#1) Root-only site deletion:
 //   - Zero-data sites (no customers, orders, teams, ledgers, earnings, withdrawals,
 //     vouchers, tickets, commissions, or non-zero wallets): hard-deleted atomically
-//     with subdomain released and standalone empty owner disabled/removed.
+//     after cleaning up any provisioned Cloudflare/AliDNS/Turnstile resources so
+//     the subdomain can be safely reused, with standalone empty owner removed and
+//     revoked.
 //   - Sites with existing business or financial records: must be closed & migrated
 //     first; once closed, soft-archived/hidden from the active site list while
 //     preserving accounting ledgers, audit trails, and closed-site redirects.
@@ -20,7 +24,31 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 	if siteID <= 0 || adminID <= 0 {
 		return "", "", common.NewMessage("Invalid parameters")
 	}
+	// Pre-check whether this site is a zero-data candidate and clean up any
+	// provisioned cloud DNS/Cloudflare/Turnstile resources outside the DB tx
+	// before removing domain rows, preventing orphaned records that block reuse.
+	var preSite model.AdtySite
+	if err := model.DB.Where("id = ?", siteID).First(&preSite).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", "", ErrAdtySiteNotFound
+		}
+		return "", "", err
+	}
+	preHasData, err := adtySiteHasBusinessDataTx(model.DB, siteID)
+	if err != nil {
+		return "", "", err
+	}
+	if !preHasData {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		cleanupErr := cleanupAdtySiteCloudDomainsForHardDelete(cleanupCtx, siteID)
+		cancel()
+		if cleanupErr != nil {
+			return "", "", cleanupErr
+		}
+	}
+
 	var auditEvent *model.AuditLog
+	deletedOwnerID := 0
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteID).First(&site).Error; err != nil {
@@ -55,13 +83,30 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			"id": site.Id, "subdomain": site.Subdomain, "root_domain": site.RootDomain,
 			"owner_user_id": site.OwnerUserId, "status": site.Status,
 		}
+		var domainIDs []int
+		if tx.Migrator().HasTable(&model.AdtySiteDomain{}) {
+			if err := tx.Model(&model.AdtySiteDomain{}).Where("site_id = ?", siteID).Pluck("id", &domainIDs).Error; err != nil {
+				return err
+			}
+		}
+		if len(domainIDs) > 0 && tx.Migrator().HasTable(&model.AdtyDomainCloudResource{}) {
+			if err := tx.Where("domain_id IN ?", domainIDs).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
+				return err
+			}
+		}
 		for _, tableModel := range []any{
 			&model.AdtySiteWallet{},
 			&model.AdtySiteDomain{},
 			&model.AdtySitePrice{},
 			&model.AdtySitePriceScope{},
 			&model.AdtySiteReferralRate{},
+			&model.AdtySiteReferralAffiliate{},
 			&model.AdtySiteStaff{},
+			&model.AdtySiteMailConfig{},
+			&model.AdtySiteSenderDomain{},
+			&model.AdtySiteTierEvaluation{},
+			&model.AdtySiteTierPrincipalAdjustment{},
+			&model.AdtySiteOwnership{},
 		} {
 			if tx.Migrator().HasTable(tableModel) {
 				if err := tx.Where("site_id = ?", siteID).Delete(tableModel).Error; err != nil {
@@ -74,7 +119,13 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 		}
 		// Clean up standalone owner user if they have no other sites, balance, tokens, or orders.
 		if site.OwnerUserId > 0 {
-			_ = maybeDeleteEmptyStandaloneOwnerTx(tx, site.OwnerUserId)
+			deleted, ownerErr := maybeDeleteEmptyStandaloneOwnerTx(tx, site.OwnerUserId)
+			if ownerErr != nil {
+				return ownerErr
+			}
+			if deleted {
+				deletedOwnerID = site.OwnerUserId
+			}
 		}
 		mode = "hard_deleted"
 		auditEvent, err = recordSiteAuditWithIntentTx(tx, siteID, "delete", adminID, oldSnapshot, map[string]any{"deleted": true}, reason)
@@ -83,12 +134,114 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 	if err != nil {
 		return "", "", err
 	}
+	if deletedOwnerID > 0 {
+		model.AdtyInvalidateUserCaches([]int{deletedOwnerID})
+		_, _ = model.RevokeAllUserSessions(deletedOwnerID, "site_deleted")
+		model.InvalidateUserTokensCache(deletedOwnerID)
+	}
 	if auditEvent != nil {
 		eventID = auditEvent.EventId
 		deliverAdtyCommittedAudit(*auditEvent)
 	}
 	InvalidateAdtySiteCache()
 	return mode, eventID, nil
+}
+
+func cleanupAdtySiteCloudDomainsForHardDelete(ctx context.Context, siteID int) error {
+	if model.DB == nil || !model.DB.Migrator().HasTable(&model.AdtySiteDomain{}) {
+		return nil
+	}
+	var domains []model.AdtySiteDomain
+	if err := model.DB.WithContext(ctx).Where("site_id = ?", siteID).Order("id ASC").Find(&domains).Error; err != nil {
+		return err
+	}
+	if len(domains) == 0 {
+		return nil
+	}
+	cfg := resellerSetting()
+	for i := range domains {
+		row := &domains[i]
+		zone := strings.TrimSpace(row.ProviderZone)
+		if zone == "" {
+			zone = strings.TrimSpace(cfg.CloudflareZoneId)
+		}
+		hostnameID := strings.TrimSpace(row.CFHostnameId)
+		createAttempted := row.CFCreateStartedAt > 0
+		if strings.HasPrefix(hostnameID, adtyCloudResourcePendingPrefix) {
+			hostnameID = ""
+			createAttempted = true
+		}
+		if hostnameID == "" && model.DB.Migrator().HasTable(&model.AdtyDomainCloudResource{}) {
+			foundID, lookupAttempted, err := adtyLookupCloudResourceState(model.DB, zone, row)
+			if err != nil {
+				return err
+			}
+			hostnameID = foundID
+			createAttempted = createAttempted || lookupAttempted
+		}
+		if hostnameID == "" && createAttempted && zone != "" && cfg.CloudflareConfigured() {
+			candidate, err := AdtyCloudflare.findCustomHostname(ctx, zone, row.Hostname)
+			if err != nil {
+				return adtyDomainAutomationUserError(err)
+			}
+			if candidate != nil {
+				hostnameID = candidate.Id
+			}
+		}
+		if hostnameID != "" {
+			if zone == "" || !cfg.CloudflareConfigured() {
+				return common.NewMessage("Cloudflare is not configured; cannot clean up provisioned domain resources before hard delete")
+			}
+			if err := AdtyCloudflare.deleteCustomHostname(ctx, zone, hostnameID); err != nil {
+				return adtyDomainAutomationUserError(err)
+			}
+			_ = model.DB.Model(&model.AdtySiteDomain{}).Where("id = ?", row.Id).Update("cf_hostname_id", "").Error
+			if model.DB.Migrator().HasTable(&model.AdtyDomainCloudResource{}) {
+				_ = model.DB.Where("domain_id = ?", row.Id).Delete(&model.AdtyDomainCloudResource{}).Error
+			}
+		}
+		if strings.TrimSpace(row.DNSRecords) != "" {
+			var records []AdtyDNSRecord
+			if err := common.Unmarshal([]byte(row.DNSRecords), &records); err != nil {
+				return common.NewMessage("Stored DNS resource list is invalid")
+			}
+			dnsRoot := strings.TrimSpace(row.DNSRoot)
+			if dnsRoot == "" {
+				dnsRoot = strings.TrimSpace(cfg.AliyunDomain)
+			}
+			for len(records) > 0 {
+				rec := records[0]
+				if rec.ID == "" && dnsRoot != "" {
+					found, err := AdtyAliDNS().Find(ctx, dnsRoot, rec)
+					if err != nil {
+						return adtyDomainAutomationUserError(err)
+					}
+					if found != nil {
+						rec = *found
+					}
+				}
+				if rec.ID != "" {
+					if err := AdtyAliDNS().Delete(ctx, dnsRoot, rec); err != nil {
+						return adtyDomainAutomationUserError(err)
+					}
+				}
+				records = records[1:]
+				encoded, _ := common.Marshal(records)
+				_ = model.DB.Model(&model.AdtySiteDomain{}).Where("id = ?", row.Id).Update("dns_records", string(encoded)).Error
+			}
+		}
+		if row.TurnstileWidget != "" {
+			if err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+				if err := adtyTurnstileRemoveDomain(ctx, tx, row.TurnstileWidget, row.Hostname); err != nil {
+					return err
+				}
+				return tx.Model(&model.AdtySiteDomain{}).Where("id = ?", row.Id).Update("turnstile_widget", "").Error
+			}); err != nil {
+				return adtyDomainAutomationUserError(err)
+			}
+		}
+	}
+	return nil
 }
 
 func adtySiteHasBusinessDataTx(tx *gorm.DB, siteID int) (bool, error) {
@@ -100,12 +253,16 @@ func adtySiteHasBusinessDataTx(tx *gorm.DB, siteID int) (bool, error) {
 		{&model.User{}, "site_id = ? OR inherited_from_site_id = ? OR staff_site_id = ?", []any{siteID, siteID, siteID}},
 		{&model.AdtySiteCustomer{}, "site_id = ?", []any{siteID}},
 		{&model.AdtyTopupOrder{}, "site_id = ?", []any{siteID}},
+		{&model.AdtyManualRefund{}, "site_id = ?", []any{siteID}},
+		{&model.AdtyFundBatch{}, "site_id = ?", []any{siteID}},
 		{&model.AdtyTeam{}, "site_id = ? OR source_site_id = ?", []any{siteID, siteID}},
 		{&model.AdtySiteWalletLedger{}, "site_id = ?", []any{siteID}},
 		{&model.AdtySiteWallet{}, "site_id = ? AND (balance <> 0 OR frozen_usd <> 0)", []any{siteID}},
 		{&model.AdtySiteWithdrawal{}, "site_id = ?", []any{siteID}},
 		{&model.AdtySiteEarningDaily{}, "site_id = ?", []any{siteID}},
 		{&model.AdtySiteEarningLine{}, "site_id = ?", []any{siteID}},
+		{&model.AdtySiteSettlementSheet{}, "site_id = ?", []any{siteID}},
+		{&model.AdtySiteTrialGrant{}, "site_id = ?", []any{siteID}},
 		{&model.AdtyVoucher{}, "source_site_id = ? OR target_site_id = ?", []any{siteID, siteID}},
 		{&model.AdtyTicket{}, "site_id = ? OR handling_site_id = ?", []any{siteID, siteID}},
 		{&model.AdtySiteInviteCommission{}, "site_id = ?", []any{siteID}},
@@ -126,29 +283,49 @@ func adtySiteHasBusinessDataTx(tx *gorm.DB, siteID int) (bool, error) {
 	return false, nil
 }
 
-func maybeDeleteEmptyStandaloneOwnerTx(tx *gorm.DB, userID int) error {
+func maybeDeleteEmptyStandaloneOwnerTx(tx *gorm.DB, userID int) (bool, error) {
 	var user model.User
 	if err := tx.Select("id", "role", "quota", "used_quota", "request_count").First(&user, userID).Error; err != nil {
-		return err
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
 	}
 	if user.Role >= common.RoleAdminUser || user.Quota != 0 || user.UsedQuota != 0 || user.RequestCount != 0 {
-		return nil
+		return false, nil
 	}
 	var otherSites int64
 	if err := tx.Model(&model.AdtySite{}).Where("owner_user_id = ?", userID).Count(&otherSites).Error; err != nil || otherSites > 0 {
-		return err
+		return false, err
 	}
 	var orders int64
 	if tx.Migrator().HasTable(&model.AdtyTopupOrder{}) {
 		if err := tx.Model(&model.AdtyTopupOrder{}).Where("user_id = ?", userID).Count(&orders).Error; err != nil || orders > 0 {
-			return err
+			return false, err
 		}
 	}
 	var tokens int64
 	if tx.Migrator().HasTable(&model.Token{}) {
 		if err := tx.Model(&model.Token{}).Where("user_id = ?", userID).Count(&tokens).Error; err != nil || tokens > 0 {
-			return err
+			return false, err
 		}
 	}
-	return tx.Delete(&model.User{}, userID).Error
+	if _, err := model.IncrementUserAuthVersionWithTx(tx, userID); err != nil {
+		return false, err
+	}
+	if err := tx.Model(&model.User{}).Where("id = ?", userID).Updates(map[string]any{
+		"status":       common.UserStatusDisabled,
+		"access_token": "",
+	}).Error; err != nil {
+		return false, err
+	}
+	if tx.Migrator().HasTable(&model.UserAccessToken{}) {
+		if err := tx.Where("user_id = ?", userID).Delete(&model.UserAccessToken{}).Error; err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Delete(&model.User{}, userID).Error; err != nil {
+		return false, err
+	}
+	return true, nil
 }

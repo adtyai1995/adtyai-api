@@ -385,7 +385,10 @@ func adtyVoucherBatchFromSingle(issued *AdtyVoucherIssued) *AdtyVoucherBatchIssu
 }
 
 func IssueAdtyVoucherBatch(input AdtyVoucherIssueInput) (*AdtyVoucherBatchIssued, error) {
-	if input.Count <= 0 {
+	if input.Count < 0 {
+		return nil, common.NewMessage("Invalid parameters")
+	}
+	if input.Count == 0 {
 		input.Count = 1
 	}
 	if input.Count > 100 {
@@ -576,11 +579,22 @@ func IssueAdtyVoucherBatch(input AdtyVoucherIssueInput) (*AdtyVoucherBatchIssued
 		}
 
 		voucherIDs := make([]int64, count)
+		totalFrozenEarnings := decimal.Zero
+		totalFrozenMargin := decimal.Zero
 		for i := range rows {
 			if err := tx.Create(&rows[i]).Error; err != nil {
 				return err
 			}
 			voucherIDs[i] = rows[i].Id
+			totalFrozenEarnings = totalFrozenEarnings.Add(rows[i].FrozenEarningsUSD)
+			totalFrozenMargin = totalFrozenMargin.Add(rows[i].FrozenMarginUSD)
+		}
+		batchSourceKind := rows[0].SourceKind
+		if input.Purpose == model.AdtyVoucherPurposeSiteCustomer {
+			batchSourceKind = AdtyOwnerFundingSplit{
+				EarningsUSD: totalFrozenEarnings,
+				MarginUSD:   totalFrozenMargin,
+			}.SourceKind()
 		}
 
 		auditSiteID := rows[0].TargetSiteId
@@ -592,7 +606,8 @@ func IssueAdtyVoucherBatch(input AdtyVoucherIssueInput) (*AdtyVoucherBatchIssued
 			map[string]any{
 				"batch_no": batchNo, "count": count, "voucher_id": rows[0].Id, "voucher_ids": voucherIDs,
 				"purpose": rows[0].Purpose, "amount_usd": input.AmountUSD.String(), "total_amount_usd": totalAmount.String(),
-				"quota": quota, "status": model.AdtyVoucherStatusPending, "source": rows[0].SourceKind,
+				"quota": quota, "status": model.AdtyVoucherStatusPending, "source": batchSourceKind,
+				"frozen_earnings_usd": totalFrozenEarnings.String(), "frozen_margin_usd": totalFrozenMargin.String(),
 				"site_id": auditSiteID, "target_site_id": rows[0].TargetSiteId,
 				"designated_owner_id": rows[0].DesignatedOwnerId, "intent_key": input.IntentKey,
 			},
@@ -634,9 +649,9 @@ func IssueAdtyVoucherBatch(input AdtyVoucherIssueInput) (*AdtyVoucherBatchIssued
 			CodeTail:          first.CodeTail,
 			Purpose:           first.Purpose,
 			Status:            first.Status,
-			SourceKind:        first.SourceKind,
-			FrozenEarningsUSD: first.FrozenEarningsUSD,
-			FrozenMarginUSD:   first.FrozenMarginUSD,
+			SourceKind:        batchSourceKind,
+			FrozenEarningsUSD: totalFrozenEarnings,
+			FrozenMarginUSD:   totalFrozenMargin,
 			TargetSiteId:      first.TargetSiteId,
 			DesignatedOwnerId: first.DesignatedOwnerId,
 			AmountUSD:         first.AmountUSD,
@@ -693,8 +708,12 @@ func findAdtyVoucherBatchReplayTx(tx *gorm.DB, issuerId int, input AdtyVoucherIs
 	}
 	items := make([]AdtyVoucherIssued, len(rows))
 	totalAmount := decimal.Zero
+	totalFrozenEarnings := decimal.Zero
+	totalFrozenMargin := decimal.Zero
 	for i, row := range rows {
 		totalAmount = totalAmount.Add(row.AmountUSD)
+		totalFrozenEarnings = totalFrozenEarnings.Add(row.FrozenEarningsUSD)
+		totalFrozenMargin = totalFrozenMargin.Add(row.FrozenMarginUSD)
 		itemIntent := ""
 		if row.IntentKey != nil {
 			itemIntent = *row.IntentKey
@@ -720,15 +739,22 @@ func findAdtyVoucherBatchReplayTx(tx *gorm.DB, issuerId int, input AdtyVoucherIs
 		}
 	}
 	first := items[0]
+	batchSourceKind := first.SourceKind
+	if first.Purpose == model.AdtyVoucherPurposeSiteCustomer {
+		batchSourceKind = AdtyOwnerFundingSplit{
+			EarningsUSD: totalFrozenEarnings,
+			MarginUSD:   totalFrozenMargin,
+		}.SourceKind()
+	}
 	return &AdtyVoucherBatchIssued{
 		Id:                first.Id,
 		Code:              "",
 		CodeTail:          first.CodeTail,
 		Purpose:           first.Purpose,
 		Status:            first.Status,
-		SourceKind:        first.SourceKind,
-		FrozenEarningsUSD: first.FrozenEarningsUSD,
-		FrozenMarginUSD:   first.FrozenMarginUSD,
+		SourceKind:        batchSourceKind,
+		FrozenEarningsUSD: totalFrozenEarnings,
+		FrozenMarginUSD:   totalFrozenMargin,
 		TargetSiteId:      first.TargetSiteId,
 		DesignatedOwnerId: first.DesignatedOwnerId,
 		AmountUSD:         first.AmountUSD,
@@ -1651,7 +1677,14 @@ func adtyVoucherRedeemAllowed(tx *gorm.DB, user *model.User, voucher *model.Adty
 	}
 	switch voucher.Purpose {
 	case model.AdtyVoucherPurposeMainUser:
-		if user.SiteId != 0 || user.StaffSiteId != 0 || user.Role != common.RoleCommonUser || AdtyIsSiteOwner(user.Id) {
+		if user.SiteId != 0 || user.StaffSiteId != 0 || user.Role != common.RoleCommonUser {
+			return ErrAdtyVoucherWrongAccount
+		}
+		isOwner, ownerErr := AdtyIsSiteOwnerStrictTx(tx, user.Id)
+		if ownerErr != nil {
+			return ownerErr
+		}
+		if isOwner {
 			return ErrAdtyVoucherWrongAccount
 		}
 	case model.AdtyVoucherPurposeSiteMargin:

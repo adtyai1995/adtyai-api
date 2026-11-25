@@ -24,6 +24,14 @@ func AdtyEpayExpiry(created int64) int64 {
 	return created + int64(minutes)*60
 }
 
+func adtyUSDTOrderTimeoutSeconds() int64 {
+	minutes := adty_setting.GetTopupSetting().USDTOrderMinutes
+	if minutes <= 0 {
+		return bepusdtTimeoutSeconds
+	}
+	return int64(minutes) * 60
+}
+
 func adtyTeamQuote(userGroup string, face int64, method string) (*AdtyQuote, error) {
 	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
 		return nil, common.NewMessage("Top-up is unavailable while quota is displayed as tokens")
@@ -41,16 +49,12 @@ func adtyTeamQuote(userGroup string, face int64, method string) (*AdtyQuote, err
 	if _, err := common.WalletQuotaFromDecimalStrict(creditQuota); err != nil || !creditQuota.IsPositive() {
 		return nil, common.NewMessage("Top-up quota exceeds the range the system can represent")
 	}
-	groupRatio := decimal.NewFromFloat(common.GetTopupGroupRatio(userGroup))
-	if !groupRatio.IsPositive() {
-		groupRatio = decimal.NewFromInt(1)
-	}
 	quote := &AdtyQuote{
 		FaceUSD:         faceUSD,
 		BonusRate:       decimal.Zero,
 		BonusUSD:        decimal.Zero,
 		CreditQuota:     creditQuota.IntPart(),
-		TopupGroupRatio: groupRatio,
+		TopupGroupRatio: decimal.NewFromInt(1),
 	}
 	if IsAdtyUSDTMethod(method) {
 		quote.PayCurrency = AdtyCurrencyUSDT
@@ -253,7 +257,7 @@ func startAdtyTeamBEpusdtTopup(leaderID int, teamID int64, amountUSD decimal.Dec
 	}
 	ext := &model.AdtyTopupOrder{
 		Business: model.AdtyBusinessTeamTopup, TradeNo: tradeNo, UserId: leaderID, TeamId: teamID, SiteId: team.SiteId,
-		ExpireAt: time.Now().Unix() + bepusdtTimeoutSeconds, CheckoutStage: "local", CheckoutGateway: strings.TrimRight(setting.GetBEpusdtSetting().BaseURL, "/"), Provider: model.PaymentProviderAdtyBEpusdt, Method: method,
+		ExpireAt: time.Now().Unix() + adtyUSDTOrderTimeoutSeconds(), CheckoutStage: "local", CheckoutGateway: strings.TrimRight(setting.GetBEpusdtSetting().BaseURL, "/"), Provider: model.PaymentProviderAdtyBEpusdt, Method: method,
 		FaceUSD: quote.FaceUSD, BonusRate: decimal.Zero, BonusUSD: decimal.Zero,
 		CreditQuota: quote.CreditQuota, PayAmount: quote.PayAmount,
 		PayCurrency: quote.PayCurrency, PriceSnapshot: quote.PriceCNYPerUSD, TopupGroupRatio: quote.TopupGroupRatio,
@@ -363,7 +367,7 @@ func recoverTeamCheckout(ctx context.Context, tx *gorm.DB, ext *model.AdtyTopupO
 		}
 		deadline := ext.ExpireAt
 		if deadline == 0 {
-			deadline = ext.CreatedAt + bepusdtTimeoutSeconds
+			deadline = ext.CreatedAt + adtyUSDTOrderTimeoutSeconds()
 		}
 		remaining := deadline - time.Now().Unix()
 		if remaining < 120 {

@@ -133,15 +133,35 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
 
   const save = async () => {
     if (saving) return
-    const value = normalizeValue(editor.values[field])
-    if (value === editor.baseline[field]) return
+    const dirtyFields = FIELDS.map((key) => ({
+      key,
+      value: normalizeValue(editor.values[key]),
+    })).filter(({ key, value }) => value !== editor.baseline[key])
+    if (dirtyFields.length === 0) return
+
     setSaving(true)
+    let shouldInvalidateStatus = false
     try {
-      await updateOption.mutateAsync({
-        key: `adty_legal_setting.${field}`,
-        value,
-      })
-      if (field === 'user_agreement' || field === 'privacy_policy') {
+      for (const { key, value } of dirtyFields) {
+        await updateOption.mutateAsync({
+          key: `adty_legal_setting.${key}`,
+          value,
+        })
+        if (key === 'user_agreement' || key === 'privacy_policy') {
+          shouldInvalidateStatus = true
+        }
+        setEditor((current) => ({
+          ...current,
+          baseline: {
+            ...current.baseline,
+            [key]: value,
+          },
+        }))
+      }
+    } catch {
+      // The mutation reports the error; remaining drafts stay available to retry.
+    } finally {
+      if (shouldInvalidateStatus) {
         void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
         try {
           window.localStorage.removeItem(STATUS_STORAGE_KEY)
@@ -149,16 +169,6 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
           /* Storage may be disabled. */
         }
       }
-      setEditor((current) => ({
-        ...current,
-        baseline: {
-          ...current.baseline,
-          [field]: value,
-        },
-      }))
-    } catch {
-      // The mutation reports the error; remaining drafts stay available to retry.
-    } finally {
       setSaving(false)
     }
   }

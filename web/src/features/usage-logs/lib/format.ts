@@ -478,6 +478,7 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'user.create': 'Created user {{username}} (role {{role}})',
   'user.update': 'Updated user {{username}} (ID: {{id}})',
   'user.delete': 'Deleted user {{username}} (ID: {{id}})',
+  'admin.user.password_reset': 'Reset password for user {{username}} (ID: {{id}})',
   'user.account_delete': 'Account deletion',
   'user.manage': 'Performed {{action}} on user {{username}} (ID: {{id}})',
   'user.quota_add': 'Increased user quota by {{quota}}',
@@ -553,6 +554,7 @@ const AUDIT_TEMPLATES: Record<string, string> = {
     'Payment channel {{id}} moved to maintenance',
   'adty.user.limits':
     'Set request limits: RPM {{rpm}}, TPM {{tpm}}, concurrency {{concurrency}}',
+  'adty.site.customer.password_reset': 'Reset site customer password',
   'adty.referral.settings': 'Updated referral settings',
   'adty.referral.partner_review': 'Reviewed a partner application',
   'adty.referral.affiliate_update': 'Updated an affiliate ({{action}})',

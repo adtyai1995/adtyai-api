@@ -72,6 +72,14 @@ const MANAGE_ACTION_TITLES: Record<AdminUserManageAction, string> = {
   demote: 'Verify to demote user',
 }
 
+function isActiveSiteOwner(user: {
+  id: number
+  adty_site_owner?: boolean
+  is_site_owner?: boolean
+}): boolean {
+  return Boolean(user.adty_site_owner || user.is_site_owner)
+}
+
 interface DataTableRowActionsProps {
   row: Row<User>
 }
@@ -174,7 +182,8 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
     !isAdmin &&
     (user.site_id ?? 0) === 0 &&
     (user.staff_site_id ?? 0) === 0 &&
-    !user.is_team_employee
+    !user.is_team_employee &&
+    !isActiveSiteOwner(user)
   const canResetPassword =
     canWrite &&
     !isRoot &&

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -116,145 +115,10 @@ func UpdateAdtyTeamProfile(leaderId int, teamId int64, name string) error {
 	})
 }
 
-// SubmitAdtyStaffBalanceRequest records an employee request. It does not change the customer balance.
-// The idempotency key is required so a retried submit cannot create a second booking.
+// SubmitAdtyStaffBalanceRequest rejects retired staff balance requests.
 func SubmitAdtyStaffBalanceRequest(staffUserID, customerUserID int, direction string, amount decimal.Decimal, idempotencyKey string, provenance ...model.AdtyStaffBalanceProvenance) (*model.AdtyStaffBalanceRequest, error) {
-	if staffUserID <= 0 || customerUserID <= 0 || !amount.IsPositive() {
-		return nil, common.NewMessage("Invalid parameters")
-	}
-	if direction != model.AdtyStaffBalanceIncrease && direction != model.AdtyStaffBalanceDecrease {
-		return nil, common.NewMessage("Invalid parameters")
-	}
-	idempotencyKey = strings.TrimSpace(idempotencyKey)
-	if idempotencyKey == "" || len(idempotencyKey) > 64 {
-		return nil, common.NewMessage("Idempotency key is required")
-	}
-	if len(provenance) != 1 {
-		return nil, common.NewMessage("Adjustment reason, original order and funding source are required")
-	}
-	prov := provenance[0]
-	prov.Reason = strings.TrimSpace(prov.Reason)
-	prov.OrderRef = strings.TrimSpace(prov.OrderRef)
-	prov.FundingSource = strings.TrimSpace(prov.FundingSource)
-	prov.BatchKind, prov.BatchSource = strings.TrimSpace(prov.BatchKind), strings.TrimSpace(prov.BatchSource)
-	if prov.Reason == "" || len([]rune(prov.Reason)) > 200 || len(prov.OrderRef) > 64 || len(prov.BatchSource) > 64 {
-		return nil, common.NewMessage("Adjustment reason, original order and funding source are required")
-	}
-	if direction == model.AdtyStaffBalanceIncrease {
-		switch prov.FundingSource {
-		case "", model.AdtyStaffFundingSourceAuto, model.AdtyStaffFundingSourceEarnings, model.AdtyStaffFundingSourceMargin:
-			prov.FundingSource = model.AdtyStaffFundingSourceAuto
-		default:
-			return nil, common.NewMessage("Select an authorized funding source")
-		}
-		if prov.BatchKind != "" || prov.BatchSource != "" {
-			return nil, common.NewMessage("Select an authorized funding source")
-		}
-	} else if prov.FundingSource != "specified_batch" || prov.BatchSource == "" ||
-		(prov.BatchKind != model.AdtyFundBatchKindPrincipal && prov.BatchKind != model.AdtyFundBatchKindBonus && prov.BatchKind != model.AdtyFundBatchKindExpiringBonus) {
-		return nil, common.NewMessage("A specific available fund batch is required")
-	}
-	var result *model.AdtyStaffBalanceRequest
-	var officialEntry *model.AuditLog
-	var deliverIntent bool
-	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		// R5-033: Pre-read staff.site_id unlocked, then lock AdtySite BEFORE AdtySiteStaff
-		// to obey canonical AdtySite -> AdtySiteStaff -> User lock order.
-		var observedStaff struct {
-			SiteId int
-		}
-		if err := tx.Model(&model.AdtySiteStaff{}).Select("site_id").Where("user_id = ? AND status = ?", staffUserID, "enabled").First(&observedStaff).Error; err != nil || observedStaff.SiteId <= 0 {
-			return common.NewMessage("No permission to perform this action")
-		}
-		var site model.AdtySite
-		if err := model.AdtyLockForUpdate(tx).First(&site, observedStaff.SiteId).Error; err != nil {
-			return err
-		}
-		var staff model.AdtySiteStaff
-		if err := model.AdtyLockForUpdate(tx).Where("user_id = ? AND status = ?", staffUserID, "enabled").First(&staff).Error; err != nil {
-			return common.NewMessage("No permission to perform this action")
-		}
-		if staff.SiteId != site.Id || !slices.Contains(AdtyStaffViewOf(staff).Permissions, AdtyStaffBalanceRequest) {
-			return common.NewMessage("No permission to perform this action")
-		}
-		if site.OwnerUserId != staff.OwnerUserId || site.Status != model.AdtySiteStatusActive || !AdtySiteAgreementAccepted(site.AgreementVer) {
-			return common.NewMessage("No permission to perform this action")
-		}
-		var customer model.User
-		if err := model.AdtyLockForUpdate(tx).First(&customer, customerUserID).Error; err != nil {
-			return err
-		}
-		if customer.SiteId != staff.SiteId || customer.StaffSiteId != 0 || customer.Status != common.UserStatusEnabled {
-			return common.NewMessage("No permission to perform this action")
-		}
-		if _, err := model.ValidateAdtyAdjustmentOrderTx(tx, customerUserID, prov.OrderRef, &staff.SiteId); err != nil {
-			return err
-		}
-		scopedIdemKey := adtyScopedStaffBalanceIdemKey(staff.SiteId, staffUserID, idempotencyKey)
-		if existing, err := findAdtyStaffBalanceRequestByIdemKey(tx, staff.SiteId, staffUserID, idempotencyKey); err != nil {
-			return err
-		} else if existing != nil {
-			if !sameAdtyStaffBalanceRequest(existing, staff.SiteId, staffUserID, customerUserID, direction, amount) {
-				return model.ErrAdtyIdempotencyConflict
-			}
-			if existing.Reason != prov.Reason || existing.OrderRef != prov.OrderRef || existing.FundingSource != prov.FundingSource || existing.BatchKind != prov.BatchKind || existing.BatchSource != prov.BatchSource {
-				return model.ErrAdtyIdempotencyConflict
-			}
-			result = existing
-			return nil
-		}
-		row := &model.AdtyStaffBalanceRequest{
-			SiteId: staff.SiteId, StaffUserId: staffUserID, CustomerUserId: customerUserID,
-			Direction: direction, AmountUSD: amount, Status: model.AdtyStaffBalancePending,
-			IdempotencyKey: &scopedIdemKey,
-			Reason:         prov.Reason, BusinessRef: prov.OrderRef, OrderRef: prov.OrderRef, FundingSource: prov.FundingSource,
-			BatchKind: prov.BatchKind, BatchSource: prov.BatchSource,
-		}
-		if err := tx.Create(row).Error; err != nil {
-			return err
-		}
-		var actor model.User
-		if err := tx.Select("id", "username", "role").First(&actor, staffUserID).Error; err != nil {
-			return err
-		}
-		snapshot := map[string]any{
-			"id":              row.Id,
-			"request_id":      row.Id,
-			"staff_id":        staffUserID,
-			"customer_id":     customerUserID,
-			"site_id":         row.SiteId,
-			"direction":       direction,
-			"amount_usd":      amount.String(),
-			"status":          row.Status,
-			"idempotency_key": idempotencyKey,
-			"customer_quota":  customer.Quota,
-			"reason":          row.Reason, "order_ref": row.OrderRef, "funding_source": row.FundingSource,
-			"batch_kind": row.BatchKind, "batch_source": row.BatchSource,
-		}
-		if err := tx.Create(&model.AdtySiteAudit{
-			SiteId: row.SiteId, Action: "staff.balance_request", OperatorId: staffUserID,
-			NewValue: common.GetJsonString(snapshot), Reason: row.Reason,
-		}).Error; err != nil {
-			return err
-		}
-		entry, ok, err := appendStaffBalanceOfficialAuditTx(tx, actor.Id, actor.Username, actor.Role, row.SiteId,
-			strconv.FormatInt(row.Id, 10), "adty.staff.balance_request",
-			fmt.Sprintf("staff_balance:%d", row.Id), nil, snapshot, row.Reason)
-		if err != nil {
-			return err
-		}
-		officialEntry = entry
-		deliverIntent = ok
-		result = row
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	if officialEntry != nil {
-		deliverStaffBalanceOfficialAudit(officialEntry, deliverIntent)
-	}
-	return result, nil
+	_, _, _, _, _, _ = staffUserID, customerUserID, direction, amount, idempotencyKey, provenance
+	return nil, common.NewMessage("Staff balance requests have been disabled.")
 }
 
 func appendStaffBalanceOfficialAuditTx(tx *gorm.DB, actorID int, username string, actorRole, siteID int, objectID, action, approvalRef string, before, after any, reason string) (*model.AuditLog, bool, error) {
@@ -1650,7 +1514,20 @@ func BindSiteInviteFromIP(siteID, inviterID, inviteeID int, ipHash string) error
 		if inviterID != firstID {
 			inviter, invitee = secondUser, firstUser
 		}
-		if inviter.SiteId != siteID || invitee.SiteId != siteID {
+		if inviter.SiteId != siteID || invitee.SiteId != siteID ||
+			inviter.Status != common.UserStatusEnabled || invitee.Status != common.UserStatusEnabled ||
+			inviter.StaffSiteId != 0 || invitee.StaffSiteId != 0 ||
+			inviter.Role != common.RoleCommonUser || invitee.Role != common.RoleCommonUser {
+			return common.NewMessage("No permission to perform this action")
+		}
+		if isEmp, empErr := adtyIsIndependentTeamEmployeeTx(tx, inviterID); empErr != nil {
+			return empErr
+		} else if isEmp {
+			return common.NewMessage("No permission to perform this action")
+		}
+		if isEmp, empErr := adtyIsIndependentTeamEmployeeTx(tx, inviteeID); empErr != nil {
+			return empErr
+		} else if isEmp {
 			return common.NewMessage("No permission to perform this action")
 		}
 		var site model.AdtySite
@@ -1663,6 +1540,9 @@ func BindSiteInviteFromIP(siteID, inviterID, inviteeID int, ipHash string) error
 		var rate model.AdtySiteReferralRate
 		if err := tx.Where("site_id = ?", siteID).First(&rate).Error; err != nil {
 			return common.NewMessage("Site invite rate is not configured")
+		}
+		if !rate.Enabled {
+			return common.NewMessage("Site referral is disabled")
 		}
 		effectiveRate := rate.Rate
 		if aff, affFound, affErr := loadSiteReferralAffiliateTx(tx, siteID, inviterID); affErr != nil {
@@ -1742,8 +1622,12 @@ func BindSiteInviteFromIP(siteID, inviterID, inviteeID int, ipHash string) error
 				if err := fpQ.Count(&fpMatches).Error; err == nil && fpMatches > 0 {
 					riskFlag = model.ReferralRiskSelfInvite
 					note := "self invite: invitee shares IP or device with the inviter"
-					_ = upsertSiteReferralAffiliateRiskTx(tx, siteID, inviterID, false, model.ReferralRiskSelfInvite, note)
-					_ = upsertSiteReferralAffiliateRiskTx(tx, siteID, inviteeID, false, model.ReferralRiskSelfInvite, note)
+					if err := upsertSiteReferralAffiliateRiskTx(tx, siteID, inviterID, false, model.ReferralRiskSelfInvite, note); err != nil {
+						return err
+					}
+					if err := upsertSiteReferralAffiliateRiskTx(tx, siteID, inviteeID, false, model.ReferralRiskSelfInvite, note); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -1762,7 +1646,9 @@ func BindSiteInviteFromIP(siteID, inviterID, inviteeID int, ipHash string) error
 			if err := tx.Model(&model.AdtySiteInvite{}).
 				Where("site_id = ? AND inviter_id = ? AND ip_hash = ? AND created_at >= ?", siteID, inviterID, trimmedIP, since).
 				Count(&recentCount).Error; err == nil && recentCount >= *site.MarketingPolicy.BatchRegisterThreshold {
-				_ = upsertSiteReferralAffiliateRiskTx(tx, siteID, inviterID, true, model.ReferralRiskBatchRegister, "settlement frozen: several sign-ups from one IP")
+				if err := upsertSiteReferralAffiliateRiskTx(tx, siteID, inviterID, true, model.ReferralRiskBatchRegister, "settlement frozen: several sign-ups from one IP"); err != nil {
+					return err
+				}
 			}
 		}
 		return nil

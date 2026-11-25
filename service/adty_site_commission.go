@@ -374,6 +374,30 @@ func ResumeAdtySiteInviteCoverage(siteID int, now time.Time) error {
 	return nil
 }
 
+// ResumeAdtySiteInviteCoverageWithAudit resumes pending coverage and writes a
+// site referral audit entry for manual owner triggers.
+func ResumeAdtySiteInviteCoverageWithAudit(siteID, operatorID int, now time.Time, ip, ua string) error {
+	var beforePending int64
+	if siteID > 0 && model.DB != nil {
+		_ = model.DB.Model(&model.AdtySiteInviteCommission{}).
+			Where("site_id = ? AND status = ?", siteID, model.AdtySiteCommissionPendingCoverage).
+			Count(&beforePending).Error
+	}
+	if err := ResumeAdtySiteInviteCoverage(siteID, now); err != nil {
+		return err
+	}
+	var afterPending int64
+	if siteID > 0 && model.DB != nil {
+		_ = model.DB.Model(&model.AdtySiteInviteCommission{}).
+			Where("site_id = ? AND status = ?", siteID, model.AdtySiteCommissionPendingCoverage).
+			Count(&afterPending).Error
+		_ = recordSiteReferralAuditTx(model.DB, siteID, "coverage_resume", 0, operatorID, "", ip, ua,
+			map[string]any{"pending_coverage_count": beforePending},
+			map[string]any{"pending_coverage_count": afterPending})
+	}
+	return nil
+}
+
 func coverAdtySiteInviteCommissionTx(tx *gorm.DB, id int64, now time.Time, resume bool) error {
 	// Read site_id unlocked first so we preserve canonical lock order:
 	// AdtySite -> AdtySiteInviteCommission -> AdtySiteWallet.
@@ -1047,6 +1071,9 @@ func ConvertAdtySiteInviteCommission(inviterID int, commissionID int64, amount d
 		if !SiteInviteCommissionWithdrawable(&row, time.Now()) {
 			return common.NewMessage("No permission to perform this action")
 		}
+		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: row.SiteId, AccountID: inviterID}); err != nil {
+			return err
+		}
 		if blocked, blockErr := isSiteReferralAffiliateWithdrawalBlockedTx(tx, row.SiteId, inviterID); blockErr != nil {
 			return blockErr
 		} else if blocked {
@@ -1101,6 +1128,37 @@ func ConvertAdtySiteInviteCommission(inviterID int, commissionID int64, amount d
 		model.AdtySyncCreditUserQuotaCache(inviterID, int64(quota), "site invite commission")
 	}
 	return nil
+}
+
+// AdtyUserHasLegacySiteCommissions reports whether a main-site user (including
+// customers migrated from a closed sub-site) has any closed-site invite
+// commissions or non-terminal closed-site invite withdrawals to manage.
+func AdtyUserHasLegacySiteCommissions(userID int) bool {
+	if userID <= 0 || model.DB == nil {
+		return false
+	}
+	if !model.DB.Migrator().HasTable(&model.AdtySite{}) {
+		return false
+	}
+	if model.DB.Migrator().HasTable(&model.AdtySiteInviteCommission{}) {
+		var count int64
+		if err := model.DB.Table("adty_site_invite_commissions AS c").
+			Joins("JOIN adty_sites s ON s.id = c.site_id").
+			Where("c.inviter_id = ? AND s.status = ?", userID, model.AdtySiteStatusClosed).
+			Limit(1).Count(&count).Error; err == nil && count > 0 {
+			return true
+		}
+	}
+	if model.DB.Migrator().HasTable(&model.AdtySiteInviteWithdrawal{}) {
+		var count int64
+		if err := model.DB.Table("adty_site_invite_withdrawals AS w").
+			Joins("JOIN adty_sites s ON s.id = w.site_id").
+			Where("w.user_id = ? AND s.status = ?", userID, model.AdtySiteStatusClosed).
+			Limit(1).Count(&count).Error; err == nil && count > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func adtyRecordSiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder) error {

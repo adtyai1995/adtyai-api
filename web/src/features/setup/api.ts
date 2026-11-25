@@ -41,19 +41,28 @@ export function buildSetupPayload(
   values: SetupFormValues,
   rootInitialized: boolean
 ) {
-  const { usageMode, ...rest } = values
+  const { usageMode, username, password, confirmPassword } = values
 
   const basePayload = {
     SelfUseModeEnabled: usageMode === 'self',
     DemoSiteEnabled: usageMode === 'demo',
   }
 
+  const trimmedUsername = username.trim()
+
   if (rootInitialized) {
-    return basePayload
+    return {
+      username: trimmedUsername,
+      password,
+      confirmPassword: password,
+      ...basePayload,
+    }
   }
 
   return {
-    ...rest,
+    username: trimmedUsername,
+    password,
+    confirmPassword,
     ...basePayload,
   }
 }

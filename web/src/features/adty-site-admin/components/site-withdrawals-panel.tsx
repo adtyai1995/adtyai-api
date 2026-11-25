@@ -146,7 +146,7 @@ export function SiteWithdrawalsPanel() {
       return {
         title: t('Record payout'),
         description: t(
-          'Enter the transaction hash, or for Alipay the transfer reference. USDT payouts require the transaction hash.'
+          'Enter the transaction hash. USDT payouts require the transaction hash.'
         ),
         submitText: t('Record payout'),
         variant: 'brand' as const,

@@ -30,6 +30,7 @@ import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 import { cn } from '@/lib/utils'
 
@@ -88,7 +89,8 @@ export function EarningsPanel() {
       return (
         row.model_name.toLowerCase().includes(needle) ||
         row.request_id.toLowerCase().includes(needle) ||
-        String(row.user_id ?? '').includes(needle)
+        String(row.user_id ?? '').includes(needle) ||
+        (row.username ?? '').toLowerCase().includes(needle)
       )
     })
   }, [rawRows, searchText, groupFilter])
@@ -196,8 +198,11 @@ export function EarningsPanel() {
           },
           {
             id: 'user',
-            header: t('Customer ID'),
-            cell: (row) => (row.user_id ? row.user_id : '—'),
+            header: t('Customer'),
+            cell: (row) =>
+              row.user_id || row.username
+                ? formatUserIdentity(row.user_id, row.username)
+                : '—',
           },
           { id: 'model', header: t('Model'), cell: (row) => row.model_name },
           { id: 'group', header: t('Group'), cell: (row) => row.group || '—' },

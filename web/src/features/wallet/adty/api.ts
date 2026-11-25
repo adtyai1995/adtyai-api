@@ -34,15 +34,26 @@ export type AdtyTopupInfo = BaseAdtyTopupInfo & {
 }
 
 /**
- * Formats a bonus rate string (either decimal fraction like "0.05" or percentage like "5")
- * into a clean percentage number string (e.g. "5", "2.5"), or null when inactive.
+ * Formats a decimal fraction bonus rate (0..1, e.g. "0.05" -> "5", "0.005" -> "0.5")
+ * into a clean percentage number string, or null when inactive.
  */
-export function formatBonusPercentValue(raw?: string | number): string | null {
+export function formatBonusRateFraction(raw?: string | number): string | null {
   if (raw === undefined || raw === null) return null
   const num = Number(String(raw).trim())
   if (!Number.isFinite(num) || num <= 0) return null
-  const percent = num <= 1 ? num * 100 : num
-  const rounded = Number(percent.toFixed(2))
+  const rounded = Number((num * 100).toFixed(2))
+  return rounded > 0 ? String(rounded) : null
+}
+
+/**
+ * Formats a percentage bonus rate (0..100, e.g. "0.5" -> "0.5", "1" -> "1", "2.5" -> "2.5")
+ * into a clean percentage number string without scaling, or null when inactive.
+ */
+export function formatBonusRatePercent(raw?: string | number): string | null {
+  if (raw === undefined || raw === null) return null
+  const num = Number(String(raw).trim())
+  if (!Number.isFinite(num) || num <= 0) return null
+  const rounded = Number(num.toFixed(2))
   return rounded > 0 ? String(rounded) : null
 }
 
@@ -57,7 +68,7 @@ export function resolveMethodBonusPercent(
     methodBonusRates[methodId] ??
     methodBonusRates[normalized] ??
     (normalized.startsWith('usdt') ? methodBonusRates.usdt : undefined)
-  return formatBonusPercentValue(raw)
+  return formatBonusRateFraction(raw)
 }
 
 type ApiResponse<T> = { success: boolean; message?: string; data: T }

@@ -63,9 +63,13 @@ func runProgram(entry *cachedEntry, params TokenParams, request RequestInput) (f
 		trace.ImageCount = &imageCount
 	}
 
+	vars, err := tokenParamsAsDecimals(params, imageCount)
+	if err != nil {
+		return 0, trace, err
+	}
 	cost, err := evalBillingExpr(entry.tree, entry.body, &decimalEvalEnv{
 		src:             entry.body,
-		vars:            tokenParamsAsDecimals(params, imageCount),
+		vars:            vars,
 		trace:           &trace,
 		headers:         normalizeHeaders(request.Headers),
 		body:            request.Body,

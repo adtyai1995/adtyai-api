@@ -42,11 +42,11 @@ func accessTokenScopeRule(scope string) accessTokenRouteRule {
 // DeclareAccessTokenPermissionRoute when they are registered.
 var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	// router/api-router.go: top level
+	"GET /api/uptime/status":            accessTokenAnyRule,
+	"POST /api/uptime/probe":            accessTokenScopeRule("option:write"),
 	"GET /api/models":                   accessTokenScopeRule("profile:read"),
 	"GET /api/status/test":              accessTokenScopeRule("log:read"),
 	"GET /api/pricing":                  accessTokenAnyRule,
-	"GET /api/perf-metrics/summary":     accessTokenAnyRule,
-	"GET /api/perf-metrics":             accessTokenAnyRule,
 	"GET /api/rankings":                 accessTokenAnyRule,
 	"POST /api/oauth/email/bind/start":  accessTokenScopeRule("account_security:write"),
 	"POST /api/oauth/email/bind/resend": accessTokenScopeRule("account_security:write"),
@@ -162,7 +162,6 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	// router/api-router.go: /api/token
 	"GET /api/token/":            accessTokenScopeRule("api_key:read"),
 	"GET /api/token/search":      accessTokenScopeRule("api_key:read"),
-	"GET /api/token/auto-groups": accessTokenScopeRule("api_key:read"),
 	"GET /api/token/:id":         accessTokenScopeRule("api_key:read"),
 	"POST /api/token/:id/key":    accessTokenScopeRule("api_key:reveal"),
 	"POST /api/token/":           accessTokenScopeRule("api_key:write"),

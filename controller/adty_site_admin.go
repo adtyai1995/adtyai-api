@@ -524,69 +524,9 @@ func GetAdtyAdminSiteCustomers(c *gin.Context) {
 	common.ApiSuccess(c, pageInfo)
 }
 
-// GetAdtyAdminSiteOwnerCandidates lists eligible main-site users who can be designated
-// as fixed owner of a new reseller site (Root only). Excludes disabled accounts, sub-site
-// accounts, site staff, independent team employees, and users who already own a non-closed site.
+// GetAdtyAdminSiteOwnerCandidates 已被停用（R-32 #25）：分站站长固定在开站时新建独立纯管理账号，不再从存量用户中挑选。
 func GetAdtyAdminSiteOwnerCandidates(c *gin.Context) {
-	pageInfo := common.GetPageQuery(c)
-	pageSize := pageInfo.GetPageSize()
-	if pageSize <= 0 || pageSize > 50 {
-		pageSize = 20
-	}
-	ownedSub := model.DB.Model(&model.AdtySite{}).Select("owner_user_id").Where("status <> ?", model.AdtySiteStatusClosed)
-	empSub := model.DB.Model(&model.AdtyTeamMember{}).Select("user_id").Where("independent_employee = ?", true)
-	query := model.DB.Model(&model.User{}).
-		Where("site_id = 0 AND staff_site_id = 0 AND status = ?", common.UserStatusEnabled).
-		Where("id NOT IN (?)", ownedSub).
-		Where("id NOT IN (?)", empSub)
-	showEmail := adtyAdminFieldVisible(c, authz.AdtyUserRead)
-	if keyword := strings.TrimSpace(c.Query("keyword")); keyword != "" {
-		op := "LIKE"
-		if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
-			op = "ILIKE"
-		}
-		like := "%" + keyword + "%"
-		if id, err := strconv.Atoi(strings.TrimPrefix(keyword, "#")); err == nil && id > 0 {
-			if showEmail {
-				query = query.Where("(id = ? OR username "+op+" ? OR display_name "+op+" ? OR email "+op+" ?)", id, like, like, like)
-			} else {
-				query = query.Where("(id = ? OR username "+op+" ? OR display_name "+op+" ?)", id, like, like)
-			}
-		} else if showEmail {
-			query = query.Where("(username "+op+" ? OR display_name "+op+" ? OR email "+op+" ?)", like, like, like)
-		} else {
-			query = query.Where("(username "+op+" ? OR display_name "+op+" ?)", like, like)
-		}
-	}
-	var total int64
-	if err := query.Count(&total).Error; err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	var users []model.User
-	if err := query.Select("id", "username", "display_name", "email", "role", "created_at").
-		Order("id DESC").Offset(pageInfo.GetStartIdx()).Limit(pageSize).Find(&users).Error; err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	items := make([]gin.H, 0, len(users))
-	for _, user := range users {
-		email := service.AdtyMaskEmail(user.Email)
-		if showEmail {
-			email = user.Email
-		}
-		items = append(items, gin.H{
-			"id":           user.Id,
-			"username":     user.Username,
-			"display_name": user.DisplayName,
-			"email":        email,
-			"role":         user.Role,
-			"created_at":   user.CreatedAt,
-		})
-	}
-	pageInfo.SetTotal(int(total))
-	pageInfo.SetItems(items)
-	common.ApiSuccess(c, pageInfo)
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Selecting an existing user as site owner has been retired; create a dedicated owner account instead."))
 }
 
 // CreateAdtyAdminSite 是管理员直接开站（仅 Root）：按 R-32 (#25) 同步创建独立纯管理端站长账号。
@@ -609,18 +549,19 @@ func CreateAdtyAdminSite(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	var newOwner *service.AdtyNewOwnerInput
-	if strings.TrimSpace(body.OwnerUsername) != "" {
-		newOwner = &service.AdtyNewOwnerInput{
-			Username:    body.OwnerUsername,
-			Password:    body.OwnerPassword,
-			Email:       body.OwnerEmail,
-			DisplayName: body.OwnerDisplayName,
-		}
-		body.UserId = 0
-	} else if body.UserId <= 0 {
+	if body.UserId > 0 {
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Designating an existing user as site owner is disabled; provide owner_username and owner_password to create a dedicated owner account."))
+		return
+	}
+	if strings.TrimSpace(body.OwnerUsername) == "" || body.OwnerPassword == "" {
 		common.ApiErrorT(c, "Owner username and password are required")
 		return
+	}
+	newOwner := &service.AdtyNewOwnerInput{
+		Username:    body.OwnerUsername,
+		Password:    body.OwnerPassword,
+		Email:       body.OwnerEmail,
+		DisplayName: body.OwnerDisplayName,
 	}
 	costFactor, err := parseOptionalDecimal(body.CostFactor)
 	if err != nil {

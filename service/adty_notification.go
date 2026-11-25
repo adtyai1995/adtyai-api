@@ -802,6 +802,70 @@ func adtyContainsChinese(text string) bool {
 	return false
 }
 
+func NormalizeAdtyNotificationSourceContent(pubID int, content string) string {
+	return normalizeAdtyNotificationSourceContentWithDB(model.DB, pubID, content)
+}
+
+func NormalizeAdtyNotificationSourceContents(rows []model.AdtyNotificationPublication) map[int]string {
+	out := make(map[int]string, len(rows))
+	if len(rows) == 0 {
+		return out
+	}
+	engByPubID := map[int]string{}
+	if model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyTranslationHead{}) {
+		keys := make([]string, 0, len(rows))
+		pubByKey := make(map[string]int, len(rows))
+		for _, row := range rows {
+			if row.Id > 0 {
+				key := adtyNotificationTranslationKey(row.Id)
+				keys = append(keys, key)
+				pubByKey[key] = row.Id
+			}
+		}
+		if len(keys) > 0 {
+			var heads []model.AdtyTranslationHead
+			if err := model.DB.Select("object_key", "english").Where("object_key IN ?", keys).Find(&heads).Error; err == nil {
+				for _, head := range heads {
+					if pubID, ok := pubByKey[head.ObjectKey]; ok {
+						engByPubID[pubID] = head.English
+					}
+				}
+			}
+		}
+	}
+	for _, row := range rows {
+		out[row.Id] = stripAdtyNotificationTranslationSuffix(row.Content, engByPubID[row.Id])
+	}
+	return out
+}
+
+func stripAdtyNotificationTranslationSuffix(content, english string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	candidates := []string{AdtyTranslationNotReady}
+	if eng := strings.TrimSpace(english); eng != "" {
+		candidates = append(candidates, eng)
+		if sanitized := SanitizeAdtyNotificationHTML(eng); sanitized != "" && sanitized != eng {
+			candidates = append(candidates, sanitized)
+		}
+	}
+	for {
+		trimmed := false
+		for _, candidate := range candidates {
+			if before, ok := strings.CutSuffix(content, "\n\n"+candidate); ok {
+				content = strings.TrimSpace(before)
+				trimmed = true
+			}
+		}
+		if !trimmed {
+			break
+		}
+	}
+	return content
+}
+
 func normalizeAdtyNotificationSourceContent(pubID int, content string) string {
 	return normalizeAdtyNotificationSourceContentWithDB(model.DB, pubID, content)
 }
@@ -811,28 +875,14 @@ func normalizeAdtyNotificationSourceContentWithDB(db *gorm.DB, pubID int, conten
 	if content == "" {
 		return ""
 	}
-	if idx := strings.LastIndex(content, "\n\n"+AdtyTranslationNotReady); idx >= 0 {
-		content = strings.TrimSpace(content[:idx])
-	}
+	english := ""
 	if pubID > 0 && db != nil && db.Migrator().HasTable(&model.AdtyTranslationHead{}) {
 		var head model.AdtyTranslationHead
 		if db.Where("object_key = ?", adtyNotificationTranslationKey(pubID)).Limit(1).Find(&head).RowsAffected > 0 {
-			if head.English != "" {
-				eng := strings.TrimSpace(head.English)
-				for _, candidate := range []string{eng, SanitizeAdtyNotificationHTML(eng)} {
-					if candidate == "" {
-						continue
-					}
-					suffix := "\n\n" + candidate
-					if strings.HasSuffix(content, suffix) {
-						content = strings.TrimSpace(strings.TrimSuffix(content, suffix))
-						break
-					}
-				}
-			}
+			english = head.English
 		}
 	}
-	return content
+	return stripAdtyNotificationTranslationSuffix(content, english)
 }
 
 func ensureAdtyTranslationTables() {
@@ -1025,12 +1075,12 @@ func adtyActiveTeamUserIDsForSitesTx(tx *gorm.DB, siteIDs []int, staffSet map[in
 	return validIDs, nil
 }
 
-func adtyNotificationTargetedRecipientIDs(tx *gorm.DB, row *model.AdtyNotificationPublication, audiences []string) ([]int, error) {
+func adtyNotificationTargetedRecipientSets(tx *gorm.DB, row *model.AdtyNotificationPublication, audiences []string) ([]int, []int, error) {
 	staffSet := map[int]bool{}
 	if tx.Migrator().HasTable(&model.AdtySiteStaff{}) {
 		var staffIDs []int
 		if err := tx.Model(&model.AdtySiteStaff{}).Distinct("user_id").Pluck("user_id", &staffIDs).Error; err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, uid := range staffIDs {
 			if uid > 0 {
@@ -1046,7 +1096,7 @@ func adtyNotificationTargetedRecipientIDs(tx *gorm.DB, row *model.AdtyNotificati
 			Where("status IN ? AND owner_user_id > 0", adtyOpenSiteStatuses).
 			Distinct("owner_user_id").
 			Pluck("owner_user_id", &ownerIDs).Error; err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, uid := range ownerIDs {
 			if uid > 0 {
@@ -1055,7 +1105,8 @@ func adtyNotificationTargetedRecipientIDs(tx *gorm.DB, row *model.AdtyNotificati
 		}
 	}
 
-	recipientSet := map[int]bool{}
+	userSet := map[int]bool{}
+	adminSet := map[int]bool{}
 	for _, aud := range audiences {
 		switch aud {
 		case "main_users":
@@ -1063,11 +1114,11 @@ func adtyNotificationTargetedRecipientIDs(tx *gorm.DB, row *model.AdtyNotificati
 			if err := tx.Model(&model.User{}).
 				Where("status = ? AND site_id = 0 AND staff_site_id = 0", common.UserStatusEnabled).
 				Pluck("id", &ids).Error; err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			for _, uid := range ids {
 				if uid > 0 && !staffSet[uid] && !ownerSet[uid] {
-					recipientSet[uid] = true
+					userSet[uid] = true
 				}
 			}
 		case "all_site_owners":
@@ -1082,11 +1133,11 @@ func adtyNotificationTargetedRecipientIDs(tx *gorm.DB, row *model.AdtyNotificati
 			if err := tx.Model(&model.User{}).
 				Where("id IN ? AND status = ?", ownerList, common.UserStatusEnabled).
 				Pluck("id", &enabledOwners).Error; err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			for _, uid := range enabledOwners {
 				if uid > 0 {
-					recipientSet[uid] = true
+					adminSet[uid] = true
 				}
 			}
 		case "site_users":
@@ -1098,21 +1149,21 @@ func adtyNotificationTargetedRecipientIDs(tx *gorm.DB, row *model.AdtyNotificati
 			if err := tx.Model(&model.User{}).
 				Where("status = ? AND site_id IN ? AND staff_site_id = 0", common.UserStatusEnabled, siteIDs).
 				Pluck("id", &ids).Error; err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			for _, uid := range ids {
 				if uid > 0 && !staffSet[uid] {
-					recipientSet[uid] = true
+					userSet[uid] = true
 				}
 			}
 		case "main_teams":
 			ids, err := adtyActiveTeamUserIDsForSitesTx(tx, []int{0}, staffSet)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			for _, uid := range ids {
 				if uid > 0 {
-					recipientSet[uid] = true
+					userSet[uid] = true
 				}
 			}
 		case "site_teams":
@@ -1122,68 +1173,74 @@ func adtyNotificationTargetedRecipientIDs(tx *gorm.DB, row *model.AdtyNotificati
 			}
 			ids, err := adtyActiveTeamUserIDsForSitesTx(tx, siteIDs, staffSet)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			for _, uid := range ids {
 				if uid > 0 {
-					recipientSet[uid] = true
+					userSet[uid] = true
 				}
 			}
 		}
 	}
 
-	out := make([]int, 0, len(recipientSet))
-	for uid := range recipientSet {
-		out = append(out, uid)
+	userIDs := make([]int, 0, len(userSet))
+	for uid := range userSet {
+		userIDs = append(userIDs, uid)
 	}
-	slices.Sort(out)
-	return out, nil
+	slices.Sort(userIDs)
+
+	adminIDs := make([]int, 0, len(adminSet))
+	for uid := range adminSet {
+		adminIDs = append(adminIDs, uid)
+	}
+	slices.Sort(adminIDs)
+	return userIDs, adminIDs, nil
 }
 
-func adtyNotificationPrivateRecipientIDs(tx *gorm.DB, row *model.AdtyNotificationPublication) ([]int, error) {
+func adtyNotificationPrivateRecipientSets(tx *gorm.DB, row *model.AdtyNotificationPublication) ([]int, []int, error) {
 	if row == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if audiences := row.ParsedTargetAudiences(); len(audiences) > 0 {
-		return adtyNotificationTargetedRecipientIDs(tx, row, audiences)
+		return adtyNotificationTargetedRecipientSets(tx, row, audiences)
 	}
 	switch row.Audience {
 	case "user":
 		uidStr, ok := strings.CutPrefix(row.TargetSiteName, "user:")
 		if !ok {
-			return nil, nil
+			return nil, nil, nil
 		}
 		uid, err := strconv.Atoi(uidStr)
 		if err != nil || uid <= 0 {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return []int{uid}, nil
+		return []int{uid}, nil, nil
 	case "team":
 		tidStr, ok := strings.CutPrefix(row.TargetSiteName, "team:")
 		if !ok {
-			return nil, nil
+			return nil, nil, nil
 		}
 		tid, err := strconv.ParseInt(tidStr, 10, 64)
 		if err != nil || tid <= 0 {
-			return nil, nil
+			return nil, nil, nil
 		}
 		if !tx.Migrator().HasTable(&model.AdtyTeamMember{}) {
-			return nil, nil
+			return nil, nil, nil
 		}
 		var userIDs []int
 		if err := tx.Model(&model.AdtyTeamMember{}).
 			Where("team_id = ? AND status = ?", tid, model.AdtyTeamMemberActive).
 			Order("user_id").Pluck("user_id", &userIDs).Error; err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return userIDs, nil
+		return userIDs, nil, nil
 	default:
-		return nil, nil
+		return nil, nil, nil
 	}
 }
 
 func queueAdtyPrivatePublicationTelegramTx(tx *gorm.DB, row *model.AdtyNotificationPublication) error {
-	userIDs, err := adtyNotificationPrivateRecipientIDs(tx, row)
+	userIDs, adminIDs, err := adtyNotificationPrivateRecipientSets(tx, row)
 	if err != nil {
 		return err
 	}
@@ -1194,63 +1251,67 @@ func queueAdtyPrivatePublicationTelegramTx(tx *gorm.DB, row *model.AdtyNotificat
 	if !strings.Contains(body, "\n\n") {
 		body += "\n\nEnglish is not ready"
 	}
-	includeSiteOwners := slices.Contains(row.ParsedTargetAudiences(), "all_site_owners")
-	for _, uid := range userIDs {
-		eventKey := fmt.Sprintf("pub:%d:user:%d", row.Id, uid)
-		var existing model.AdtyTelegramDelivery
-		if tx.Where("event_key = ?", eventKey).Limit(1).Find(&existing).RowsAffected > 0 {
-			continue
-		}
-		purpose := model.AdtyTelegramPurposeUser
-		delivery := model.AdtyTelegramDelivery{
-			EventKey: eventKey,
-			UserId:   uid,
-			Purpose:  purpose,
-			Body:     body,
-			Status:   model.AdtyTelegramDeliverySkip,
-		}
-		var user model.User
-		if err := tx.Select("id", "site_id", "staff_site_id", "status", "role").Where("id = ?", uid).Limit(1).Find(&user).Error; err != nil {
-			return err
-		}
-		var binding model.AdtyTelegramBinding
-		found := tx.Where("user_id = ? AND purpose = ? AND status = ?", uid, purpose, model.AdtyTelegramBindActive).Limit(1).Find(&binding)
-		if found.Error != nil {
-			return found.Error
-		}
-		if found.RowsAffected == 0 && includeSiteOwners {
-			foundAdmin := tx.Where("user_id = ? AND purpose = ? AND status = ?", uid, model.AdtyTelegramPurposeAdmin, model.AdtyTelegramBindActive).Limit(1).Find(&binding)
-			if foundAdmin.Error != nil {
-				return foundAdmin.Error
+	enqueueGroup := func(purpose string, eventPrefix string, recipientIDs []int) error {
+		for _, uid := range recipientIDs {
+			eventKey := fmt.Sprintf("pub:%d:%s:%d", row.Id, eventPrefix, uid)
+			var existing model.AdtyTelegramDelivery
+			if tx.Where("event_key = ?", eventKey).Limit(1).Find(&existing).RowsAffected > 0 {
+				continue
 			}
-			if foundAdmin.RowsAffected > 0 {
-				found = foundAdmin
-				purpose = model.AdtyTelegramPurposeAdmin
-				delivery.Purpose = purpose
+			delivery := model.AdtyTelegramDelivery{
+				EventKey: eventKey,
+				UserId:   uid,
+				Purpose:  purpose,
+				Body:     body,
+				Status:   model.AdtyTelegramDeliverySkip,
 			}
-		}
-		if found.RowsAffected > 0 && user.Id > 0 && user.Status == common.UserStatusEnabled && user.SiteId == binding.SiteId {
-			siteOpen, err := adtyTelegramSiteAccess(tx, binding.SiteId)
-			if err != nil {
+			var user model.User
+			if err := tx.Select("id", "site_id", "staff_site_id", "status", "role").Where("id = ?", uid).Limit(1).Find(&user).Error; err != nil {
 				return err
 			}
-			if siteOpen {
-				var bot model.AdtyTelegramBot
-				if err := tx.Where("purpose = ? AND enabled = ?", purpose, true).Limit(1).Find(&bot).Error; err != nil {
+			var binding model.AdtyTelegramBinding
+			found := tx.Where("user_id = ? AND purpose = ? AND status = ?", uid, purpose, model.AdtyTelegramBindActive).Limit(1).Find(&binding)
+			if found.Error != nil {
+				return found.Error
+			}
+			eligible := found.RowsAffected > 0 && user.Id > 0 && user.Status == common.UserStatusEnabled && user.SiteId == binding.SiteId
+			if eligible && purpose == model.AdtyTelegramPurposeUser && user.StaffSiteId > 0 {
+				eligible = false
+			}
+			if eligible && purpose == model.AdtyTelegramPurposeAdmin {
+				adminOK, err := adtyTelegramAdminAccess(tx, &user)
+				if err != nil {
 					return err
 				}
-				if bot.Id != 0 && bot.IdentityHash == binding.BotIdentity && binding.TelegramUserId > 0 {
-					delivery.Status = model.AdtyTelegramDeliveryWait
-					delivery.BindingId = binding.Id
-					delivery.SiteId = binding.SiteId
+				eligible = adminOK
+			}
+			if eligible {
+				siteOpen, err := adtyTelegramSiteAccess(tx, binding.SiteId)
+				if err != nil {
+					return err
+				}
+				if siteOpen {
+					var bot model.AdtyTelegramBot
+					if err := tx.Where("purpose = ? AND enabled = ?", purpose, true).Limit(1).Find(&bot).Error; err != nil {
+						return err
+					}
+					if bot.Id != 0 && bot.IdentityHash == binding.BotIdentity && binding.TelegramUserId > 0 {
+						delivery.Status = model.AdtyTelegramDeliveryWait
+						delivery.BindingId = binding.Id
+						delivery.SiteId = binding.SiteId
+					}
 				}
 			}
+			if err := tx.Create(&delivery).Error; err != nil {
+				return err
+			}
 		}
-		if err := tx.Create(&delivery).Error; err != nil {
-			return err
-		}
+		return nil
 	}
-	return nil
+	if err := enqueueGroup(model.AdtyTelegramPurposeUser, "user", userIDs); err != nil {
+		return err
+	}
+	return enqueueGroup(model.AdtyTelegramPurposeAdmin, "admin", adminIDs)
 }
 
 func adtyNotificationHasTelegramOutbox(tx *gorm.DB, row *model.AdtyNotificationPublication) bool {
@@ -1258,13 +1319,20 @@ func adtyNotificationHasTelegramOutbox(tx *gorm.DB, row *model.AdtyNotificationP
 		return true
 	}
 	if adtyNotificationIsPrivateTelegram(row) {
-		userIDs, err := adtyNotificationPrivateRecipientIDs(tx, row)
-		if err != nil || len(userIDs) == 0 {
+		userIDs, adminIDs, err := adtyNotificationPrivateRecipientSets(tx, row)
+		if err != nil || (len(userIDs) == 0 && len(adminIDs) == 0) {
 			return true
 		}
 		for _, uid := range userIDs {
 			var count int64
 			eventKey := fmt.Sprintf("pub:%d:user:%d", row.Id, uid)
+			if tx.Model(&model.AdtyTelegramDelivery{}).Where("event_key = ?", eventKey).Count(&count).Error == nil && count == 0 {
+				return false
+			}
+		}
+		for _, uid := range adminIDs {
+			var count int64
+			eventKey := fmt.Sprintf("pub:%d:admin:%d", row.Id, uid)
 			if tx.Model(&model.AdtyTelegramDelivery{}).Where("event_key = ?", eventKey).Count(&count).Error == nil && count == 0 {
 				return false
 			}
@@ -1506,16 +1574,28 @@ func resolveAdtyNotificationDisplayContentWithDB(db *gorm.DB, row model.AdtyNoti
 				// Guard against legacy rows where title was stored in notification:<id>
 				// while the body itself was pure English.
 				if src != "" && src == strings.TrimSpace(row.Title) && !adtyContainsChinese(currentSrc) {
+					if isHTML {
+						return SanitizeAdtyNotificationHTML(content)
+					}
 					return content
 				}
 				if src == "" {
 					src = currentSrc
 				}
+				if isHTML {
+					src = SanitizeAdtyNotificationHTML(src)
+				}
 				if eng != "" && !strings.Contains(src, eng) {
 					return src + "\n\n" + eng
 				}
+				if src != "" {
+					return src
+				}
 			}
 		}
+	}
+	if isHTML {
+		return SanitizeAdtyNotificationHTML(content)
 	}
 	return content
 }

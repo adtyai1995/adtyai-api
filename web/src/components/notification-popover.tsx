@@ -50,7 +50,10 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { SevereTodoList } from '@/features/adty-notifications/components/todo-item-card'
-import { isHtmlNotificationContent } from '@/features/adty-notifications/lib/rich-text'
+import {
+  isHtmlNotificationContent,
+  sanitizeNotificationHtml,
+} from '@/features/adty-notifications/lib/rich-text'
 import {
   formatNotificationRecipients,
   notificationKindLabels,
@@ -213,6 +216,8 @@ function AnnouncementDetailButton(props: { readKey: string }) {
   const detailMode = isHtmlNotificationContent(content, detailFormat)
     ? 'html'
     : 'markdown'
+  const safeContent =
+    detailMode === 'html' ? sanitizeNotificationHtml(content) : content
   return (
     <>
       <Button
@@ -233,7 +238,7 @@ function AnnouncementDetailButton(props: { readKey: string }) {
             <ErrorState onRetry={() => void detail.refetch()} />
           )}
           {detail.isSuccess && (
-            <RichContent mode={detailMode} breaks content={content} />
+            <RichContent mode={detailMode} breaks content={safeContent} />
           )}
         </DialogContent>
       </Dialog>
@@ -375,6 +380,10 @@ function AnnouncementsContent({
           )
             ? 'html'
             : 'markdown'
+          const safeDisplayContent =
+            contentMode === 'html'
+              ? sanitizeNotificationHtml(displayContent)
+              : displayContent
           const recipientSummary = formatNotificationRecipients(item, t)
 
           return (
@@ -399,7 +408,7 @@ function AnnouncementsContent({
                       <RichContent
                         mode={contentMode}
                         breaks
-                        content={displayContent}
+                        content={safeDisplayContent}
                       />
                     </div>
 

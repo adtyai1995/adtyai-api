@@ -23,7 +23,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -96,9 +96,7 @@ export function SiteMarginVoucherPanel() {
   const [amount, setAmount] = useState('')
   const [countRaw, setCountRaw] = useState('1')
   const [reason, setReason] = useState('')
-  const [intentKey, setIntentKey] = useState(() =>
-    createVoucherBatchIntentKey()
-  )
+  const intentRef = useRef<{ signature: string; key: string } | null>(null)
   const [reconciled, setReconciled] = useState<VoucherBatchIssued | null>(null)
   const [batchResult, setBatchResult] = useState<NormalizedVoucherBatch | null>(
     null
@@ -165,34 +163,39 @@ export function SiteMarginVoucherPanel() {
   }
 
   const issue = useMutation({
-    mutationFn: () =>
+    mutationFn: (input: {
+      siteId: number
+      amountUsd: string
+      count: number
+      reason: string
+      intentKey: string
+      targetSiteLabel: string
+    }) =>
       issueAdminVoucherBatch({
         purpose: 'site_margin',
-        site_id: targetSiteNumericId,
-        amount_usd: amount.trim(),
-        count: batchSummary.count,
-        reason: reason.trim(),
-        intent_key: intentKey,
+        site_id: input.siteId,
+        amount_usd: input.amountUsd,
+        count: input.count,
+        reason: input.reason,
+        intent_key: input.intentKey,
       }),
-    onSuccess: (issued) => {
+    onSuccess: (issued, input) => {
       const normalized = normalizeVoucherBatchResult(issued, {
-        fallbackReason: reason.trim(),
-        targetSiteLabel: selectedSite
-          ? formatSiteOptionLabel(selectedSite)
-          : `#${targetSiteNumericId}`,
+        fallbackReason: input.reason,
+        targetSiteLabel: input.targetSiteLabel,
       })
       if (issued.replayed || !normalized) {
         setReconciled(issued)
         refresh()
         return
       }
+      intentRef.current = null
       setReconciled(null)
       setBatchResult(normalized)
       setResultOpen(true)
       setAmount('')
       setCountRaw('1')
       setReason('')
-      setIntentKey(createVoucherBatchIntentKey())
       toast.success(
         t('Issued {{count}} margin recharge code(s)', {
           count: normalized.count,
@@ -210,8 +213,8 @@ export function SiteMarginVoucherPanel() {
         : cancelAdminVoucherById(input.id),
     onSuccess: (_data, input) => {
       if (input.kind === 'cancel' && reconciled?.id === input.id) {
+        intentRef.current = null
         setReconciled(null)
-        setIntentKey(createVoucherBatchIntentKey())
       }
       toast.success(
         input.kind === 'freeze' ? t('Code frozen') : t('Code cancelled')
@@ -222,6 +225,10 @@ export function SiteMarginVoucherPanel() {
   })
 
   const rows = list.data?.items ?? []
+  const replayedCount = reconciled
+    ? (reconciled.count ?? reconciled.items?.length ?? 1)
+    : 0
+  const isBatchReplay = replayedCount > 1
 
   return (
     <div className='flex flex-col gap-5'>
@@ -242,16 +249,34 @@ export function SiteMarginVoucherPanel() {
             className='flex max-w-2xl flex-col gap-3.5'
             onSubmit={(event) => {
               event.preventDefault()
+              const trimmedAmount = amount.trim()
+              const trimmedReason = reason.trim()
               if (
                 issue.isPending ||
                 reconciled !== null ||
                 targetSiteNumericId <= 0 ||
                 !batchSummary.valid ||
-                reason.trim() === ''
+                trimmedReason === ''
               ) {
                 return
               }
-              issue.mutate()
+              const signature = `site_margin:${targetSiteNumericId}:${trimmedAmount}:${batchSummary.count}:${trimmedReason}`
+              if (intentRef.current?.signature !== signature) {
+                intentRef.current = {
+                  signature,
+                  key: createVoucherBatchIntentKey(),
+                }
+              }
+              issue.mutate({
+                siteId: targetSiteNumericId,
+                amountUsd: trimmedAmount,
+                count: batchSummary.count,
+                reason: trimmedReason,
+                intentKey: intentRef.current.key,
+                targetSiteLabel: selectedSite
+                  ? formatSiteOptionLabel(selectedSite)
+                  : `#${targetSiteNumericId}`,
+              })
             }}
           >
             <div className='flex flex-col gap-1.5'>
@@ -261,7 +286,10 @@ export function SiteMarginVoucherPanel() {
                 className='w-full'
                 value={selectedSiteId}
                 disabled={sitesQuery.isPending}
-                onChange={(event) => setSelectedSiteId(event.target.value)}
+                onChange={(event) => {
+                  setSelectedSiteId(event.target.value)
+                  setReconciled(null)
+                }}
               >
                 <NativeSelectOption value=''>
                   {sitesQuery.isPending
@@ -286,7 +314,10 @@ export function SiteMarginVoucherPanel() {
                   inputMode='decimal'
                   placeholder='100.00'
                   value={amount}
-                  onChange={(event) => setAmount(event.target.value)}
+                  onChange={(event) => {
+                    setAmount(event.target.value)
+                    setReconciled(null)
+                  }}
                 />
               </div>
               <div className='flex flex-col gap-1.5'>
@@ -301,7 +332,10 @@ export function SiteMarginVoucherPanel() {
                   max={VOUCHER_BATCH_MAX_COUNT}
                   step={1}
                   value={countRaw}
-                  onChange={(event) => setCountRaw(event.target.value)}
+                  onChange={(event) => {
+                    setCountRaw(event.target.value)
+                    setReconciled(null)
+                  }}
                 />
               </div>
             </div>
@@ -333,7 +367,10 @@ export function SiteMarginVoucherPanel() {
                 id='margin-voucher-reason'
                 placeholder={t('e.g. Offline bank transfer margin deposit')}
                 value={reason}
-                onChange={(event) => setReason(event.target.value)}
+                onChange={(event) => {
+                  setReason(event.target.value)
+                  setReconciled(null)
+                }}
               />
             </div>
 
@@ -371,44 +408,94 @@ export function SiteMarginVoucherPanel() {
                 data-testid='margin-voucher-reconcile-banner'
                 className='border-border bg-muted/40 flex flex-col gap-2 rounded-md border p-3 text-sm'
               >
-                <p>
-                  {t(
-                    'Previous issuance request already created code #{{id}} (tail {{tail}}). Full codes are shown once.',
-                    {
-                      id: reconciled.id,
-                      tail: reconciled.code_tail,
-                    }
-                  )}
-                </p>
-                <div className='flex flex-wrap gap-2'>
-                  {reconciled.id > 0 &&
-                    (!reconciled.status ||
-                      reconciled.status === 'pending' ||
-                      reconciled.status === 'frozen') && (
+                {isBatchReplay ? (
+                  <>
+                    <p>
+                      {reconciled.batch_no
+                        ? t(
+                            'Previous issuance request already created batch {{batchNo}} ({{count}} codes). Full codes are shown once. Filter by this batch number in the list below to manage or cancel them.',
+                            {
+                              batchNo: reconciled.batch_no,
+                              count: replayedCount,
+                            }
+                          )
+                        : t(
+                            'Previous issuance request already created {{count}} codes. Full codes are shown once. Manage or cancel them in the list below.',
+                            { count: replayedCount }
+                          )}
+                    </p>
+                    <div className='flex flex-wrap gap-2'>
+                      {reconciled.batch_no && (
+                        <Button
+                          type='button'
+                          size='sm'
+                          variant='outline'
+                          onClick={() => {
+                            setBatchNoFilter(reconciled.batch_no ?? '')
+                            setPage(1)
+                          }}
+                        >
+                          {t('Filter this batch')}
+                        </Button>
+                      )}
                       <Button
                         type='button'
                         size='sm'
                         variant='outline'
-                        disabled={change.isPending}
-                        onClick={() =>
-                          change.mutate({ kind: 'cancel', id: reconciled.id })
-                        }
+                        onClick={() => {
+                          intentRef.current = null
+                          setReconciled(null)
+                        }}
                       >
-                        {t('Cancel code and replace')}
+                        {t('Prepare replacement batch')}
                       </Button>
-                    )}
-                  <Button
-                    type='button'
-                    size='sm'
-                    variant='outline'
-                    onClick={() => {
-                      setReconciled(null)
-                      setIntentKey(createVoucherBatchIntentKey())
-                    }}
-                  >
-                    {t('Prepare replacement code')}
-                  </Button>
-                </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p>
+                      {t(
+                        'Previous issuance request already created code #{{id}} (tail {{tail}}). Full codes are shown once.',
+                        {
+                          id: reconciled.id,
+                          tail: reconciled.code_tail,
+                        }
+                      )}
+                    </p>
+                    <div className='flex flex-wrap gap-2'>
+                      {reconciled.id > 0 &&
+                        (!reconciled.status ||
+                          reconciled.status === 'pending' ||
+                          reconciled.status === 'frozen') && (
+                          <Button
+                            type='button'
+                            size='sm'
+                            variant='outline'
+                            disabled={change.isPending}
+                            onClick={() =>
+                              change.mutate({
+                                kind: 'cancel',
+                                id: reconciled.id,
+                              })
+                            }
+                          >
+                            {t('Cancel code and replace')}
+                          </Button>
+                        )}
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='outline'
+                        onClick={() => {
+                          intentRef.current = null
+                          setReconciled(null)
+                        }}
+                      >
+                        {t('Prepare replacement code')}
+                      </Button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </form>

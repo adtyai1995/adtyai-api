@@ -165,7 +165,11 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 	if info.BillingImageCount != nil {
 		imageN = *info.BillingImageCount
 	} else if count, ok := info.PriceData.OtherRatios()["n"]; ok && info.PriceData.UsePrice && count >= 1 && count <= dto.MaxImageN {
-		imageN = common.QuotaRound(count)
+		rounded, clamp := common.QuotaRoundChecked(count)
+		if clamp != nil && info.QuotaClamp == nil {
+			info.QuotaClamp = clamp
+		}
+		imageN = rounded
 	}
 
 	usageDto, ok := usage.(*dto.Usage)
@@ -199,6 +203,8 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		logContent = append(logContent, common.NewMessage("Image count {{count}}", map[string]any{"count": imageN}))
 	}
 
-	service.PostTextConsumeQuota(c, info, usageDto, logContent)
+	if err := service.PostTextConsumeQuota(c, info, usageDto, logContent); err != nil {
+		return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+	}
 	return nil
 }

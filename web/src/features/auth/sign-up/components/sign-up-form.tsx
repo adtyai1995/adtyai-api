@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useQueryClient } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
@@ -47,34 +48,45 @@ import { registerFormSchema } from '@/features/auth/constants'
 import { useAuthRedirect } from '@/features/auth/hooks/use-auth-redirect'
 import { useEmailVerification } from '@/features/auth/hooks/use-email-verification'
 import { useTurnstile } from '@/features/auth/hooks/use-turnstile'
+import {
+  clearSiteInviteCookie,
+  readSiteInviteCookie,
+} from '@/features/referral/lib/click'
 import { useStatus } from '@/hooks/use-status'
 import { handleServerError } from '@/lib/handle-server-error'
 import { AuthOperationError } from '@/lib/secure-verification'
 import { createServerError } from '@/lib/server-error-message'
-import { readReferralEnabledFromStatus } from '@/lib/status-query'
+import {
+  readReferralEnabledFromStatus,
+  STATUS_QUERY_KEY,
+} from '@/lib/status-query'
 import { subsiteDocument } from '@/lib/subsite-document'
 import { cn } from '@/lib/utils'
+
+function readInitialSiteInvite(): string {
+  if (typeof window === 'undefined') return ''
+  const fromUrl =
+    new URLSearchParams(window.location.search).get('site_invite')?.trim() ?? ''
+  if (fromUrl) return fromUrl
+  if (typeof document === 'undefined') return ''
+  return readSiteInviteCookie(document)?.code ?? ''
+}
 
 export function SignUpForm({
   className,
   ...props
 }: React.HTMLAttributes<HTMLFormElement>) {
   const { t, i18n } = useTranslation()
+  const queryClient = useQueryClient()
   const [isLoading, setIsLoading] = useState(false)
   const [verificationCode, setVerificationCode] = useState('')
-  const [initialSiteInvite] = useState(() => {
-    if (typeof window === 'undefined') return ''
-    return (
-      new URLSearchParams(window.location.search).get('site_invite')?.trim() ??
-      ''
-    )
-  })
+  const [initialSiteInvite] = useState(readInitialSiteInvite)
   const [siteInviteCode, setSiteInviteCode] = useState(initialSiteInvite)
   const [agreedToLegal, setAgreedToLegal] = useState(false)
   const [turnstileWidgetKey, setTurnstileWidgetKey] = useState(0)
   const legalConsentErrorMessage = t('Please agree to the legal terms first')
 
-  const { status } = useStatus()
+  const { status, loading: statusLoading, error: statusError } = useStatus()
   const {
     isTurnstileEnabled,
     turnstileSiteKey,
@@ -115,6 +127,7 @@ export function SignUpForm({
   })
 
   const emailValue = form.watch('email')
+  const statusReady = Boolean(status) && !statusLoading && !statusError
   const emailVerificationRequired = !!status?.email_verification
   const hasUserAgreement = Boolean(status?.user_agreement_enabled)
   const hasPrivacyPolicy = Boolean(status?.privacy_policy_enabled)
@@ -127,14 +140,23 @@ export function SignUpForm({
   const turnstileReady = !isTurnstileEnabled || Boolean(turnstileToken)
 
   useEffect(() => {
-    if (requiresLegalConsent) {
+    if (!statusReady || requiresLegalConsent) {
       setAgreedToLegal(false)
     } else {
       setAgreedToLegal(true)
     }
-  }, [requiresLegalConsent])
+  }, [statusReady, requiresLegalConsent])
 
   async function onSubmit(data: z.infer<typeof registerFormSchema>) {
+    if (!statusReady) {
+      toast.error(
+        statusError
+          ? t('Failed to load site configuration. Please retry.')
+          : t('Loading site configuration...')
+      )
+      return
+    }
+
     if (requiresLegalConsent && !agreedToLegal) {
       toast.error(legalConsentErrorMessage)
       return
@@ -170,6 +192,9 @@ export function SignUpForm({
       })
 
       if (res?.success) {
+        if (typeof document !== 'undefined') {
+          clearSiteInviteCookie(document)
+        }
         toast.success(t('Account created! Please sign in'))
         redirectToLogin()
       } else {
@@ -362,6 +387,36 @@ export function SignUpForm({
           </div>
         )}
 
+        {!statusReady && (
+          <div
+            role={statusError ? 'alert' : 'status'}
+            className='border-border/60 bg-muted/40 text-muted-foreground flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-xs'
+          >
+            <span className='flex items-center gap-2'>
+              {!statusError && (
+                <Loader2 className='h-3.5 w-3.5 animate-spin' aria-hidden />
+              )}
+              {statusError
+                ? t('Failed to load site configuration. Please retry.')
+                : t('Loading site configuration...')}
+            </span>
+            {statusError && (
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                onClick={() =>
+                  void queryClient.refetchQueries({
+                    queryKey: STATUS_QUERY_KEY,
+                  })
+                }
+              >
+                {t('Retry')}
+              </Button>
+            )}
+          </div>
+        )}
+
         <LegalConsent
           status={status}
           checked={agreedToLegal}
@@ -376,6 +431,7 @@ export function SignUpForm({
           className='mt-1 h-10 w-full justify-center gap-2 text-[0.9375rem]'
           disabled={
             isLoading ||
+            !statusReady ||
             (requiresLegalConsent && !agreedToLegal) ||
             !turnstileReady
           }

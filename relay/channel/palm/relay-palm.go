@@ -124,10 +124,11 @@ func palmHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respons
 	if resp != nil {
 		defer service.CloseResponseBodyGracefully(resp)
 	}
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
+	responseBody, readErr := helper.ReadResponseBody(c, resp, types.ErrorCodeReadResponseBodyFailed)
+	if readErr != nil {
+		return nil, readErr
 	}
+	var err error
 	var palmResponse PaLMChatResponse
 	err = common.Unmarshal(responseBody, &palmResponse)
 	if err != nil {

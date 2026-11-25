@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/mail"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -80,10 +81,13 @@ var (
 		netip.MustParsePrefix("203.0.113.0/24"), // TEST-NET-3
 		netip.MustParsePrefix("240.0.0.0/4"),    // Reserved / limited broadcast
 		netip.MustParsePrefix("::/96"),          // Deprecated IPv4-compatible IPv6
+		netip.MustParsePrefix("::ffff:0:0:0/96"), // RFC 2765 SIIT IPv4-translated
 		netip.MustParsePrefix("64:ff9b::/96"),   // RFC 6052 NAT64 well-known
 		netip.MustParsePrefix("64:ff9b:1::/48"), // RFC 8215 NAT64 local-use
 		netip.MustParsePrefix("100::/64"),       // RFC 6666 discard-only
+		netip.MustParsePrefix("2001::/23"),      // RFC 2928 / Teredo / IETF protocol assignments
 		netip.MustParsePrefix("2001:db8::/32"),  // RFC 3849 documentation
+		netip.MustParsePrefix("2002::/16"),      // RFC 3056 6to4
 		netip.MustParsePrefix("fec0::/10"),      // Deprecated IPv6 site-local
 	}
 )
@@ -421,6 +425,7 @@ func SaveAdtySiteMailConfig(ctx context.Context, ownerUserID int, input AdtySite
 	}
 
 	var saved model.AdtySiteMailConfig
+	var auditEvent *model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		var locked model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).Where("id = ? AND owner_user_id = ?", site.Id, ownerUserID).First(&locked).Error; err != nil {
@@ -505,12 +510,39 @@ func SaveAdtySiteMailConfig(ctx context.Context, ownerUserID int, input AdtySite
 				return err
 			}
 		}
+		var auditErr error
+		auditEvent, auditErr = appendAdtyOfficialAuditTx(
+			tx,
+			ownerUserID,
+			site.Id,
+			"site_mail_config",
+			strconv.Itoa(site.Id),
+			"adty.site.mail_config_update",
+			"",
+			"",
+			map[string]any{"provider": oldProvider},
+			map[string]any{
+				"provider":           row.Provider,
+				"smtp_server":        row.SMTPServer,
+				"smtp_port":          row.SMTPPort,
+				"smtp_from":          row.SMTPFrom,
+				"resend_from":        row.ResendFrom,
+				"resend_sender_name": row.ResendSenderName,
+			},
+			model.AuditResultSuccess,
+		)
+		if auditErr != nil {
+			return auditErr
+		}
 
 		saved = row
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	if auditEvent != nil {
+		deliverAdtyCommittedAudit(*auditEvent)
 	}
 	return adtySiteMailConfigToView(&saved), nil
 }
@@ -626,11 +658,14 @@ func TestAdtySiteMailConfig(ctx context.Context, ownerUserID int, toEmail string
 	}
 
 	brandName := adtySubsiteFallbackDisplayName(site)
-	subject := brandName + " - Test Email"
+	subject := brandName + " - 测试邮件 / Test Email"
 	content := AdtyRenderMail(site, AdtyMailMessage{
-		Title:      "Test Email",
-		Intro:      "This is a test email from " + brandName + ".",
-		Paragraphs: []string{"Your site email configuration is working properly."},
+		Title: "测试邮件 / Test Email",
+		Intro: "这是一封来自 " + brandName + " 的配置测试邮件。 / This is a test email from " + brandName + ".",
+		Paragraphs: []string{
+			"您的分站邮件发信配置工作正常。",
+			"Your site email configuration is working properly.",
+		},
 	})
 	return AdtySendSiteEmail(site, subject, parsed.Address, content)
 }

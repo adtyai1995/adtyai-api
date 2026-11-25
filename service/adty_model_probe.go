@@ -407,12 +407,7 @@ func dispatchAdtyModelProbeCtx(ctx context.Context, channel *model.Channel, upst
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(reqCtx.Err(), context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
 			return model.AdtyModelProbeStatusDown, elapsedMs, "timeout"
 		}
-		sanitized := common.SanitizeOutboundError(err, key)
-		msg := "network error"
-		if sanitized != nil && strings.TrimSpace(sanitized.Error()) != "" {
-			msg = strings.TrimSpace(sanitized.Error())
-		}
-		return model.AdtyModelProbeStatusDown, elapsedMs, msg
+		return model.AdtyModelProbeStatusDown, elapsedMs, classifyAdtyProbeNetworkError(err)
 	}
 	defer resp.Body.Close()
 
@@ -443,6 +438,23 @@ func dispatchAdtyModelProbeCtx(ctx context.Context, channel *model.Channel, upst
 		return model.AdtyModelProbeStatusDown, elapsedMs, formatAdtyProbeHTTPMessage(resp.StatusCode, errCode, errType)
 	default:
 		return model.AdtyModelProbeStatusDown, elapsedMs, formatAdtyProbeHTTPMessage(resp.StatusCode, errCode, errType)
+	}
+}
+
+func classifyAdtyProbeNetworkError(err error) string {
+	if err == nil {
+		return "network error"
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "x509") || strings.Contains(lower, "tls") || strings.Contains(lower, "certificate"):
+		return "tls error"
+	case strings.Contains(lower, "no such host") || strings.Contains(lower, "lookup "):
+		return "dns error"
+	case strings.Contains(lower, "connection refused"):
+		return "connection refused"
+	default:
+		return "network error"
 	}
 }
 
@@ -725,12 +737,7 @@ func doAdtyImageProbeHTTP(reqCtx context.Context, authKind, targetURL, key strin
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(reqCtx.Err(), context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
 			return 0, nil, elapsedMs, "timeout"
 		}
-		sanitized := common.SanitizeOutboundError(err, key)
-		msg := "network error"
-		if sanitized != nil && strings.TrimSpace(sanitized.Error()) != "" {
-			msg = strings.TrimSpace(sanitized.Error())
-		}
-		return 0, nil, elapsedMs, msg
+		return 0, nil, elapsedMs, classifyAdtyProbeNetworkError(err)
 	}
 	defer resp.Body.Close()
 
@@ -999,6 +1006,10 @@ func runAdtyModelProbes(ctx context.Context, filterGroupID string, scheduled boo
 		modelName string
 		isImage   bool
 	}
+	activeGroups, activeErr := model.ActiveAdtyGroupIDs()
+	if activeErr != nil {
+		activeGroups = nil
+	}
 	targets := make([]probeTarget, 0, len(groups))
 	seen := make(map[string]struct{}, len(groups))
 	for _, g := range groups {
@@ -1009,6 +1020,11 @@ func runAdtyModelProbes(ctx context.Context, filterGroupID string, scheduled boo
 		modelName := g.EffectiveProbeModel()
 		if groupKey == "" || modelName == "" {
 			continue
+		}
+		if len(activeGroups) > 0 && strings.TrimSpace(g.GroupID) != "" {
+			if _, ok := activeGroups[strings.TrimSpace(g.GroupID)]; !ok {
+				continue
+			}
 		}
 		if filterGroupID != "" && groupKey != filterGroupID {
 			continue

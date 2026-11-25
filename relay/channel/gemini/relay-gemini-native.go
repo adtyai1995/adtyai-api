@@ -43,6 +43,9 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 	if len(geminiResponse.Candidates) == 0 && geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
 		info.PerformanceBusinessRejection = true
 		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
+	} else if reason := geminiAbnormalFinishReason(&geminiResponse); reason != "" && !geminiHasVisibleOutput(&geminiResponse) {
+		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_abnormal_finish=%s", reason))
+		return nil, types.NewOpenAIError(fmt.Errorf("gemini stopped abnormally: finishReason=%s", reason), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 
 	// 计算使用量（优先上游 UsageMetadata，缺失时本地估算并保留 Gemini 计费语义）

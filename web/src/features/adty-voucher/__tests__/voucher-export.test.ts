@@ -106,6 +106,77 @@ describe('adty-voucher export and batch calculation', () => {
     expect(csv).toContain('ADTY-BBB2,10.00,main_user,BATCH-20260617-01,"Campaign, ""VIP""",')
   })
 
+  it('neutralizes spreadsheet formula prefixes before RFC 4180 escaping in CSV export', () => {
+    const normalized = normalizeVoucherBatchResult({
+      id: 20,
+      code: 'ADTY-SAFE1',
+      code_tail: 'SAFE1',
+      purpose: 'main_user',
+      status: 'pending',
+      amount_usd: '10.00',
+      quota: 5000000,
+      batch_no: 'B-1',
+      count: 4,
+      items: [
+        {
+          id: 20,
+          code: 'ADTY-SAFE1',
+          code_tail: 'SAFE1',
+          purpose: 'main_user',
+          status: 'pending',
+          amount_usd: '10.00',
+          quota: 5000000,
+          batch_no: 'B-1',
+          reason: '=HYPERLINK("http://evil","x")',
+          created_at: 1700000000,
+        },
+        {
+          id: 21,
+          code: 'ADTY-SAFE2',
+          code_tail: 'SAFE2',
+          purpose: 'main_user',
+          status: 'pending',
+          amount_usd: '10.00',
+          quota: 5000000,
+          batch_no: 'B-1',
+          reason: '  +SUM(A1:A2)',
+          created_at: 1700000000,
+        },
+        {
+          id: 22,
+          code: 'ADTY-SAFE3',
+          code_tail: 'SAFE3',
+          purpose: 'main_user',
+          status: 'pending',
+          amount_usd: '10.00',
+          quota: 5000000,
+          batch_no: 'B-1',
+          reason: '@cmd',
+          created_at: 1700000000,
+        },
+        {
+          id: 23,
+          code: 'ADTY-SAFE4',
+          code_tail: 'SAFE4',
+          purpose: 'main_user',
+          status: 'pending',
+          amount_usd: '10.00',
+          quota: 5000000,
+          batch_no: 'B-1',
+          reason: '\t-2+3',
+          created_at: 1700000000,
+        },
+      ],
+    })
+    expect(normalized).not.toBeNull()
+    if (!normalized) return
+    const csv = formatVoucherBatchCsv(normalized)
+    expect(csv).toContain(`"'=HYPERLINK(""http://evil"",""x"")"`)
+    expect(csv).toContain(`'  +SUM(A1:A2)`)
+    expect(csv).toContain(`'@cmd`)
+    expect(csv).toContain(`'\t-2+3`)
+  })
+
   it('normalizes legacy single-item response without items array', () => {
     const normalized = normalizeVoucherBatchResult(
       {

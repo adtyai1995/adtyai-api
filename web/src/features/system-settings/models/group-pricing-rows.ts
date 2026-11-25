@@ -24,7 +24,6 @@ import { safeJsonParse } from '../utils/json-parser'
 export type GroupPricingRow = {
   id: string
   ratio: string
-  selectable: boolean
   description: string
 }
 
@@ -68,7 +67,6 @@ export function buildGroupPricingRows(
   return [...ids].map((id) => ({
     id,
     ratio: String(normalizeRatio(ratioMap[id])),
-    selectable: Object.hasOwn(usableMap, id),
     description: String(usableMap[id] ?? ''),
   }))
 }
@@ -86,9 +84,7 @@ export function serializeGroupPricingRows(
 
   for (const row of rows) {
     groupRatio[row.id] = normalizeRatio(row.ratio)
-    if (row.selectable) {
-      userUsableGroups[row.id] = row.description
-    }
+    userUsableGroups[row.id] = row.description
   }
 
   return {

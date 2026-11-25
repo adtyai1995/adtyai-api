@@ -26,6 +26,7 @@ import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
 import { formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { getServerErrorMessage } from '@/lib/server-error-message'
 
 import { getPricingHistory, OWNER_PAGE_SIZE, siteOwnerKeys } from '../api'
@@ -49,7 +50,7 @@ export function PricingHistory(props: { customerId?: number }) {
       {open && query.isSuccess && <>
         <StaticDataTable data={query.data.items ?? []} getRowKey={(row) => row.id} columns={[
           { id: 'time', header: t('Time'), cell: (row) => formatTimestamp(row.created_at) },
-          { id: 'actor', header: t('Operator ID'), cell: (row) => row.actor_id || t('System') },
+          { id: 'actor', header: t('Operator'), cell: (row) => row.actor_id ? formatUserIdentity(row.actor_id, row.actor_username) : t('System') },
           { id: 'scope', header: t('Scope'), cell: (row) => row.model || row.group || t('Default') },
           { id: 'value', header: t('Price change'), cell: (row) => `${row.before} → ${row.after}` },
           { id: 'action', header: t('Status'), cell: (row) => labels[row.action] ?? row.action },

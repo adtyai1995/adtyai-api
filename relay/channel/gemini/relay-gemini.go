@@ -24,6 +24,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
 )
 
@@ -51,12 +52,12 @@ func patchGeminiZeroCompletionUsage(c *gin.Context, info *relaycommon.RelayInfo,
 	if usage == nil || usage.CompletionTokens > 0 {
 		return
 	}
-	if responseText == "" && inlineOutput.completionTokens() == 0 {
+	if responseText == "" && inlineOutput.hasOutput() == false {
 		return
 	}
 	estimated := service.ResponseText2Usage(c, responseText, info.UpstreamModelName, usage.PromptTokens)
 	usage.CompletionTokens = estimated.CompletionTokens
-	inlineOutput.fillZeroCompletion(usage)
+	inlineOutput.fillZeroCompletion(info, usage)
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	// Settlement prefers BillingUsage, so fill the missing completion in the
 	// original upstream dialect without discarding cache or modality details.
@@ -165,7 +166,7 @@ func buildUsageFromGeminiResponse(c *gin.Context, info *relaycommon.RelayInfo, r
 		return usage
 	}
 	usage := service.ResponseText2Usage(c, geminiResponseUsageText(response), info.UpstreamModelName, info.GetEstimatePromptTokens())
-	if inlineOutput.fillZeroCompletion(usage) {
+	if inlineOutput.fillZeroCompletion(info, usage) {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 	attachEstimatedGeminiBillingUsage(usage)
@@ -215,15 +216,30 @@ func (o geminiInlineOutput) audioTokens() int {
 	return int((int64(o.audio)*geminiAudioTokensPerSecond + int64(time.Second) - 1) / int64(time.Second))
 }
 
+func (o geminiInlineOutput) hasOutput() bool {
+	return o.images > 0 || o.audio > 0
+}
+
+func (o geminiInlineOutput) completionTokensChecked() (int, *common.QuotaClamp) {
+	total := decimal.NewFromInt(int64(o.images)).
+		Mul(decimal.NewFromInt(geminiInlineImageCompletionTokens)).
+		Add(decimal.NewFromInt(int64(o.audioTokens())))
+	return common.QuotaFromDecimalChecked(total)
+}
+
 func (o geminiInlineOutput) completionTokens() int {
-	return common.QuotaFromFloat(float64(o.images)*geminiInlineImageCompletionTokens + float64(o.audioTokens()))
+	tokens, _ := o.completionTokensChecked()
+	return tokens
 }
 
 // fillZeroCompletion uses the inline estimate when usage has no completion
 // tokens, recording the audio part as audio output so tiered expressions price
 // it with ao. It reports whether the estimate was applied.
-func (o geminiInlineOutput) fillZeroCompletion(usage *dto.Usage) bool {
-	completionTokens := o.completionTokens()
+func (o geminiInlineOutput) fillZeroCompletion(info *relaycommon.RelayInfo, usage *dto.Usage) bool {
+	completionTokens, clamp := o.completionTokensChecked()
+	if clamp != nil && info != nil && info.QuotaClamp == nil {
+		info.QuotaClamp = clamp
+	}
 	if completionTokens == 0 || usage.CompletionTokens != 0 {
 		return false
 	}
@@ -463,7 +479,7 @@ func geminiStreamHandlerWithOutcome(c *gin.Context, info *relaycommon.RelayInfo,
 		} else {
 			usage = &dto.Usage{}
 		}
-		if inlineOutput.fillZeroCompletion(usage) {
+		if inlineOutput.fillZeroCompletion(info, usage) {
 			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 			common.SetContextKey(c, constant.ContextKeyLocalCountTokens, true)
 		}
@@ -696,6 +712,10 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 			})
 		}
 		return &usage, nil
+	}
+	if reason := geminiAbnormalFinishReason(&geminiResponse); reason != "" && !geminiHasVisibleOutput(&geminiResponse) {
+		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_abnormal_finish=%s", reason))
+		return nil, types.NewOpenAIError(fmt.Errorf("gemini stopped abnormally: finishReason=%s", reason), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 	fullTextResponse := responseGeminiChat2OpenAI(c, &geminiResponse)
 	fullTextResponse.Model = info.UpstreamModelName

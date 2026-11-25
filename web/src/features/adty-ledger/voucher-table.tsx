@@ -25,6 +25,7 @@ import { EmptyState } from '@/components/empty-state'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 
 import {
   voucherCanCancel,
@@ -111,7 +112,8 @@ export function VoucherTable(props: {
                 {
                   id: 'issuer',
                   header: t('Issued by'),
-                  cell: (row: Voucher) => `#${row.issuer_id}`,
+                  cell: (row: Voucher) =>
+                    formatUserIdentity(row.issuer_id, row.issuer_username),
                 },
               ]
             : []),
@@ -125,7 +127,7 @@ export function VoucherTable(props: {
             header: t('Redeemed by'),
             cell: (row) =>
               row.redeemer_id > 0
-                ? `#${row.redeemer_id} · ${formatTimestamp(row.redeemed_at)}`
+                ? `${formatUserIdentity(row.redeemer_id, row.redeemer_username)} · ${formatTimestamp(row.redeemed_at)}`
                 : '—',
           },
           {

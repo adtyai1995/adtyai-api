@@ -2,7 +2,6 @@ package openai
 
 import (
 	"bytes"
-	"io"
 	"math"
 	"net/http"
 	"strings"
@@ -88,7 +87,10 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 			if usage.CompletionTokens > 0 {
 				usage.CompletionTokenDetails.AudioTokens = usage.CompletionTokens
 			} else if streamedAudioBytes > 0 {
-				estimatedTokens := estimatedAudioTokensFromSizeKB(float64(streamedAudioBytes) / 1000.0)
+				estimatedTokens, clamp := estimatedAudioTokensFromSizeKBChecked(float64(streamedAudioBytes) / 1000.0)
+				if clamp != nil && info.QuotaClamp == nil {
+					info.QuotaClamp = clamp
+				}
 				usage.CompletionTokens = estimatedTokens
 				usage.CompletionTokenDetails.AudioTokens = estimatedTokens
 				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
@@ -96,17 +98,17 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		}
 	} else {
 		common.SetContextKey(c, constant.ContextKeyLocalCountTokens, true)
-		// 读取响应体到缓冲区
-		bodyBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			logger.LogError(c, common.LogText("failed to read TTS response body: %v", err))
+		// 读取响应体到缓冲区（受统一上限与断连保护）
+		bodyBytes, apiErr := helper.ReadResponseBody(c, resp, types.ErrorCodeReadResponseBodyFailed)
+		if apiErr != nil {
+			logger.LogError(c, common.LogText("failed to read TTS response body: %v", apiErr.Error()))
 			c.Writer.WriteHeaderNow()
 			return usage
 		}
 
 		// 写入响应到客户端
 		c.Writer.WriteHeaderNow()
-		_, err = c.Writer.Write(bodyBytes)
+		_, err := c.Writer.Write(bodyBytes)
 		if err != nil {
 			logger.LogError(c, common.LogText("failed to write TTS response: %v", err))
 		}
@@ -138,13 +140,19 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		if durationErr != nil {
 			logger.LogWarn(c, common.LogText("failed to get audio duration: %v", durationErr))
 			// 如果无法获取时长，则设置保底的 CompletionTokens，根据body大小计算
-			estimatedTokens := estimatedAudioTokensFromSizeKB(float64(len(bodyBytes)) / 1000.0)
+			estimatedTokens, clamp := estimatedAudioTokensFromSizeKBChecked(float64(len(bodyBytes)) / 1000.0)
+			if clamp != nil && info.QuotaClamp == nil {
+				info.QuotaClamp = clamp
+			}
 			usage.CompletionTokens = estimatedTokens
 			usage.CompletionTokenDetails.AudioTokens = estimatedTokens
 		} else if duration > 0 {
 			// 计算 token: ceil(duration) / 60.0 * 1000，即每分钟 1000 tokens。
 			// duration 解析自上游返回的音频元数据，饱和转换防止 int 回绕。
-			completionTokens := common.QuotaRound(math.Ceil(duration) / 60.0 * 1000)
+			completionTokens, clamp := common.QuotaRoundChecked(math.Ceil(duration) / 60.0 * 1000)
+			if clamp != nil && info.QuotaClamp == nil {
+				info.QuotaClamp = clamp
+			}
 			usage.CompletionTokens = completionTokens
 			usage.CompletionTokenDetails.AudioTokens = completionTokens
 		}
@@ -156,12 +164,17 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 
 // estimatedAudioTokensFromSizeKB 是拿不到音频时长时的兜底估算：粗略按每 KB 约 1 token。
 //
-// 必须和 `:107` 的时长口径一样走 `common.QuotaRound`（饱和 + 越界留 QuotaClamp 痕迹）：
+// 必须和 `:107` 的时长口径一样走 `common.QuotaRoundChecked`（饱和 + 越界留 QuotaClamp 痕迹）：
 // 裸 `int()` 转换既丢掉 int32 饱和、也不会留下任何审计痕迹，billing.md:14 明令禁止
 // 「把算出来的 quota / token 数用裸 cast 转 int」。单独成函数是为了让饱和这一面可测
 // ——响应体大小本身在测试里到不了 int32 上限。
 func estimatedAudioTokensFromSizeKB(sizeInKB float64) int {
-	return common.QuotaRound(math.Ceil(sizeInKB))
+	tokens, _ := estimatedAudioTokensFromSizeKBChecked(sizeInKB)
+	return tokens
+}
+
+func estimatedAudioTokensFromSizeKBChecked(sizeInKB float64) (int, *common.QuotaClamp) {
+	return common.QuotaRoundChecked(math.Ceil(sizeInKB))
 }
 
 func OpenaiSTTHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, responseFormat string) (*types.NewAPIError, *dto.Usage) {

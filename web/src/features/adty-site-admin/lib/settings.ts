@@ -86,7 +86,6 @@ export type ResellerDrafts = Record<RuleKey, string> &
     aliyun_secret: string
     clear_aliyun: boolean
     custom_domain_enabled: boolean
-    sender_domain_enabled: boolean
     /** One per line. */
     root_domains: string
     reserved_subdomains: string
@@ -121,7 +120,6 @@ export function toResellerDrafts(saved: ResellerSettings): ResellerDrafts {
     aliyun_secret: '',
     clear_aliyun: false,
     custom_domain_enabled: saved.custom_domain_enabled,
-    sender_domain_enabled: saved.sender_domain_enabled,
     root_domains: (saved.root_domains ?? []).join('\n'),
     reserved_subdomains: (saved.reserved_subdomains ?? []).join('\n'),
     visibility: { ...VISIBILITY_DEFAULTS, ...saved.visibility },
@@ -191,11 +189,7 @@ export function buildResellerUpdate(
   for (const key of SWITCH_KEYS) {
     if (drafts[key] !== saved[key]) body[key] = drafts[key]
   }
-  for (const key of [
-    'enabled',
-    'custom_domain_enabled',
-    'sender_domain_enabled',
-  ] as const) {
+  for (const key of ['enabled', 'custom_domain_enabled'] as const) {
     if (drafts[key] !== saved[key]) body[key] = drafts[key]
   }
 

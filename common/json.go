@@ -52,6 +52,24 @@ func DecodeJson(reader io.Reader, v any) error {
 	return kitutil.DecodeJson(reader, v)
 }
 
+// DecodeJsonObjectUseNumber decodes a single JSON object from a string while
+// preserving numbers as json.Number and rejecting trailing tokens.
+func DecodeJsonObjectUseNumber(data string) (map[string]any, error) {
+	dec := json.NewDecoder(bytes.NewBufferString(data))
+	dec.UseNumber()
+	var raw map[string]any
+	if err := dec.Decode(&raw); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, io.ErrUnexpectedEOF
+	}
+	if raw == nil {
+		return map[string]any{}, nil
+	}
+	return raw, nil
+}
+
 // DecodeJsonWithValidation decodes JSON and applies Gin's configured binding-tag
 // validator, including binding:"required" and any registered custom validators.
 func DecodeJsonWithValidation(reader io.Reader, v any) error {

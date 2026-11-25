@@ -20,12 +20,11 @@ var (
 )
 
 const (
-	AdtyStaffTicketManage   = "tickets.manage"
-	AdtyStaffBalanceRequest = "customers.balance_request"
+	AdtyStaffTicketManage = "tickets.manage"
 )
 
 var adtyStaffReadPermissions = []string{"customers.read", "customers.balance", "customers.topups", "customers.usage"}
-var adtyStaffPermissions = append(slices.Clone(adtyStaffReadPermissions), "customers.disable", AdtyStaffBalanceRequest, AdtyStaffTicketManage)
+var adtyStaffPermissions = append(slices.Clone(adtyStaffReadPermissions), "customers.disable", AdtyStaffTicketManage)
 
 type AdtyStaffInput struct {
 	Username        string    `json:"username"`
@@ -127,7 +126,7 @@ func CreateAdtyStaff(ownerID, siteID int, input AdtyStaffInput) (*AdtyStaffView,
 			return err
 		}
 		user := model.User{Username: input.Username, DisplayName: input.DisplayName, Password: hash, Role: common.RoleCommonUser,
-			Status: common.UserStatusEnabled, Group: "default", SiteId: siteID, StaffSiteId: siteID, AuthVersion: 1}
+			Status: common.UserStatusEnabled, Group: "", SiteId: siteID, StaffSiteId: siteID, AuthVersion: 1}
 		if err := tx.Session(&gorm.Session{Logger: logger.Discard}).Create(&user).Error; err != nil {
 			return ErrAdtyStaffInput
 		}
@@ -213,6 +212,13 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 		if _, err := model.IncrementUserAuthVersionWithTx(tx, staff.UserId); err != nil {
 			return err
 		}
+		if staff.Status != "enabled" || action == AdtySiteOwnerActionStaffPassword || action == AdtySiteOwnerActionStaffDelete {
+			if _, err := model.DeleteUserAccessTokensWithTx(tx, staff.UserId); err != nil {
+				return err
+			}
+			userUpdates["access_token"] = nil
+			userUpdates["access_token_created_at"] = nil
+		}
 		if err := tx.Session(&gorm.Session{Logger: logger.Discard}).Model(&model.User{}).Where("id = ? AND staff_site_id = ?", staff.UserId, siteID).Updates(userUpdates).Error; err != nil {
 			return ErrAdtyStaffInput
 		}
@@ -240,6 +246,9 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 	}
 	if _, err := model.RevokeAllUserSessions(staff.UserId, "staff_"+action); err != nil {
 		common.SysError("Failed to revoke staff sessions")
+	}
+	if err := model.InvalidateUserTokensCache(staff.UserId); err != nil {
+		common.SysError("Failed to invalidate staff tokens cache")
 	}
 	view := AdtyStaffViewOf(staff)
 	return &view, nil
@@ -321,7 +330,14 @@ func ManageAdtyStaffCustomer(userID int, authVersion int64, customerID int, acti
 		if _, err := model.IncrementUserAuthVersionWithTx(tx, customerID); err != nil {
 			return err
 		}
-		if err := tx.Model(&model.User{}).Where("id = ?", customerID).Update("status", common.UserStatusDisabled).Error; err != nil {
+		if _, err := model.DeleteUserAccessTokensWithTx(tx, customerID); err != nil {
+			return err
+		}
+		if err := tx.Model(&model.User{}).Where("id = ?", customerID).Updates(map[string]any{
+			"status":                  common.UserStatusDisabled,
+			"access_token":            nil,
+			"access_token_created_at": nil,
+		}).Error; err != nil {
 			return err
 		}
 		customer.Status = common.UserStatusDisabled
@@ -337,6 +353,9 @@ func ManageAdtyStaffCustomer(userID int, authVersion int64, customerID int, acti
 		}
 		if _, err := model.RevokeAllUserSessions(customerID, "staff_customer_disabled"); err != nil {
 			common.SysError("Failed to revoke disabled customer sessions")
+		}
+		if err := model.InvalidateUserTokensCache(customerID); err != nil {
+			common.SysError("Failed to invalidate disabled customer tokens cache")
 		}
 	}
 	return &customer, nil

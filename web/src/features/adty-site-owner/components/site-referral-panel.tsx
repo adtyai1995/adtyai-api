@@ -263,6 +263,7 @@ export function SiteReferralPanel() {
 
   const rateTrimmed = draft.rate_percent.trim()
   const rateMissing = rateTrimmed === ''
+  const rateCleared = Boolean(saved.rate_configured) && rateMissing
   const rateInvalid =
     !rateMissing && !validSiteReferralRatePercent(rateTrimmed)
   const capMissing = draft.pending_coverage_cap.trim() === ''
@@ -294,7 +295,8 @@ export function SiteReferralPanel() {
       : ''
 
   const hasValidationError = Boolean(
-    rateInvalid ||
+    rateCleared ||
+      rateInvalid ||
       usdtChainError ||
       minMissingError ||
       feeMissingError ||
@@ -395,7 +397,7 @@ export function SiteReferralPanel() {
               step='0.01'
               value={draft.rate_percent}
               placeholder={t('Not set')}
-              aria-invalid={rateInvalid}
+              aria-invalid={rateInvalid || rateCleared}
               onChange={(event) => set('rate_percent', event.target.value)}
             />
             {rateInvalid && (
@@ -403,7 +405,14 @@ export function SiteReferralPanel() {
                 {t('Commission rate must be between 0% and 30%.')}
               </p>
             )}
-            {!rateInvalid && rateMissing && (
+            {!rateInvalid && rateCleared && (
+              <p role='alert' className='text-destructive text-xs'>
+                {t(
+                  'Commission rate cannot be cleared once configured. Set it to 0% to disable commission.'
+                )}
+              </p>
+            )}
+            {!rateInvalid && !rateCleared && rateMissing && (
               <p className='text-warning text-xs'>{t('Not set')}</p>
             )}
             {!rateInvalid && !rateMissing && (

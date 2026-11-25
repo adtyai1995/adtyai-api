@@ -215,6 +215,39 @@ func validateEmailBindingOriginWithTx(tx *gorm.DB, siteID int, host string) erro
 	return nil
 }
 
+func isSiteOwnerForEmailBindingWithTx(tx *gorm.DB, userID, siteID int) (bool, error) {
+	if tx == nil {
+		tx = DB
+	}
+	if userID <= 0 || siteID <= 0 || !tx.Migrator().HasTable(&AdtySite{}) {
+		return false, nil
+	}
+	var count int64
+	if err := tx.Model(&AdtySite{}).
+		Where("id = ? AND owner_user_id = ? AND status <> ?", siteID, userID, AdtySiteStatusClosed).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func resolveEmailBindingOriginSiteWithTx(tx *gorm.DB, identity AuthSessionIdentity, userSiteID int) (int, error) {
+	issuedSite, ok := identity.IssuedSite()
+	if !ok || issuedSite == userSiteID {
+		return userSiteID, nil
+	}
+	if userSiteID == 0 && issuedSite > 0 {
+		isOwner, err := isSiteOwnerForEmailBindingWithTx(tx, identity.UserID, issuedSite)
+		if err != nil {
+			return 0, err
+		}
+		if isOwner {
+			return issuedSite, nil
+		}
+	}
+	return 0, ErrAuthFlowInvalid
+}
+
 func CreateEmailBinding(identity AuthSessionIdentity, state EmailBindingState, originHost ...string) (string, *AuthFlow, error) {
 	var token string
 	var flow *AuthFlow
@@ -228,14 +261,15 @@ func CreateEmailBinding(identity AuthSessionIdentity, state EmailBindingState, o
 		if err != nil {
 			return err
 		}
-		if issuedSite, ok := identity.IssuedSite(); ok && issuedSite != siteID {
-			return ErrAuthFlowInvalid
+		originSiteID, err := resolveEmailBindingOriginSiteWithTx(tx, identity, siteID)
+		if err != nil {
+			return err
 		}
 		if state.SiteID != 0 && state.SiteID != siteID {
 			return ErrAuthFlowInvalid
 		}
 		state.SiteID = siteID
-		if err := validateEmailBindingOriginWithTx(tx, siteID, state.OriginHost); err != nil {
+		if err := validateEmailBindingOriginWithTx(tx, originSiteID, state.OriginHost); err != nil {
 			return err
 		}
 		if err := validateEmailBindingAccountWithTx(tx, identity, &state); err != nil {
@@ -278,10 +312,11 @@ func GetEmailBinding(identity AuthSessionIdentity, token string, originHost ...s
 	if err := matchEmailBindingOriginHost(state.OriginHost, originHost...); err != nil {
 		return nil, nil, err
 	}
-	if issuedSite, ok := identity.IssuedSite(); ok && issuedSite != state.SiteID {
-		return nil, nil, ErrAuthFlowInvalid
+	originSiteID, err := resolveEmailBindingOriginSiteWithTx(DB, identity, state.SiteID)
+	if err != nil {
+		return nil, nil, err
 	}
-	if err := validateEmailBindingOriginWithTx(DB, state.SiteID, state.OriginHost); err != nil {
+	if err := validateEmailBindingOriginWithTx(DB, originSiteID, state.OriginHost); err != nil {
 		return nil, nil, err
 	}
 	return flow, &state, nil
@@ -437,10 +472,11 @@ func validateEmailBindingAccountWithTx(tx *gorm.DB, identity AuthSessionIdentity
 	if state.SiteID != siteID {
 		return ErrAuthFlowInvalid
 	}
-	if issuedSite, ok := identity.IssuedSite(); ok && issuedSite != siteID {
-		return ErrAuthFlowInvalid
+	originSiteID, err := resolveEmailBindingOriginSiteWithTx(tx, identity, siteID)
+	if err != nil {
+		return err
 	}
-	if err := validateEmailBindingOriginWithTx(tx, siteID, state.OriginHost); err != nil {
+	if err := validateEmailBindingOriginWithTx(tx, originSiteID, state.OriginHost); err != nil {
 		return err
 	}
 	var user User

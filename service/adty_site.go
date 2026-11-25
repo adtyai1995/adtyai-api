@@ -237,10 +237,10 @@ func validateSitePreset(costFactor *decimal.Decimal) error {
 }
 
 func recordSiteCompatibilityAuditTx(tx *gorm.DB, siteId int, action string, operatorId int, oldValue, newValue any, reason string) error {
-	reason = truncateText(reason, 1000)
+	reason = model.RedactAuditText(truncateText(reason, 1000))
 	return tx.Create(&model.AdtySiteAudit{
 		SiteId: siteId, Action: action, OperatorId: operatorId,
-		OldValue: common.GetJsonString(oldValue), NewValue: common.GetJsonString(newValue), Reason: reason,
+		OldValue: model.RedactAuditJSON(oldValue), NewValue: model.RedactAuditJSON(newValue), Reason: reason,
 	}).Error
 }
 
@@ -319,13 +319,16 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 	var newOwnerUsername, newOwnerPassHash, newOwnerEmail, newOwnerDisplayName string
 	if preset.NewOwner != nil {
 		newOwnerUsername = strings.TrimSpace(preset.NewOwner.Username)
-		if len(newOwnerUsername) < 3 || len(newOwnerUsername) > 32 {
-			return nil, "", false, common.NewMessage("Owner username must be between 3 and 32 characters")
+		if len(newOwnerUsername) < 3 || len(newOwnerUsername) > 20 || strings.Contains(newOwnerUsername, "@") {
+			return nil, "", false, common.NewMessage("Owner username must be 3 to 20 characters and cannot contain @")
 		}
-		if len(preset.NewOwner.Password) < 8 || len(preset.NewOwner.Password) > 64 {
-			return nil, "", false, common.NewMessage("Owner password must be between 8 and 64 characters")
+		if err := common.Validate.StructPartial(&model.User{Username: newOwnerUsername}, "Username"); err != nil {
+			return nil, "", false, common.NewMessage("Owner username must be 3 to 20 characters and cannot contain @")
 		}
-		hashed, hashErr := common.Password2Hash(preset.NewOwner.Password)
+		if err := common.ValidateNewAccountPassword(preset.NewOwner.Password); err != nil {
+			return nil, "", false, err
+		}
+		hashed, hashErr := common.HashAccountPassword(preset.NewOwner.Password)
 		if hashErr != nil {
 			return nil, "", false, hashErr
 		}
@@ -346,7 +349,7 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 	if idemKey != "" {
 		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d/%s", preset.OperatorId, idemKey))))
 		openKeyDigest = &digest
-		openFingerprint = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s|%s", userId, newOwnerUsername, rawSubdomain, root, costStr, tierCode, tierMode, contact))))
+		openFingerprint = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s|%s|%s|%s", userId, newOwnerUsername, newOwnerEmail, newOwnerDisplayName, rawSubdomain, root, costStr, tierCode, tierMode, contact))))
 	}
 	label := rawSubdomain
 	if label == "" {
@@ -405,6 +408,13 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 	replayed := false
 	var auditEvent *model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		// Serialize concurrent retries with the same operator/idempotency key before creating a new owner row.
+		if openKeyDigest != nil && preset.OperatorId > 0 {
+			var op model.User
+			if err := model.AdtyLockForUpdate(tx).Select("id").Where("id = ?", preset.OperatorId).Limit(1).Find(&op).Error; err != nil {
+				return err
+			}
+		}
 		if openKeyDigest != nil {
 			var existing model.AdtySite
 			lookup := tx.Where("open_key = ?", *openKeyDigest).Limit(1).Find(&existing)
@@ -421,16 +431,15 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 			}
 		}
 		if preset.NewOwner != nil {
-			var existingUsername int64
-			if err := tx.Unscoped().Model(&model.User{}).Where("username = ?", newOwnerUsername).Count(&existingUsername).Error; err != nil {
+			if err := model.EnsureUsernameAvailableWithTx(tx, newOwnerUsername, 0); err != nil {
+				if errors.Is(err, model.ErrUsernameAlreadyTaken) {
+					return common.NewMessage("Username is already taken")
+				}
 				return err
-			}
-			if existingUsername > 0 {
-				return common.NewMessage("Username is already taken")
 			}
 			if newOwnerEmail != "" {
 				var existingEmail int64
-				if err := tx.Unscoped().Model(&model.User{}).Where("email = ? AND site_id = 0", newOwnerEmail).Count(&existingEmail).Error; err != nil {
+				if err := tx.Unscoped().Model(&model.User{}).Where("LOWER(email) = ? AND site_id = 0", newOwnerEmail).Count(&existingEmail).Error; err != nil {
 					return err
 				}
 				if existingEmail > 0 {
@@ -447,6 +456,7 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 				Group:       "",
 				SiteId:      0,
 				Quota:       0,
+				AuthVersion: 1,
 			}
 			if err := tx.Create(&ownerUser).Error; err != nil {
 				return err
@@ -883,12 +893,15 @@ func AdjustAdtySiteWithAuditForActor(siteId, adminId, actorRole int, denyAdminTa
 				_ = common.UnmarshalJsonStr(site.Brand, &brand)
 			}
 			fields := map[string]*string{
-				"name": &brand.Name, "title": &brand.Title, "tagline": &brand.Tagline, "notice": &brand.Notice,
-				"support_contact": &brand.SupportContact, "theme_color": &brand.ThemeColor,
+				"name": &brand.Name, "title": &brand.Title, "notice": &brand.Notice,
+				"support_contact": &brand.SupportContact,
 				"tawk_property_id": &brand.TawkPropertyID, "tawk_widget_id": &brand.TawkWidgetID,
 				"wallet_notice": &brand.WalletNotice, "voucher_purchase_url": &brand.VoucherPurchaseURL,
 			}
 			for key, val := range adjust.Brand {
+				if key == "tagline" || key == "theme_color" {
+					continue
+				}
 				dest, ok := fields[key]
 				if !ok {
 					return ErrAdtySiteBrandInvalid
@@ -944,24 +957,42 @@ func AdjustAdtySiteWithAuditForActor(siteId, adminId, actorRole int, denyAdminTa
 // arrived. A later decrease clears the pending columns, so a due row is still
 // an increase that was announced in advance.
 func ApplyDueAdtySiteCostFactors(now int64) (int64, error) {
-	var due []model.AdtySite
-	if err := model.DB.Where("pending_cost_factor_at > 0 AND pending_cost_factor_at <= ?", now).Find(&due).Error; err != nil {
+	var dueIDs []int
+	if err := model.DB.Model(&model.AdtySite{}).
+		Where("pending_cost_factor_at > 0 AND pending_cost_factor_at <= ?", now).
+		Order("id ASC").
+		Pluck("id", &dueIDs).Error; err != nil {
 		return 0, err
 	}
 	var applied int64
-	for _, site := range due {
-		if site.PendingCostFactor == nil {
-			continue
-		}
-		result := model.DB.Model(&model.AdtySite{}).
-			Where("id = ? AND pending_cost_factor_at > 0 AND pending_cost_factor_at <= ?", site.Id, now).
-			Updates(map[string]any{
-				"cost_factor": site.PendingCostFactor, "pending_cost_factor": gorm.Expr("NULL"), "pending_cost_factor_at": 0,
+	for _, siteID := range dueIDs {
+		var rowApplied int64
+		err := model.DB.Transaction(func(tx *gorm.DB) error {
+			var site model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteID).First(&site).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil
+				}
+				return err
+			}
+			if site.PendingCostFactor == nil || site.PendingCostFactorAt <= 0 || site.PendingCostFactorAt > now {
+				return nil
+			}
+			res := tx.Model(&model.AdtySite{}).Where("id = ?", site.Id).Updates(map[string]any{
+				"cost_factor":            *site.PendingCostFactor,
+				"pending_cost_factor":    gorm.Expr("NULL"),
+				"pending_cost_factor_at": 0,
 			})
-		if result.Error != nil {
-			return applied, result.Error
+			if res.Error != nil {
+				return res.Error
+			}
+			rowApplied = res.RowsAffected
+			return nil
+		})
+		if err != nil {
+			return applied, err
 		}
-		applied += result.RowsAffected
+		applied += rowApplied
 	}
 	if applied > 0 {
 		InvalidateAdtySiteCache()
@@ -971,26 +1002,43 @@ func ApplyDueAdtySiteCostFactors(now int64) (int64, error) {
 
 // ApplyDueAdtySiteTierCostFactors writes a scheduled higher performance-tier d.
 func ApplyDueAdtySiteTierCostFactors(now int64) (int64, error) {
-	var due []model.AdtySite
-	if err := model.DB.Where("pending_tier_cost_factor_at > 0 AND pending_tier_cost_factor_at <= ?", now).
-		Where("(tier_mode = ? OR tier_mode IS NULL) AND (tier_code = ? OR tier_code IS NULL)", "", "").Find(&due).Error; err != nil {
+	var dueIDs []int
+	if err := model.DB.Model(&model.AdtySite{}).
+		Where("pending_tier_cost_factor_at > 0 AND pending_tier_cost_factor_at <= ?", now).
+		Where("(tier_mode = ? OR tier_mode IS NULL) AND (tier_code = ? OR tier_code IS NULL)", "", "").
+		Order("id ASC").
+		Pluck("id", &dueIDs).Error; err != nil {
 		return 0, err
 	}
 	var applied int64
-	for _, site := range due {
-		if site.PendingTierCostFactor == nil {
-			continue
-		}
-		result := model.DB.Model(&model.AdtySite{}).
-			Where("id = ? AND pending_tier_cost_factor_at > 0 AND pending_tier_cost_factor_at <= ?", site.Id, now).
-			Where("(tier_mode = ? OR tier_mode IS NULL) AND (tier_code = ? OR tier_code IS NULL)", "", "").
-			Updates(map[string]any{
-				"tier_cost_factor": site.PendingTierCostFactor, "pending_tier_cost_factor": gorm.Expr("NULL"), "pending_tier_cost_factor_at": 0,
+	for _, siteID := range dueIDs {
+		var rowApplied int64
+		err := model.DB.Transaction(func(tx *gorm.DB) error {
+			var site model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteID).First(&site).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil
+				}
+				return err
+			}
+			if site.PendingTierCostFactor == nil || site.PendingTierCostFactorAt <= 0 || site.PendingTierCostFactorAt > now || site.TierMode != "" || site.TierCode != "" {
+				return nil
+			}
+			res := tx.Model(&model.AdtySite{}).Where("id = ?", site.Id).Updates(map[string]any{
+				"tier_cost_factor":            *site.PendingTierCostFactor,
+				"pending_tier_cost_factor":    gorm.Expr("NULL"),
+				"pending_tier_cost_factor_at": 0,
 			})
-		if result.Error != nil {
-			return applied, result.Error
+			if res.Error != nil {
+				return res.Error
+			}
+			rowApplied = res.RowsAffected
+			return nil
+		})
+		if err != nil {
+			return applied, err
 		}
-		applied += result.RowsAffected
+		applied += rowApplied
 	}
 	if applied > 0 {
 		InvalidateAdtySiteCache()
@@ -1276,6 +1324,7 @@ var AdtySiteClawBackTx func(tx *gorm.DB, site *model.AdtySite, operatorId int) e
 // 关站不会作废未结收益，也不会扣回已结算佣金；这些金额继续按原来源持有，后续结算、转余额、提现或退款走原规则。
 func ExecuteAdtySiteClose(siteId int, now int64) error {
 	var moved []int
+	var disabledStaff []int
 	var closed model.AdtySite
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var site model.AdtySite
@@ -1297,6 +1346,7 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 		if err != nil {
 			return err
 		}
+		_ = tx.Model(&model.User{}).Where("staff_site_id = ?", site.Id).Pluck("id", &disabledStaff).Error
 		if err := disableAdtyTeamsKeysOnCloseTx(tx, inheritedTeamIDs); err != nil {
 			return err
 		}
@@ -1368,11 +1418,22 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 	if err != nil {
 		return err
 	}
-	invalidateIDs := moved
+	invalidateIDs := append([]int(nil), moved...)
+	for _, sid := range disabledStaff {
+		if sid > 0 && !slices.Contains(invalidateIDs, sid) {
+			invalidateIDs = append(invalidateIDs, sid)
+		}
+	}
 	if closed.OwnerUserId > 0 && !slices.Contains(invalidateIDs, closed.OwnerUserId) {
-		invalidateIDs = append(append([]int(nil), moved...), closed.OwnerUserId)
+		invalidateIDs = append(invalidateIDs, closed.OwnerUserId)
 	}
 	model.AdtyInvalidateUserCaches(invalidateIDs)
+	for _, sid := range disabledStaff {
+		if sid > 0 {
+			_, _ = model.RevokeAllUserSessions(sid, "site_closed")
+			model.InvalidateUserTokensCache(sid)
+		}
+	}
 	InvalidateAdtySiteCache()
 	if closed.Id > 0 && AdtyOnSiteClosed != nil {
 		AdtyOnSiteClosed(&closed)

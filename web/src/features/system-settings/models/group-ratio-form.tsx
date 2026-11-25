@@ -42,14 +42,7 @@ import { GroupRatioVisualEditor } from './group-ratio-visual-editor'
 
 type GroupFormValues = {
   GroupRatio: string
-  TopupGroupRatio: string
   UserUsableGroups: string
-  GroupGroupRatio: string
-  AutoGroups: string
-  MaxTokenAutoGroups: number
-  DefaultUseAutoGroup: boolean
-  GroupSpecialUsableGroup: string
-  GroupModelAllow?: string
 }
 
 type GroupRatioFormProps = {
@@ -93,7 +86,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
     <div className='space-y-6'>
       <div className='flex flex-wrap items-center justify-between gap-3'>
         <p className='text-muted-foreground text-sm'>
-          {t('Manage pricing and visibility for your groups.')}
+          {t('Manage pricing ratios and descriptions for your groups.')}
         </p>
         <div className='flex shrink-0 gap-2'>
           <Button
@@ -159,7 +152,7 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
           <SheetTitle>{t('Group pricing usage guide')}</SheetTitle>
           <SheetDescription>
             {t(
-              'Use the pricing group table to manage the ratio and whether the group appears in the token creation dropdown.'
+              'Use the pricing group table to manage each group ratio and description.'
             )}
           </SheetDescription>
         </SheetHeader>
@@ -171,20 +164,14 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
             </h3>
             <p className='text-muted-foreground text-sm leading-6'>
               {t(
-                'Use the pricing group table to manage the ratio and whether the group appears in the token creation dropdown.'
+                'Use the pricing group table to manage each group ratio and description.'
               )}
             </p>
             <GuideCodeBlock>
-              {`${t('Group name')}   ${t('Ratio')}   ${t('User selectable')}   ${t('Description')}
-standard     1.0     ${t('Yes')}               ${t('Standard price')}
-premium      0.5     ${t('Yes')}               ${t('Premium plan, half price')}
-vip          0.5     ${t('No')}                ${t('Assigned by administrator only')}`}
+              {`${t('Group name')}   ${t('Ratio')}   ${t('Description')}
+standard     1.0     ${t('Standard price')}
+premium      0.5     ${t('Premium plan, half price')}`}
             </GuideCodeBlock>
-            <p className='text-muted-foreground text-sm leading-6'>
-              {t(
-                'Users only see groups marked as user selectable. Non-selectable groups can still be assigned by administrators.'
-              )}
-            </p>
           </section>
         </div>
       </SheetContent>

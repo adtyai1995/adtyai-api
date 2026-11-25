@@ -1173,12 +1173,18 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 			return nil, fmt.Errorf("expr run error: int expects 1 argument")
 		}
 		if d, ok := valueAsDecimal(args[0]); ok {
+			if _, err := checkExprDecimalBounds(d); err != nil {
+				return nil, err
+			}
 			return d.Truncate(0), nil
 		}
 		if s, ok := args[0].(string); ok {
 			d, err := decimal.NewFromString(strings.TrimSpace(s))
 			if err != nil {
 				return nil, fmt.Errorf("expr run error: int cannot parse %q", s)
+			}
+			if _, err := checkExprDecimalBounds(d); err != nil {
+				return nil, err
 			}
 			return d.Truncate(0), nil
 		}
@@ -1194,14 +1200,14 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 			return nil, fmt.Errorf("expr run error: float expects 1 argument")
 		}
 		if d, ok := valueAsDecimal(args[0]); ok {
-			return d, nil
+			return checkExprDecimalBounds(d)
 		}
 		if s, ok := args[0].(string); ok {
 			d, err := decimal.NewFromString(strings.TrimSpace(s))
 			if err != nil {
 				return nil, fmt.Errorf("expr run error: float cannot parse %q", s)
 			}
-			return d, nil
+			return checkExprDecimalBounds(d)
 		}
 		if b, ok := args[0].(bool); ok {
 			if b {
@@ -1375,22 +1381,41 @@ func decimalFromLocation(src string, loc file.Location) (decimal.Decimal, bool) 
 	return d, true
 }
 
-func tokenParamsAsDecimals(params TokenParams, imageCount int) map[string]decimal.Decimal {
-	return map[string]decimal.Decimal{
-		"image_count": decimal.NewFromInt(int64(imageCount)),
-		"p":           decimal.NewFromFloat(params.P),
-		"c":           decimal.NewFromFloat(params.C),
-		"len":         decimal.NewFromFloat(params.Len),
-		"cr":          decimal.NewFromFloat(params.CR),
-		"cc":          decimal.NewFromFloat(params.CC),
-		"cc1h":        decimal.NewFromFloat(params.CC1h),
-		"cc12h":       decimal.NewFromFloat(params.CC12h),
-		"img":         decimal.NewFromFloat(params.Img),
-		"img_cr":      decimal.NewFromFloat(params.ImgCR),
-		"img_o":       decimal.NewFromFloat(params.ImgO),
-		"ai":          decimal.NewFromFloat(params.AI),
-		"ao":          decimal.NewFromFloat(params.AO),
+func finiteTokenParamDecimal(name string, v float64) (decimal.Decimal, error) {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return decimal.Zero, fmt.Errorf("expr param %s must be finite", name)
 	}
+	return decimal.NewFromFloat(v), nil
+}
+
+func tokenParamsAsDecimals(params TokenParams, imageCount int) (map[string]decimal.Decimal, error) {
+	vars := map[string]decimal.Decimal{
+		"image_count": decimal.NewFromInt(int64(imageCount)),
+	}
+	for _, pair := range []struct {
+		name string
+		val  float64
+	}{
+		{"p", params.P},
+		{"c", params.C},
+		{"len", params.Len},
+		{"cr", params.CR},
+		{"cc", params.CC},
+		{"cc1h", params.CC1h},
+		{"cc12h", params.CC12h},
+		{"img", params.Img},
+		{"img_cr", params.ImgCR},
+		{"img_o", params.ImgO},
+		{"ai", params.AI},
+		{"ao", params.AO},
+	} {
+		d, err := finiteTokenParamDecimal(pair.name, pair.val)
+		if err != nil {
+			return nil, err
+		}
+		vars[pair.name] = d
+	}
+	return vars, nil
 }
 
 func valueAsDecimal(v any) (decimal.Decimal, bool) {
@@ -1408,6 +1433,9 @@ func valueAsDecimal(v any) (decimal.Decimal, bool) {
 	case int64:
 		return decimal.NewFromInt(x), true
 	case uint:
+		if uint64(x) > uint64(math.MaxInt64) {
+			return decimal.Zero, false
+		}
 		return decimal.NewFromInt(int64(x)), true
 	case uint8:
 		return decimal.NewFromInt(int64(x)), true
@@ -1448,7 +1476,13 @@ func decimalAsInt(v any) (int, bool) {
 
 func decimalAsInt64(v any) (int64, bool) {
 	d, ok := valueAsDecimal(v)
-	if !ok || !d.Equal(d.Truncate(0)) {
+	if !ok {
+		return 0, false
+	}
+	if _, err := checkExprDecimalBounds(d); err != nil {
+		return 0, false
+	}
+	if !d.Equal(d.Truncate(0)) {
 		return 0, false
 	}
 	bi := d.BigInt()
@@ -1460,7 +1494,13 @@ func decimalAsInt64(v any) (int64, bool) {
 
 func decimalAsUint64(v any) (uint64, bool) {
 	d, ok := valueAsDecimal(v)
-	if !ok || !d.Equal(d.Truncate(0)) || d.IsNegative() {
+	if !ok || d.IsNegative() {
+		return 0, false
+	}
+	if _, err := checkExprDecimalBounds(d); err != nil {
+		return 0, false
+	}
+	if !d.Equal(d.Truncate(0)) {
 		return 0, false
 	}
 	bi := d.BigInt()

@@ -375,9 +375,13 @@ func SearchAdtyTicketPageWithFilter(userId int, filter AdtyTicketSearchFilter, b
 	if filter.AssigneeId > 0 && actor.isHandling() {
 		query = query.Where("assignee_id = ?", filter.AssigneeId)
 	}
-	loc, locErr := time.LoadLocation("Asia/Shanghai")
-	if locErr != nil {
-		loc = time.UTC
+	loc, _, locErr := loadAdtyBusinessLocation()
+	if locErr != nil || loc == nil {
+		if fallback, fallbackErr := time.LoadLocation(defaultBusinessTimezone); fallbackErr == nil {
+			loc = fallback
+		} else {
+			loc = time.UTC
+		}
 	}
 	if dateFrom := strings.TrimSpace(filter.DateFrom); dateFrom != "" {
 		t, parseErr := time.ParseInLocation("2006-01-02", dateFrom, loc)
@@ -690,7 +694,7 @@ func GetAdtyTicket(userId int, ticketId int64, workspace ...string) (*AdtyTicket
 		}
 	}
 	images := []model.AdtyTicketImage{}
-	imageQuery := model.DB.Select("id", "object_id", "ticket_id", "message_id", "visibility", "mime", "size", "width", "height", "sha256", "created_at").
+	imageQuery := model.DB.Select("id", "object_id", "ticket_id", "message_id", "uploader_id", "uploader_role", "visibility", "mime", "size", "width", "height", "sha256", "created_at").
 		Where("ticket_id = ? AND COALESCE(delete_pending, false) = false", ticket.Id)
 	if !actor.isHandling() {
 		imageQuery = imageQuery.Where("visibility = ?", model.AdtyTicketVisibilityPublic)
@@ -707,6 +711,14 @@ func GetAdtyTicket(userId int, ticketId int64, workspace ...string) (*AdtyTicket
 		return nil, err
 	}
 	ticket.Status = model.NormalizeAdtyTicketStatus(ticket.Status, ticket.AssigneeId)
+	messageByID := make(map[int64]*model.AdtyTicketMessage, len(messages))
+	for i := range messages {
+		msgCopy := messages[i]
+		messageByID[msgCopy.Id] = &msgCopy
+	}
+	for i := range images {
+		images[i].CanDelete = canDeleteAdtyTicketImage(actor, ticket, images[i], messageByID[images[i].MessageId])
+	}
 	if !actor.isHandling() {
 		ticket.AssigneeId = 0
 		for i := range messages {
@@ -1332,6 +1344,42 @@ func OpenAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...strin
 	return path, imageRow.Mime, nil
 }
 
+// canDeleteAdtyTicketImage is the single source of truth for image deletion
+// permissions, shared between GetAdtyTicket (can_delete) and DeleteAdtyTicketImage.
+func canDeleteAdtyTicketImage(actor adtyTicketActor, ticket model.AdtyTicket, target model.AdtyTicketImage, msg *model.AdtyTicketMessage) bool {
+	status := model.NormalizeAdtyTicketStatus(ticket.Status, ticket.AssigneeId)
+	if status == model.AdtyTicketClosed || status == model.AdtyTicketResolved {
+		return false
+	}
+	if target.Visibility != model.AdtyTicketVisibilityPublic {
+		return actor.isHandling()
+	}
+	if actor.isHandling() {
+		return true
+	}
+	if target.MessageId > 0 {
+		if msg == nil {
+			return false
+		}
+		if ticketSupportAuthor(msg.AuthorRole) || (msg.AuthorRole != "customer" && msg.AuthorId != actor.User.Id) {
+			return false
+		}
+		if msg.AuthorId != actor.User.Id && !isAdtyTicketCustomerController(actor, ticket) {
+			return false
+		}
+		return true
+	}
+	// R10-037: Fail closed for legacy/empty UploaderRole rows on non-handler
+	// delete requests so customers cannot delete pre-upgrade support images.
+	if target.UploaderRole != "customer" {
+		return false
+	}
+	if target.UploaderId != actor.User.Id && !isAdtyTicketCustomerController(actor, ticket) {
+		return false
+	}
+	return true
+}
+
 // DeleteAdtyTicketImage hides an image atomically inside a transaction, records
 // both a ticket event and an official audit log, and removes the backing file
 // after commit so a crash or disk failure never leaves a dangling visible image.
@@ -1354,35 +1402,19 @@ func DeleteAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...str
 		if err := model.AdtyLockForUpdate(tx).Where("id = ? AND ticket_id = ? AND COALESCE(delete_pending,false)=false", imageId, ticket.Id).First(&target).Error; err != nil {
 			return err
 		}
-		if target.Visibility != model.AdtyTicketVisibilityPublic {
-			if !actor.isHandling() {
-				return ErrAdtyTicketForbidden
+		var msgPtr *model.AdtyTicketMessage
+		if target.Visibility == model.AdtyTicketVisibilityPublic && !actor.isHandling() && target.MessageId > 0 {
+			var msg model.AdtyTicketMessage
+			if err := tx.Select("author_id", "author_role").Where("id = ? AND ticket_id = ?", target.MessageId, ticket.Id).First(&msg).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAdtyTicketForbidden
+				}
+				return err
 			}
-		} else if !actor.isHandling() {
-			if target.MessageId > 0 {
-				var msg model.AdtyTicketMessage
-				if err := tx.Select("author_id", "author_role").Where("id = ? AND ticket_id = ?", target.MessageId, ticket.Id).First(&msg).Error; err != nil {
-					if errors.Is(err, gorm.ErrRecordNotFound) {
-						return ErrAdtyTicketForbidden
-					}
-					return err
-				}
-				if ticketSupportAuthor(msg.AuthorRole) || (msg.AuthorRole != "customer" && msg.AuthorId != actor.User.Id) {
-					return ErrAdtyTicketForbidden
-				}
-				if msg.AuthorId != actor.User.Id && !isAdtyTicketCustomerController(actor, ticket) {
-					return ErrAdtyTicketForbidden
-				}
-			} else {
-				// R10-037: Fail closed for legacy/empty UploaderRole rows on non-handler
-				// delete requests so customers cannot delete pre-upgrade support images.
-				if target.UploaderRole != "customer" {
-					return ErrAdtyTicketForbidden
-				}
-				if target.UploaderId != actor.User.Id && !isAdtyTicketCustomerController(actor, ticket) {
-					return ErrAdtyTicketForbidden
-				}
-			}
+			msgPtr = &msg
+		}
+		if !canDeleteAdtyTicketImage(actor, ticket, target, msgPtr) {
+			return ErrAdtyTicketForbidden
 		}
 		if err := tx.Model(&target).Updates(map[string]any{"delete_pending": true, "upload_key": nil}).Error; err != nil {
 			return err

@@ -119,15 +119,11 @@ func adtyQuotaQuoteForSite(site *model.AdtySite, userGroup string, faceUSD decim
 	if _, err := common.WalletQuotaFromDecimalStrict(creditQuota); err != nil || !creditQuota.IsPositive() {
 		return nil, common.NewMessage("Top-up quota exceeds the range the system can represent")
 	}
-	groupRatio := decimal.NewFromFloat(common.GetTopupGroupRatio(userGroup))
-	if !groupRatio.IsPositive() {
-		groupRatio = decimal.NewFromInt(1)
-	}
 	return &AdtyQuote{
 		FaceUSD:         faceUSD,
 		BonusRate:       rate,
 		BonusUSD:        bonus,
 		CreditQuota:     creditQuota.IntPart(),
-		TopupGroupRatio: groupRatio,
+		TopupGroupRatio: decimal.NewFromInt(1),
 	}, nil
 }

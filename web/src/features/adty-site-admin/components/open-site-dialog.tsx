@@ -43,7 +43,7 @@ import { generateOwnerPassword } from '../lib/sites'
 import type { AdminSite, ResellerSettings } from '../types'
 
 const SUBDOMAIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
-const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]{3,32}$/
+const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]{3,20}$/
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 function newOpenIdempotencyKey(): string {
@@ -124,8 +124,10 @@ export function OpenSiteDialog(props: {
 
   let usernameError = ''
   if (trimmedUsername !== '') {
-    if (trimmedUsername.length < 3 || trimmedUsername.length > 32) {
-      usernameError = t('Owner username must be 3 to 32 characters')
+    if (trimmedUsername.length < 3 || trimmedUsername.length > 20) {
+      usernameError = t('Owner username must be 3 to 20 characters')
+    } else if (trimmedUsername.includes('@')) {
+      usernameError = t('Username cannot contain @')
     } else if (!USERNAME_PATTERN.test(trimmedUsername)) {
       usernameError = t(
         'Owner username may only contain letters, digits, underscores, dots, and hyphens'
@@ -136,9 +138,14 @@ export function OpenSiteDialog(props: {
   let passwordError = ''
   if (
     ownerPassword !== '' &&
-    (ownerPassword.length < 8 || ownerPassword.length > 64)
+    (ownerPassword.length < 8 || ownerPassword.length > 128)
   ) {
-    passwordError = t('Owner password must be 8 to 64 characters')
+    passwordError = t('Owner password must be 8 to 128 characters')
+  }
+
+  let displayNameError = ''
+  if (trimmedDisplayName.length > 20) {
+    displayNameError = t('Display name must be 20 characters or fewer')
   }
 
   let emailError = ''
@@ -218,8 +225,9 @@ export function OpenSiteDialog(props: {
     trimmedUsername !== '' &&
     usernameError === '' &&
     ownerPassword.length >= 8 &&
-    ownerPassword.length <= 64 &&
+    ownerPassword.length <= 128 &&
     passwordError === '' &&
+    displayNameError === '' &&
     emailError === '' &&
     confirmed &&
     !openMutation.isPending &&
@@ -471,7 +479,7 @@ export function OpenSiteDialog(props: {
                 <Input
                   id={`${fieldId}-owner-username`}
                   value={ownerUsername}
-                  maxLength={32}
+                  maxLength={20}
                   autoComplete='off'
                   placeholder='partner_admin'
                   aria-invalid={usernameError !== ''}
@@ -484,7 +492,7 @@ export function OpenSiteDialog(props: {
                   <p className='text-destructive text-xs'>{usernameError}</p>
                 ) : (
                   <p className='text-muted-foreground text-xs'>
-                    {t('3 to 32 characters (letters, digits, _, ., -)')}
+                    {t('3 to 20 characters (letters, digits, _, ., -, no @)')}
                   </p>
                 )}
               </div>
@@ -497,9 +505,9 @@ export function OpenSiteDialog(props: {
                     id={`${fieldId}-owner-password`}
                     className='min-w-0 flex-1'
                     value={ownerPassword}
-                    maxLength={64}
+                    maxLength={128}
                     autoComplete='new-password'
-                    placeholder={t('8 to 64 characters')}
+                    placeholder={t('8 to 128 characters')}
                     aria-invalid={passwordError !== ''}
                     onChange={(event) => setOwnerPassword(event.target.value)}
                   />
@@ -525,7 +533,7 @@ export function OpenSiteDialog(props: {
                   <p className='text-destructive text-xs'>{passwordError}</p>
                 ) : (
                   <p className='text-muted-foreground text-xs'>
-                    {t('8 to 64 characters. Copy and deliver it securely to the owner.')}
+                    {t('8 to 128 characters. Copy and deliver it securely to the owner.')}
                   </p>
                 )}
               </div>
@@ -553,11 +561,15 @@ export function OpenSiteDialog(props: {
                 <Input
                   id={`${fieldId}-owner-display-name`}
                   value={ownerDisplayName}
-                  maxLength={40}
+                  maxLength={20}
                   autoComplete='off'
                   placeholder={t('Defaults to owner username')}
+                  aria-invalid={displayNameError !== ''}
                   onChange={(event) => setOwnerDisplayName(event.target.value)}
                 />
+                {displayNameError && (
+                  <p className='text-destructive text-xs'>{displayNameError}</p>
+                )}
               </div>
             </div>
           </section>

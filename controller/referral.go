@@ -63,8 +63,6 @@ func GetAdtyReferralPublicSettings(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{
 		"enabled":                cfg.Enabled,
 		"default_rate":           cfg.DefaultRate,
-		"partner_min_rate":       cfg.PartnerMinRate,
-		"partner_max_rate":       cfg.PartnerMaxRate,
 		"freeze_days":            cfg.FreezeDays,
 		"min_withdraw_usd":       cfg.MinWithdrawUSD,
 		"usdt_withdraw_fee":      cfg.USDTWithdrawFee,

@@ -41,7 +41,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import {
   InputGroup,
@@ -142,7 +141,7 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
     (
       id: string,
       field: Exclude<keyof GroupPricingRow, 'id'>,
-      value: string | boolean
+      value: string
     ) => {
       emitRows(
         rows.map((row) => (row.id === id ? { ...row, [field]: value } : row))
@@ -156,18 +155,19 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
     onSuccess: async (created) => {
       setSearch('')
       emitRows([
-        { id: created.id, ratio: '1', selectable: true, description: '' },
+        { id: created.id, ratio: '1', description: '' },
         ...rows.filter((row) => row.id !== created.id),
       ])
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: adminGroupsQueryKey }),
         queryClient.invalidateQueries({ queryKey: groupDisplayQueryKey }),
+        queryClient.invalidateQueries({ queryKey: ['system-options'] }),
         queryClient.invalidateQueries({ queryKey: ['groups'] }),
         queryClient.invalidateQueries({ queryKey: ['user-groups'] }),
       ])
       setEditing(created)
       toast.success(
-        t('Group {{id}} created. Save group settings to keep its ratio.', {
+        t('Group {{id}} created with default ratio 1.', {
           id: created.id,
         })
       )
@@ -351,40 +351,19 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
                 ),
               },
               {
-                id: 'selectable',
-                header: t('User selectable'),
-                className: 'w-28 text-center',
-                cell: (row) => (
-                  <div className='flex justify-center'>
-                    <Checkbox
-                      checked={row.selectable}
-                      onCheckedChange={(checked) =>
-                        updateRow(row.id, 'selectable', checked === true)
-                      }
-                      aria-label={t('User selectable')}
-                    />
-                  </div>
-                ),
-              },
-              {
                 id: 'description',
                 header: t('Description'),
                 className: 'min-w-48',
-                cell: (row) =>
-                  row.selectable ? (
-                    <Input
-                      value={row.description}
-                      aria-label={t('Group description')}
-                      placeholder={t('Group description')}
-                      onChange={(event) =>
-                        updateRow(row.id, 'description', event.target.value)
-                      }
-                    />
-                  ) : (
-                    <span className='text-muted-foreground px-3 text-sm'>
-                      -
-                    </span>
-                  ),
+                cell: (row) => (
+                  <Input
+                    value={row.description}
+                    aria-label={t('Group description')}
+                    placeholder={t('Group description')}
+                    onChange={(event) =>
+                      updateRow(row.id, 'description', event.target.value)
+                    }
+                  />
+                ),
               },
               {
                 id: 'refs',
@@ -479,7 +458,7 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
         onOpenChange={(open) => !open && setDeleting(null)}
         title={t('Delete group')}
         desc={t(
-          'Delete {{group}}? It will be removed from all group settings. Historical logs will still show its name.',
+          'Delete {{group}}? Legacy user group bindings will be cleared, associated channels and subsite authorizations will be cleaned up, and existing API keys will keep their original group name without being silently rebound. Historical logs will still show its name.',
           { group: deleting ? display.adminLabel(deleting.id) : '' }
         )}
         confirmText={t('Delete')}
@@ -504,23 +483,25 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
               {deletingRefs.users > 0 && (
                 <li>
                   {t(
-                    '{{count}} users currently assigned to this group will be reassigned to an active fallback group.',
+                    '{{count}} legacy users currently bound to this group will have their group binding cleared.',
                     { count: formatNumber(deletingRefs.users, locale) }
                   )}
                 </li>
               )}
               {deletingRefs.tokens > 0 && (
                 <li>
-                  {t('{{count}} API keys reference this group.', {
-                    count: formatNumber(deletingRefs.tokens, locale),
-                  })}
+                  {t(
+                    '{{count}} existing API keys will keep their original group name without being silently rebound.',
+                    { count: formatNumber(deletingRefs.tokens, locale) }
+                  )}
                 </li>
               )}
               {(deletingRefs.sites ?? 0) > 0 && (
                 <li>
-                  {t('{{count}} subsites reference this group.', {
-                    count: formatNumber(deletingRefs.sites ?? 0, locale),
-                  })}
+                  {t(
+                    '{{count}} subsites will have this group removed from their authorized groups.',
+                    { count: formatNumber(deletingRefs.sites ?? 0, locale) }
+                  )}
                 </li>
               )}
             </ul>

@@ -255,9 +255,6 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 		if exists {
 			actualGroupRatioDec = ratio_setting.GetGroupRatioDecimal(autoGroup.(string))
 		}
-		if billed, ok := ratio_setting.GetGroupGroupRatioDecimal(relayInfo.UserGroup, relayInfo.UsingGroup); ok {
-			actualGroupRatioDec = billed
-		}
 		actualGroupRatioDec, _ = AdtyApplySiteMarkupDecimal(ctx, relayInfo.UserId, relayInfo.UsingGroup, actualGroupRatioDec, modelName) // 二开：任务 11.4
 		actualGroupRatio := actualGroupRatioDec.InexactFloat64()
 
@@ -744,6 +741,7 @@ func postConsumeDirectWithPrefix(prefix string, relayInfo *relaycommon.RelayInfo
 		if k, d, ok := AdtySiteMarkupFromContext(c); ok {
 			spec.SiteId, spec.SiteMarkup, spec.SiteCostFactor = c.GetInt(AdtySiteIdContextKey), k, d
 		}
+		applySnapshotToBillingOperation(&spec, AdtyFrozenPriceSnapshot(c))
 		c.Set(adtyDurableBillingContextKey, true)
 		c.Set(adtyBillingOperationContextKey, key)
 	}

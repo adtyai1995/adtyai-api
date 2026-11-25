@@ -18,10 +18,11 @@ var adtyEpayRand = func() *rand.Rand { return rand.New(rand.NewPCG(uint64(time.N
 // adtyEpaySumToday 统计当天已到账金额，测试可以替换。
 var adtyEpaySumToday = model.SumAdtyEpayPaidToday
 
-// adtyDayStart 是 now 所在自然日的 0 点（服务器时区）。
+// adtyDayStart 是 now 所在自然日的 0 点（业务时区）。
 func adtyDayStart(now int64) int64 {
-	t := time.Unix(now, 0)
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()).Unix()
+	loc := model.AdtyBusinessLocation(nil)
+	t := time.Unix(now, 0).In(loc)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc).Unix()
 }
 
 // PickAdtyEpayChannel 按规则挑通道：只看启用的、支持这种方式的、金额在单笔范围内、

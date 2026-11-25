@@ -146,6 +146,7 @@ export type PaymentOrphanReview = {
   exposure_amount: string
   created_at: number
   operator_id: number
+  operator_username?: string
 }
 
 export type PaymentOrphanReviewRequest = {
@@ -238,6 +239,7 @@ export type OrderTraceEntry = {
   frozen_delta?: string
   withdrawn_delta?: string
   operator_id?: number
+  operator_username?: string
   note?: string
 }
 
@@ -400,6 +402,7 @@ export type GiftFulfillment = {
   id: number
   trade_no: string
   user_id: number
+  username?: string
   site_id: number
   bonus_usd: string
   bonus_quota: number
@@ -536,6 +539,7 @@ export type ManualRefundRecord = {
   request_usd: string
   request_quota: number
   reason: string
+  reconcile_orphan_id?: number
   applied_at?: number
   approved_at?: number
   approve_note?: string
@@ -576,6 +580,14 @@ export async function previewTopupRefund(
   return requireServerSuccess(res.data).data
 }
 
+export type RefundRequest = {
+  reason: string
+  idempotency_key: string
+  refund_quota?: number
+  refund_usd?: string
+  reconcile_orphan_id?: number
+}
+
 export async function refundTopup(
   tradeNo: string,
   reason: string,
@@ -583,16 +595,22 @@ export async function refundTopup(
   refundQuota: number,
   refundUsd?: string,
   proofToken?: string,
-  ownerMode = false
+  ownerMode = false,
+  reconcileOrphanId?: number
 ) {
+  const body: RefundRequest = {
+    reason,
+    idempotency_key: idempotencyKey,
+    refund_quota: refundUsd ? undefined : refundQuota,
+    refund_usd: refundUsd || undefined,
+    reconcile_orphan_id:
+      !ownerMode && reconcileOrphanId && reconcileOrphanId > 0
+        ? reconcileOrphanId
+        : undefined,
+  }
   const res = await api.post<ApiResponse<ManualRefundResult>>(
     `${ownerMode ? '/api/adty/site/orders' : '/api/adty/admin/topup'}/${encodeURIComponent(tradeNo)}/refund`,
-    {
-      reason,
-      idempotency_key: idempotencyKey,
-      refund_quota: refundUsd ? undefined : refundQuota,
-      refund_usd: refundUsd || undefined,
-    },
+    body,
     proofHeaders(proofToken)
   )
   return requireServerSuccess(res.data).data

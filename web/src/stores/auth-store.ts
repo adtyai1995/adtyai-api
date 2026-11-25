@@ -55,6 +55,8 @@ export interface AuthUser {
   adty_site_owner?: boolean
   /** True when the referral program is enabled for the current site. */
   adty_referral_enabled?: boolean
+  /** True when a main-site user migrated from a closed sub-site still has legacy sub-site commissions. */
+  adty_has_legacy_site_commissions?: boolean
   /** True when the user belongs to an active team or led a closed team. */
   adty_has_team?: boolean
   /** Reseller sub-site id for sub-site customers; 0 for main-site accounts. */

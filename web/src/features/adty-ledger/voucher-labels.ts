@@ -32,7 +32,9 @@ export type Voucher = {
   source_site_id: number
   target_site_id: number
   issuer_id: number
+  issuer_username?: string
   redeemer_id: number
+  redeemer_username?: string
   inherited_by_main: boolean
   trade_no: string
   created_at: number

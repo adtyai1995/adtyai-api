@@ -83,8 +83,6 @@ function resellerFieldLabel(key: string, t: (k: string) => string): string {
       return t('Site customers sign in only on their site')
     case 'custom_domain_enabled':
       return t('Custom domains')
-    case 'sender_domain_enabled':
-      return t('Site owner sender domains')
     case 'self_use_check_enabled':
       return t('Check for self-use')
     case 'migration_check_enabled':
@@ -146,10 +144,6 @@ function resellerWarningText(warning: string, t: (k: string) => string): string 
       return t(
         'Custom domains are on but Turnstile is not configured (account id or widgets missing): new domains will not be registered for human verification.'
       )
-    case 'Sender domains are on but the Resend API key is empty: sender domains cannot be verified.':
-      return t(
-        'Sender domains are on but the Resend API key is empty: sender domains cannot be verified.'
-      )
     default:
       if (warning.startsWith('cleared_secret:')) {
         return t(
@@ -162,9 +156,9 @@ function resellerWarningText(warning: string, t: (k: string) => string): string 
 
 /**
  * Every adty_reseller_setting key (task 11.9, convention I). Money keys show
- * "Not configured" until set and keep the master switch off; custom and
- * sender domains stay off until Cloudflare and Resend are filled in. The
- * server checks the same rules; this only explains them up front.
+ * "Not configured" until set and keep the master switch off; custom domains
+ * stay off until Cloudflare is filled in. The server checks the same rules;
+ * this only explains them up front.
  */
 export function SettingsPanel(props: {
   section: 'supply' | 'domains' | 'policies'
@@ -672,22 +666,6 @@ export function SettingsPanel(props: {
                   )
             }
             onCheckedChange={(value) => set('custom_domain_enabled', value)}
-          />
-          <SwitchRow
-            label={t('Site owner sender domains')}
-            checked={drafts.sender_domain_enabled}
-            disabled={
-              disabled ||
-              (!saved.resend_configured && !drafts.sender_domain_enabled)
-            }
-            hint={
-              saved.resend_configured
-                ? undefined
-                : t(
-                    'Fill in the Resend API key under System Settings > Email first.'
-                  )
-            }
-            onCheckedChange={(value) => set('sender_domain_enabled', value)}
           />
         </fieldset>
       )}

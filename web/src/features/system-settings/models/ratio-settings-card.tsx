@@ -42,7 +42,6 @@ import { handleServerError } from '@/lib/handle-server-error'
 import { SettingsPageTitleStatusPortal } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
-import { positiveIntegerSchema } from '../utils/numeric-field'
 import { GroupRatioForm } from './group-ratio-form'
 import { ModelRatioForm } from './model-ratio-form'
 import { ToolPriceSettings } from './tool-price-settings'
@@ -134,19 +133,7 @@ const createModelSchema = (t: Translate) =>
 const createGroupSchema = (t: Translate) =>
   z.object({
     GroupRatio: createJsonStringField(t),
-    TopupGroupRatio: createJsonStringField(t),
     UserUsableGroups: createJsonStringField(t),
-    GroupGroupRatio: createJsonStringField(t),
-    AutoGroups: createJsonStringField(t, {
-      predicate: (parsed) =>
-        Array.isArray(parsed) &&
-        parsed.every((item) => typeof item === 'string'),
-      predicateMessage: 'Expected a JSON array of group identifiers',
-    }),
-    MaxTokenAutoGroups: positiveIntegerSchema(t('Enter a positive integer')),
-    DefaultUseAutoGroup: z.boolean(),
-    GroupSpecialUsableGroup: createJsonStringField(t),
-    GroupModelAllow: createJsonStringField(t).optional(),
   })
 
 type ModelFormValues = z.infer<ReturnType<typeof createModelSchema>>
@@ -154,16 +141,8 @@ type GroupFormValues = z.infer<ReturnType<typeof createGroupSchema>>
 
 function formatGroupFormValues(values: GroupFormValues): GroupFormValues {
   return {
-    ...values,
     GroupRatio: formatJsonForTextarea(values.GroupRatio),
-    TopupGroupRatio: formatJsonForTextarea(values.TopupGroupRatio),
     UserUsableGroups: formatJsonForTextarea(values.UserUsableGroups),
-    GroupGroupRatio: formatJsonForTextarea(values.GroupGroupRatio),
-    AutoGroups: formatJsonForTextarea(values.AutoGroups),
-    GroupSpecialUsableGroup: formatJsonForTextarea(
-      values.GroupSpecialUsableGroup
-    ),
-    GroupModelAllow: formatJsonForTextarea(values.GroupModelAllow ?? '{}'),
   }
 }
 
@@ -275,16 +254,7 @@ export function RatioSettingsCard({
 
   const groupNormalizedDefaults = useRef({
     GroupRatio: normalizeJsonString(groupDefaults.GroupRatio),
-    TopupGroupRatio: normalizeJsonString(groupDefaults.TopupGroupRatio),
     UserUsableGroups: normalizeJsonString(groupDefaults.UserUsableGroups),
-    GroupGroupRatio: normalizeJsonString(groupDefaults.GroupGroupRatio),
-    AutoGroups: normalizeJsonString(groupDefaults.AutoGroups),
-    MaxTokenAutoGroups: groupDefaults.MaxTokenAutoGroups,
-    DefaultUseAutoGroup: groupDefaults.DefaultUseAutoGroup,
-    GroupSpecialUsableGroup: normalizeJsonString(
-      groupDefaults.GroupSpecialUsableGroup
-    ),
-    GroupModelAllow: normalizeJsonString(groupDefaults.GroupModelAllow ?? '{}'),
   })
   const groupNormalizedSerializedRef = useRef(
     JSON.stringify(groupNormalizedDefaults.current)
@@ -426,18 +396,7 @@ export function RatioSettingsCard({
   useEffect(() => {
     const nextGroupNormalized = {
       GroupRatio: normalizeJsonString(groupDefaults.GroupRatio),
-      TopupGroupRatio: normalizeJsonString(groupDefaults.TopupGroupRatio),
       UserUsableGroups: normalizeJsonString(groupDefaults.UserUsableGroups),
-      GroupGroupRatio: normalizeJsonString(groupDefaults.GroupGroupRatio),
-      AutoGroups: normalizeJsonString(groupDefaults.AutoGroups),
-      MaxTokenAutoGroups: groupDefaults.MaxTokenAutoGroups,
-      DefaultUseAutoGroup: groupDefaults.DefaultUseAutoGroup,
-      GroupSpecialUsableGroup: normalizeJsonString(
-        groupDefaults.GroupSpecialUsableGroup
-      ),
-      GroupModelAllow: normalizeJsonString(
-        groupDefaults.GroupModelAllow ?? '{}'
-      ),
     }
     const serialized = JSON.stringify(nextGroupNormalized)
     if (serialized === groupNormalizedSerializedRef.current) return
@@ -522,22 +481,7 @@ export function RatioSettingsCard({
     async (values: GroupFormValues) => {
       const normalized = {
         GroupRatio: normalizeJsonString(values.GroupRatio),
-        TopupGroupRatio: normalizeJsonString(values.TopupGroupRatio),
         UserUsableGroups: normalizeJsonString(values.UserUsableGroups),
-        GroupGroupRatio: normalizeJsonString(values.GroupGroupRatio),
-        AutoGroups: normalizeJsonString(values.AutoGroups),
-        MaxTokenAutoGroups: values.MaxTokenAutoGroups,
-        DefaultUseAutoGroup: values.DefaultUseAutoGroup,
-        GroupSpecialUsableGroup: normalizeJsonString(
-          values.GroupSpecialUsableGroup
-        ),
-        GroupModelAllow: normalizeJsonString(values.GroupModelAllow ?? '{}'),
-      }
-
-      // Map form field names to API keys (most are 1:1, except GroupSpecialUsableGroup)
-      const apiKeyMap: Record<string, string> = {
-        GroupSpecialUsableGroup:
-          'group_ratio_setting.group_special_usable_group',
       }
 
       const updates = (
@@ -547,8 +491,7 @@ export function RatioSettingsCard({
       )
 
       for (const key of updates) {
-        const apiKey = apiKeyMap[key] || key
-        await updateOption.mutateAsync({ key: apiKey, value: normalized[key] })
+        await updateOption.mutateAsync({ key, value: normalized[key] })
         groupNormalizedDefaults.current = {
           ...groupNormalizedDefaults.current,
           [key]: normalized[key],
@@ -556,13 +499,9 @@ export function RatioSettingsCard({
         groupNormalizedSerializedRef.current = JSON.stringify(
           groupNormalizedDefaults.current
         )
-        const committedValue =
-          key === 'GroupModelAllow'
-            ? (values.GroupModelAllow ?? '{}')
-            : values[key]
         groupFormDefaultsRef.current = {
           ...groupFormDefaultsRef.current,
-          [key]: committedValue,
+          [key]: values[key],
         }
         groupForm.reset(groupFormDefaultsRef.current, {
           keepValues: true,
@@ -573,7 +512,6 @@ export function RatioSettingsCard({
       const nextDefaults = formatGroupFormValues({
         ...groupFormDefaultsRef.current,
         ...values,
-        GroupModelAllow: values.GroupModelAllow ?? '{}',
       })
       groupFormDefaultsRef.current = nextDefaults
       groupForm.reset(nextDefaults, {

@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink } from 'lucide-react'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
@@ -154,6 +154,31 @@ export function WithdrawalPanel(props: {
   const [reason, setReason] = useState('')
   const [txnNo, setTxnNo] = useState('')
   const [proofUrl, setProofUrl] = useState('')
+  const proofFileRef = useRef<HTMLInputElement | null>(null)
+  const activePayingIdRef = useRef<number | null>(null)
+  const resetPayForm = () => {
+    setTxnNo('')
+    setProofUrl('')
+    if (proofFileRef.current) proofFileRef.current.value = ''
+  }
+  const openPaying = (row: AdminReferralWithdrawal) => {
+    activePayingIdRef.current = row.id
+    resetPayForm()
+    setPaying(row)
+  }
+  const closePaying = () => {
+    activePayingIdRef.current = null
+    setPaying(null)
+    resetPayForm()
+  }
+  const openRejecting = (row: AdminReferralWithdrawal) => {
+    setReason('')
+    setRejecting(row)
+  }
+  const closeRejecting = () => {
+    setRejecting(null)
+    setReason('')
+  }
   const params = { p: page, status }
   const query = useQuery({
     queryKey: adminReferralKeys.list('withdrawals', params),
@@ -168,8 +193,7 @@ export function WithdrawalPanel(props: {
       reviewWithdrawal(input.row.id, { approve: input.approve, reason }),
     onSuccess: () => {
       toast.success(t('Saved successfully'))
-      setRejecting(null)
-      setReason('')
+      closeRejecting()
       void refresh()
     },
     onError: (err) => handleServerError(err),
@@ -183,17 +207,19 @@ export function WithdrawalPanel(props: {
       }),
     onSuccess: () => {
       toast.success(t('Marked as paid'))
-      setPaying(null)
-      setTxnNo('')
-      setProofUrl('')
+      closePaying()
       void refresh()
     },
     onError: (err) => handleServerError(err),
   })
   const upload = useMutation({
-    mutationFn: (file: File) =>
-      uploadReferralAsset(file, '/api/user/admin/referral/upload'),
-    onSuccess: setProofUrl,
+    mutationFn: (input: { file: File; withdrawalId: number }) =>
+      uploadReferralAsset(input.file, '/api/user/admin/referral/upload'),
+    onSuccess: (url, input) => {
+      if (activePayingIdRef.current === input.withdrawalId) {
+        setProofUrl(url)
+      }
+    },
     onError: (err) => handleServerError(err),
   })
 
@@ -252,16 +278,23 @@ export function WithdrawalPanel(props: {
           {
             id: 'payout',
             header: t('Amount to pay'),
-            cell: (row) => (
-              <div className='flex flex-col'>
-                <span className='font-semibold' data-testid='payout'>
-                  {payoutText(row, formatUsd(row.amount, locale))}
-                </span>
-                <span className='text-muted-foreground text-xs'>
-                  {formatUsd(row.amount, locale)}
-                </span>
-              </div>
-            ),
+            cell: (row) => {
+              const usdText = formatUsd(
+                row.amount,
+                locale,
+                row.account_type === 'usdt' ? 6 : 2
+              )
+              return (
+                <div className='flex flex-col'>
+                  <span className='font-semibold' data-testid='payout'>
+                    {payoutText(row, usdText)}
+                  </span>
+                  <span className='text-muted-foreground text-xs'>
+                    {usdText}
+                  </span>
+                </div>
+              )
+            },
           },
           {
             id: 'status',
@@ -299,7 +332,7 @@ export function WithdrawalPanel(props: {
                     <Button
                       size='sm'
                       variant='outline'
-                      onClick={() => setRejecting(row)}
+                      onClick={() => openRejecting(row)}
                     >
                       {t('Reject')}
                     </Button>
@@ -308,7 +341,7 @@ export function WithdrawalPanel(props: {
                 {row.status === 'approved' && (
                   <>
                     {props.canPayout && (
-                      <Button size='sm' onClick={() => setPaying(row)}>
+                      <Button size='sm' onClick={() => openPaying(row)}>
                         {t('Mark as paid')}
                       </Button>
                     )}
@@ -316,7 +349,7 @@ export function WithdrawalPanel(props: {
                       <Button
                         size='sm'
                         variant='outline'
-                        onClick={() => setRejecting(row)}
+                        onClick={() => openRejecting(row)}
                       >
                         {t('Reject')}
                       </Button>
@@ -337,7 +370,9 @@ export function WithdrawalPanel(props: {
 
       <Dialog
         open={rejecting !== null}
-        onOpenChange={(open) => !open && setRejecting(null)}
+        onOpenChange={(open) => {
+          if (!open) closeRejecting()
+        }}
         title={t('Reject the withdrawal')}
         footer={
           <Button
@@ -363,10 +398,21 @@ export function WithdrawalPanel(props: {
 
       <Dialog
         open={paying !== null}
-        onOpenChange={(open) => !open && setPaying(null)}
+        onOpenChange={(open) => {
+          if (!open) closePaying()
+        }}
         title={t('Mark as paid')}
         description={
-          paying ? payoutText(paying, formatUsd(paying.amount, locale)) : ''
+          paying
+            ? payoutText(
+                paying,
+                formatUsd(
+                  paying.amount,
+                  locale,
+                  paying.account_type === 'usdt' ? 6 : 2
+                )
+              )
+            : ''
         }
         footer={
           <Button
@@ -440,12 +486,15 @@ export function WithdrawalPanel(props: {
           <div className='space-y-2'>
             <Label htmlFor='pay-proof'>{t('Payment proof')}</Label>
             <Input
+              ref={proofFileRef}
               id='pay-proof'
               type='file'
               accept='image/png,image/jpeg,image/webp'
               onChange={(event) => {
                 const file = event.target.files?.[0]
-                if (file) upload.mutate(file)
+                if (file && paying) {
+                  upload.mutate({ file, withdrawalId: paying.id })
+                }
               }}
             />
           </div>

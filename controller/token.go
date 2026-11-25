@@ -128,7 +128,7 @@ func validatePersonalTokenGroup(c *gin.Context, siteID int, group string) bool {
 		return false
 	}
 	if !ratio_setting.ContainsGroupRatio(group) || !service.SiteGroupAllowed(siteID, group) {
-		common.ApiErrorT(c, "Auto group {{group}} is unavailable or unauthorized", map[string]any{"group": group})
+		common.ApiErrorT(c, "Group {{group}} is unavailable or unauthorized", map[string]any{"group": group})
 		return false
 	}
 	return true
@@ -154,7 +154,7 @@ type tokenResponse struct {
 
 func maxTokenQuota() int {
 	quota, err := common.WalletQuotaFromDecimalStrict(
-		decimal.NewFromInt(1_000_000_000).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
+		decimal.NewFromInt(1_000_000_000).Mul(common.QuotaPerUnitDecimal()),
 	)
 	if err != nil {
 		return common.MaxWalletQuota
@@ -685,24 +685,12 @@ func UpdateToken(c *gin.Context) {
 		if !request.groupSet {
 			targetGroup = previous.Group
 		}
-		// Allow updating non-group fields on legacy tokens that already had "" or "auto",
-		// while rejecting any change to empty or "auto" (and requiring a valid concrete group otherwise).
-		legacyGroupUnchanged := targetGroup == previous.Group && (previous.Group == "" || previous.Group == "auto")
-		if !legacyGroupUnchanged {
-			if !validatePersonalTokenGroup(c, siteID, targetGroup) {
-				return
-			}
+		if !validatePersonalTokenGroup(c, siteID, targetGroup) {
+			return
 		}
 		cleanToken.Group = targetGroup
-		cleanToken.CrossGroupRetry = token.CrossGroupRetry
-		if cleanToken.Group != "auto" {
-			cleanToken.CrossGroupRetry = false
-			_ = cleanToken.SetAutoGroups(nil)
-		} else if request.AutoGroups.Set {
-			if !setTokenAutoGroups(c, cleanToken, request.AutoGroups.Groups) {
-				return
-			}
-		}
+		cleanToken.CrossGroupRetry = false
+		_ = cleanToken.SetAutoGroups(nil)
 		keyLimitPatch = request.keyLimitPatch()
 	}
 	action := "token.update"

@@ -684,14 +684,12 @@ func AdjustAdtySiteTierPrincipal(siteID, operatorID int, mode string, amountUSD 
 			if selected == nil {
 				selected = lowestEnabledAdtySiteTier(tiers)
 			}
-			if selected != nil {
+			if selected != nil && selected.CostFactor.IsPositive() {
 				tierAfter = selected.Code
-			} else {
-				tierAfter = ""
-			}
-			if tierAfter != tierBefore {
-				if err := applyAdtySiteTierAssignmentTx(tx, siteID, selected, time.Now().Unix()); err != nil {
-					return err
+				if tierAfter != tierBefore {
+					if err := applyAdtySiteTierAssignmentTx(tx, siteID, selected, time.Now().Unix()); err != nil {
+						return err
+					}
 				}
 			}
 		}

@@ -22,6 +22,7 @@ import { StaticDataTable } from '@/components/data-table/static/static-data-tabl
 import { EmptyState } from '@/components/empty-state'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber, formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 
 import type { OrderTraceEntry } from '../api'
 import { ORDER_TRACE_LABELS } from '../trace-labels'
@@ -97,8 +98,12 @@ export function OrderTraceTable(props: { entries: OrderTraceEntry[] }) {
             <div className='max-w-xs break-all'>
               <span>{entry.reference || `#${entry.id}`}</span>
               {entry.operator_id !== undefined && entry.operator_id > 0 && (
-                <p>
-                  {t('Operator')}: #{entry.operator_id}
+                <p className='tabular-nums'>
+                  {t('Operator')}:{' '}
+                  {formatUserIdentity(
+                    entry.operator_id,
+                    entry.operator_username
+                  )}
                 </p>
               )}
               {entry.note && (

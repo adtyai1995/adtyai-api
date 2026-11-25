@@ -130,7 +130,7 @@ export function SiteCustomerReferral() {
         <CardContent className='flex flex-col gap-6 py-6 md:flex-row md:items-center md:justify-between'>
           <div className='flex min-w-0 flex-col gap-4'>
             <div className='flex flex-col gap-1'>
-              <span className='text-background/70 text-xs tracking-wider uppercase'>
+              <span className='text-background/70 text-xs'>
                 {t('Your site invite link')}
               </span>
               <div className='flex items-center gap-2'>

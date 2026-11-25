@@ -146,7 +146,7 @@ func RefundUserQuotaForOperation(id int, quota int, operationKey string) error {
 	} else if err := common.ValidateWalletQuota(quota); err != nil {
 		return err
 	}
-	return DB.Transaction(func(tx *gorm.DB) error {
+	err := DB.Transaction(func(tx *gorm.DB) error {
 		if quota > 0 {
 			var user User
 			if err := lockForUpdate(tx).First(&user, id).Error; err != nil {
@@ -160,6 +160,12 @@ func RefundUserQuotaForOperation(id int, quota int, operationKey string) error {
 		}
 		return ReleaseAdtyFundAllocationsTx(tx, id, operationKey)
 	})
+	if err == nil && quota > 0 {
+		if cacheErr := invalidateUserCache(id); cacheErr != nil {
+			common.SysLog(common.LogText("failed to invalidate user cache after refund for user %d: %s", id, cacheErr.Error()))
+		}
+	}
+	return err
 }
 
 func reserveTokenQuotaDB(id int, quota int) (bool, error) {

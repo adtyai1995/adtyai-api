@@ -195,12 +195,12 @@ func cohereHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		defer service.CloseResponseBodyGracefully(resp)
 	}
 	createdTime := common.GetTimestamp()
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+	responseBody, apiErr := helper.ReadResponseBody(c, resp, types.ErrorCodeBadResponseBody)
+	if apiErr != nil {
+		return nil, apiErr
 	}
 	var cohereResp CohereResponseResult
-	err = common.Unmarshal(responseBody, &cohereResp)
+	err := common.Unmarshal(responseBody, &cohereResp)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
@@ -243,12 +243,12 @@ func cohereRerankHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 	if resp != nil {
 		defer service.CloseResponseBodyGracefully(resp)
 	}
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+	responseBody, apiErr := helper.ReadResponseBody(c, resp, types.ErrorCodeBadResponseBody)
+	if apiErr != nil {
+		return nil, apiErr
 	}
 	var cohereResp CohereRerankResponseResult
-	err = common.Unmarshal(responseBody, &cohereResp)
+	err := common.Unmarshal(responseBody, &cohereResp)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
@@ -315,10 +315,14 @@ func cohereEmbeddingHandler(c *gin.Context, resp *http.Response, info *relaycomm
 		}
 	}
 	inputTokens := info.GetEstimatePromptTokens()
+	var clamp *common.QuotaClamp
 	if response.Meta.BilledUnits.InputTokens != nil && *response.Meta.BilledUnits.InputTokens > 0 {
-		inputTokens = common.QuotaFromFloat(*response.Meta.BilledUnits.InputTokens)
+		inputTokens, clamp = common.QuotaFromFloatChecked(*response.Meta.BilledUnits.InputTokens)
 	} else if response.Meta.Tokens.InputTokens != nil && *response.Meta.Tokens.InputTokens > 0 {
-		inputTokens = common.QuotaFromFloat(*response.Meta.Tokens.InputTokens)
+		inputTokens, clamp = common.QuotaFromFloatChecked(*response.Meta.Tokens.InputTokens)
+	}
+	if clamp != nil && info.QuotaClamp == nil {
+		info.QuotaClamp = clamp
 	}
 	if inputTokens < 0 || inputTokens > common.MaxQuota {
 		return nil, types.NewError(errors.New("Cohere embedding token estimate is out of range"), types.ErrorCodeBadResponseBody)

@@ -19,7 +19,8 @@ For commercial licensing, please contact support@quantumnous.com
 import { useTranslation } from 'react-i18next'
 
 import { Skeleton } from '@/components/ui/skeleton'
-import { formatQuota } from '@/lib/format'
+import { toIntlLocale } from '@/i18n/languages'
+import { formatNumber, formatQuota } from '@/lib/format'
 
 import type { UserWalletData } from '../types'
 import { WalletLotProjectionLines } from './wallet-lot-projection'
@@ -31,7 +32,8 @@ interface WalletStatsCardProps {
 }
 
 export function WalletStatsCard(props: WalletStatsCardProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const hasUser = props.user != null && !props.error
 
   if (props.loading) {
@@ -68,7 +70,7 @@ export function WalletStatsCard(props: WalletStatsCardProps) {
       label: t('API Requests'),
       value:
         hasUser && props.user?.request_count != null
-          ? props.user.request_count.toLocaleString()
+          ? formatNumber(props.user.request_count, locale)
           : '—',
       description: t('Total requests made'),
     },

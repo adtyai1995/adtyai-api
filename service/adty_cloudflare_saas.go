@@ -602,6 +602,15 @@ func AddAdtySiteDomainWithRole(ctx context.Context, ownerUserId int, rawHost, ro
 			domain = existing
 			return nil
 		}
+		var activeCustomCount int64
+		if err := tx.Model(&model.AdtySiteDomain{}).
+			Where("site_id = ? AND managed_by <> ? AND status <> ?", site.Id, "platform", model.AdtySiteDomainRemoved).
+			Count(&activeCustomCount).Error; err != nil {
+			return err
+		}
+		if activeCustomCount == 0 {
+			return common.NewMessage("Please configure both website and API custom domains together first")
+		}
 		excludeId := 0
 		if found {
 			excludeId = existing.Id

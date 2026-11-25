@@ -370,9 +370,10 @@ func SetAdtyEpayMethodEnabled(methodID int, enabled bool) error {
 	return DB.Model(&AdtyEpayChannelMethod{}).Where("id = ?", methodID).Update("enabled", enabled).Error
 }
 
-func adtyEpayDayStart(now int64) int64 {
-	t := time.Unix(now, 0)
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()).Unix()
+func adtyEpayDayStart(tx *gorm.DB, now int64) int64 {
+	loc := AdtyBusinessLocation(tx)
+	t := time.Unix(now, 0).In(loc)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc).Unix()
 }
 
 // lockAdtyEpayDailyRoom locks the method row and rejects the order when paid
@@ -385,7 +386,7 @@ func lockAdtyEpayDailyRoom(tx *gorm.DB, channelId int, method string, amount dec
 	if !row.DailyLimitCNY.IsPositive() {
 		return nil
 	}
-	dayStart := adtyEpayDayStart(now)
+	dayStart := adtyEpayDayStart(tx, now)
 	var total decimal.Decimal
 	err := tx.Table("adty_topup_orders AS a").
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").

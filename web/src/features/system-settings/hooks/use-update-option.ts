@@ -25,12 +25,11 @@ import { adtySiteQueryKey } from '@/features/adty-site/api'
 import { handleServerError } from '@/lib/handle-server-error'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
-import { updatePasskeyDomains, updateSystemOption } from '../api'
+import { updateSystemOption } from '../api'
 import type {
   SystemOption,
   SystemOptionsResponse,
   UpdateOptionRequest,
-  UpdatePasskeyDomainsRequest,
 } from '../types'
 
 function isSensitiveOptionKey(key: string): boolean {
@@ -119,19 +118,10 @@ const STATUS_RELATED_KEYS = new Set([
   'DataExportDefaultTime',
   'DemoSiteEnabled',
   'SelfUseModeEnabled',
-  'DefaultUseAutoGroup',
   'oidc.display_name',
   'ServerAddress',
   'adty_site_setting.api_base_url',
   'DefaultCollapseSidebar',
-  'passkey.enabled',
-  'passkey.rp_display_name',
-  'passkey.rp_id',
-  'passkey.legacy_rp_ids',
-  'passkey.origins',
-  'passkey.allow_insecure_origin',
-  'passkey.user_verification',
-  'passkey.attachment_preference',
   'adty_bepusdt.enabled',
   'adty_bepusdt.base_url',
   'adty_bepusdt.secret',
@@ -231,64 +221,5 @@ export function useUpdateOption() {
     onError: (error: Error) => {
       handleServerError(error, i18next.t('Failed to update setting'))
     },
-  })
-}
-
-export function useUpdatePasskeyDomains() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: async (request: UpdatePasskeyDomainsRequest) => {
-      const result = await updatePasskeyDomains(request)
-      if (
-        result.code === 'PASSKEY_RP_ID_REMOVAL_CONFIRMATION_REQUIRED' &&
-        result.data
-      ) {
-        return result
-      }
-      return requireServerSuccess(result)
-    },
-    onSuccess: (result, request) => {
-      if (request.preview || !result.success) return
-      const nextRpId = result.data?.rp_id ?? request.rp_id
-      const nextLegacyRpIds =
-        result.data?.legacy_rp_ids ?? request.legacy_rp_ids
-      const nextOrigins = result.data?.origins ?? request.origins
-      queryClient.setQueryData<SystemOptionsResponse>(
-        ['system-options'],
-        (current) => {
-          if (!current || !Array.isArray(current.data)) return current
-          let nextData = upsertSystemOption(
-            current.data,
-            'passkey.rp_id',
-            nextRpId
-          )
-          nextData = upsertSystemOption(
-            nextData,
-            'passkey.legacy_rp_ids',
-            nextLegacyRpIds
-          )
-          nextData = upsertSystemOption(
-            nextData,
-            'passkey.origins',
-            nextOrigins
-          )
-          if (nextData === current.data) return current
-          return { ...current, data: nextData }
-        }
-      )
-      queryClient.invalidateQueries({
-        queryKey: ['system-options'],
-        refetchType: 'none',
-      })
-      queryClient.invalidateQueries({ queryKey: ['status'] })
-      try {
-        window.localStorage.removeItem('status')
-      } catch {
-        /* Storage may be disabled. */
-      }
-      toast.success(i18next.t('Setting updated successfully'))
-    },
-    onError: (error: Error) =>
-      handleServerError(error, i18next.t('Failed to update setting')),
   })
 }

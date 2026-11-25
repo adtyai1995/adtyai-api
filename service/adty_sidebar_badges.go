@@ -14,7 +14,6 @@ import (
 // part A. Unconfirmed kinds in part B must not appear in the API.
 const (
 	AdtyBadgeNotificationUnread                   = "notification_unread"
-	AdtyBadgeReferralPartners                     = "referral_partners"
 	AdtyBadgeReferralWithdrawalsPending           = "referral_withdrawals_pending"
 	AdtyBadgeReferralWithdrawalsApproved          = "referral_withdrawals_approved"
 	AdtyBadgeSiteWithdrawalsPending               = "site_withdrawals_pending"
@@ -22,7 +21,6 @@ const (
 	AdtyBadgeSiteInviteCommissionsPendingCoverage = "site_invite_commissions_pending_coverage"
 	AdtyBadgeReferralCommissionsFrozen            = "referral_commissions_frozen"
 	AdtyBadgeFundAnomaliesOpen                    = "fund_anomalies_open"
-	AdtyBadgeStaffBalancePending                  = "staff_balance_pending"
 	AdtyBadgeTicketsPending                       = "tickets_pending"
 	AdtyBadgePlatformTicketsPending               = "platform_tickets_pending"
 	AdtyBadgeOwnerTicketsPending                  = "owner_tickets_pending"
@@ -35,7 +33,6 @@ const (
 func AdtySidebarBadgeConfirmedKinds() []string {
 	return []string{
 		AdtyBadgeNotificationUnread,
-		AdtyBadgeReferralPartners,
 		AdtyBadgeReferralWithdrawalsPending,
 		AdtyBadgeReferralWithdrawalsApproved,
 		AdtyBadgeSiteWithdrawalsPending,
@@ -193,7 +190,7 @@ func CollectAdtyReferralAdminBadges(userID int, tokenScopes ...[]string) (AdtyRe
 	if err := collectAdtyReferralAdminBadgeCounts(counts, actor, nil, false, tokenScopes...); err != nil {
 		return out, err
 	}
-	return AdtyReferralAdminBadges{Partners: counts[AdtyBadgeReferralPartners], PendingWithdrawals: counts[AdtyBadgeReferralWithdrawalsPending], ApprovedWithdrawals: counts[AdtyBadgeReferralWithdrawalsApproved], FrozenCommissions: counts[AdtyBadgeReferralCommissionsFrozen]}, nil
+	return AdtyReferralAdminBadges{PendingWithdrawals: counts[AdtyBadgeReferralWithdrawalsPending], ApprovedWithdrawals: counts[AdtyBadgeReferralWithdrawalsApproved], FrozenCommissions: counts[AdtyBadgeReferralCommissionsFrozen]}, nil
 }
 
 // AdtyReferralOverview is the referral admin overview totals, in the same
@@ -267,10 +264,6 @@ func collectAdtyReferralAdminBadgeCounts(counts map[string]int64, actor adtyTick
 			return countBadgeOrZero(kind, query), nil
 		}
 		return countScoped(query)
-	}
-	if can(authz.AdtyReferralReview) {
-		// Main-site partner applications are retired (R-34 #2); keep badge at 0.
-		counts[AdtyBadgeReferralPartners] = 0
 	}
 	for _, duty := range []struct {
 		permission    authz.Permission

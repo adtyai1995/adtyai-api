@@ -40,7 +40,8 @@ import { getServerErrorMessage } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
 import {
-  formatBonusPercentValue,
+  formatBonusRateFraction,
+  formatBonusRatePercent,
   quoteAdtyTopup,
   type AdtyTopupInfo,
 } from '../api'
@@ -74,13 +75,11 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
   const sceneSelectId = useId()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const tiers = props.info?.tiers ?? []
-  const ownerSelfUse = props.business === 'owner_self_use_topup'
   const ownerMargin = props.business === 'owner_margin_topup'
-  const ownerTopup = ownerSelfUse || ownerMargin
   const [sceneKey, setSceneKey] = useState('wallet_topup')
   const scenes = props.info?.scenes ?? []
   const scene = scenes.find((item) => item.key === sceneKey) ?? scenes[0]
-  const paymentScene = scene?.key ?? (ownerTopup ? '' : 'wallet_topup')
+  const paymentScene = scene?.key ?? (ownerMargin ? '' : 'wallet_topup')
   const minTopup = Math.max(
     props.info?.min_topup ?? 1,
     Number(scene?.min_usd ?? 0)
@@ -90,7 +89,7 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
   const [methodKey, setMethodKey] = useState<string | null>(null)
 
   const methods =
-    !ownerTopup && props.info?.scenes === undefined
+    !ownerMargin && props.info?.scenes === undefined
       ? (props.info?.methods ?? [])
       : (scene?.methods ?? [])
   const method =
@@ -149,7 +148,7 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
     )
   }
 
-  if (ownerTopup && !scenes.length) {
+  if (ownerMargin && !scenes.length) {
     return (
       <EmptyState title={t('Online top-up is unavailable for this site.')} />
     )
@@ -164,7 +163,7 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
   let principalUsd = validAmount ? amount : 0
   let bonusUsd = 0
   let totalCreditUsd = validAmount ? amount : 0
-  if (validAmount && !ownerTopup && quote) {
+  if (validAmount && !ownerMargin && quote) {
     if (Number.isFinite(quotedBonusUsd) && quotedBonusUsd > 0) {
       bonusUsd = quotedBonusUsd
     }
@@ -178,13 +177,13 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
       totalCreditUsd = quotedCreditUsd
     }
   }
-  const bonusPercent =
-    bonusUsd > 0
-      ? (formatBonusPercentValue(quote?.bonus_rate) ??
-        (principalUsd > 0
-          ? formatBonusPercentValue(bonusUsd / principalUsd)
-          : null))
-      : null
+  let bonusPercent: string | null = null
+  if (bonusUsd > 0) {
+    bonusPercent = formatBonusRatePercent(quote?.bonus_rate)
+    if (!bonusPercent && principalUsd > 0) {
+      bonusPercent = formatBonusRateFraction(bonusUsd / principalUsd)
+    }
+  }
   let bonusBreakdownText = ''
   if (validAmount && bonusUsd > 0) {
     if (bonusPercent) {
@@ -237,24 +236,14 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
     }
   }
 
-  let cardTitle = t('Add funds')
-  if (ownerMargin) {
-    cardTitle = t('Owner margin online top-up')
-  } else if (ownerSelfUse) {
-    cardTitle = t('Owner self-use top-up')
-  }
+  const cardTitle = ownerMargin
+    ? t('Owner margin online top-up')
+    : t('Add funds')
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>{cardTitle}</CardTitle>
-        {ownerSelfUse && (
-          <CardDescription>
-            {t(
-              'Each $1 adds $1 to your site self-use principal. No bonus applies.'
-            )}
-          </CardDescription>
-        )}
         {ownerMargin && (
           <CardDescription>
             {t(
@@ -285,7 +274,7 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
           </div>
         )}
         <section className='flex flex-col gap-3'>
-          <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
+          <Label className='text-muted-foreground text-xs font-medium'>
             {t('Amount')}
           </Label>
           <div className='grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-5'>
@@ -341,7 +330,7 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
         </section>
 
         <section className='flex flex-col gap-3'>
-          <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
+          <Label className='text-muted-foreground text-xs font-medium'>
             {t('Payment method')}
           </Label>
           <PaymentMethodButtons
@@ -349,7 +338,7 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
             selected={methodKey}
             onSelect={setMethodKey}
             methodBonusRates={
-              ownerTopup ? undefined : props.info?.method_bonus_rates
+              ownerMargin ? undefined : props.info?.method_bonus_rates
             }
           />
         </section>

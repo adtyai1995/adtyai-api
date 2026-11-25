@@ -92,6 +92,8 @@ func EmbeddingHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	if !ok || usageDto == nil {
 		return types.NewError(fmt.Errorf("unexpected usage type %T", usage), types.ErrorCodeBadResponseBody)
 	}
-	service.PostTextConsumeQuota(c, info, usageDto, nil)
+	if err := service.PostTextConsumeQuota(c, info, usageDto, nil); err != nil {
+		return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+	}
 	return nil
 }

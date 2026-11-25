@@ -26,7 +26,7 @@ export function SectionIntro(props: {
 }) {
   return (
     <>
-      <p className='text-neutral font-mono text-[11.5px] tracking-[0.18em] uppercase'>
+      <p className='text-neutral font-mono text-[11.5px] tracking-[0.18em]'>
         {props.eyebrow}
       </p>
       <h2

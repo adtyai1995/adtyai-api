@@ -28,6 +28,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 import { SecureVerificationDialog } from '@/features/auth/secure-verification/components/secure-verification-dialog'
 import { useSecureVerification } from '@/features/auth/secure-verification/hooks/use-secure-verification'
@@ -41,14 +42,28 @@ import { useAuthStore } from '@/stores/auth-store'
 
 import {
   completeTopupManually,
+  getOrderTrace,
   listTopupManualRefunds,
   previewTopupRefund,
   queryTopupPayment,
   refundTopup,
   runTopupManualRefundStep,
+  type OrderTraceEntry,
   type RechargeAuditOrder,
   type TopupRefundResult,
 } from '../api'
+
+function isExternalReversalTraceEntry(entry: OrderTraceEntry): boolean {
+  const eventId = (entry.reference ?? '').trim().toLowerCase()
+  if (eventId.startsWith('reversal:')) return true
+  const eventType = (entry.source ?? '').trim().toLowerCase()
+  return (
+    eventType.includes('refund') ||
+    eventType.includes('chargeback') ||
+    eventType.includes('dispute') ||
+    eventType.includes('reversal')
+  )
+}
 
 type OrderActionProps = {
   order: RechargeAuditOrder | null
@@ -225,6 +240,7 @@ export function RefundDialog(
   const userId = useAuthStore((state) => state.auth.user?.id)
   const [reason, setReason] = useState('')
   const [refundUsd, setRefundUsd] = useState('')
+  const [reconcileOrphanId, setReconcileOrphanId] = useState('')
   const [idempotencyKey, setIdempotencyKey] = useState('')
   const [selectedId, setSelectedId] = useState('')
   const [payoutCurrency, setPayoutCurrency] = useState('')
@@ -238,9 +254,14 @@ export function RefundDialog(
   const [terminateNote, setTerminateNote] = useState('')
   const typedAmount = refundUsd.trim()
   const typedReady = /^\d+(\.\d{1,8})?$/.test(typedAmount)
+  const parsedReconcileOrphanId =
+    !props.ownerMode && /^\d+$/.test(reconcileOrphanId)
+      ? Number(reconcileOrphanId)
+      : 0
   useEffect(() => {
     setReason('')
     setRefundUsd('')
+    setReconcileOrphanId('')
     setSelectedId('')
     setPayoutCurrency('')
     setPayoutAmount('')
@@ -253,6 +274,22 @@ export function RefundDialog(
     setTerminateNote('')
     setIdempotencyKey(crypto.randomUUID())
   }, [props.order])
+  const exceptionsQuery = useQuery({
+    queryKey: [
+      'topup-refund-orphans',
+      userId,
+      props.order?.trade_no,
+    ],
+    queryFn: () =>
+      getOrderTrace(props.order?.trade_no ?? '', 'exceptions', 1, false),
+    enabled: props.order !== null && !props.ownerMode,
+    retry: false,
+    meta: { errorToast: false },
+  })
+  const pendingReversalOrphans = (exceptionsQuery.data?.items ?? []).filter(
+    (entry) =>
+      entry.status === 'pending_review' && isExternalReversalTraceEntry(entry)
+  )
   const preview = useQuery({
     queryKey: [
       'topup-refund-preview',
@@ -317,17 +354,23 @@ export function RefundDialog(
   const refresh = () => {
     void listing.refetch()
     void preview.refetch()
+    if (!props.ownerMode) {
+      void exceptionsQuery.refetch()
+    }
     props.onDone()
   }
 
   const applyMutation = useMutation({
     mutationFn: async () => {
+      const orphanId =
+        parsedReconcileOrphanId > 0 ? parsedReconcileOrphanId : undefined
       const proof = await verification.requestVerification({
         scope: props.ownerMode ? 'site.order.refund' : 'adty.topup.refund',
         context: {
           trade_no: props.order?.trade_no,
           reason: reason.trim(),
           refund_usd: typedAmount,
+          reconcile_orphan_id: orphanId,
         },
         title: t('Confirm it is you'),
         description: t('Applying a refund requires a fresh verification.'),
@@ -340,12 +383,14 @@ export function RefundDialog(
         0,
         typedAmount,
         proof.proof_token,
-        props.ownerMode === true
+        props.ownerMode === true,
+        orphanId
       )
     },
     onSuccess: (data) => {
       toast.success(t('Refund application submitted'))
       if (data.refund?.refund_id) setSelectedId(data.refund.refund_id)
+      setReconcileOrphanId('')
       setIdempotencyKey(crypto.randomUUID())
       refresh()
     },
@@ -493,6 +538,13 @@ export function RefundDialog(
     !stepMutation.isPending &&
     selected.status !== 'completed' &&
     selected.status !== 'terminated'
+  const selectedHasReconcileOrphan = (selected?.reconcile_orphan_id ?? 0) > 0
+  const payoutReadyForComplete = selectedHasReconcileOrphan
+    ? selected?.payout_status !== 'unknown'
+    : selected?.payout_status === 'success'
+  const isUnknownPayout = selected?.payout_status === 'unknown'
+  const canTerminate =
+    selected?.payout_status !== 'success' && !isUnknownPayout
 
   return (
     <Dialog
@@ -689,6 +741,37 @@ export function RefundDialog(
       {preview.data && (
         <CommissionRefundPreviewDetails preview={preview.data} t={t} />
       )}
+      {!props.ownerMode && pendingReversalOrphans.length > 0 && (
+        <div className='space-y-2'>
+          <Label htmlFor='refund-reconcile-orphan'>
+            {t('Reconcile external reversal event (optional)')}
+          </Label>
+          <NativeSelect
+            id='refund-reconcile-orphan'
+            className='w-full'
+            value={reconcileOrphanId}
+            onChange={(event) => setReconcileOrphanId(event.target.value)}
+          >
+            <NativeSelectOption value=''>
+              {t('None (standard offline refund)')}
+            </NativeSelectOption>
+            {pendingReversalOrphans.map((entry) => (
+              <NativeSelectOption key={entry.id} value={String(entry.id)}>
+                #{entry.id} · {entry.source || entry.kind} · {entry.reference}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+          {parsedReconcileOrphanId > 0 && (
+            <Alert>
+              <AlertDescription>
+                {t(
+                  'This refund will reconcile the selected external reversal event. No second offline payout is required.'
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
+        </div>
+      )}
       <div className='space-y-2'>
         <Label htmlFor='refund-reason'>{t('Reason (required)')}</Label>
         <Textarea
@@ -710,6 +793,9 @@ export function RefundDialog(
             {refunds.map((row) => (
               <option key={row.refund_id} value={row.refund_id}>
                 {row.refund_id} · {row.request_usd} USD · {row.status}
+                {row.reconcile_orphan_id && row.reconcile_orphan_id > 0
+                  ? ` · ${t('Reconcile orphan #{{id}}', { id: row.reconcile_orphan_id })}`
+                  : ''}
                 {row.shortfall_quota
                   ? ` · ${t('shortfall')} ${row.shortfall_usd}`
                   : ''}
@@ -721,6 +807,15 @@ export function RefundDialog(
               {t('Internal reclaim')}:{' '}
               {selected.reclaimed_at ? t('recorded') : t('pending')}.{' '}
               {t('Offline payout')}: {selected.payout_status || t('pending')}.{' '}
+              {selectedHasReconcileOrphan && (
+                <>
+                  {t(
+                    'Reconcile orphan #{{id}} (no second offline payout required)',
+                    { id: selected.reconcile_orphan_id }
+                  )}
+                  .{' '}
+                </>
+              )}
               {t('Gift')}: {selected.bonus_at ? t('recorded') : t('pending')}.{' '}
               {t('Commission')}:{' '}
               {selected.commission_at ? t('recorded') : t('pending')}.
@@ -739,63 +834,76 @@ export function RefundDialog(
           {selected &&
             selected.status !== 'completed' &&
             selected.status !== 'terminated' && (
-              <div className='flex flex-wrap gap-2'>
-                <Button
-                  variant='outline'
-                  disabled={!canStep(!selected.approved_at)}
-                  onClick={() => stepMutation.mutate('approve')}
-                >
-                  {t('Approve')}
-                </Button>
-                <Button
-                  variant='outline'
-                  disabled={
-                    !canStep(!!selected.approved_at && !selected.reclaimed_at)
-                  }
-                  onClick={() => stepMutation.mutate('reclaim')}
-                >
-                  {t('Record internal reclaim')}
-                </Button>
-                <Button
-                  variant='outline'
-                  disabled={
-                    !canStep(!!selected.approved_at && !selected.bonus_at)
-                  }
-                  onClick={() => stepMutation.mutate('bonus')}
-                >
-                  {t('Record gift reclaim')}
-                </Button>
-                <Button
-                  variant='outline'
-                  disabled={
-                    !canStep(!!selected.approved_at && !selected.commission_at)
-                  }
-                  onClick={() => stepMutation.mutate('commission')}
-                >
-                  {t('Record commission handling')}
-                </Button>
-                <Button
-                  variant='outline'
-                  disabled={
-                    !canStep(
-                      !!selected.approved_at &&
-                        !!selected.reclaimed_at &&
-                        !!selected.bonus_at &&
-                        !!selected.commission_at &&
-                        selected.payout_status === 'success'
-                    )
-                  }
-                  onClick={() => stepMutation.mutate('complete')}
-                >
-                  {t('Complete refund')}
-                </Button>
-                <Button
-                  variant='destructive'
-                  disabled={!canStep(selected.payout_status !== 'success')}
-                  onClick={() => setTerminateOpen(true)}
-                >
-                  {t('Terminate refund')}
-                </Button>
+              <div className='space-y-2'>
+                <div className='flex flex-wrap gap-2'>
+                  <Button
+                    variant='outline'
+                    disabled={!canStep(!selected.approved_at)}
+                    onClick={() => stepMutation.mutate('approve')}
+                  >
+                    {t('Approve')}
+                  </Button>
+                  <Button
+                    variant='outline'
+                    disabled={
+                      !canStep(!!selected.approved_at && !selected.reclaimed_at)
+                    }
+                    onClick={() => stepMutation.mutate('reclaim')}
+                  >
+                    {t('Record internal reclaim')}
+                  </Button>
+                  <Button
+                    variant='outline'
+                    disabled={
+                      !canStep(!!selected.approved_at && !selected.bonus_at)
+                    }
+                    onClick={() => stepMutation.mutate('bonus')}
+                  >
+                    {t('Record gift reclaim')}
+                  </Button>
+                  <Button
+                    variant='outline'
+                    disabled={
+                      !canStep(
+                        !!selected.approved_at && !selected.commission_at
+                      )
+                    }
+                    onClick={() => stepMutation.mutate('commission')}
+                  >
+                    {t('Record commission handling')}
+                  </Button>
+                  <Button
+                    variant='outline'
+                    disabled={
+                      !canStep(
+                        !!selected.approved_at &&
+                          !!selected.reclaimed_at &&
+                          !!selected.bonus_at &&
+                          !!selected.commission_at &&
+                          payoutReadyForComplete
+                      )
+                    }
+                    onClick={() => stepMutation.mutate('complete')}
+                  >
+                    {t('Complete refund')}
+                  </Button>
+                  <Button
+                    variant='destructive'
+                    disabled={!canStep(canTerminate)}
+                    onClick={() => setTerminateOpen(true)}
+                  >
+                    {t('Terminate refund')}
+                  </Button>
+                </div>
+                {isUnknownPayout && (
+                  <Alert>
+                    <AlertDescription>
+                      {t(
+                        'An unknown offline payout cannot be terminated before failure is confirmed'
+                      )}
+                    </AlertDescription>
+                  </Alert>
+                )}
               </div>
             )}
           <ConfirmDialog

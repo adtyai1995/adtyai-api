@@ -430,11 +430,43 @@ func ListDataRetentionRuns(limit int) ([]DataRetentionRunView, error) {
 	return views, nil
 }
 
+func dataRetentionCancelErr(ctx context.Context, systemTaskID string) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	if systemTaskID != "" && model.DB != nil && model.DB.Migrator().HasTable(&model.SystemTask{}) {
+		cancelled, err := model.SystemTaskCancelRequested(systemTaskID)
+		if err != nil {
+			return err
+		}
+		if cancelled {
+			return context.Canceled
+		}
+	}
+	return nil
+}
+
 // RunDataRetentionCleanup applies configured category rules and always records
 // notification-history exclusion. Changing a policy never calls this function.
 func RunDataRetentionCleanup(ctx context.Context, trigger, systemTaskID string, now time.Time) (*model.AdtyDataRetentionRun, []model.AdtyDataRetentionRunItem, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	checkCancelled := func() error {
+		if err := dataRetentionCancelErr(runCtx, systemTaskID); err != nil {
+			if errors.Is(err, context.Canceled) {
+				cancel()
+			}
+			return err
+		}
+		return nil
+	}
+	if err := checkCancelled(); err != nil {
+		return nil, nil, err
 	}
 	if now.IsZero() {
 		now = time.Now()
@@ -457,31 +489,36 @@ func RunDataRetentionCleanup(ctx context.Context, trigger, systemTaskID string, 
 	if err := model.DB.Create(run).Error; err != nil {
 		return nil, nil, err
 	}
+	finishRunTimestamp := func() error {
+		finished := max(time.Now().Unix(), started)
+		run.FinishedAt = finished
+		return model.DB.Model(run).Update("finished_at", finished).Error
+	}
 	items := make([]model.AdtyDataRetentionRunItem, 0, len(dataRetentionCatalog()))
 	for _, spec := range dataRetentionCatalog() {
-		item := applyDataRetentionCategory(ctx, spec, policies[spec.Category], now)
+		if cancelErr := checkCancelled(); cancelErr != nil {
+			_ = finishRunTimestamp()
+			return run, items, cancelErr
+		}
+		item, cancelErr := applyDataRetentionCategory(runCtx, checkCancelled, spec, policies[spec.Category], now)
 		item.RunId = run.Id
 		if err := model.DB.Create(&item).Error; err != nil {
 			return run, items, err
 		}
 		items = append(items, item)
+		if cancelErr != nil {
+			_ = finishRunTimestamp()
+			return run, items, cancelErr
+		}
 	}
-	finished := time.Now().Unix()
-	if finished < started {
-		finished = started
-	}
-	run.FinishedAt = finished
-	if err := model.DB.Model(run).Update("finished_at", finished).Error; err != nil {
+	if err := finishRunTimestamp(); err != nil {
 		return run, items, err
 	}
 	return run, items, nil
 }
 
-func applyDataRetentionCategory(ctx context.Context, spec dataRetentionCategorySpec, policy model.AdtyDataRetentionPolicy, now time.Time) model.AdtyDataRetentionRunItem {
-	executedAt := time.Now().Unix()
-	if executedAt < now.Unix() {
-		executedAt = now.Unix()
-	}
+func applyDataRetentionCategory(ctx context.Context, checkCancel func() error, spec dataRetentionCategorySpec, policy model.AdtyDataRetentionPolicy, now time.Time) (model.AdtyDataRetentionRunItem, error) {
+	executedAt := max(time.Now().Unix(), now.Unix())
 	item := model.AdtyDataRetentionRunItem{
 		Category:   spec.Category,
 		Scope:      model.DataRetentionScopePlatform,
@@ -490,13 +527,13 @@ func applyDataRetentionCategory(ctx context.Context, spec dataRetentionCategoryS
 	if spec.Category == model.DataRetentionCategoryNotificationHistory || !spec.AutoCleanable {
 		item.Rule = "exclude; permanent retention"
 		item.SkipReason = dataRetentionSkipNotification
-		return item
+		return item, nil
 	}
 	configured := policy.RetentionDays != nil && *policy.RetentionDays > 0
 	if !configured {
 		item.Rule = "unconfigured"
 		item.SkipReason = dataRetentionSkipUnconfigured
-		return item
+		return item, nil
 	}
 	action := policy.Action
 	if action == "" {
@@ -509,29 +546,42 @@ func applyDataRetentionCategory(ctx context.Context, spec dataRetentionCategoryS
 	}
 	if spec.SkipConfigured != "" {
 		item.SkipReason = spec.SkipConfigured
-		return item
+		return item, nil
 	}
-	if err := ctx.Err(); err != nil {
+	if err := checkCancel(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			item.SkipReason = "cancelled"
+			return item, context.Canceled
+		}
 		item.FailureCount = 1
 		item.SkipReason = err.Error()
-		return item
+		return item, nil
 	}
 	effectiveDays := effectiveRetentionDays(days, spec.MinDays)
 	if spec.Category == model.DataRetentionCategoryUserAccountProfile {
 		cleared, err := model.ClearCancelledAccountProfileLeftovers(ctx, retentionCutoffUnix(now, effectiveDays), dataRetentionCleanupBatchSize)
 		item.DeidentifyCount = cleared
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				item.SkipReason = "cancelled"
+				return item, context.Canceled
+			}
 			item.FailureCount = 1
 			item.SkipReason = err.Error()
 		}
-		return item
+		return item, nil
 	}
 	if action == model.DataRetentionActionDeidentify {
 		item.SkipReason = dataRetentionSkipDeidentify
-		return item
+		return item, nil
 	}
-	deleted, failed, err := executeDataRetentionDelete(ctx, spec.Category, effectiveDays, now)
+	deleted, failed, err := executeDataRetentionDelete(ctx, checkCancel, spec.Category, effectiveDays, now)
 	item.DeleteCount = deleted
+	if errors.Is(err, context.Canceled) {
+		item.FailureCount = 0
+		item.SkipReason = "cancelled"
+		return item, context.Canceled
+	}
 	item.FailureCount = failed
 	if err != nil {
 		if item.FailureCount == 0 {
@@ -539,7 +589,7 @@ func applyDataRetentionCategory(ctx context.Context, spec dataRetentionCategoryS
 		}
 		item.SkipReason = err.Error()
 	}
-	return item
+	return item, nil
 }
 
 func effectiveRetentionDays(days, minDays int) int {
@@ -570,18 +620,18 @@ func retentionCutoffUnix(now time.Time, days int) int64 {
 	return nowUnix - delta
 }
 
-func executeDataRetentionDelete(ctx context.Context, category string, days int, now time.Time) (deleted, failed int64, err error) {
+func executeDataRetentionDelete(ctx context.Context, checkCancel func() error, category string, days int, now time.Time) (deleted, failed int64, err error) {
 	days = effectiveRetentionDays(days, 0)
 	cutoff := retentionCutoffUnix(now, days)
 	switch category {
 	case model.DataRetentionCategoryAPIUsageLogs:
-		count, err := drainRetentionBatches(ctx, func() (int64, error) {
+		count, err := drainRetentionBatches(ctx, checkCancel, func() (int64, error) {
 			return model.DeleteOldLogBatch(ctx, cutoff, dataRetentionCleanupBatchSize)
 		})
 		if err != nil {
 			return count, 1, err
 		}
-		quota, err := drainRetentionBatches(ctx, func() (int64, error) {
+		quota, err := drainRetentionBatches(ctx, checkCancel, func() (int64, error) {
 			return model.DeleteOldQuotaDataBatch(ctx, cutoff, dataRetentionCleanupBatchSize)
 		})
 		if err != nil {
@@ -589,35 +639,35 @@ func executeDataRetentionDelete(ctx context.Context, category string, days int, 
 		}
 		return count + quota, 0, nil
 	case model.DataRetentionCategoryLoginSecurity:
-		logs, err := drainRetentionBatches(ctx, func() (int64, error) {
+		logs, err := drainRetentionBatches(ctx, checkCancel, func() (int64, error) {
 			return model.DeleteOldLogsOfTypesBatch(ctx, []int{model.LogTypeLogin}, cutoff, dataRetentionCleanupBatchSize)
 		})
 		if err != nil {
 			return logs, 1, err
 		}
-		audits, err := drainRetentionBatches(ctx, func() (int64, error) {
+		audits, err := drainRetentionBatches(ctx, checkCancel, func() (int64, error) {
 			return model.DeleteOldAuditLogsByCategoriesBatch(ctx, []string{model.AuditCategoryLogin, model.AuditCategorySecurity}, cutoff, dataRetentionCleanupBatchSize)
 		})
 		if err != nil {
 			return logs + audits, 1, err
 		}
-		if err := ctx.Err(); err != nil {
+		if err := checkCancel(); err != nil {
 			return logs + audits, 1, err
 		}
-		sessions, err := model.DeleteInactiveUserSessionsForRetention(now.Unix(), days)
+		sessions, err := model.DeleteInactiveUserSessionsForRetention(ctx, now.Unix(), days)
 		if err != nil {
 			return logs + audits + sessions, 1, err
 		}
-		if err := ctx.Err(); err != nil {
+		if err := checkCancel(); err != nil {
 			return logs + audits + sessions, 1, err
 		}
-		tokens, err := model.DeleteExpiredUserAccessTokensForRetention(now.Unix(), days)
+		tokens, err := model.DeleteExpiredUserAccessTokensForRetention(ctx, now.Unix(), days)
 		if err != nil {
 			return logs + audits + sessions + tokens, 1, err
 		}
 		return logs + audits + sessions + tokens, 0, nil
 	case model.DataRetentionCategoryOperationAudit:
-		count, err := drainRetentionBatches(ctx, func() (int64, error) {
+		count, err := drainRetentionBatches(ctx, checkCancel, func() (int64, error) {
 			return model.DeleteOldAuditLogsByCategoriesBatch(ctx, []string{model.AuditCategoryOperation, model.AuditCategoryAccessToken}, cutoff, dataRetentionCleanupBatchSize)
 		})
 		if err != nil {
@@ -625,13 +675,13 @@ func executeDataRetentionDelete(ctx context.Context, category string, days int, 
 		}
 		return count, 0, nil
 	case model.DataRetentionCategorySupportTickets:
-		return deleteExpiredSupportTickets(ctx, cutoff, dataRetentionCleanupBatchSize)
+		return deleteExpiredSupportTickets(ctx, checkCancel, cutoff, dataRetentionCleanupBatchSize)
 	default:
 		return 0, 0, nil
 	}
 }
 
-func deleteExpiredSupportTickets(ctx context.Context, cutoff int64, limit int) (deleted, failed int64, err error) {
+func deleteExpiredSupportTickets(ctx context.Context, checkCancel func() error, cutoff int64, limit int) (deleted, failed int64, err error) {
 	if limit <= 0 {
 		limit = dataRetentionCleanupBatchSize
 	}
@@ -639,8 +689,11 @@ func deleteExpiredSupportTickets(ctx context.Context, cutoff int64, limit int) (
 		return 0, 1, fmt.Errorf("database unavailable")
 	}
 	// Process the durable file queue even if a different ticket prevents this
-	// run from expiring more cases.
+	// run from expiring more cases, unless the run was explicitly cancelled.
 	defer func() {
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+			return
+		}
 		fileFailures, cleanupErr := cleanExpiredTicketImages(ctx, limit)
 		failed += fileFailures
 		if cleanupErr != nil {
@@ -650,7 +703,7 @@ func deleteExpiredSupportTickets(ctx context.Context, cutoff int64, limit int) (
 	}()
 	var lastID int64
 	for {
-		if err := ctx.Err(); err != nil {
+		if err := checkCancel(); err != nil {
 			return deleted, failed + 1, err
 		}
 		var ids []int64
@@ -675,6 +728,9 @@ func deleteExpiredSupportTickets(ctx context.Context, cutoff int64, limit int) (
 			return deleted, failed, nil
 		}
 		for _, id := range ids {
+			if err := checkCancel(); err != nil {
+				return deleted, failed + 1, err
+			}
 			lastID = id
 			removed, fileFailed, ferr := deleteOneExpiredSupportTicket(ctx, id, cutoff)
 			if ferr != nil {
@@ -834,10 +890,14 @@ func cleanExpiredTicketImages(ctx context.Context, limit int) (int64, error) {
 	return failed, err
 }
 
-func drainRetentionBatches(ctx context.Context, fn func() (int64, error)) (int64, error) {
+func drainRetentionBatches(ctx context.Context, checkCancel func() error, fn func() (int64, error)) (int64, error) {
 	var total int64
 	for {
-		if err := ctx.Err(); err != nil {
+		if checkCancel != nil {
+			if err := checkCancel(); err != nil {
+				return total, err
+			}
+		} else if err := ctx.Err(); err != nil {
 			return total, err
 		}
 		n, err := fn()
@@ -869,14 +929,47 @@ func (dataRetentionHandler) Run(ctx context.Context, task *model.SystemTask, run
 	if payload.Trigger == "" {
 		payload.Trigger = model.DataRetentionTriggerScheduled
 	}
-	run, _, err := RunDataRetentionCleanup(ctx, payload.Trigger, task.TaskID, time.Now())
-	if err != nil {
-		failSystemTask(task, runnerID, err)
-		return
-	}
+	run, items, err := RunDataRetentionCleanup(ctx, payload.Trigger, task.TaskID, time.Now())
 	result := DataRetentionResult{}
 	if run != nil {
 		result.RunID = run.Id
+	}
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			if finishErr := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusCancelled, result, "cancelled"); finishErr != nil {
+				logSystemTaskLockError(ctx, task, finishErr)
+			}
+			return
+		}
+		if finishErr := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusFailed, result, err.Error()); finishErr != nil {
+			logSystemTaskLockError(ctx, task, finishErr)
+		}
+		return
+	}
+	if cancelled, cancelErr := model.SystemTaskCancelRequested(task.TaskID); cancelErr == nil && cancelled {
+		if finishErr := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusCancelled, result, "cancelled"); finishErr != nil {
+			logSystemTaskLockError(ctx, task, finishErr)
+		}
+		return
+	}
+	var failedCategories []string
+	var totalFailures int64
+	for _, item := range items {
+		if item.FailureCount > 0 {
+			totalFailures += item.FailureCount
+			detail := item.Category
+			if reason := strings.TrimSpace(item.SkipReason); reason != "" {
+				detail += ": " + reason
+			}
+			failedCategories = append(failedCategories, detail)
+		}
+	}
+	if totalFailures > 0 {
+		errMsg := fmt.Sprintf("data retention cleanup completed with %d failure(s) in %s", totalFailures, strings.Join(failedCategories, "; "))
+		if finishErr := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusFailed, result, errMsg); finishErr != nil {
+			logSystemTaskLockError(ctx, task, finishErr)
+		}
+		return
 	}
 	if err := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusSucceeded, result, ""); err != nil {
 		logSystemTaskLockError(ctx, task, err)

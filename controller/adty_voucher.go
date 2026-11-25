@@ -275,6 +275,39 @@ func PutAdtyVoucherIssuanceLimit(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"limit_usd": limit.String()})
 }
 
+type adtyVoucherListView struct {
+	model.AdtyVoucher
+	IssuerUsername          string `json:"issuer_username,omitempty"`
+	RedeemerUsername        string `json:"redeemer_username,omitempty"`
+	DesignatedOwnerUsername string `json:"designated_owner_username,omitempty"`
+}
+
+func decorateAdtyVoucherList(items []model.AdtyVoucher) []adtyVoucherListView {
+	lookupIDs := make([]int, 0, len(items)*3)
+	for _, item := range items {
+		if item.IssuerId > 0 {
+			lookupIDs = append(lookupIDs, item.IssuerId)
+		}
+		if item.RedeemerId > 0 {
+			lookupIDs = append(lookupIDs, item.RedeemerId)
+		}
+		if item.DesignatedOwnerId > 0 {
+			lookupIDs = append(lookupIDs, item.DesignatedOwnerId)
+		}
+	}
+	usernames := model.LookupUsernamesByIDs(model.DB, lookupIDs)
+	views := make([]adtyVoucherListView, 0, len(items))
+	for _, item := range items {
+		views = append(views, adtyVoucherListView{
+			AdtyVoucher:             item,
+			IssuerUsername:          usernames[item.IssuerId],
+			RedeemerUsername:        usernames[item.RedeemerId],
+			DesignatedOwnerUsername: usernames[item.DesignatedOwnerId],
+		})
+	}
+	return views
+}
+
 // GetAdtyAdminVouchers lists every code for Root, optionally by status, purpose, target site, and batch_no.
 func GetAdtyAdminVouchers(c *gin.Context) {
 	page := common.GetPageQuery(c)
@@ -297,7 +330,7 @@ func GetAdtyAdminVouchers(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"total": total, "items": items, "page": page.GetPage(), "page_size": page.GetPageSize()})
+	common.ApiSuccess(c, gin.H{"total": total, "items": decorateAdtyVoucherList(items), "page": page.GetPage(), "page_size": page.GetPageSize()})
 }
 
 // GetAdtySiteVouchers lists the site_customer codes this owner issued from this site's wallets.
@@ -319,7 +352,7 @@ func GetAdtySiteVouchers(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, gin.H{
-		"total": total, "items": items, "page": page.GetPage(), "page_size": page.GetPageSize(),
+		"total": total, "items": decorateAdtyVoucherList(items), "page": page.GetPage(), "page_size": page.GetPageSize(),
 	})
 }
 

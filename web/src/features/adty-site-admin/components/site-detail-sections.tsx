@@ -475,15 +475,16 @@ export function SiteDomainsCard(props: {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('Sender domain')}</CardTitle>
-        </CardHeader>
-        <CardContent className='flex flex-col gap-2.5'>
-          {props.senders.length === 0 ? (
-            <EmptyState className='min-h-20' title={t('No data')} />
-          ) : (
-            props.senders.map((sender) => (
+      {props.senders.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('Sender domain')}</CardTitle>
+            <CardDescription>
+              {t('Legacy Resend sender domains retained for cleanup.')}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className='flex flex-col gap-2.5'>
+            {props.senders.map((sender) => (
               <div
                 key={sender.domain}
                 className='flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3'
@@ -518,10 +519,10 @@ export function SiteDomainsCard(props: {
                   </Button>
                 )}
               </div>
-            ))
-          )}
-        </CardContent>
-      </Card>
+            ))}
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }
@@ -602,9 +603,7 @@ export function SiteBusinessStatsCard(props: {
             </dl>
             {dimensions.map(({ label, rows }) => (
               <div key={label} className='flex flex-col gap-2'>
-                <h4 className='text-xs font-medium tracking-wide uppercase'>
-                  {label}
-                </h4>
+                <h4 className='text-xs font-medium tracking-wide'>{label}</h4>
                 <StaticDataTable
                   tableProps={{ 'aria-label': label }}
                   data={rows}

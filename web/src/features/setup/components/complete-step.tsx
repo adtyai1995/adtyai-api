@@ -44,11 +44,18 @@ const DATABASE_VARIANT: Record<
   postgres: 'success',
 }
 
-export function CompleteStep({ status, values }: CompleteStepProps) {
+export function CompleteStep(props: CompleteStepProps) {
   const { t } = useTranslation()
-  const usageLabelKey = USAGE_MODE_LABEL_KEYS[values.usageMode]
-  const dbType = status?.database_type ?? 'Unknown'
+  const usageLabelKey = USAGE_MODE_LABEL_KEYS[props.values.usageMode]
+  const dbType = props.status?.database_type ?? 'Unknown'
   const databaseVariant = DATABASE_VARIANT[dbType.toLowerCase()] ?? 'neutral'
+  const trimmedUsername = props.values.username.trim()
+  let adminAccountLabel = trimmedUsername || t('Not set yet')
+  if (props.status?.root_init) {
+    adminAccountLabel = trimmedUsername
+      ? `${trimmedUsername} (${t('Existing account will be reused')})`
+      : t('Existing account will be reused')
+  }
 
   return (
     <div className='flex flex-col items-center gap-6 text-center'>
@@ -88,11 +95,7 @@ export function CompleteStep({ status, values }: CompleteStepProps) {
             <dt className='text-muted-foreground text-xs font-medium tracking-wide uppercase'>
               {t('Administrator account')}
             </dt>
-            <dd className='text-sm font-semibold'>
-              {status?.root_init
-                ? t('Existing account will be reused')
-                : values.username || t('Not set yet')}
-            </dd>
+            <dd className='text-sm font-semibold'>{adminAccountLabel}</dd>
           </div>
 
           <Separator />

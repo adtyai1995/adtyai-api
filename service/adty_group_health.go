@@ -39,10 +39,9 @@ var (
 	AdtyGroupProbeDispatchFunc = defaultAdtyGroupProbeDispatch
 )
 
-func init() {
-	perfmetrics.GroupHealthObserver = observeAdtyGroupHealth
-	adtyMasterTasks = append(adtyMasterTasks, StartAdtyGroupHealthProbes, StartAdtyGroupHealthAlerts)
-}
+// R-32 (#5) / R-33 (#2): Legacy full-model group-health background probes and
+// per-request observers are retired in favor of the built-in single-model-per-group
+// probe engine in adty_model_probe.go. Helper utilities remain for probe reuse.
 
 type AdtyGroupHealthView struct {
 	Group              string                 `json:"group"`

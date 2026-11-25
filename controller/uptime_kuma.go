@@ -73,7 +73,6 @@ type UptimeGroupResult struct {
 	StatusLabel   string              `json:"statusLabel"`
 	Uptime        *float64            `json:"uptime"`
 	AvgPingMs     *float64            `json:"avgPingMs,omitempty"`
-	CacheHitRate  *float64            `json:"cacheHitRate"`
 	LastCheckedAt string              `json:"lastCheckedAt,omitempty"`
 	Heartbeats    []UptimeHeartbeat   `json:"heartbeats,omitempty"`
 	Monitors      []Monitor           `json:"monitors"`
@@ -243,7 +242,29 @@ func resolveUptimeGroupDisplayName(group console_setting.UptimeKumaGroup) string
 	return groupID
 }
 
-func buildBuiltInUptimeResults(groups []console_setting.UptimeKumaGroup, probes []model.AdtyModelProbe, cacheHitRates map[string]float64) []UptimeGroupResult {
+func sanitizePublicProbeMessage(msg string) string {
+	trimmed := strings.TrimSpace(msg)
+	if trimmed == "" {
+		return ""
+	}
+	switch trimmed {
+	case "timeout", "network error", "tls error", "dns error", "connection refused", "no available channel":
+		return trimmed
+	}
+	if strings.HasPrefix(trimmed, "HTTP ") && len(trimmed) >= 8 {
+		code := trimmed[5:8]
+		if code[0] >= '1' && code[0] <= '5' && code[1] >= '0' && code[1] <= '9' && code[2] >= '0' && code[2] <= '9' {
+			return "HTTP " + code
+		}
+	}
+	return "probe failed"
+}
+
+func buildBuiltInUptimeResults(groups []console_setting.UptimeKumaGroup, probes []model.AdtyModelProbe) []UptimeGroupResult {
+	activeGroups, err := model.ActiveAdtyGroupIDs()
+	if err != nil {
+		activeGroups = nil
+	}
 	type probeKey struct {
 		groupID   string
 		modelName string
@@ -261,6 +282,11 @@ func buildBuiltInUptimeResults(groups []console_setting.UptimeKumaGroup, probes 
 	for _, group := range groups {
 		if !group.IsEnabled() {
 			continue
+		}
+		if len(activeGroups) > 0 && strings.TrimSpace(group.GroupID) != "" {
+			if _, ok := activeGroups[strings.TrimSpace(group.GroupID)]; !ok {
+				continue
+			}
 		}
 		groupKey := strings.TrimSpace(group.GroupID)
 		if groupKey == "" {
@@ -328,12 +354,6 @@ func buildBuiltInUptimeResults(groups []console_setting.UptimeKumaGroup, probes 
 			primarySummary = summarizeUptimeProbeRows(nil)
 		}
 
-		var cacheHitRatePtr *float64
-		if rate, ok := cacheHitRates[groupKey]; ok {
-			r := rate
-			cacheHitRatePtr = &r
-		}
-
 		results = append(results, UptimeGroupResult{
 			GroupID:       group.GroupID,
 			CategoryName:  displayName,
@@ -345,7 +365,6 @@ func buildBuiltInUptimeResults(groups []console_setting.UptimeKumaGroup, probes 
 			StatusLabel:   primarySummary.statusLabel,
 			Uptime:        primarySummary.uptime,
 			AvgPingMs:     primarySummary.avgPingMs,
-			CacheHitRate:  cacheHitRatePtr,
 			LastCheckedAt: primarySummary.lastCheckedAtRFC,
 			Heartbeats:    primarySummary.heartbeats,
 			Monitors:      monitors,
@@ -408,12 +427,21 @@ func prepareUptimeResultsForRequest(c *gin.Context, results []UptimeGroupResult,
 	if len(results) == 0 {
 		return []UptimeGroupResult{}
 	}
+	isAdmin := c.GetInt("role") >= common.RoleAdminUser
 	filtered := make([]UptimeGroupResult, 0, len(results))
 	for _, item := range results {
 		if siteID > 0 && item.GroupID != "" && !service.SiteGroupAllowed(siteID, item.GroupID) {
 			continue
 		}
-		// Copy struct so per-request GroupRatio never mutates the shared site-agnostic cache.
+		// Copy struct so per-request GroupRatio and message redaction never mutate the shared cache.
+		if !isAdmin && len(item.Models) > 0 {
+			modelsCopy := make([]UptimeModelStatus, len(item.Models))
+			for i, m := range item.Models {
+				m.LastMessage = sanitizePublicProbeMessage(m.LastMessage)
+				modelsCopy[i] = m
+			}
+			item.Models = modelsCopy
+		}
 		filtered = append(filtered, item)
 	}
 	if len(filtered) == 0 {
@@ -462,14 +490,13 @@ func GetUptimeKumaStatus(c *gin.Context) {
 		if results, gen, ok := publicUptimeStatusCache.get(configuration); ok && gen == startGen {
 			return results, nil
 		}
-		cacheHitRates := service.GetAdtyGroupCacheHitRates24h()
 		since := time.Now().Unix() - uptimeWindowSeconds
 		probes, err := model.ListAdtyModelProbesSince(since)
 		if err != nil {
 			common.SysError(common.LogText("list adty model probes: %s", err.Error()))
-			return buildBuiltInUptimeResults(groups, nil, cacheHitRates), nil
+			return buildBuiltInUptimeResults(groups, nil), nil
 		}
-		results := buildBuiltInUptimeResults(groups, probes, cacheHitRates)
+		results := buildBuiltInUptimeResults(groups, probes)
 
 		publicUptimeStatusCache.Lock()
 		if publicUptimeStatusCache.generation == startGen {

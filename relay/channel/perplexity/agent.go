@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"strings"
@@ -258,9 +257,9 @@ func agentResponseHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		return nil, types.NewOpenAIError(errors.New("invalid Perplexity Agent response"), types.ErrorCodeBadResponse, http.StatusBadGateway)
 	}
 	defer service.CloseResponseBodyGracefully(resp)
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusBadGateway)
+	data, readErr := helper.ReadResponseBody(c, resp, types.ErrorCodeReadResponseBodyFailed)
+	if readErr != nil {
+		return nil, readErr
 	}
 	data, usage, apiErr := normalizeAgentResponse(data)
 	if apiErr != nil {

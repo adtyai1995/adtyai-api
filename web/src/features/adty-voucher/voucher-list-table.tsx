@@ -34,6 +34,7 @@ import {
   voucherStatusLabel,
 } from '@/features/adty-ledger/voucher-labels'
 import { formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 
 import type { VoucherListItem } from './api'
 
@@ -60,10 +61,15 @@ export function VoucherListTable(props: {
   const { t } = useTranslation()
   const [pending, setPending] = useState<PendingAction | null>(null)
 
+  const isMarginMode =
+    props.showTargetSite === true ||
+    (props.rows.length > 0 &&
+      props.rows.every((row) => row.purpose === 'site_margin'))
+
   const columns: StaticDataTableColumn<VoucherListItem>[] = [
     {
       id: 'code',
-      header: t('Voucher code'),
+      header: isMarginMode ? t('Recharge code') : t('Redemption code'),
       cell: (row) => (
         <code className='font-mono text-xs'>…{row.code_tail}</code>
       ),
@@ -157,10 +163,14 @@ export function VoucherListTable(props: {
       id: 'redeemed_at',
       header: t('Redeemed at'),
       cellClassName: 'tabular-nums text-xs text-muted-foreground',
-      cell: (row) =>
-        row.redeemed_at > 0
-          ? `${row.redeemer_id > 0 ? `#${row.redeemer_id} · ` : ''}${formatTimestamp(row.redeemed_at)}`
-          : '—',
+      cell: (row) => {
+        if (row.redeemed_at <= 0) return '—'
+        const ts = formatTimestamp(row.redeemed_at)
+        if (row.redeemer_id > 0) {
+          return `${formatUserIdentity(row.redeemer_id, row.redeemer_username)} · ${ts}`
+        }
+        return ts
+      },
     },
     {
       id: 'actions',

@@ -82,10 +82,8 @@ Versions below are the resolved versions for the checked-in manifests and lockfi
 | web      | production  | npm       | `@codemirror/language`                                  | `6.12.4`                             | MIT                     |
 | web      | production  | npm       | `@codemirror/state`                                     | `6.7.1`                              | MIT                     |
 | web      | production  | npm       | `@codemirror/view`                                      | `6.43.15`                            | MIT                     |
-| web      | production  | npm       | `@fontsource-variable/inter`                            | `5.3.0`                              | OFL-1.1                 |
 | web      | production  | npm       | `@fontsource-variable/jetbrains-mono`                   | `5.3.0`                              | OFL-1.1                 |
 | web      | production  | npm       | `@fontsource-variable/lora`                             | `5.3.0`                              | OFL-1.1                 |
-| web      | production  | npm       | `@fontsource-variable/plus-jakarta-sans`                | `5.3.0`                              | OFL-1.1                 |
 | web      | production  | npm       | `@fontsource-variable/public-sans`                      | `5.3.0`                              | OFL-1.1                 |
 | web      | production  | npm       | `@hookform/resolvers`                                   | `5.9.2`                              | MIT                     |
 | web      | production  | npm       | `@hugeicons/core-free-icons`                            | `4.4.0`                              | MIT                     |

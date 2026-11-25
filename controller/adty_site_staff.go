@@ -19,7 +19,7 @@ func filterDisabledStaffPermissions(perms []string) []string {
 	}
 	filtered := make([]string, 0, len(perms))
 	for _, perm := range perms {
-		if perm == service.AdtyStaffBalanceRequest {
+		if perm == "customers.balance_request" {
 			continue
 		}
 		filtered = append(filtered, perm)
@@ -85,21 +85,31 @@ func GetAdtyOwnerStaffAudits(c *gin.Context) {
 	}
 	type staffAuditView struct {
 		model.AdtySiteAudit
-		StaffId    int `json:"staff_id"`
-		CustomerId int `json:"customer_id"`
+		StaffId          int    `json:"staff_id"`
+		CustomerId       int    `json:"customer_id"`
+		OperatorUsername string `json:"operator_username,omitempty"`
+		StaffUsername    string `json:"staff_username,omitempty"`
+		CustomerUsername string `json:"customer_username,omitempty"`
 	}
 	// R5-040: Collect all current and historical staff user_ids for this site so
 	// staff-authored audit rows are preserved while Root/platform operator metadata is redacted.
 	siteStaffUserIDs := map[int]bool{}
-	var staffUserIDs []int
-	if err := model.DB.Model(&model.AdtySiteStaff{}).Where("site_id = ?", site.Id).Pluck("user_id", &staffUserIDs).Error; err == nil {
-		for _, uid := range staffUserIDs {
-			if uid > 0 {
-				siteStaffUserIDs[uid] = true
+	staffUserByStaffID := map[int]int{}
+	staffNameByStaffID := map[int]string{}
+	var siteStaffRows []model.AdtySiteStaff
+	if err := model.DB.Select("id", "user_id", "username").Where("site_id = ?", site.Id).Find(&siteStaffRows).Error; err == nil {
+		for _, row := range siteStaffRows {
+			if row.UserId > 0 {
+				siteStaffUserIDs[row.UserId] = true
+				staffUserByStaffID[row.Id] = row.UserId
+			}
+			if row.Username != "" {
+				staffNameByStaffID[row.Id] = row.Username
 			}
 		}
 	}
 	views := make([]staffAuditView, 0, len(items))
+	lookupIDs := make([]int, 0, len(items)*3)
 	for _, item := range items {
 		var target struct {
 			Id         int `json:"id"`
@@ -131,7 +141,32 @@ func GetAdtyOwnerStaffAudits(c *gin.Context) {
 				item.Reason = ""
 			}
 		}
+		if item.OperatorId > 0 {
+			lookupIDs = append(lookupIDs, item.OperatorId)
+		}
+		if uid := staffUserByStaffID[staffID]; uid > 0 {
+			lookupIDs = append(lookupIDs, uid)
+		}
+		if target.CustomerId > 0 {
+			lookupIDs = append(lookupIDs, target.CustomerId)
+		}
 		views = append(views, staffAuditView{AdtySiteAudit: item, StaffId: staffID, CustomerId: target.CustomerId})
+	}
+	usernames := model.LookupUsernamesByIDs(model.DB, lookupIDs)
+	for i := range views {
+		if views[i].OperatorId > 0 {
+			views[i].OperatorUsername = usernames[views[i].OperatorId]
+		}
+		if views[i].StaffId > 0 {
+			if uid := staffUserByStaffID[views[i].StaffId]; uid > 0 && usernames[uid] != "" {
+				views[i].StaffUsername = usernames[uid]
+			} else {
+				views[i].StaffUsername = staffNameByStaffID[views[i].StaffId]
+			}
+		}
+		if views[i].CustomerId > 0 {
+			views[i].CustomerUsername = usernames[views[i].CustomerId]
+		}
 	}
 	page.SetTotal(int(total))
 	page.SetItems(views)
@@ -284,28 +319,15 @@ func PostAdtyStaffCustomerDisable(c *gin.Context) {
 }
 
 func GetAdtyStaffBalanceRequests(c *gin.Context) {
-	if _, _, ok := adtyStaffRequest(c, ""); !ok {
-		return
-	}
-	page := common.GetPageQuery(c)
-	common.ApiSuccess(c, gin.H{"items": []any{}, "total": 0, "page": page.GetPage(), "page_size": page.GetPageSize()})
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Staff balance requests have been disabled."))
 }
 
 func GetAdtyOwnerBalanceRequests(c *gin.Context) {
-	if _, ok := adtyOwnerSiteOr403(c); !ok {
-		return
-	}
-	page := common.GetPageQuery(c)
-	common.ApiSuccess(c, gin.H{"items": []any{}, "total": 0, "page": page.GetPage(), "page_size": page.GetPageSize()})
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Staff balance requests have been disabled."))
 }
 
 func GetAdtyAdminBalanceRequests(c *gin.Context) {
-	if c.GetInt("role") != common.RoleRootUser {
-		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
-		return
-	}
-	page := common.GetPageQuery(c)
-	common.ApiSuccess(c, gin.H{"items": []any{}, "total": 0, "page": page.GetPage(), "page_size": page.GetPageSize()})
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Staff balance requests have been disabled."))
 }
 
 func PostAdtyStaffBalanceRequest(c *gin.Context) {

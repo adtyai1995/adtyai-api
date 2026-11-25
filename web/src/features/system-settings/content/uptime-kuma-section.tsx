@@ -1221,7 +1221,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
     <SettingsSection
       title={t('Channel Status Monitor')}
       description={t(
-        'Configure built-in scheduled health probes with a primary probe model per group for Overview, Pricing, and Channel Status pages'
+        'Configure built-in scheduled health probes with a primary probe model per group for Overview and Channel Status pages'
       )}
     >
       <div className='space-y-5'>
@@ -1233,7 +1233,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
                 onCheckedChange={handleToggleEnabled}
                 label={t('Enable Channel Status Monitor')}
                 description={t(
-                  "Periodically probe each group's primary model and display 24h channel health across Overview, Pricing, and Channel Status pages"
+                  "Periodically probe each group's primary model and display 24h channel health across Overview and Channel Status pages"
                 )}
                 className='flex-1 py-0'
               />

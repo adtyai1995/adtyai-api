@@ -23,8 +23,9 @@ const (
 
 	// systemTaskSchedulerInterval throttles how often the scheduler/stale-lock
 	// pass runs, independent of how often the runner wakes to claim tasks.
-	systemTaskSchedulerInterval = 15 * time.Second
-	systemTaskStaleLockInterval = 30 * time.Second
+	systemTaskSchedulerInterval  = 15 * time.Second
+	systemTaskStaleLockInterval  = 30 * time.Second
+	systemTaskCancelPollInterval = 2 * time.Second
 )
 
 // SystemTaskHandler executes a claimed task of a specific type. Run owns the
@@ -318,29 +319,56 @@ func runSystemTaskScheduler() {
 }
 
 // runWithLeaseHeartbeat renews the per-type lock on a background ticker while
-// fn runs. The TTL is a crash-detection window, not a task time limit: an
-// arbitrarily long handler stays alive as long as the heartbeat succeeds.
+// fn runs, and observes cancel_requested so running handlers receive ctx
+// cancellation promptly while keeping their lease alive until they finish.
 func runWithLeaseHeartbeat(task *model.SystemTask, runnerID string, fn func(ctx context.Context)) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	if task != nil && task.TaskID != "" {
+		if cancelled, err := model.SystemTaskCancelRequested(task.TaskID); err == nil && cancelled {
+			cancel()
+		}
+	}
 
 	interval := systemTaskLockTTL / 3
 	if interval <= 0 {
 		interval = systemTaskLockTTL
 	}
+	cancelInterval := min(systemTaskCancelPollInterval, interval)
+	if cancelInterval <= 0 {
+		cancelInterval = interval
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	cancelTicker := time.NewTicker(cancelInterval)
+	defer cancelTicker.Stop()
 	done := make(chan struct{})
 
 	go func() {
+		cancelCheckedDone := ctx.Err() != nil
 		for {
 			select {
 			case <-done:
 				return
+			case <-cancelTicker.C:
+				if cancelCheckedDone || task == nil || task.TaskID == "" {
+					continue
+				}
+				if cancelled, err := model.SystemTaskCancelRequested(task.TaskID); err == nil && cancelled {
+					cancel()
+					cancelCheckedDone = true
+				}
 			case <-ticker.C:
 				if err := model.RenewSystemTaskLock(task.TaskID, runnerID, systemTaskLockUntil()); err != nil {
 					cancel()
 					return
+				}
+				if !cancelCheckedDone && task != nil && task.TaskID != "" {
+					if cancelled, err := model.SystemTaskCancelRequested(task.TaskID); err == nil && cancelled {
+						cancel()
+						cancelCheckedDone = true
+					}
 				}
 			}
 		}

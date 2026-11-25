@@ -3,7 +3,6 @@ package relay
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
@@ -92,9 +91,9 @@ func AlphaSearchHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError
 		return newAPIError
 	}
 
-	responseBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusBadGateway)
+	responseBody, apiErr := helper.ReadResponseBody(c, httpResp, types.ErrorCodeReadResponseBodyFailed)
+	if apiErr != nil {
+		return apiErr
 	}
 	if contentType := httpResp.Header.Get("Content-Type"); contentType != "" {
 		c.Writer.Header().Set("Content-Type", contentType)
@@ -105,7 +104,9 @@ func AlphaSearchHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError
 	info.SetBillableToolCount(dto.BuildInToolWebSearchPreview, 1)
 
 	usage := &dto.Usage{}
-	service.PostTextConsumeQuota(c, info, usage, nil)
+	if err := service.PostTextConsumeQuota(c, info, usage, nil); err != nil {
+		return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+	}
 	return nil
 }
 

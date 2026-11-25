@@ -149,9 +149,8 @@ export function NotificationEditor(props: {
           target_user_id: props.row.target_user_id ?? 0,
           business: props.row.business ?? '',
           sync_telegram:
-            props.mode === 'root' &&
-            ((props.row.telegram_at ?? 0) > 0 ||
-              Boolean(props.row.telegram_channel)),
+            (props.row.telegram_at ?? 0) > 0 ||
+            Boolean(props.row.telegram_channel),
           telegram_channel:
             props.mode === 'owner' || props.row.telegram_channel === '@private'
               ? ''
@@ -183,7 +182,7 @@ export function NotificationEditor(props: {
   const isContentOverLimit = plainLength > MAX_NOTIFICATION_PLAIN_LENGTH
   const showSubsitePicker =
     props.mode === 'root' && targetAudiences.includes('site_users')
-  const canSyncTelegram = props.mode === 'root'
+  const canSpecifyTelegramChannel = props.mode === 'root'
 
   useDraftNavigation(form.formState.isDirty)
 
@@ -227,8 +226,8 @@ export function NotificationEditor(props: {
       target_site_id: legacy.target_site_id,
       target_team_id: 0,
       target_user_id: 0,
-      sync_telegram: canSyncTelegram ? input.sync_telegram : false,
-      telegram_channel: canSyncTelegram ? input.telegram_channel : '',
+      sync_telegram: input.sync_telegram,
+      telegram_channel: canSpecifyTelegramChannel ? input.telegram_channel : '',
     }
   }
 
@@ -302,8 +301,8 @@ export function NotificationEditor(props: {
     const parsed = draftSchema.safeParse({
       ...raw,
       content_format: 'html',
-      sync_telegram: canSyncTelegram ? raw.sync_telegram : false,
-      telegram_channel: canSyncTelegram ? raw.telegram_channel : '',
+      sync_telegram: raw.sync_telegram,
+      telegram_channel: canSpecifyTelegramChannel ? raw.telegram_channel : '',
     })
     if (!parsed.success) {
       for (const issue of parsed.error.issues) {
@@ -572,30 +571,35 @@ export function NotificationEditor(props: {
               </Field>
             )}
 
-            {canSyncTelegram && (
-              <Field>
-                <div className='flex items-center gap-2'>
-                  <Checkbox
-                    id={`${id}-sync-telegram`}
-                    disabled={save.isPending}
-                    checked={syncTelegram === true}
-                    onCheckedChange={(checked) =>
-                      form.setValue('sync_telegram', checked === true, {
-                        shouldDirty: true,
-                      })
-                    }
-                  />
-                  <Label htmlFor={`${id}-sync-telegram`}>
-                    {t('Sync to Telegram')}
-                  </Label>
-                </div>
-              </Field>
-            )}
+            <Field>
+              <div className='flex items-center gap-2'>
+                <Checkbox
+                  id={`${id}-sync-telegram`}
+                  disabled={save.isPending}
+                  checked={syncTelegram === true}
+                  onCheckedChange={(checked) =>
+                    form.setValue('sync_telegram', checked === true, {
+                      shouldDirty: true,
+                    })
+                  }
+                />
+                <Label htmlFor={`${id}-sync-telegram`}>
+                  {t('Sync to Telegram')}
+                </Label>
+              </div>
+              {!canSpecifyTelegramChannel && syncTelegram && (
+                <p className='text-muted-foreground text-xs'>
+                  {t(
+                    'Bound users of this site will receive a private message via the Telegram bot'
+                  )}
+                </p>
+              )}
+            </Field>
 
-            {canSyncTelegram && syncTelegram && (
+            {canSpecifyTelegramChannel && syncTelegram && (
               <Field data-invalid={!!errors.telegram_channel}>
                 <FieldLabel htmlFor={`${id}-telegram-channel`}>
-                  {t('Telegram channel')}
+                  {t('Telegram channel (optional)')}
                 </FieldLabel>
                 <Input
                   id={`${id}-telegram-channel`}
@@ -605,6 +609,11 @@ export function NotificationEditor(props: {
                   disabled={save.isPending}
                   {...form.register('telegram_channel')}
                 />
+                <p className='text-muted-foreground text-xs'>
+                  {t(
+                    'Leave blank to push privately to bound recipients via Telegram bot, or enter a public channel/group ID (e.g. @channel or -100...)'
+                  )}
+                </p>
                 <FieldError>
                   {errors.telegram_channel?.message
                     ? t(errors.telegram_channel.message)

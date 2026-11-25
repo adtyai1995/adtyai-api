@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -141,6 +142,19 @@ func writeTaskArtifacts(c *gin.Context, task *model.Task, dashboard bool) {
 // carry the snapshot, so the dashboard reads it here on demand. The snapshot
 // is either a clip array or a JSON string holding one; only clips with an
 // audio URL are kept and only preview fields are exposed.
+func isSafeHTTPMediaURL(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	return (scheme == "http" || scheme == "https") && parsed.Host != ""
+}
+
 func legacySunoAudioClips(data json.RawMessage) []map[string]any {
 	clips := make([]map[string]any, 0)
 	if len(data) == 0 {
@@ -155,13 +169,18 @@ func legacySunoAudioClips(data json.RawMessage) []map[string]any {
 	}
 	for _, item := range items {
 		audioURL, _ := item["audio_url"].(string)
-		if strings.TrimSpace(audioURL) == "" {
+		if !isSafeHTTPMediaURL(audioURL) {
 			continue
 		}
-		clip := map[string]any{"audio_url": audioURL}
-		for _, key := range []string{"clip_id", "id", "title", "tags", "duration", "image_url", "image_large_url", "metadata"} {
+		clip := map[string]any{"audio_url": strings.TrimSpace(audioURL)}
+		for _, key := range []string{"clip_id", "id", "title", "tags", "duration", "metadata"} {
 			if value, ok := item[key]; ok {
 				clip[key] = value
+			}
+		}
+		for _, key := range []string{"image_url", "image_large_url"} {
+			if raw, ok := item[key].(string); ok && isSafeHTTPMediaURL(raw) {
+				clip[key] = strings.TrimSpace(raw)
 			}
 		}
 		clips = append(clips, clip)
@@ -173,7 +192,7 @@ func projectTaskArtifacts(task *model.Task) ([]relaychannel.TaskArtifact, error)
 	if task == nil || task.Status != model.TaskStatusSuccess || !taskHasPluginExecution(task) || !task.ResultRetrievable() {
 		return []relaychannel.TaskArtifact{}, nil
 	}
-	adaptor := relay.GetTaskAdaptor(task.Platform)
+	adaptor := relay.GetTaskAdaptorForTask(task, task.Platform)
 	if adaptor == nil {
 		return nil, errTaskArtifactPluginUnavailable
 	}
@@ -225,7 +244,7 @@ func initTaskArtifactAdaptor(task *model.Task) (relaychannel.TaskAdaptor, error)
 	if err != nil {
 		return nil, fmt.Errorf("%w: channel unavailable", errTaskArtifactPluginUnavailable)
 	}
-	adaptor := relay.GetTaskAdaptor(task.Platform)
+	adaptor := relay.GetTaskAdaptorForTask(task, task.Platform)
 	if adaptor == nil {
 		return nil, errTaskArtifactPluginUnavailable
 	}

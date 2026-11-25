@@ -708,7 +708,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
           )}
           {props.log.request_id && props.log.user_id === userId && (
             <Link
-              to='/profile'
+              to='/support'
               hash={`ticket:request:${encodeURIComponent(props.log.request_id)}`}
               className='text-sm underline'
             >

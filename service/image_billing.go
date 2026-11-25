@@ -59,6 +59,7 @@ func PrepareImageBillingForRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 		if err == nil {
 			snap.EstimatedImageCount = trace.ImageCount
 			snap.EstimatedQuotaBeforeGroup = beforeGroupDec.InexactFloat64()
+			snap.EstimatedQuotaBeforeGroupDecimal = beforeGroupDec.String()
 			snap.EstimatedQuotaAfterGroup = quota
 			snap.EstimatedTier = trace.MatchedTier
 			snap.EstimatedBillingUnit = trace.BillingUnit

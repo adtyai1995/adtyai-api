@@ -29,6 +29,7 @@ type adtySiteSnapshot struct {
 	apiOnly    map[string]bool            // 用途是 base_url 的自定义域名：只放行 relay
 	defaultAPI map[int]string
 	loadedAt   time.Time
+	loadErr    error
 }
 
 var (
@@ -95,8 +96,9 @@ func loadAdtySiteSnapshot() *adtySiteSnapshot {
 	}
 	var sites []model.AdtySite
 	if err := model.DB.Find(&sites).Error; err != nil {
-		// 读不到站点表时不缓存，下次再试；这次当成没有分站。
+		// 读不到站点表时不缓存，并保留错误供调用方返回 503 而非误判 404 导致分站掉登录。
 		common.SysError(common.LogText("load adty sites failed: %s", err.Error()))
+		snapshot.loadErr = err
 		return snapshot
 	}
 	for i := range sites {
@@ -104,11 +106,11 @@ func loadAdtySiteSnapshot() *adtySiteSnapshot {
 		snapshot.byId[site.Id] = site
 		snapshot.byHost[strings.ToLower(site.Subdomain+"."+site.RootDomain)] = site
 	}
-	loadErr := false
+	var loadErr error
 	if AdtyLoadCustomDomains != nil {
 		domains, err := AdtyLoadCustomDomains()
 		if err != nil {
-			loadErr = true
+			loadErr = err
 			common.SysError(common.LogText("load adty custom domains failed: %s", err.Error()))
 		}
 		for host, siteId := range domains {
@@ -120,7 +122,9 @@ func loadAdtySiteSnapshot() *adtySiteSnapshot {
 	if AdtyLoadApiOnlyDomains != nil {
 		apiHosts, err := AdtyLoadApiOnlyDomains()
 		if err != nil {
-			loadErr = true
+			if loadErr == nil {
+				loadErr = err
+			}
 			common.SysError(common.LogText("load adty api-only domains failed: %s", err.Error()))
 			// Never serve a custom API hostname as an account website without its role.
 			clear(snapshot.byCustom)
@@ -131,6 +135,7 @@ func loadAdtySiteSnapshot() *adtySiteSnapshot {
 	}
 	var fixedDomains []model.AdtySiteDomain
 	if err := model.DB.Where("managed_by = ? AND role = ?", "platform", model.AdtySiteDomainRoleBaseURL).Find(&fixedDomains).Error; err != nil {
+		snapshot.loadErr = err
 		return snapshot
 	}
 	fixedBySite := make(map[int]model.AdtySiteDomain, len(fixedDomains))
@@ -162,8 +167,10 @@ func loadAdtySiteSnapshot() *adtySiteSnapshot {
 			break
 		}
 	}
-	if !loadErr {
+	if loadErr == nil {
 		adtySiteCache = snapshot
+	} else {
+		snapshot.loadErr = loadErr
 	}
 	return snapshot
 }
@@ -356,6 +363,9 @@ func AdtySiteForHostWithError(host string) (*model.AdtySite, error) {
 		site = snapshot.byHost[host]
 	}
 	if site == nil {
+		if snapshot.loadErr != nil {
+			return nil, snapshot.loadErr
+		}
 		return nil, nil
 	}
 	// Read the authoritative status so a close on another instance wins over
@@ -627,6 +637,7 @@ func AdtySiteLoginAllowed(c *gin.Context, userId int) bool {
 
 // adtySessionHostAllowed 拒绝在已关停分站的主机上建立会话。自定义域名和平台子域名一样，
 // 站点还在服务时都可以登录和二次验证；站点关掉后两种主机都拒绝。
+// 每次校验权威数据库状态，防止多实例旧缓存放行已关站登录，DB 异常 fail-closed。
 func adtySessionHostAllowed(c *gin.Context) bool {
 	if c == nil || c.Request == nil || !resellerSetting().Enabled {
 		return true
@@ -635,13 +646,25 @@ func adtySessionHostAllowed(c *gin.Context) bool {
 	if host == "" || AdtyIsMainHost(host) {
 		return true
 	}
-	snapshot := loadAdtySiteSnapshot()
-	site := snapshot.byCustom[host]
-	if site == nil {
-		site = snapshot.byHost[host]
-	}
-	if site != nil && !AdtySiteServesCustomers(site) {
+	site, err := AdtySiteForHostWithError(host)
+	if err != nil {
 		return false
+	}
+	if site != nil {
+		if !AdtySiteServesCustomers(site) {
+			return false
+		}
+		// 权威查库复验分站状态，避免多实例旧缓存在另一实例关站后短暂放行登录。
+		if model.DB != nil {
+			var fresh model.AdtySite
+			if err := model.DB.Select("id", "status").Where("id = ?", site.Id).First(&fresh).Error; err != nil {
+				return false
+			}
+			if !AdtySiteServesCustomers(&fresh) {
+				InvalidateAdtySiteCache()
+				return false
+			}
+		}
 	}
 	return true
 }

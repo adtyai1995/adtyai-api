@@ -57,7 +57,7 @@ export function EndpointsSection(props: { baseUrl: string }) {
                   <th
                     key={heading}
                     scope='col'
-                    className='text-neutral border-border border-b pb-4 text-left font-mono text-[11px] font-semibold tracking-[0.14em] uppercase'
+                    className='text-neutral border-border border-b pb-4 text-left font-mono text-[11px] font-semibold tracking-[0.14em]'
                   >
                     {heading}
                   </th>

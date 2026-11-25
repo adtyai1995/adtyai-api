@@ -135,9 +135,20 @@ func (req *adtyEpayChannelRequest) toChannel() (*model.AdtyEpayChannel, error) {
 		UnpaidThreshold:    max(req.UnpaidThreshold, 0),
 	}
 	enabled := 0
+	seenMethods := map[string]struct{}{}
 	for _, m := range req.Methods {
 		if !service.IsAdtyEpayMethod(m.Method) {
 			return nil, common.NewMessage("Unsupported payment method")
+		}
+		if _, dup := seenMethods[m.Method]; dup {
+			return nil, common.NewMessage("Duplicate payment method")
+		}
+		seenMethods[m.Method] = struct{}{}
+		minCNY := m.MinCNY.Round(2)
+		maxCNY := m.MaxCNY.Round(2)
+		dailyLimitCNY := m.DailyLimitCNY.Round(2)
+		if minCNY.IsNegative() || maxCNY.IsNegative() || dailyLimitCNY.IsNegative() || (maxCNY.IsPositive() && minCNY.GreaterThan(maxCNY)) {
+			return nil, common.NewMessage("Invalid parameters")
 		}
 		if m.Enabled {
 			enabled++
@@ -148,7 +159,7 @@ func (req *adtyEpayChannelRequest) toChannel() (*model.AdtyEpayChannel, error) {
 		}
 		channel.Methods = append(channel.Methods, model.AdtyEpayChannelMethod{
 			Method: m.Method, DisplayName: displayName, TypeCode: strings.TrimSpace(m.TypeCode),
-			MinCNY: m.MinCNY.Round(2), MaxCNY: m.MaxCNY.Round(2), DailyLimitCNY: m.DailyLimitCNY.Round(2),
+			MinCNY: minCNY, MaxCNY: maxCNY, DailyLimitCNY: dailyLimitCNY,
 			Enabled: m.Enabled, ReturnType: strings.TrimSpace(m.ReturnType),
 		})
 	}

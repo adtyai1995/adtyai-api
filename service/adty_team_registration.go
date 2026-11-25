@@ -230,7 +230,7 @@ func resolveAdtyTeamRegistrationLeader(tx *gorm.DB, siteId int, username, passwo
 		DisplayName: username,
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
-		Group:       "default",
+		Group:       "",
 		AuthVersion: 1,
 		SiteId:      siteId,
 	}

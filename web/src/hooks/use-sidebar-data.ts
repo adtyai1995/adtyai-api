@@ -141,15 +141,22 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
   const userReferralEnabled = useAuthStore(
     (state) => state.auth.user?.adty_referral_enabled
   )
+  const hasLegacySiteCommissions = useAuthStore(
+    (state) => state.auth.user?.adty_has_legacy_site_commissions === true
+  )
   const referralEnabled =
     (readReferralEnabledFromStatus(status) ?? userReferralEnabled) === true
   const isPureSiteOwner = isSiteOwner && !isAdmin
-  const showReferral = !isAdmin && !isSiteOwner && referralEnabled
-  const hasTeam = useAuthStore(
-    (state) => state.auth.user?.adty_has_team === true
-  )
   const isStaff = useAuthStore(
     (state) => (state.auth.user?.staff_site_id ?? 0) > 0
+  )
+  const showReferral =
+    !isAdmin &&
+    !isSiteOwner &&
+    !isStaff &&
+    (referralEnabled || hasLegacySiteCommissions)
+  const hasTeam = useAuthStore(
+    (state) => state.auth.user?.adty_has_team === true
   )
 
   return useMemo(() => {

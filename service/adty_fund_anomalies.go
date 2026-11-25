@@ -28,8 +28,11 @@ type adtyFundAnomalyItem struct {
 }
 
 func detectAdtyFundAnomalies(siteID int) ([]adtyFundAnomalyItem, error) {
-	if siteID <= 0 {
+	if siteID < 0 {
 		return nil, ErrAdtySiteWalletInvalidOperation
+	}
+	if siteID == 0 {
+		return detectMainSiteFundAnomalies()
 	}
 	items, err := detectExistingAdtyFundAnomalies(siteID)
 	if err != nil {
@@ -51,6 +54,83 @@ func detectAdtyFundAnomalies(siteID int) ([]adtyFundAnomalyItem, error) {
 	}
 	items = append(items, earnings...)
 	refunds, err := detectRefundAmountMismatches(siteID)
+	if err != nil {
+		return nil, err
+	}
+	items = append(items, refunds...)
+	return items, nil
+}
+
+func detectMainSiteFundAnomalies() ([]adtyFundAnomalyItem, error) {
+	var items []adtyFundAnomalyItem
+	principalQuota, giftQuota, lotGap, err := adtySiteCustomerPrincipalAndGiftQuota(0)
+	if err != nil {
+		return nil, err
+	}
+	if lotGap != 0 {
+		items = append(items, adtyFundAnomalyItem{
+			Kind:       AdtyAnomalyBalanceLedgerGap,
+			Ref:        "main:balance_ledger_gap",
+			SiteID:     0,
+			Difference: decimal.NewFromInt(lotGap).Div(common.QuotaPerUnitDecimal()).String(),
+			Evidence: mustAnomalyEvidence(map[string]any{
+				"customer_principal":   decimal.NewFromInt(principalQuota).Div(common.QuotaPerUnitDecimal()).String(),
+				"customer_gift":        decimal.NewFromInt(giftQuota).Div(common.QuotaPerUnitDecimal()).String(),
+				"fund_batch_gap_quota": lotGap,
+			}),
+		})
+	}
+	var userIDs []int
+	if err := model.DB.Model(&model.User{}).Where("site_id = 0").Pluck("id", &userIDs).Error; err != nil {
+		return nil, err
+	}
+	var holds int64
+	if len(userIDs) > 0 {
+		if err := model.DB.Model(&model.AdtyBillingHold{}).Where("user_id IN ? AND status = ?", userIDs, model.AdtyBillingHoldOpen).Count(&holds).Error; err != nil {
+			return nil, err
+		}
+	}
+	if holds > 0 {
+		items = append(items, adtyFundAnomalyItem{
+			Kind:       AdtyAnomalyOpenShortfallHold,
+			Ref:        "main:open_shortfall_hold",
+			SiteID:     0,
+			Difference: strconv.FormatInt(holds, 10),
+			Evidence:   mustAnomalyEvidence(map[string]any{"open_holds": holds}),
+		})
+	}
+	dupCredit, err := adtyDuplicateEventTradeNos(0, "credited", "")
+	if err != nil {
+		return nil, err
+	}
+	if len(dupCredit) > 0 {
+		items = append(items, adtyFundAnomalyItem{
+			Kind:       AdtyAnomalyDuplicateCredit,
+			Ref:        "main:duplicate_credit",
+			SiteID:     0,
+			Difference: strconv.Itoa(len(dupCredit)),
+			Evidence:   mustAnomalyEvidence(map[string]any{"trade_nos": dupCredit, "reason": "repeated credited payment events"}),
+		})
+	}
+	dupRefund, err := adtyDuplicateEventTradeNos(0, "", "refund.succeeded")
+	if err != nil {
+		return nil, err
+	}
+	if len(dupRefund) > 0 {
+		items = append(items, adtyFundAnomalyItem{
+			Kind:       AdtyAnomalyDuplicateRefund,
+			Ref:        "main:duplicate_refund",
+			SiteID:     0,
+			Difference: strconv.Itoa(len(dupRefund)),
+			Evidence:   mustAnomalyEvidence(map[string]any{"trade_nos": dupRefund, "reason": "repeated refund.succeeded payment events"}),
+		})
+	}
+	unbooked, err := detectUnbookedSuccessfulOrders(0)
+	if err != nil {
+		return nil, err
+	}
+	items = append(items, unbooked...)
+	refunds, err := detectRefundAmountMismatches(0)
 	if err != nil {
 		return nil, err
 	}
@@ -231,14 +311,16 @@ func adtySiteCustomerPrincipalAndGiftQuota(siteID int) (principalQuota int64, gi
 	}
 
 	heldByUser := map[int]int64{}
-	if model.DB.Migrator().HasTable(&model.AdtyFundAllocation{}) {
+	if model.DB.Migrator().HasTable(&model.AdtyFundAllocation{}) && model.DB.Migrator().HasTable(&model.AdtyFundBatch{}) {
 		var held []struct {
 			UserId int
 			Quota  int64
 		}
-		if err := model.DB.Model(&model.AdtyFundAllocation{}).
-			Select("user_id, COALESCE(SUM(held - settled), 0) AS quota").
-			Where("user_id IN ? AND held > settled", userIDs).Group("user_id").Scan(&held).Error; err != nil {
+		if err := model.DB.Table("adty_fund_allocations AS a").
+			Joins("JOIN adty_fund_batches b ON b.id = a.batch_id").
+			Select("a.user_id, COALESCE(SUM(a.held - a.settled), 0) AS quota").
+			Where("a.user_id IN ? AND a.held > a.settled AND a.operation_id NOT LIKE ? AND (b.site_id = ? OR b.site_id IS NULL)", userIDs, "owner-refund:%", siteID).
+			Group("a.user_id").Scan(&held).Error; err != nil {
 			return 0, 0, 0, err
 		}
 		for _, row := range held {
@@ -473,7 +555,7 @@ func detectInsufficientGiftGuarantees(siteID int) ([]adtyFundAnomalyItem, error)
 	if err != nil {
 		return nil, err
 	}
-	bonusBatchByTrade, err := loadGiftBatchRemainingByTrade(tradeNos)
+	bonusBatchByTrade, err := loadGiftBatchRemainingByTrade(siteID, tradeNos)
 	if err != nil {
 		return nil, err
 	}
@@ -546,13 +628,13 @@ type giftBatchRemainingInfo struct {
 	Original  int64
 }
 
-func loadGiftBatchRemainingByTrade(tradeNos []string) (map[string]giftBatchRemainingInfo, error) {
+func loadGiftBatchRemainingByTrade(siteID int, tradeNos []string) (map[string]giftBatchRemainingInfo, error) {
 	out := map[string]giftBatchRemainingInfo{}
 	if len(tradeNos) == 0 || !model.DB.Migrator().HasTable(&model.AdtyFundBatch{}) {
 		return out, nil
 	}
 	var batches []model.AdtyFundBatch
-	if err := model.DB.Where("source IN ? AND kind IN ?", tradeNos, []string{
+	if err := model.DB.Where("source IN ? AND (site_id = ? OR site_id IS NULL) AND kind IN ?", tradeNos, siteID, []string{
 		model.AdtyFundBatchKindBonus,
 		model.AdtyFundBatchKindExpiringBonus,
 	}).Find(&batches).Error; err != nil {
@@ -1127,7 +1209,7 @@ const adtyAnomalyDispositionOpen = "open"
 // 发起人，同一条异常也会被重新检出），唯一索引会把它们一起挡住。
 func upsertOpenAdtyAnomalyDisposition(item adtyFundAnomalyItem) error {
 	kind, ref := strings.TrimSpace(item.Kind), strings.TrimSpace(item.Ref)
-	if kind == "" || ref == "" || item.SiteID <= 0 {
+	if kind == "" || ref == "" || item.SiteID < 0 {
 		return common.NewMessage("Invalid parameters")
 	}
 	updates := map[string]any{

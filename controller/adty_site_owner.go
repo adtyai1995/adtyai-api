@@ -287,6 +287,7 @@ type adtyOwnerEarningRow struct {
 	Id        int64           `json:"id"`
 	Day       string          `json:"day"`
 	UserId    int             `json:"user_id"`
+	Username  string          `json:"username,omitempty"`
 	Kind      string          `json:"kind"`
 	Reason    string          `json:"reason,omitempty"`
 	Revenue   decimal.Decimal `json:"revenue_usd"`
@@ -316,9 +317,16 @@ func GetAdtyOwnerEarnings(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	userIDs := make([]int, 0, len(rows))
+	for _, row := range rows {
+		if row.UserId > 0 {
+			userIDs = append(userIDs, row.UserId)
+		}
+	}
+	usernames := model.LookupUsernamesByIDs(model.DB, userIDs)
 	items := make([]adtyOwnerEarningRow, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, adtyOwnerEarningRow{Id: row.Id, Day: row.Day, UserId: row.UserId, Kind: row.Kind, Reason: row.Reason,
+		items = append(items, adtyOwnerEarningRow{Id: row.Id, Day: row.Day, UserId: row.UserId, Username: usernames[row.UserId], Kind: row.Kind, Reason: row.Reason,
 			Revenue: row.Revenue, Earning: row.Earning, Status: row.Status, SettledAt: row.SettledAt})
 	}
 	balances, err := service.GetAdtyOwnerBalances(site, c.GetInt("id"))
@@ -344,7 +352,22 @@ func GetAdtyOwnerEarningLines(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, rows)
+	type earningLineView struct {
+		model.AdtySiteEarningLine
+		Username string `json:"username,omitempty"`
+	}
+	userIDs := make([]int, 0, len(rows))
+	for _, row := range rows {
+		if row.UserId > 0 {
+			userIDs = append(userIDs, row.UserId)
+		}
+	}
+	usernames := model.LookupUsernamesByIDs(model.DB, userIDs)
+	views := make([]earningLineView, 0, len(rows))
+	for _, row := range rows {
+		views = append(views, earningLineView{AdtySiteEarningLine: row, Username: usernames[row.UserId]})
+	}
+	common.ApiSuccess(c, views)
 }
 
 // GetAdtyOwnerCustomers 按注册时间分页列出客户：GET /api/adty/site/customers。
@@ -569,6 +592,7 @@ func GetAdtyOwnerExport(c *gin.Context) {
 		return
 	}
 	var b strings.Builder
+	b.WriteString("\xef\xbb\xbf")
 	switch c.Query("kind") {
 	case "earnings":
 		var total int64

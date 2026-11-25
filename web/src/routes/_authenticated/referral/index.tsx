@@ -31,12 +31,14 @@ import { useAuthStore } from '@/stores/auth-store'
 function ReferralRoutePage() {
   const navigate = useNavigate()
   const { status } = useStatus()
-  const userReferralEnabled = useAuthStore(
-    (state) => state.auth.user?.adty_referral_enabled
-  )
+  const user = useAuthStore((state) => state.auth.user)
+  const userReferralEnabled = user?.adty_referral_enabled
+  const hasLegacySiteCommissions =
+    user?.adty_has_legacy_site_commissions === true &&
+    (user?.staff_site_id ?? 0) === 0
   const referralEnabled =
     readReferralEnabledFromStatus(status) ?? userReferralEnabled
-  const isDisabled = referralEnabled === false
+  const isDisabled = referralEnabled === false && !hasLegacySiteCommissions
 
   useEffect(() => {
     if (!isDisabled) return
@@ -51,12 +53,15 @@ function ReferralRoutePage() {
   return <Referral />
 }
 
-// R-32 #21 & R-35 #15: Admins, site owners, and sites with referral disabled
-// do not use the personal referral page.
+// R-32 #21 & R-35 #15: Admins, site owners, staff, and sites with referral
+// disabled (without legacy sub-site commissions) do not use the personal referral page.
 export const Route = createFileRoute('/_authenticated/referral/')({
   beforeLoad: async ({ context }) => {
     const user = useAuthStore.getState().auth.user
     if (!user) return
+    if ((user.staff_site_id ?? 0) > 0) {
+      throw redirect({ to: '/site-staff' })
+    }
     if (user.adty_site_owner === true && user.role < ROLE.ADMIN) {
       throw redirect({
         to: '/site-owner/$section',
@@ -79,7 +84,9 @@ export const Route = createFileRoute('/_authenticated/referral/')({
     }
 
     const referralEnabled = statusReferralEnabled ?? user.adty_referral_enabled
-    if (referralEnabled === false) {
+    const hasLegacySiteCommissions =
+      user.adty_has_legacy_site_commissions === true
+    if (referralEnabled === false && !hasLegacySiteCommissions) {
       throw redirect({
         to: '/dashboard/$section',
         params: { section: 'overview' },

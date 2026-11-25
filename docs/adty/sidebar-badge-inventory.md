@@ -75,29 +75,16 @@ that number in.
 - 刷新机制: Common rule above. Distinct from finance/order/ticket
   badges.
 
-### A.2 推广合作伙伴申请 (`referral_partners`)
-
-- 待办定义: Platform referral partner applications waiting for review
-  (`ReferralPartnerStatusPending`).
-- 数据来源: `referral_affiliates.partner_status`, scoped through
-  `users.id = referral_affiliates.user_id` and `users.site_id`.
-- 角色范围: Root = global. Non-root admin with referral read = main
-  site only. Site owners, staff, and users do not receive this kind
-  (platform referral admin is not their reviewer role).
-- 计数规则: Number of pending partner rows in scope.
-- 清零条件: The application leaves pending (approved or rejected).
-  Opening the referral menu does not clear it.
-- 刷新机制: Common rule. `GetReferralAdminBadges` uses this same
-  scoped count and is no longer an unscoped global sum.
-
 ### A.3 推广提现待审核 (`referral_withdrawals_pending`)
 
 - 待办定义: Platform referral withdrawals in official
   `ReferralWithdrawalStatusPending`.
 - 数据来源: `referral_withdrawals.status`, scoped through
   `users.id = referral_withdrawals.user_id` and `users.site_id`.
-- 角色范围: Same as A.2. Not merged with site earning withdrawals or
-  site-invite commission withdrawals.
+- 角色范围: Root = global. Non-root admin with referral read = main
+  site only. Site owners, staff, and users do not receive this kind
+  (platform referral admin is not their reviewer role). Not merged with
+  site earning withdrawals or site-invite commission withdrawals.
 - 计数规则: Number of pending rows in scope.
 - 清零条件: Review moves the row out of pending (approved, rejected,
   or canceled). Opening the menu does not clear it.
@@ -113,7 +100,7 @@ that number in.
 - 清零条件: Paid, or otherwise leaving approved. Opening the menu
   does not clear it.
 - 刷新机制: Common rule. The referral admin sidebar badge may show
-  A.2+A.3+A.4 together because they are one referral-admin module,
+  A.3+A.4 together because they are one referral-admin module,
   as the existing badge already did.
 
 ### A.5 分站收益提现待审核 (`site_withdrawals_pending`)
@@ -170,13 +157,13 @@ that number in.
   `ReferralCommissionStatusFrozen`.
 - 数据来源: `referral_commissions.status`, scoped through
   `users.id = referral_commissions.user_id` and `users.site_id`.
-- 角色范围: Same as A.2 (Root global; non-root referral admin = main
+- 角色范围: Same as A.3 (Root global; non-root referral admin = main
   site). Not merged with site-invite frozen / on-hold amounts (B.5).
 - 计数规则: Number of frozen commission rows in scope.
 - 清零条件: Official commission state leaves `frozen`. Opening the
   menu does not clear it.
 - 刷新机制: Common rule. This kind is shown on the referral admin
-  item together with A.2–A.4 only when it is the sole positive
+  item together with A.3–A.4 only when it is the sole positive
   referral kind, or as part of that same referral-admin module;
   it is never added into finance/order or ticket badges.
 
@@ -198,20 +185,6 @@ that number in.
 - 刷新机制: Common rule. Detection may create new open rows; the
   badge counts existing open/reviewing rows and does not invent
   tolerances or repair money.
-
-### A.10 员工余额调整待审批 (`staff_balance_pending`)
-
-- 待办定义: Staff customer-balance adjustment requests in official
-  `AdtyStaffBalancePending`, awaiting Root or site-owner approval.
-- 数据来源: `adty_staff_balance_requests.status` (and `site_id`,
-  `staff_user_id`).
-- 角色范围: Root = global. Site owner = this site (reviewer). Enabled
-  staff = only their own submitted pending rows (本人相关), never
-  other staff or other sites. Unauthorized actors are omitted.
-- 计数规则: Number of pending rows in that scope.
-- 清零条件: Official approve or reject leaves pending. Opening the
-  menu does not clear it.
-- 刷新机制: Common rule.
 
 ### A.11 客服工单待处理 (`tickets_pending`)
 
@@ -369,16 +342,13 @@ and the affected acceptance items. This is not a single vague
 
 - Notification unread: top bar, not mixed into finance/order/ticket
   items.
-- Referral admin item: A.2–A.4 and A.8 (one official referral-admin
-  module).
+- Referral admin item: A.3–A.4 and A.8 (one official referral-admin
+  module; A.2 `referral_partners` is retired).
 - Order management item: A.13 only (B.1 and B.2 are not implemented).
-- Reseller sites item: A.5, A.9, and Root's A.10. These are different
-  duties, so the parent shows a single kind's number when only one is
-  positive, and a non-numeric pending cue when more than one is
-  positive — it does not sum them.
-- Site owner center item: A.6, A.7, and the owner's A.10, with the
-  same non-mixing rule.
+- Reseller sites item: A.5 and A.9 (A.10 `staff_balance_pending` is
+  retired). These are different duties, so the parent shows a single
+  kind's number when only one is positive, and a non-numeric pending
+  cue when more than one is positive — it does not sum them.
+- Site owner center item: A.6 and A.7, with the same non-mixing rule.
 - Tickets item: A.11 and/or A.12, with the same non-mixing rule.
-- Staff workspace item: A.11 (handler queue). Staff A.10 (own
-  submissions) is returned in the API but is not mixed into that
-  badge.
+- Staff workspace item: A.11 (handler queue).

@@ -92,8 +92,14 @@ func AdtyQuoteForPayment(userID, requestSiteID int, group, business string, face
 	if err != nil {
 		return nil, err
 	}
-	if user.Role < common.RoleAdminUser && AdtyIsSiteOwner(user.Id) && strings.TrimSpace(business) != model.AdtyBusinessOwnerMarginTopup {
-		return nil, common.NewMessage("Site owner accounts can only top up site margin")
+	if user.Role < common.RoleAdminUser && strings.TrimSpace(business) != model.AdtyBusinessOwnerMarginTopup {
+		isOwner, ownerErr := AdtyIsSiteOwnerStrict(user.Id)
+		if ownerErr != nil {
+			return nil, ownerErr
+		}
+		if isOwner {
+			return nil, common.NewMessage("Site owner accounts can only top up site margin")
+		}
 	}
 	siteID, business, err := adtyPaymentScopeIdentity(model.DB, user, []AdtyPaymentScope{{Business: business, SiteID: requestSiteID}}, false)
 	if err != nil {

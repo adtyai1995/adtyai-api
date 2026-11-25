@@ -258,8 +258,12 @@ func CountAudioTokenInput(audioBase64 string, audioFormat string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	// duration 来自用户提供的音频元数据，饱和转换防止 int 回绕
-	return common.QuotaFromFloat(duration / 60 * 100 / 0.06), nil
+	// duration 来自用户提供的音频元数据，饱和转换防止 int 回绕并记录告警
+	tokens, clamp := common.QuotaFromFloatChecked(duration / 60 * 100 / 0.06)
+	if clamp != nil {
+		common.SysLog(common.LogText("audio input token count saturated: %s", clamp.Error()))
+	}
+	return tokens, nil
 }
 
 func CountAudioTokenOutput(audioBase64 string, audioFormat string) (int, error) {
@@ -270,6 +274,10 @@ func CountAudioTokenOutput(audioBase64 string, audioFormat string) (int, error) 
 	if err != nil {
 		return 0, err
 	}
-	// duration 来自上游返回的音频元数据，饱和转换防止 int 回绕
-	return common.QuotaFromFloat(duration / 60 * 200 / 0.24), nil
+	// duration 来自上游返回的音频元数据，饱和转换防止 int 回绕并记录告警
+	tokens, clamp := common.QuotaFromFloatChecked(duration / 60 * 200 / 0.24)
+	if clamp != nil {
+		common.SysLog(common.LogText("audio output token count saturated: %s", clamp.Error()))
+	}
+	return tokens, nil
 }

@@ -27,6 +27,14 @@ func SendAccountDeletionCode(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if user.Role == common.RoleRootUser {
+		common.ApiErrorT(c, "Cannot delete super administrator account")
+		return
+	}
+	if user.Status != common.UserStatusEnabled {
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("This account cannot request deletion"))
+		return
+	}
 	email := model.NormalizeEmail(user.Email)
 	if email == "" || !strings.Contains(email, "@") {
 		common.ApiErrorT(c, "Add an email address before deleting this account")

@@ -96,6 +96,12 @@ export function PaymentSceneEditor(props: {
       ? {
           ...existingScene,
           business: initialBusiness,
+          site_scope:
+            initialBusiness === 'team_topup'
+              ? 'main'
+              : existingScene.site_scope,
+          site_ids:
+            initialBusiness === 'team_topup' ? [] : existingScene.site_ids,
         }
       : {
           key: '',
@@ -117,6 +123,7 @@ export function PaymentSceneEditor(props: {
   const epaySelected = form.watch('providers').includes('adty_epay')
   const selectedSites = form.watch('site_scope') === 'selected'
   const selectedBusiness = form.watch('business')
+  const teamTopup = selectedBusiness === 'team_topup'
   const ownerTopup = selectedBusiness === 'owner_margin_topup'
   const channels = useQuery({
     queryKey: [...epayChannelsQueryKey, props.userId],
@@ -249,10 +256,20 @@ export function PaymentSceneEditor(props: {
                   id={`${id}-business`}
                   {...form.register('business', {
                     onChange: (event) => {
-                      if (event.target.value !== 'team_topup') {
+                      const nextBusiness = event.target.value
+                      if (nextBusiness === 'team_topup') {
+                        form.setValue('site_scope', 'main', {
+                          shouldDirty: true,
+                          shouldValidate: true,
+                        })
+                        form.setValue('site_ids', [], {
+                          shouldDirty: true,
+                          shouldValidate: true,
+                        })
+                      } else {
                         form.setValue('team_ids', [])
                       }
-                      if (event.target.value !== 'owner_margin_topup') {
+                      if (nextBusiness !== 'owner_margin_topup') {
                         return
                       }
                       form.setValue('user_types', ['site_owner'], {
@@ -358,30 +375,40 @@ export function PaymentSceneEditor(props: {
                   </FieldError>
                 </Field>
               )}
-              <Field>
+              <Field data-invalid={!!errors.site_scope}>
                 <FieldLabel htmlFor={`${id}-site-scope`}>
                   {t('Site scope')}
                 </FieldLabel>
                 <NativeSelect
                   id={`${id}-site-scope`}
-                  {...form.register('site_scope', {
-                    onChange: () =>
-                      form.setValue('site_ids', [], { shouldDirty: true }),
-                  })}
+                  disabled={teamTopup}
+                  value={teamTopup ? 'main' : form.watch('site_scope')}
+                  onChange={(event) => {
+                    form.setValue(
+                      'site_scope',
+                      event.target.value as PaymentSceneFormValues['site_scope'],
+                      { shouldDirty: true, shouldValidate: true }
+                    )
+                    form.setValue('site_ids', [], { shouldDirty: true })
+                  }}
                 >
                   {Object.entries(sceneAudienceLabels)
-                    .filter(
-                      ([value]) =>
-                        !ownerTopup ||
-                        value === 'all_sites' ||
-                        value === 'selected'
-                    )
+                    .filter(([value]) => {
+                      if (teamTopup) return value === 'main'
+                      if (ownerTopup) {
+                        return value === 'all_sites' || value === 'selected'
+                      }
+                      return true
+                    })
                     .map(([value, label]) => (
                       <NativeSelectOption key={value} value={value}>
                         {t(label)}
                       </NativeSelectOption>
                     ))}
                 </NativeSelect>
+                <FieldError>
+                  {errors.site_scope?.message && t(errors.site_scope.message)}
+                </FieldError>
               </Field>
               {form.watch('business') === 'team_topup' && (
                 <Field data-invalid={!!errors.team_ids}>

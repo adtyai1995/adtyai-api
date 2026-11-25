@@ -335,7 +335,13 @@ func DeleteOldAuditLogsByCategoriesBatch(ctx context.Context, categories []strin
 
 // DeleteInactiveUserSessionsForRetention removes expired or revoked sessions older than retentionDays.
 // Active, unexpired sessions are left in place. The issuance window still applies as an operational safety bound.
-func DeleteInactiveUserSessionsForRetention(now int64, retentionDays int) (int64, error) {
+func DeleteInactiveUserSessionsForRetention(ctx context.Context, now int64, retentionDays int) (int64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	if retentionDays <= 0 {
 		return 0, nil
 	}
@@ -349,8 +355,11 @@ func DeleteInactiveUserSessionsForRetention(now int64, retentionDays int) (int64
 	cutoff := now - int64(retentionDays)*24*60*60
 	deleted := int64(0)
 	for {
+		if err := ctx.Err(); err != nil {
+			return deleted, err
+		}
 		var sids []string
-		if err := DB.Model(&UserSession{}).
+		if err := DB.WithContext(ctx).Model(&UserSession{}).
 			Where(
 				"created_at <= ? AND ((status = ? AND revoked_at > 0 AND revoked_at < ?) OR (expires_at < ? AND (status <> ? OR revoked_at <= 0 OR revoked_at < ?)))",
 				issuanceCutoff,
@@ -367,8 +376,11 @@ func DeleteInactiveUserSessionsForRetention(now int64, retentionDays int) (int64
 			return deleted, nil
 		}
 		for start := 0; start < len(sids); start += userSessionCleanupBatchSize {
+			if err := ctx.Err(); err != nil {
+				return deleted, err
+			}
 			end := min(start+userSessionCleanupBatchSize, len(sids))
-			result := DB.Where("sid IN ?", sids[start:end]).
+			result := DB.WithContext(ctx).Where("sid IN ?", sids[start:end]).
 				Where(
 					"created_at <= ? AND ((status = ? AND revoked_at > 0 AND revoked_at < ?) OR (expires_at < ? AND (status <> ? OR revoked_at <= 0 OR revoked_at < ?)))",
 					issuanceCutoff,
@@ -388,7 +400,13 @@ func DeleteInactiveUserSessionsForRetention(now int64, retentionDays int) (int64
 }
 
 // DeleteExpiredUserAccessTokensForRetention deletes access tokens that expired before the retention cutoff.
-func DeleteExpiredUserAccessTokensForRetention(now int64, retentionDays int) (int64, error) {
+func DeleteExpiredUserAccessTokensForRetention(ctx context.Context, now int64, retentionDays int) (int64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	if retentionDays <= 0 {
 		return 0, nil
 	}
@@ -398,8 +416,11 @@ func DeleteExpiredUserAccessTokensForRetention(now int64, retentionDays int) (in
 	before := now - int64(retentionDays)*24*60*60
 	deleted := int64(0)
 	for {
+		if err := ctx.Err(); err != nil {
+			return deleted, err
+		}
 		var ids []int
-		if err := DB.Model(&UserAccessToken{}).
+		if err := DB.WithContext(ctx).Model(&UserAccessToken{}).
 			Where("expires_at > 0 AND expires_at < ?", before).
 			Order("id").Limit(userAccessTokenCleanupBatchSize).Pluck("id", &ids).Error; err != nil {
 			return deleted, err
@@ -407,7 +428,10 @@ func DeleteExpiredUserAccessTokensForRetention(now int64, retentionDays int) (in
 		if len(ids) == 0 {
 			return deleted, nil
 		}
-		result := DB.Where("id IN ?", ids).Delete(&UserAccessToken{})
+		if err := ctx.Err(); err != nil {
+			return deleted, err
+		}
+		result := DB.WithContext(ctx).Where("id IN ?", ids).Delete(&UserAccessToken{})
 		if result.Error != nil {
 			return deleted, result.Error
 		}

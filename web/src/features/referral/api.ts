@@ -72,13 +72,6 @@ export async function getReferralWithdrawals(
   return requireServerSuccess(res.data).data
 }
 
-export async function applyReferralPartner(note: string): Promise<void> {
-  const res = await api.post<ApiResponse<null>>('/api/user/referral/apply', {
-    note,
-  })
-  requireServerSuccess(res.data)
-}
-
 export type RateChange = { rate: string; cnyAmount: string; updatedAt: number }
 
 export type WithdrawalResult =

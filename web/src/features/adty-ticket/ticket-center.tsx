@@ -685,6 +685,7 @@ function TicketWorkspace(props: { workspace: TicketScope; userId?: number }) {
     >
       {selected !== null ? (
         <TicketDetailView
+          key={selected}
           scope={scope}
           userId={userId}
           detail={detail.data}

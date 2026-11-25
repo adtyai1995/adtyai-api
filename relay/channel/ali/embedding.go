@@ -2,13 +2,13 @@ package ali
 
 import (
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -151,11 +151,12 @@ func parseURLField(m map[string]any, key string) (string, error) {
 }
 
 func MultimodalEmbeddingHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (*types.NewAPIError, *dto.Usage) {
-	responseBody, err := io.ReadAll(resp.Body)
+	responseBody, readErr := helper.ReadResponseBody(c, resp, types.ErrorCodeReadResponseBodyFailed)
 	service.CloseResponseBodyGracefully(resp)
-	if err != nil {
-		return types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError), nil
+	if readErr != nil {
+		return readErr, nil
 	}
+	var err error
 
 	var aliResponse AliMultimodalEmbeddingResponse
 	if err = common.Unmarshal(responseBody, &aliResponse); err != nil {

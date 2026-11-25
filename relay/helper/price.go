@@ -56,21 +56,8 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 		return service.GroupRatioInfoFromSnapshot(snap)
 	}
 
-	// check user group special ratio
-	userGroupRatio, ok := ratio_setting.GetGroupGroupRatio(relayInfo.UserGroup, relayInfo.UsingGroup)
-	if ok {
-		// user group special ratio
-		groupRatioInfo.GroupSpecialRatio = userGroupRatio
-		groupRatioInfo.GroupRatio = userGroupRatio
-		groupRatioInfo.HasSpecialRatio = true
-		if billed, found := ratio_setting.GetGroupGroupRatioDecimal(relayInfo.UserGroup, relayInfo.UsingGroup); found {
-			groupRatioInfo.SetBilledGroupRatio(billed)
-		}
-	} else {
-		// normal group ratio
-		groupRatioInfo.GroupRatio = ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
-		groupRatioInfo.SetBilledGroupRatio(ratio_setting.GetGroupRatioDecimal(relayInfo.UsingGroup))
-	}
+	groupRatioInfo.GroupRatio = ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
+	groupRatioInfo.SetBilledGroupRatio(ratio_setting.GetGroupRatioDecimal(relayInfo.UsingGroup))
 	// 二开：分站客户乘上站长倍率 k（任务 11.4）；渠道测试不乘，也不记站长收益
 	if !relayInfo.IsChannelTest {
 		billedDec, storedKDec := service.AdtyApplySiteMarkupDecimalHook(ctx, relayInfo.UserId, relayInfo.UsingGroup, groupRatioInfo.BilledGroupRatio(), relayInfo.OriginModelName)
@@ -254,7 +241,7 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 			modelPrice = modelPriceDec.InexactFloat64()
 		}
 		if _, image := info.Request.(*dto.ImageRequest); image {
-			info.ImageQuotaBeforeGroup = modelPrice * common.QuotaPerUnit
+			info.ImageQuotaBeforeGroup = modelPriceDec.Mul(common.QuotaPerUnitDecimal()).InexactFloat64()
 		}
 	}
 

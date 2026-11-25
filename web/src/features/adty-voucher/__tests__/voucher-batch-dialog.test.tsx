@@ -124,4 +124,43 @@ describe('VoucherBatchResultDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Copy All' }))
     expect(copyMock).toHaveBeenCalledWith('ADTY-CODE-1\nADTY-CODE-2')
   })
+
+  it('uses margin recharge code title and list label for site_margin batches', () => {
+    render(
+      <VoucherBatchResultDialog
+        open
+        onOpenChange={vi.fn()}
+        batch={{
+          batch_no: 'B-MARGIN-01',
+          purpose: 'site_margin',
+          amount_usd: '100.00',
+          count: 1,
+          total_amount_usd: '100.00',
+          reason: 'Offline deposit',
+          items: [
+            {
+              id: 5,
+              code: 'ADTY-MGN-1',
+              code_tail: 'MGN-1',
+              purpose: 'site_margin',
+              status: 'pending',
+              amount_usd: '100.00',
+              quota: 50000000,
+              batch_no: 'B-MARGIN-01',
+              reason: 'Offline deposit',
+              created_at: 1700000000,
+            },
+          ],
+        }}
+      />
+    )
+
+    expect(
+      screen.getByRole('heading', { name: 'Generated margin recharge codes' })
+    ).toBeTruthy()
+    expect(
+      screen.getByLabelText('Generated margin recharge codes')
+    ).toBeTruthy()
+    expect(screen.queryByText('Generated redemption codes')).toBeNull()
+  })
 })

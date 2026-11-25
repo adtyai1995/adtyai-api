@@ -235,7 +235,17 @@ func isRetiredOptionKey(k string) bool {
 	case "payment_setting.amount_discount",
 		"adty_topup_setting.bonus_rates",
 		"adty_reseller_setting.max_site_bonus_extra",
-		"adty_reseller_setting.invite_code_enabled":
+		"adty_reseller_setting.invite_code_enabled",
+		"TopupGroupRatio",
+		"GroupGroupRatio",
+		"group_ratio_setting.group_group_ratio",
+		"GroupModelAllow",
+		"group_ratio_setting.group_special_usable_group",
+		"AutoGroups",
+		"MaxTokenAutoGroups",
+		"DefaultUseAutoGroup",
+		"console_setting.uptime_kuma_base_url",
+		"Chats":
 		return true
 	}
 	return strings.HasPrefix(k, "adty_legal_setting.site_agreement") ||
@@ -392,6 +402,10 @@ func UpdateOption(c *gin.Context) {
 	case adty_setting.EpaySettingKeyChannelTimeout, adty_setting.EpaySettingKeyTotalTimeout:
 		// Cross-key validation runs below after locking both SQL rows.
 	default:
+		if isRetiredOptionKey(option.Key) {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
+			return
+		}
 		if strings.HasPrefix(option.Key, "adty_legal_setting.site_agreement") ||
 			strings.HasPrefix(option.Key, "adty_legal_setting.site_customer_terms") {
 			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))

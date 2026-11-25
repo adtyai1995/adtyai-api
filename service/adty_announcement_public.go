@@ -18,14 +18,15 @@ const AdtyPublicAnnouncementLimit = 100
 // `/api/status`，字段是 content/publishDate/type/extra。换数据源不换形状，
 // 前端的未登录可见性就不会因为这次迁移而改变——这正是「读路径分叉」的要点。
 type AdtyPublicAnnouncement struct {
-	Id          int    `json:"id"`
-	Title       string `json:"title,omitempty"`
-	TitleEn     string `json:"title_en,omitempty"`
-	Content     string `json:"content"`
-	ContentEn   string `json:"content_en,omitempty"`
-	PublishDate string `json:"publishDate"`
-	Type        string `json:"type"`
-	Extra       string `json:"extra"`
+	Id            int    `json:"id"`
+	Title         string `json:"title,omitempty"`
+	TitleEn       string `json:"title_en,omitempty"`
+	Content       string `json:"content"`
+	ContentEn     string `json:"content_en,omitempty"`
+	ContentFormat string `json:"content_format,omitempty"`
+	PublishDate   string `json:"publishDate"`
+	Type          string `json:"type"`
+	Extra         string `json:"extra"`
 }
 
 // AdtyPublicAnnouncementsForRequest 按请求的站点读已发布公告，供 `/api/status` 用。
@@ -62,23 +63,40 @@ func AdtyPublicAnnouncementsForRequest(c *gin.Context) []AdtyPublicAnnouncement 
 		}
 	}
 	for _, row := range rows {
-		content := strings.TrimSpace(row.Content)
+		contentFormat := strings.ToLower(strings.TrimSpace(row.ContentFormat))
+		if contentFormat == "" {
+			contentFormat = "markdown"
+		}
+		isHTML := contentFormat == "html"
+		rawContent := strings.TrimSpace(row.Content)
+		content := rawContent
+		if isHTML {
+			content = SanitizeAdtyNotificationHTML(content)
+		}
 		contentEn := ""
 		if head, ok := headByKey[adtyNotificationTranslationKey(row.Id)]; ok && strings.TrimSpace(head.English) != "" {
-			currentSrc := normalizeAdtyNotificationSourceContentWithDB(model.DB, row.Id, content)
+			currentSrc := normalizeAdtyNotificationSourceContentWithDB(model.DB, row.Id, rawContent)
 			if adtyTranslationHeadMatchesSource(head, currentSrc) {
 				eng := strings.TrimSpace(head.English)
+				if isHTML {
+					eng = SanitizeAdtyNotificationHTML(eng)
+				}
 				src := strings.TrimSpace(head.Source)
 				// Guard against legacy rows where title was stored in notification:<id>
 				// while the body itself was pure English.
 				isLegacyTitleOnly := src != "" && src == strings.TrimSpace(row.Title) && !adtyContainsChinese(currentSrc)
-				if !isLegacyTitleOnly && adtyContainsChinese(content) {
+				if !isLegacyTitleOnly && adtyContainsChinese(rawContent) {
 					if src == "" {
 						src = currentSrc
 					}
+					if isHTML {
+						src = SanitizeAdtyNotificationHTML(src)
+					}
 					contentEn = eng
-					if !strings.Contains(src, eng) {
+					if eng != "" && !strings.Contains(src, eng) {
 						content = src + "\n\n" + eng
+					} else if src != "" {
+						content = src
 					}
 				}
 			}
@@ -93,14 +111,15 @@ func AdtyPublicAnnouncementsForRequest(c *gin.Context) []AdtyPublicAnnouncement 
 			}
 		}
 		out = append(out, AdtyPublicAnnouncement{
-			Id:          row.Id,
-			Title:       title,
-			TitleEn:     titleEn,
-			Content:     content,
-			ContentEn:   contentEn,
-			PublishDate: time.Unix(row.PublishedAt, 0).UTC().Format(time.RFC3339),
-			Type:        adtyLegacyAnnouncementColor(row.Business),
-			Extra:       extra,
+			Id:            row.Id,
+			Title:         title,
+			TitleEn:       titleEn,
+			Content:       content,
+			ContentEn:     contentEn,
+			ContentFormat: contentFormat,
+			PublishDate:   time.Unix(row.PublishedAt, 0).UTC().Format(time.RFC3339),
+			Type:          adtyLegacyAnnouncementColor(row.Business),
+			Extra:         extra,
 		})
 	}
 	return out

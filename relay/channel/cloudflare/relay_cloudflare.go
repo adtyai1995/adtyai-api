@@ -2,7 +2,6 @@ package cloudflare
 
 import (
 	"bufio"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -95,10 +94,11 @@ func cfHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response)
 	if resp != nil {
 		defer service.CloseResponseBodyGracefully(resp)
 	}
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return types.NewError(err, types.ErrorCodeBadResponseBody), nil
+	responseBody, readErr := helper.ReadResponseBody(c, resp, types.ErrorCodeBadResponseBody)
+	if readErr != nil {
+		return readErr, nil
 	}
+	var err error
 	var response dto.TextResponse
 	err = common.Unmarshal(responseBody, &response)
 	if err != nil {
@@ -127,10 +127,11 @@ func cfSTTHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respon
 		defer service.CloseResponseBodyGracefully(resp)
 	}
 	var cfResp CfAudioResponse
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return types.NewError(err, types.ErrorCodeBadResponseBody), nil
+	responseBody, readErr := helper.ReadResponseBody(c, resp, types.ErrorCodeBadResponseBody)
+	if readErr != nil {
+		return readErr, nil
 	}
+	var err error
 	err = common.Unmarshal(responseBody, &cfResp)
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeBadResponseBody), nil

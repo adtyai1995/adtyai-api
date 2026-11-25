@@ -31,6 +31,7 @@ import { SecureVerificationDialog } from '@/features/auth/secure-verification/co
 import { useSecureVerification } from '@/features/auth/secure-verification/hooks/use-secure-verification'
 import { DraftDiscardDialog } from '@/features/system-settings/components/draft-discard-dialog'
 import { formatQuota, formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -204,8 +205,13 @@ export function PaymentOrphanReviewDialog(props: {
               <dd className='break-words whitespace-pre-wrap'>{review.note}</dd>
               <dt className='text-muted-foreground'>{t('Time')}</dt>
               <dd>{formatTimestamp(review.created_at)}</dd>
-              <dt className='text-muted-foreground'>{t('Operator ID')}</dt>
-              <dd>{review.operator_id}</dd>
+              <dt className='text-muted-foreground'>{t('Operator')}</dt>
+              <dd className='tabular-nums'>
+                {formatUserIdentity(
+                  review.operator_id,
+                  review.operator_username
+                )}
+              </dd>
               {review.dismissal_reason && (
                 <>
                   <dt className='text-muted-foreground'>

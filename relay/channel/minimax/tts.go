@@ -3,12 +3,12 @@ package minimax
 import (
 	"encoding/hex"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -94,13 +94,9 @@ func handleTTSResponse(c *gin.Context, resp *http.Response, info *relaycommon.Re
 	if resp != nil {
 		defer service.CloseResponseBodyGracefully(resp)
 	}
-	body, readErr := io.ReadAll(resp.Body)
+	body, readErr := helper.ReadResponseBody(c, resp, types.ErrorCodeReadResponseBodyFailed)
 	if readErr != nil {
-		return nil, types.NewErrorWithStatusCode(
-			fmt.Errorf("failed to read minimax response: %w", readErr),
-			types.ErrorCodeReadResponseBodyFailed,
-			http.StatusInternalServerError,
-		)
+		return nil, readErr
 	}
 
 	// Parse response

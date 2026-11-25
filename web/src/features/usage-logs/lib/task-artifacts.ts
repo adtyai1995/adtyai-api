@@ -138,8 +138,21 @@ function parseTaskArtifact(value: unknown): TaskArtifact {
   return artifact
 }
 
+export function toSafeHttpUrl(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  const trimmed = raw.trim()
+  if (!trimmed) return undefined
+  try {
+    const url = new URL(trimmed)
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined
+    return url.toString()
+  } catch {
+    return undefined
+  }
+}
+
 // Legacy Suno tasks persisted their clip list as an array or as a JSON string
-// holding one. Only clips with an audio URL can be previewed.
+// holding one. Only clips with an http/https audio URL can be previewed.
 export function parseLegacyAudioClips(data: unknown): AudioClip[] {
   let values: unknown[] = []
   if (Array.isArray(data)) {
@@ -152,12 +165,20 @@ export function parseLegacyAudioClips(data: unknown): AudioClip[] {
       return []
     }
   }
-  return values
-    .filter(
-      (value): value is AudioClip =>
-        isRecord(value) && typeof value.audio_url === 'string'
-    )
-    .slice(0, maxTaskArtifacts)
+  const clips: AudioClip[] = []
+  for (const value of values) {
+    if (!isRecord(value)) continue
+    const audioUrl = toSafeHttpUrl(value.audio_url)
+    if (!audioUrl) continue
+    clips.push({
+      ...(value as AudioClip),
+      audio_url: audioUrl,
+      image_url: toSafeHttpUrl(value.image_url),
+      image_large_url: toSafeHttpUrl(value.image_large_url),
+    })
+    if (clips.length >= maxTaskArtifacts) break
+  }
+  return clips
 }
 
 export function parseTaskArtifactsResponse(

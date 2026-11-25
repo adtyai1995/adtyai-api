@@ -179,16 +179,7 @@ func UpdateReferralSettings(c *gin.Context) {
 		common.ApiErrorT(c, "The rate must be between 0 and 100")
 		return
 	}
-	if (body.PartnerMinRate != nil && *body.PartnerMinRate > 100) || (body.PartnerMaxRate != nil && *body.PartnerMaxRate > 100) {
-		common.ApiErrorT(c, "The rate must be between 0 and 100")
-		return
-	}
-	if body.PartnerMinRate != nil && body.PartnerMaxRate != nil && *body.PartnerMinRate > *body.PartnerMaxRate {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	if !putFloat("default_rate", body.DefaultRate, 0) || !putFloat("partner_min_rate", body.PartnerMinRate, 0) ||
-		!putFloat("partner_max_rate", body.PartnerMaxRate, 0) || !putInt("cookie_ttl_days", body.CookieTTLDays, 1) ||
+	if !putFloat("default_rate", body.DefaultRate, 0) || !putInt("cookie_ttl_days", body.CookieTTLDays, 1) ||
 		!putInt("freeze_days", body.FreezeDays, 0) || !putFloat("min_withdraw_usd", body.MinWithdrawUSD, 0) ||
 		!putFloat("usdt_withdraw_fee", body.USDTWithdrawFee, 0) || !putInt("cancel_window_minutes", body.CancelWindowMinutes, 0) ||
 		!putInt("self_invite_window_days", body.SelfInviteWindowDays, 1) || !putInt("batch_register_threshold", body.BatchRegisterThreshold, 0) ||
@@ -223,7 +214,7 @@ func UpdateReferralSettings(c *gin.Context) {
 	}
 	for _, key := range body.Clear {
 		switch key {
-		case "default_rate", "partner_min_rate", "partner_max_rate", "min_withdraw_usd", "usdt_withdraw_fee":
+		case "default_rate", "min_withdraw_usd", "usdt_withdraw_fee":
 			values["adty_referral_setting."+key] = "null"
 		case "withdraw_cny_rate":
 			if strings.TrimSpace(body.WithdrawCNYRate) == "" {
@@ -266,9 +257,6 @@ func GetReferralAffiliates(c *gin.Context) {
 		return
 	}
 	query := service.ScopeAdtyReferralUsersQuery(model.DB.Model(&model.ReferralAffiliate{}), "user_id", siteID)
-	if partner := strings.TrimSpace(c.Query("partner_status")); partner != "" {
-		query = query.Where("partner_status = ?", partner)
-	}
 	if keyword := strings.TrimSpace(c.Query("keyword")); keyword != "" {
 		query = query.Where("invite_code = ? OR user_id IN (?)", strings.ToUpper(keyword),
 			model.DB.Model(&model.User{}).Select("id").Where("username LIKE ?", "%"+keyword+"%"))

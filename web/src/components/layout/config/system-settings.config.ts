@@ -39,19 +39,6 @@ import { getSiteSectionNavItems } from '@/features/system-settings/site/section-
 
 import type { NavGroup, SidebarBadges, SidebarView } from '../types'
 
-// R-32 #14/#16/#17: Hide retired console content and operations sections.
-const HIDDEN_CONTENT_SECTION_URLS = new Set<string>([
-  '/system-settings/content/chat',
-  '/system-settings/content/drawing',
-  '/system-settings/content/api-info',
-])
-
-const HIDDEN_OPERATIONS_SECTION_URLS = new Set<string>([
-  '/system-settings/operations/alerts',
-  '/system-settings/operations/group-health',
-  '/system-settings/operations/update-checker',
-])
-
 /**
  * Sidebar nav groups for the System Settings nested view.
  *
@@ -104,16 +91,12 @@ function getSystemSettingsNavGroups(
         {
           title: t('Console Content'),
           icon: Layout,
-          items: getContentSectionNavItems(t).filter(
-            (item) => !HIDDEN_CONTENT_SECTION_URLS.has(item.url)
-          ),
+          items: getContentSectionNavItems(t),
         },
         {
           title: t('Operations'),
           icon: Wrench,
-          items: getOperationsSectionNavItems(t).filter(
-            (item) => !HIDDEN_OPERATIONS_SECTION_URLS.has(item.url)
-          ),
+          items: getOperationsSectionNavItems(t),
         },
       ],
     },

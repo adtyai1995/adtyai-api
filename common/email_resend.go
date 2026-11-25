@@ -74,7 +74,7 @@ func SendResendEmailWithConfig(apiKey, fromAddr, displayName, subject, receiver,
 	apiKey = strings.TrimSpace(apiKey)
 	sender, _ := mail.ParseAddress(strings.TrimSpace(fromAddr))
 	cleanDisplayName := strings.NewReplacer("\r", "", "\n", "", "\x00", "").Replace(strings.TrimSpace(displayName))
-	if sender.Name == "" && cleanDisplayName != "" {
+	if cleanDisplayName != "" {
 		sender.Name = cleanDisplayName
 	}
 	fromField := sender.Address
