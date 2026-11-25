@@ -89,7 +89,7 @@ func SaveAdtyPaymentScenes(actorID int, expected int64, scenes []model.AdtyPayme
 		}
 		if len(scene.TeamIDs) > 0 {
 			var count int64
-			if err := model.DB.Model(&model.AdtyTeam{}).Where("id IN ?", scene.TeamIDs).Count(&count).Error; err != nil {
+			if err := model.DB.Model(&model.AdtyTeam{}).Where("id IN ? AND site_id = ?", scene.TeamIDs, 0).Count(&count).Error; err != nil {
 				return nil, err
 			}
 			if count != int64(len(scene.TeamIDs)) {

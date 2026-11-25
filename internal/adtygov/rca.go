@@ -2,10 +2,11 @@ package adtygov
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 // RCARecord is the official ADTY-24-05 root-cause / fix linkage record.
@@ -46,7 +47,7 @@ func ReadRCARecords(r io.Reader) ([]RCARecord, error) {
 			continue
 		}
 		var rec RCARecord
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		if err := common.Unmarshal([]byte(line), &rec); err != nil {
 			return nil, fmt.Errorf("line %d: %w", lineNo, err)
 		}
 		if err := ValidateRCA(rec); err != nil {

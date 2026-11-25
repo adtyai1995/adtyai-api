@@ -129,6 +129,16 @@ export function NotificationEditor(props: {
     () => resolveInitialTargets(props.mode, props.row),
     [props.mode, props.row]
   )
+  const initialLegacyAudience = useMemo(
+    () =>
+      deriveLegacyAudience(
+        props.mode,
+        props.siteId,
+        initialTargets.target_audiences,
+        initialTargets.target_site_ids
+      ),
+    [props.mode, props.siteId, initialTargets]
+  )
 
   const form = useForm<NotificationInput>({
     resolver: zodResolver(publishSchema),
@@ -141,12 +151,12 @@ export function NotificationEditor(props: {
           ),
           content_format: 'html',
           kind: props.row.kind ?? 'platform',
-          audience: props.row.audience ?? (props.mode === 'owner' ? 'site' : 'all_users'),
+          audience: initialLegacyAudience.audience,
           target_audiences: initialTargets.target_audiences,
           target_site_ids: initialTargets.target_site_ids,
-          target_site_id: props.row.target_site_id ?? props.siteId,
-          target_team_id: props.row.target_team_id ?? 0,
-          target_user_id: props.row.target_user_id ?? 0,
+          target_site_id: Math.max(0, initialLegacyAudience.target_site_id),
+          target_team_id: Math.max(0, props.row.target_team_id ?? 0),
+          target_user_id: Math.max(0, props.row.target_user_id ?? 0),
           business: props.row.business ?? '',
           sync_telegram:
             (props.row.telegram_at ?? 0) > 0 ||
@@ -161,10 +171,10 @@ export function NotificationEditor(props: {
           content: '',
           content_format: 'html',
           kind: 'platform',
-          audience: props.mode === 'owner' ? 'site' : 'all_users',
+          audience: initialLegacyAudience.audience,
           target_audiences: initialTargets.target_audiences,
           target_site_ids: initialTargets.target_site_ids,
-          target_site_id: props.siteId,
+          target_site_id: Math.max(0, initialLegacyAudience.target_site_id),
           target_team_id: 0,
           target_user_id: 0,
           business: '',
@@ -298,8 +308,21 @@ export function NotificationEditor(props: {
   const handleDraftSave = () => {
     form.clearErrors()
     const raw = form.getValues()
+    const filteredSiteIds =
+      props.mode === 'root' && raw.target_audiences.includes('site_users')
+        ? [...new Set(raw.target_site_ids.filter((siteId) => siteId > 0))]
+        : []
+    const legacy = deriveLegacyAudience(
+      props.mode,
+      props.siteId,
+      raw.target_audiences,
+      filteredSiteIds
+    )
     const parsed = draftSchema.safeParse({
       ...raw,
+      audience: legacy.audience,
+      target_site_id: Math.max(0, legacy.target_site_id),
+      target_site_ids: filteredSiteIds,
       content_format: 'html',
       sync_telegram: raw.sync_telegram,
       telegram_channel: canSpecifyTelegramChannel ? raw.telegram_channel : '',

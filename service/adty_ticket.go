@@ -1122,11 +1122,13 @@ func idempotentAdtyTicketReopen(tx *gorm.DB, ticket model.AdtyTicket, current st
 
 func releaseTicketAssigneeTx(tx *gorm.DB, ticket *model.AdtyTicket, actorID int) error {
 	previous := ticket.AssigneeId
+	now := time.Now().Unix()
 	ticket.AssigneeId = 0
 	if canAssignAdtyTicket(model.NormalizeAdtyTicketStatus(ticket.Status, previous)) {
 		ticket.Status = model.AdtyTicketPendingAssignment
 	}
-	if err := tx.Model(ticket).UpdateColumns(map[string]any{"assignee_id": 0, "status": ticket.Status}).Error; err != nil {
+	ticket.UpdatedAt = now
+	if err := tx.Model(ticket).UpdateColumns(map[string]any{"assignee_id": 0, "status": ticket.Status, "updated_at": now}).Error; err != nil {
 		return err
 	}
 	return tx.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actorID, Action: "transfer", Detail: strconv.Itoa(previous) + " → 0"}).Error
@@ -1276,7 +1278,15 @@ func AttachAdtyTicketImageWithKey(userId int, ticketId, messageID int64, visibil
 		if err := tx.Create(&event).Error; err != nil {
 			return err
 		}
-		if visibility != model.AdtyTicketVisibilityPublic || actor.isHandling() {
+		if visibility != model.AdtyTicketVisibilityPublic {
+			return nil
+		}
+		now := time.Now().Unix()
+		if actor.isHandling() {
+			if err := tx.Model(&ticket).UpdateColumn("updated_at", now).Error; err != nil {
+				return err
+			}
+			ticket.UpdatedAt = now
 			return nil
 		}
 		if err := releaseInvalidTicketAssigneeTx(tx, &ticket, userId); err != nil {
@@ -1284,12 +1294,19 @@ func AttachAdtyTicketImageWithKey(userId int, ticketId, messageID int64, visibil
 		}
 		if ticket.Status == model.AdtyTicketWaitingUser {
 			next := reopenAdtyTicketLanding(ticket.AssigneeId)
-			if err := tx.Model(&ticket).Update("status", next).Error; err != nil {
+			if err := tx.Model(&ticket).Updates(map[string]any{"status": next, "updated_at": now}).Error; err != nil {
 				return err
 			}
+			ticket.Status = next
+			ticket.UpdatedAt = now
 			if err := tx.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: userId, Action: "status", Detail: next}).Error; err != nil {
 				return err
 			}
+		} else {
+			if err := tx.Model(&ticket).UpdateColumn("updated_at", now).Error; err != nil {
+				return err
+			}
+			ticket.UpdatedAt = now
 		}
 		id := strconv.FormatInt(ticketId, 10)
 		return notifyTicketHandlersTx(tx, ticket, event.Id, userId, event.Action, "ticket:"+id+":image:"+strconv.FormatInt(row.Id, 10),
@@ -1530,13 +1547,21 @@ func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visib
 			} else if current == model.AdtyTicketWaitingUser {
 				next = reopenAdtyTicketLanding(ticket.AssigneeId)
 			}
+			now := time.Now().Unix()
 			if next != current {
-				if err := tx.Model(&ticket).Update("status", next).Error; err != nil {
+				if err := tx.Model(&ticket).Updates(map[string]any{"status": next, "updated_at": now}).Error; err != nil {
 					return err
 				}
+				ticket.Status = next
+				ticket.UpdatedAt = now
 				if err := tx.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actor.User.Id, Action: "status", Detail: next}).Error; err != nil {
 					return err
 				}
+			} else {
+				if err := tx.Model(&ticket).UpdateColumn("updated_at", now).Error; err != nil {
+					return err
+				}
+				ticket.UpdatedAt = now
 			}
 			if err := emitAdtyTicketReplyNoticesTx(tx, ticket, row, eventRow.Id, actor.User.Id); err != nil {
 				return err
@@ -2162,11 +2187,18 @@ func transferSiteTicketsToMainTx(tx *gorm.DB, siteID int) error {
 		if ticket.HandlingSiteId == nil {
 			prior += " status=" + ticket.Status + " assignee=" + strconv.Itoa(ticket.AssigneeId)
 			main := 0
+			now := time.Now().Unix()
 			ticket.HandlingSiteId, ticket.AssigneeId = &main, 0
 			if ticket.Status != model.AdtyTicketClosed && ticket.Status != model.AdtyTicketResolved {
 				ticket.Status = model.AdtyTicketPendingAssignment
 			}
-			if err := tx.Model(&ticket).UpdateColumns(map[string]any{"handling_site_id": 0, "assignee_id": 0, "status": ticket.Status}).Error; err != nil {
+			ticket.UpdatedAt = now
+			if err := tx.Model(&ticket).UpdateColumns(map[string]any{
+				"handling_site_id": 0,
+				"assignee_id":      0,
+				"status":           ticket.Status,
+				"updated_at":       now,
+			}).Error; err != nil {
 				return err
 			}
 		}

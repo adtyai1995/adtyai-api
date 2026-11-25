@@ -73,9 +73,14 @@ export function VoucherBatchResultDialog(props: {
     toast.success(t('Exported {{filename}}', { filename }))
   }
 
+  const isPlatformSource =
+    batch.source_kind === 'platform' ||
+    batch.purpose === 'main_user' ||
+    batch.purpose === 'site_margin'
   const hasFundingSplit =
-    batch.frozen_earnings_usd !== undefined ||
-    batch.frozen_margin_usd !== undefined
+    !isPlatformSource &&
+    (batch.frozen_earnings_usd !== undefined ||
+      batch.frozen_margin_usd !== undefined)
   const isMargin = batch.purpose === 'site_margin'
   const dialogTitle = isMargin
     ? t('Generated margin recharge codes')
@@ -165,19 +170,21 @@ export function VoucherBatchResultDialog(props: {
               </dd>
             </div>
           )}
-          {hasFundingSplit && (
+          {(isPlatformSource || hasFundingSplit) && (
             <div className='col-span-2 flex flex-col gap-0.5 sm:col-span-4'>
               <dt className='text-muted-foreground text-xs'>
                 {t('Funding source')}
               </dt>
               <dd className='text-muted-foreground text-xs tabular-nums'>
-                {t(
-                  'Frozen split: Earnings ${{earnings}} + Excess margin ${{margin}}',
-                  {
-                    earnings: batch.frozen_earnings_usd ?? '0',
-                    margin: batch.frozen_margin_usd ?? '0',
-                  }
-                )}
+                {isPlatformSource
+                  ? t('Platform issuance limit')
+                  : t(
+                      'Frozen split: Earnings ${{earnings}} + Excess margin ${{margin}}',
+                      {
+                        earnings: batch.frozen_earnings_usd ?? '0',
+                        margin: batch.frozen_margin_usd ?? '0',
+                      }
+                    )}
               </dd>
             </div>
           )}

@@ -248,11 +248,14 @@ export function SiteCustomerReferral() {
           <Card>
             <CardContent className='pt-6'>
               <SiteCommissionPanel
-                onConverted={() =>
+                onConverted={() => {
                   void queryClient.invalidateQueries({
                     queryKey: siteReferralProfileKey,
                   })
-                }
+                  void queryClient.invalidateQueries({
+                    queryKey: ['adty-topup', 'balance'],
+                  })
+                }}
               />
             </CardContent>
           </Card>

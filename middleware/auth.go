@@ -422,10 +422,10 @@ func adtyDashboardSiteBound(c *gin.Context, user *model.UserBase, identity servi
 			return true
 		}
 		// Scoped PATs do not carry an issuance-site claim; allow a site owner's
-		// PAT on their own sub-site while keeping legacy browser sessions main-only.
-		if _, isPAT := model.ParseAccessTokenSessionID(identity.SessionID); isPAT {
+		// non-legacy PAT on their own serving sub-site while keeping legacy browser sessions main-only.
+		if lookup := requestAccessTokenLookup(c); lookup != nil && !lookup.legacy && lookup.token != nil {
 			site := service.AdtySiteForRequest(c)
-			return site != nil && site.Id == requestSiteID && site.OwnerUserId == user.Id
+			return site != nil && site.Id == requestSiteID && site.OwnerUserId == user.Id && service.AdtySiteServesCustomers(site)
 		}
 		return false
 	}
@@ -785,23 +785,30 @@ func TokenAuth() func(c *gin.Context) {
 		userCache.WriteContext(c)
 		common.SetContextKey(c, constant.ContextKeyUserSiteId, billingSiteID)
 
-		userGroup := userCache.Group
-		tokenGroup := token.Group
-		if tokenGroup != "" {
-			// check common.UserUsableGroups[userGroup]
-			if _, ok := service.GetUserUsableGroups(userGroup)[tokenGroup]; !ok {
+		userGroup := strings.TrimSpace(userCache.Group)
+		tokenGroup := strings.TrimSpace(token.Group)
+		if tokenGroup == "" {
+			if userGroup == "" || userGroup == "auto" {
 				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAuthTokenGroupForbidden, map[string]any{"Group": tokenGroup}))
 				return
 			}
-			// check group in common.GroupRatio
-			if !ratio_setting.ContainsGroupRatio(tokenGroup) {
-				if tokenGroup != "auto" {
-					abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAuthTokenGroupDeprecated, map[string]any{"Group": tokenGroup}))
-					return
-				}
-			}
-			userGroup = tokenGroup
+			tokenGroup = userGroup
 		}
+		if tokenGroup == "auto" {
+			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAuthTokenGroupDeprecated, map[string]any{"Group": tokenGroup}))
+			return
+		}
+		// check common.UserUsableGroups[userGroup]
+		if _, ok := service.GetUserUsableGroups(userGroup)[tokenGroup]; !ok {
+			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAuthTokenGroupForbidden, map[string]any{"Group": tokenGroup}))
+			return
+		}
+		// check group in common.GroupRatio
+		if !ratio_setting.ContainsGroupRatio(tokenGroup) {
+			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAuthTokenGroupDeprecated, map[string]any{"Group": tokenGroup}))
+			return
+		}
+		userGroup = tokenGroup
 		if billingSiteID > 0 && !service.SiteGroupAllowed(billingSiteID, userGroup) {
 			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAuthSiteGroupForbidden, map[string]any{"Group": userGroup}))
 			return

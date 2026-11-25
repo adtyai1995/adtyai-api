@@ -13,7 +13,7 @@ type PerfMetricsSetting struct {
 }
 
 var perfMetricsSetting = PerfMetricsSetting{
-	Enabled:       true,
+	Enabled:       false,
 	FlushInterval: 5,
 	BucketTime:    "hour",
 	RetentionDays: 0,

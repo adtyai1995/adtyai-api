@@ -62,32 +62,6 @@ func ValidateReferralRate(rate decimal.Decimal) error {
 	return nil
 }
 
-// ValidatePartnerReferralRate 按后台配置的合作伙伴比例范围（未单独配置时采用通用 0–100 范围）校验审核比例。
-func ValidatePartnerReferralRate(rate decimal.Decimal) error {
-	if err := ValidateReferralRate(rate); err != nil {
-		return err
-	}
-	cfg := referralSetting()
-	minRate := decimal.Zero
-	if cfg.PartnerMinRate != nil {
-		minRate = decimal.NewFromFloat(*cfg.PartnerMinRate).Round(8)
-	}
-	maxRate := decimal.NewFromInt(100)
-	if cfg.PartnerMaxRate != nil {
-		maxRate = decimal.NewFromFloat(*cfg.PartnerMaxRate).Round(8)
-	}
-	if minRate.LessThan(decimal.Zero) || maxRate.GreaterThan(decimal.NewFromInt(100)) || minRate.GreaterThan(maxRate) {
-		return common.NewMessage("The configured partner rate range is invalid")
-	}
-	if rate.LessThan(minRate) || rate.GreaterThan(maxRate) {
-		return common.NewMessage("The partner rate must be between {{min}} and {{max}}", map[string]any{
-			"min": minRate.String(),
-			"max": maxRate.String(),
-		})
-	}
-	return nil
-}
-
 // referralSecret 是 cookie 签名和指纹哈希的密钥：CryptoSecret，没有就用 SessionSecret。
 // 部署必须固定 SESSION_SECRET 和 CRYPTO_SECRET，否则重启后 cookie 失效、指纹对不上。
 func referralSecret() string {
@@ -207,8 +181,11 @@ func (s *ReferralService) EnsureAffiliate(userId int) (*model.ReferralAffiliate,
 		if err == nil {
 			return created, nil
 		}
+		if !isAdtyUniqueConflictError(err) {
+			return nil, err
+		}
 		// 并发时另一个请求可能已经建好，或者邀请码撞了，再查一次。
-		if err := model.DB.Where("user_id = ?", userId).Limit(1).Find(&existing).Error; err == nil && len(existing) > 0 {
+		if findErr := model.DB.Where("user_id = ?", userId).Limit(1).Find(&existing).Error; findErr == nil && len(existing) > 0 {
 			return &existing[0], nil
 		}
 	}
@@ -296,22 +273,6 @@ func (s *ReferralService) BindInvitee(inviteeId int, code, ipHash string) (*mode
 	return binding, nil
 }
 
-// ApplyPartner 申请成为合作伙伴（批准后单设比例）。
-func (s *ReferralService) ApplyPartner(userId int, note string) error {
-	affiliate, err := s.EnsureAffiliate(userId)
-	if err != nil {
-		return err
-	}
-	if affiliate.PartnerStatus == model.ReferralPartnerStatusApproved || affiliate.PartnerStatus == model.ReferralPartnerStatusPending {
-		return nil
-	}
-	return model.DB.Model(&model.ReferralAffiliate{}).Where("id = ?", affiliate.Id).Updates(map[string]any{
-		"partner_status":        model.ReferralPartnerStatusPending,
-		"applicant_note":        truncateText(note, 1000),
-		"pending_review_cursor": time.Now().UnixNano(),
-	}).Error
-}
-
 // CheckReferralAdminTargetUserTx locks the target user row (after any referral
 // locks, matching CreateWithdrawal's canonical Affiliate -> Commission ->
 // Withdrawal -> Account -> User lock order) and enforces role hierarchy,
@@ -334,50 +295,6 @@ func CheckReferralAdminTargetUserTx(tx *gorm.DB, targetUserID, adminID, actorRol
 		return model.ErrAdminTargetSessionRequired
 	}
 	return nil
-}
-
-// ReviewPartner 批准（按后台配置的合作伙伴比例范围或通用 0–100 范围设比例）或驳回合作伙伴申请。
-func (s *ReferralService) ReviewPartner(userId, adminId int, approve bool, rate decimal.Decimal, reason, ip, ua string) error {
-	return s.ReviewPartnerForActor(userId, adminId, 0, false, approve, rate, reason, ip, ua)
-}
-
-func (s *ReferralService) ReviewPartnerForActor(userId, adminId, actorRole int, denyAdminTarget, approve bool, rate decimal.Decimal, reason, ip, ua string) error {
-	return model.DB.Transaction(func(tx *gorm.DB) error {
-		var affiliate model.ReferralAffiliate
-		if err := model.AdtyLockForUpdate(tx).Where("user_id = ?", userId).First(&affiliate).Error; err != nil {
-			return err
-		}
-		if err := CheckReferralAdminTargetUserTx(tx, userId, adminId, actorRole, denyAdminTarget); err != nil {
-			return err
-		}
-		if affiliate.PartnerStatus != model.ReferralPartnerStatusPending {
-			return common.NewMessage("Only a pending partner application can be reviewed")
-		}
-		old := map[string]any{"partner_status": affiliate.PartnerStatus, "rate_override": affiliate.RateOverride}
-		updates := map[string]any{"pending_review_cursor": 0, "approved_by": adminId}
-		if approve {
-			if err := ValidatePartnerReferralRate(rate); err != nil {
-				return err
-			}
-			updates["partner_status"] = model.ReferralPartnerStatusApproved
-			updates["rate_override"] = normalizeReferralMoney(rate)
-		} else {
-			updates["partner_status"] = model.ReferralPartnerStatusRejected
-			updates["rate_override"] = nil
-		}
-		query := tx.Model(&model.ReferralAffiliate{}).Where("id = ?", affiliate.Id)
-		if !approve {
-			query = query.Select("pending_review_cursor", "approved_by", "partner_status", "rate_override")
-		}
-		if err := query.Updates(updates).Error; err != nil {
-			return err
-		}
-		action := "partner_reject"
-		if approve {
-			action = "partner_approve"
-		}
-		return recordReferralAuditTx(tx, action, userId, affiliate.Id, adminId, reason, ip, ua, old, updates)
-	})
 }
 
 func recordReferralAuditTx(tx *gorm.DB, action string, targetUserId, affiliateId, adminId int, reason, ip, ua string, oldValue, newValue any) error {

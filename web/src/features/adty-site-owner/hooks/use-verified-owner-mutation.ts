@@ -33,20 +33,27 @@ import { useOwnerVerification } from '../components/owner-verification'
  * and target), then call the API with the proof. Cancelling the verification
  * is not an error. On success the owner center queries are refreshed.
  */
-export function useVerifiedOwnerMutation<TVars>(options: {
+export function useVerifiedOwnerMutation<TVars, TResult = unknown>(options: {
   action: SiteOwnerAction
   target: (vars: TVars) => number
   request?: (vars: TVars) => object
-  run?: (vars: TVars, proof: string) => Promise<unknown>
+  run?: (vars: TVars, proof: string) => Promise<TResult>
   staffRequest?: (vars: TVars) => StaffInput
-  successMessage?: string
-  onSuccess?: () => void
+  successMessage?:
+    | string
+    | null
+    | ((result: TResult | undefined) => string | null | undefined | false)
+  onSuccess?: (result: TResult | undefined) => void
 }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const owner = useOwnerVerification()
   return useMutation({
-    mutationFn: async (vars: TVars) => {
+    mutationFn: async (
+      vars: TVars
+    ): Promise<
+      { done: false } | { done: true; result: TResult | undefined }
+    > => {
       const target = options.target(vars)
       const staffRequest =
         options.staffRequest && structuredClone(options.staffRequest(vars))
@@ -54,25 +61,36 @@ export function useVerifiedOwnerMutation<TVars>(options: {
         staffRequest ??
         (options.request ? structuredClone(options.request(vars)) : undefined)
       const proof = await owner.verify(options.action, target, requestPayload)
-      if (!proof) return false
+      if (!proof) return { done: false }
       if (staffRequest) {
         await submitStaffRequest(options.action, target, staffRequest, proof)
-      } else if (options.run) {
-        await options.run(vars, proof)
-      } else {
-        throw new Error('Missing verified action')
+        return { done: true, result: undefined }
       }
-      return true
+      if (options.run) {
+        const result = await options.run(vars, proof)
+        return { done: true, result }
+      }
+      throw new Error('Missing verified action')
     },
-    onSuccess: (done) => {
-      if (!done) return
-      toast.success(options.successMessage ?? t('Saved successfully'))
+    onSuccess: (outcome) => {
+      if (!outcome.done) return
+      let message: string | null | undefined | false
+      if (typeof options.successMessage === 'function') {
+        message = options.successMessage(outcome.result)
+      } else if (options.successMessage === undefined) {
+        message = t('Saved successfully')
+      } else {
+        message = options.successMessage
+      }
+      if (message) {
+        toast.success(message)
+      }
       void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
       if (options.action === 'pricing') {
         void queryClient.invalidateQueries({ queryKey: ['pricing'] })
       }
       void invalidateSidebarBadges(queryClient)
-      options.onSuccess?.()
+      options.onSuccess?.(outcome.result)
     },
     onError: (err) => handleServerError(err),
   })

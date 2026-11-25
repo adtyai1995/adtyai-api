@@ -1,5 +1,7 @@
 package model
 
+import "gorm.io/gorm"
+
 // 推广返佣的 12 张表（任务 6.1）。表结构沿用旧项目，金额列沿用 float64 + decimal(20,8)（执行层决定 19），
 // 结算币种改成 USD；新加合作伙伴状态、绑定的风险标记、提现的人民币汇率和金额。
 
@@ -210,6 +212,14 @@ type ReferralAdminAuditLog struct {
 	OldValue     string `json:"old_value" gorm:"type:text"`
 	NewValue     string `json:"new_value" gorm:"type:text"`
 	CreatedAt    int64  `json:"created_at" gorm:"autoCreateTime;index"`
+}
+
+func (a *ReferralAdminAuditLog) BeforeCreate(*gorm.DB) error {
+	a.Reason = RedactAuditText(a.Reason)
+	a.UserAgent = RedactAuditText(a.UserAgent)
+	a.OldValue = RedactAuditText(a.OldValue)
+	a.NewValue = RedactAuditText(a.NewValue)
+	return nil
 }
 
 const (

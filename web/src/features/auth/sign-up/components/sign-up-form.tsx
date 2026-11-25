@@ -63,13 +63,13 @@ import {
 import { subsiteDocument } from '@/lib/subsite-document'
 import { cn } from '@/lib/utils'
 
-function readInitialSiteInvite(): string {
-  if (typeof window === 'undefined') return ''
+function readInitialSiteInvite(): { code: string; fromUrl: boolean } {
+  if (typeof window === 'undefined') return { code: '', fromUrl: false }
   const fromUrl =
     new URLSearchParams(window.location.search).get('site_invite')?.trim() ?? ''
-  if (fromUrl) return fromUrl
-  if (typeof document === 'undefined') return ''
-  return readSiteInviteCookie(document)?.code ?? ''
+  if (fromUrl) return { code: fromUrl, fromUrl: true }
+  if (typeof document === 'undefined') return { code: '', fromUrl: false }
+  return { code: readSiteInviteCookie(document)?.code ?? '', fromUrl: false }
 }
 
 export function SignUpForm({
@@ -81,7 +81,10 @@ export function SignUpForm({
   const [isLoading, setIsLoading] = useState(false)
   const [verificationCode, setVerificationCode] = useState('')
   const [initialSiteInvite] = useState(readInitialSiteInvite)
-  const [siteInviteCode, setSiteInviteCode] = useState(initialSiteInvite)
+  const [siteInviteCode, setSiteInviteCode] = useState(initialSiteInvite.code)
+  const [siteInviteEdited, setSiteInviteEdited] = useState(
+    initialSiteInvite.fromUrl
+  )
   const [agreedToLegal, setAgreedToLegal] = useState(false)
   const [turnstileWidgetKey, setTurnstileWidgetKey] = useState(0)
   const legalConsentErrorMessage = t('Please agree to the legal terms first')
@@ -186,9 +189,10 @@ export function SignUpForm({
         turnstile: turnstileToken,
         agreement_accepted: requiresLegalConsent ? true : undefined,
         lang: i18n.resolvedLanguage || i18n.language,
-        site_invite_code: showSiteInviteCode
-          ? siteInviteCode.trim() || undefined
-          : undefined,
+        site_invite_code:
+          showSiteInviteCode && siteInviteEdited
+            ? siteInviteCode.trim()
+            : undefined,
       })
 
       if (res?.success) {
@@ -370,7 +374,10 @@ export function SignUpForm({
               id='sign-up-site-invite-code'
               placeholder={t('Enter site invite code')}
               value={siteInviteCode}
-              onChange={(event) => setSiteInviteCode(event.target.value)}
+              onChange={(event) => {
+                setSiteInviteEdited(true)
+                setSiteInviteCode(event.target.value)
+              }}
             />
           </div>
         )}

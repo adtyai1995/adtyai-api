@@ -468,13 +468,32 @@ func PreviewAdtyTopUpRefund(c *gin.Context) {
 		writeAdtyFinanceError(c, err)
 		return
 	}
+	var request decimal.Decimal
+	hasRequest := false
 	if raw := strings.TrimSpace(c.Query("refund_usd")); raw != "" {
-		request, parseErr := decimal.NewFromString(raw)
-		if parseErr != nil || !request.IsPositive() {
+		parsed, parseErr := decimal.NewFromString(raw)
+		if parseErr != nil || !parsed.IsPositive() {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
 		}
-		facts, factErr := model.LoadAdtyRefundPageFacts(tradeNo, request)
+		request = parsed
+		hasRequest = true
+	}
+	var reconcileOrphanID int64
+	if rawOrphan := strings.TrimSpace(c.Query("reconcile_orphan_id")); rawOrphan != "" {
+		parsedID, parseErr := strconv.ParseInt(rawOrphan, 10, 64)
+		if parseErr != nil || parsedID < 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		reconcileOrphanID = parsedID
+	}
+	if reconcileOrphanID > 0 && c.GetInt("role") < common.RoleRootUser && result.Facts != nil && result.Facts.SiteId != 0 {
+		writeAdtyFinanceError(c, model.ErrUserQuotaPermission)
+		return
+	}
+	if hasRequest || reconcileOrphanID > 0 {
+		facts, factErr := model.LoadAdtyRefundPageFactsWithReconcile(tradeNo, request, reconcileOrphanID)
 		if factErr != nil {
 			writeAdtyFinanceError(c, factErr)
 			return

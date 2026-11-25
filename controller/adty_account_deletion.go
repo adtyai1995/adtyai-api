@@ -35,6 +35,19 @@ func SendAccountDeletionCode(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("This account cannot request deletion"))
 		return
 	}
+	if user.StaffSiteId > 0 {
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Site staff accounts cannot self-delete"))
+		return
+	}
+	isSiteOwner, ownerErr := service.AdtyIsSiteOwnerStrict(user.Id)
+	if ownerErr != nil {
+		common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Service temporarily unavailable"))
+		return
+	}
+	if isSiteOwner {
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Site owner accounts cannot self-delete while owning a site"))
+		return
+	}
 	email := model.NormalizeEmail(user.Email)
 	if email == "" || !strings.Contains(email, "@") {
 		common.ApiErrorT(c, "Add an email address before deleting this account")

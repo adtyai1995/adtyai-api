@@ -675,9 +675,10 @@ func GetAdtyOwnerExport(c *gin.Context) {
 	c.Data(http.StatusOK, "text/csv; charset=utf-8", []byte(b.String()))
 }
 
-// adtyCSVField 给 CSV 字段加引号，并防止表格软件把 =、+、-、@ 开头的内容当公式执行。
+// adtyCSVField 给 CSV 字段加引号，并防止表格软件把 =、+、-、@、控制字符或带前导空白的公式开头当公式执行。
 func adtyCSVField(value string) string {
-	if value != "" && strings.ContainsAny(value[:1], "=+-@\t\r") {
+	trimmed := strings.TrimLeft(value, " \t\r\n")
+	if value != "" && (strings.ContainsAny(value[:1], "=+-@\t\r\n") || (trimmed != "" && strings.ContainsAny(trimmed[:1], "=+-@"))) {
 		value = "'" + value
 	}
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`

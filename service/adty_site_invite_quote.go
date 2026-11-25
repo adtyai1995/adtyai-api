@@ -47,7 +47,11 @@ func payableSiteInviteWithdrawal(row *model.AdtySiteInviteWithdrawal) bool {
 
 func siteInviteQuote(site *model.AdtySite, amount decimal.Decimal, method string) (q SiteInviteWithdrawalQuote, err error) {
 	p := site.MarketingPolicy
-	if !amount.IsPositive() || !amount.Equal(amount.Round(8)) {
+	scale := int32(2)
+	if method == "usdt" {
+		scale = 6
+	}
+	if !amount.IsPositive() || !amount.Equal(amount.Truncate(scale)) {
 		return q, common.NewMessage("Invalid parameters")
 	}
 	methods, _ := usableSiteInviteWithdrawConfig(p)

@@ -131,8 +131,6 @@ function makeProfile(overrides: Partial<ReferralProfile> = {}): ReferralProfile 
       user_id: 10,
       invite_code: 'ABC12345',
       status: 'approved',
-      partner_status: '',
-      applicant_note: '',
       rate_override: null,
       acquisition_enabled: true,
       settlement_enabled: true,

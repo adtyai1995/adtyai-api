@@ -132,17 +132,8 @@ func AccessTokenScopeOf(permission authz.Permission) string {
 	return permission.Resource + accessTokenScopeSeparator + permission.Action
 }
 
-func isAccessTokenSiteOwner(userID int) bool {
-	if userID <= 0 || model.DB == nil {
-		return false
-	}
-	var count int64
-	if err := model.DB.Table("adty_sites").
-		Where("owner_user_id = ? AND status NOT IN ?", userID, []string{"closed", "deleted", "rejected"}).
-		Count(&count).Error; err != nil {
-		return false
-	}
-	return count > 0
+func isAccessTokenSiteOwner(userID int) (bool, error) {
+	return AdtyIsSiteOwnerStrict(userID)
 }
 
 // AccessTokenOwnerRouteScope maps a site-owner management HTTP route and method
@@ -202,12 +193,16 @@ func AccessTokenOwnerRouteScope(method, fullPath string) string {
 // omitted.
 func AccessTokenCatalog(userID, role int) []AccessTokenCatalogGroup {
 	resources := map[string][]AccessTokenResource{}
-	isSiteOwner := isAccessTokenSiteOwner(userID)
+	isSiteOwner, ownerErr := isAccessTokenSiteOwner(userID)
+	pureSiteOwner := ownerErr == nil && isSiteOwner && role < common.RoleAdminUser
 	for _, resource := range accessTokenStaticResources {
 		if role < resource.minRole {
 			continue
 		}
-		if resource.group == AccessTokenGroupOwner && !isSiteOwner {
+		if resource.group == AccessTokenGroupOwner && (!isSiteOwner || ownerErr != nil) {
+			continue
+		}
+		if pureSiteOwner && (resource.Resource == "api_key" || resource.Resource == "usage") {
 			continue
 		}
 		if AdtyAdminPermissionsEnabled() {

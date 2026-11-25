@@ -21,11 +21,11 @@ import { useEffect } from 'react'
 
 import { subsiteDocument } from '@/lib/subsite-document'
 
-import { recordReferralClick } from '../api'
+import { recordReferralClick, recordSiteReferralClick } from '../api'
 
 const DEVICE_COOKIE = 'adty_did'
 export const SITE_INVITE_COOKIE = 'adty_site_invite'
-const SITE_INVITE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+const SITE_INVITE_PREVIEW_STORAGE_KEY = 'adty_site_invite_preview'
 
 export type CapturedSiteInvite = {
   code: string
@@ -62,58 +62,72 @@ export function ensureDeviceCookie(doc: Document = document): void {
   doc.cookie = `${DEVICE_COOKIE}=${id}; Max-Age=31536000; Path=/; SameSite=Lax${secure}`
 }
 
-/**
- * Stores a sub-site `?site_invite=` code in a same-host cookie with its capture
- * timestamp so `SignUpForm` can read it after cross-page navigation.
- */
-export function storeSiteInviteCookie(
-  code: string,
-  doc: Document = document,
-  nowSeconds: number = Math.floor(Date.now() / 1000)
-): void {
+/** Records a subsite invite click so the server issues a signed HttpOnly cookie. */
+export async function trackSiteInvite(code: string): Promise<string | null> {
+  if (!subsiteDocument()) return null
   const trimmed = code.trim()
-  if (!trimmed) return
-  const secure = doc.location?.protocol === 'https:' ? '; Secure' : ''
-  const encoded = `${encodeURIComponent(trimmed)}|${Math.max(0, Math.floor(nowSeconds))}`
-  doc.cookie = `${SITE_INVITE_COOKIE}=${encoded}; Max-Age=${SITE_INVITE_MAX_AGE_SECONDS}; Path=/; SameSite=Lax${secure}`
-}
-
-/** Reads the captured sub-site invite code and timestamp from the same-host cookie. */
-export function readSiteInviteCookie(
-  doc: Document = document
-): CapturedSiteInvite | null {
-  const prefix = `${SITE_INVITE_COOKIE}=`
-  const match = doc.cookie
-    .split('; ')
-    .find((part) => part.startsWith(prefix))
-  if (!match) return null
-  const raw = match.slice(prefix.length).trim()
-  if (!raw) return null
-  const pipeIndex = raw.lastIndexOf('|')
-  if (pipeIndex > 0) {
-    const codePart = raw.slice(0, pipeIndex)
-    const tsPart = Number(raw.slice(pipeIndex + 1))
-    try {
-      const code = decodeURIComponent(codePart).trim()
-      if (!code) return null
-      return {
-        code,
-        capturedAt: Number.isFinite(tsPart) && tsPart > 0 ? tsPart : 0,
-      }
-    } catch {
-      return null
-    }
-  }
+  if (!trimmed) return null
   try {
-    const code = decodeURIComponent(raw).trim()
-    return code ? { code, capturedAt: 0 } : null
+    const res = await recordSiteReferralClick(trimmed)
+    return res.code || trimmed
   } catch {
     return null
   }
 }
 
-/** Clears the captured sub-site invite cookie on the current host. */
+/**
+ * Stores a sub-site invite preview in same-origin sessionStorage so `SignUpForm`
+ * can display the captured code across navigation without overwriting the
+ * server-signed HttpOnly `adty_site_invite` cookie.
+ */
+export function storeSiteInviteCookie(
+  code: string,
+  _doc: Document = document,
+  nowSeconds: number = Math.floor(Date.now() / 1000)
+): void {
+  const trimmed = code.trim()
+  if (!trimmed || typeof sessionStorage === 'undefined') return
+  const payload = JSON.stringify({
+    code: trimmed,
+    capturedAt: Math.max(0, Math.floor(nowSeconds)),
+  })
+  try {
+    sessionStorage.setItem(SITE_INVITE_PREVIEW_STORAGE_KEY, payload)
+  } catch {
+    // Ignore storage quota / privacy mode errors; the signed HttpOnly cookie still attributes.
+  }
+}
+
+/** Reads the captured sub-site invite preview from same-origin sessionStorage. */
+export function readSiteInviteCookie(
+  _doc: Document = document
+): CapturedSiteInvite | null {
+  if (typeof sessionStorage === 'undefined') return null
+  try {
+    const raw = sessionStorage.getItem(SITE_INVITE_PREVIEW_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { code?: unknown; capturedAt?: unknown }
+    const code = typeof parsed?.code === 'string' ? parsed.code.trim() : ''
+    if (!code) return null
+    const ts = Number(parsed?.capturedAt)
+    return {
+      code,
+      capturedAt: Number.isFinite(ts) && ts > 0 ? ts : 0,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Clears the captured sub-site invite preview in sessionStorage (and any legacy non-HttpOnly cookie). */
 export function clearSiteInviteCookie(doc: Document = document): void {
+  if (typeof sessionStorage !== 'undefined') {
+    try {
+      sessionStorage.removeItem(SITE_INVITE_PREVIEW_STORAGE_KEY)
+    } catch {
+      // Ignore storage errors.
+    }
+  }
   const secure = doc.location?.protocol === 'https:' ? '; Secure' : ''
   doc.cookie = `${SITE_INVITE_COOKIE}=; Max-Age=0; Path=/; SameSite=Lax${secure}`
 }
@@ -153,7 +167,11 @@ export function useReferralCapture(): void {
 
   useEffect(() => {
     if (!siteInvite || !subsiteDocument()) return
-    storeSiteInviteCookie(siteInvite)
+    void trackSiteInvite(siteInvite).then((accepted) => {
+      if (accepted) {
+        storeSiteInviteCookie(accepted)
+      }
+    })
     void navigate({
       to: '.',
       search: (prev: Record<string, unknown>) => {

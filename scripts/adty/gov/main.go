@@ -5,12 +5,12 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/internal/adtygov"
 )
 
@@ -189,7 +189,7 @@ func writeJSONL(path string, rows any) error {
 	}
 	var raw []byte
 	for _, row := range list {
-		line, err := json.Marshal(row)
+		line, err := common.Marshal(row)
 		if err != nil {
 			return err
 		}
@@ -200,22 +200,28 @@ func writeJSONL(path string, rows any) error {
 }
 
 func toSlice(rows any) ([]any, error) {
-	b, err := json.Marshal(rows)
+	b, err := common.Marshal(rows)
 	if err != nil {
 		return nil, err
 	}
 	var list []any
-	if err := json.Unmarshal(b, &list); err != nil {
+	if err := common.Unmarshal(b, &list); err != nil {
 		return nil, err
 	}
 	return list, nil
 }
 
 func writeJSON(w io.Writer, v any) error {
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
+	data, err := common.Marshal(v)
+	if err != nil {
+		return err
+	}
+	indented, err := common.IndentJson(data)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(indented, '\n'))
+	return err
 }
 
 func writeBytes(path string, raw []byte) error {

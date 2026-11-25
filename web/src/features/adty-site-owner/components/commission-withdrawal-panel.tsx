@@ -117,7 +117,11 @@ function formatPayoutDisplay(
   if (row.method === 'usdt' && row.net_usd) {
     return `${row.net_usd} USDT`
   }
-  return formatUsd(Number(row.amount_usd || 0), locale)
+  return formatUsd(
+    Number(row.amount_usd || 0),
+    locale,
+    row.method === 'usdt' ? 6 : 2
+  )
 }
 
 type QrPreviewInfo = {
@@ -472,7 +476,8 @@ export function CommissionWithdrawalPanel(
                   const payoutDisplay = formatPayoutDisplay(row, locale)
                   const requestedDisplay = formatUsd(
                     Number(row.amount_usd || 0),
-                    locale
+                    locale,
+                    row.method === 'usdt' ? 6 : 2
                   )
                   const hasUsdtFee =
                     row.method === 'usdt' && Number(row.fee_usd || 0) > 0

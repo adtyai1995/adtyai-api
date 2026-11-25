@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -14,9 +15,9 @@ import (
 // DeleteAdtySiteWithAudit handles R-32 (#1) Root-only site deletion:
 //   - Zero-data sites (no customers, orders, teams, ledgers, earnings, withdrawals,
 //     vouchers, tickets, commissions, or non-zero wallets): hard-deleted atomically
-//     after cleaning up any provisioned Cloudflare/AliDNS/Turnstile resources so
-//     the subdomain can be safely reused, with standalone empty owner removed and
-//     revoked.
+//     after reserving the site and its domain automation leases, cleaning up any
+//     provisioned Cloudflare/AliDNS/Turnstile resources so the subdomain can be
+//     safely reused, and removing/revoking any standalone empty owner.
 //   - Sites with existing business or financial records: must be closed & migrated
 //     first; once closed, soft-archived/hidden from the active site list while
 //     preserving accounting ledgers, audit trails, and closed-site redirects.
@@ -24,25 +25,91 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 	if siteID <= 0 || adminID <= 0 {
 		return "", "", common.NewMessage("Invalid parameters")
 	}
-	// Pre-check whether this site is a zero-data candidate and clean up any
-	// provisioned cloud DNS/Cloudflare/Turnstile resources outside the DB tx
-	// before removing domain rows, preventing orphaned records that block reuse.
-	var preSite model.AdtySite
-	if err := model.DB.Where("id = ?", siteID).First(&preSite).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", "", ErrAdtySiteNotFound
+	// Phase 1: Atomically lock the site, check whether it is zero-data, pause
+	// customer traffic, and acquire exclusive hard-delete leases on all its domains
+	// so concurrent registrations/orders or domain automation workers cannot race
+	// with external cloud resource cleanup (TOCTOU guard).
+	leaseToken := fmt.Sprintf("hard_delete:%d:%d", siteID, time.Now().UnixNano())
+	var preHasData bool
+	var prevStatus string
+	var statusPausedForDelete bool
+	var leasedDomainIDs []int
+	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		var site model.AdtySite
+		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteID).First(&site).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAdtySiteNotFound
+			}
+			return err
 		}
-		return "", "", err
-	}
-	preHasData, err := adtySiteHasBusinessDataTx(model.DB, siteID)
+		hasData, checkErr := adtySiteHasBusinessDataTx(tx, siteID)
+		if checkErr != nil {
+			return checkErr
+		}
+		preHasData = hasData
+		if hasData {
+			return nil
+		}
+		now := time.Now().Unix()
+		if tx.Migrator().HasTable(&model.AdtySiteDomain{}) {
+			var domains []model.AdtySiteDomain
+			if err := model.AdtyLockForUpdate(tx).Where("site_id = ?", siteID).Order("id ASC").Find(&domains).Error; err != nil {
+				return err
+			}
+			for _, dom := range domains {
+				if dom.LeaseUntil > now && dom.LeaseToken != "" {
+					return common.NewMessage("Domain automation is in progress for this site; please try again shortly")
+				}
+				leasedDomainIDs = append(leasedDomainIDs, dom.Id)
+			}
+			if len(leasedDomainIDs) > 0 {
+				if err := tx.Model(&model.AdtySiteDomain{}).Where("id IN ?", leasedDomainIDs).Updates(map[string]any{
+					"lease_token": leaseToken,
+					"lease_until": now + 180,
+					"generation":  gorm.Expr("generation + 1"),
+				}).Error; err != nil {
+					return err
+				}
+			}
+		}
+		prevStatus = site.Status
+		if site.Status != model.AdtySiteStatusPaused && site.Status != model.AdtySiteStatusClosed && site.Status != model.AdtySiteStatusClosing {
+			if err := tx.Model(&model.AdtySite{}).Where("id = ?", siteID).Update("status", model.AdtySiteStatusPaused).Error; err != nil {
+				return err
+			}
+			statusPausedForDelete = true
+		}
+		return nil
+	})
 	if err != nil {
 		return "", "", err
 	}
+	releaseDeleteReservation := func() {
+		_ = model.DB.Transaction(func(tx *gorm.DB) error {
+			if statusPausedForDelete && prevStatus != "" {
+				_ = tx.Model(&model.AdtySite{}).Where("id = ? AND status = ?", siteID, model.AdtySiteStatusPaused).Update("status", prevStatus).Error
+			}
+			if len(leasedDomainIDs) > 0 && tx.Migrator().HasTable(&model.AdtySiteDomain{}) {
+				_ = tx.Model(&model.AdtySiteDomain{}).Where("id IN ? AND lease_token = ?", leasedDomainIDs, leaseToken).Updates(map[string]any{
+					"lease_token": "",
+					"lease_until": 0,
+				}).Error
+			}
+			return nil
+		})
+		if statusPausedForDelete {
+			InvalidateAdtySiteCache()
+		}
+	}
 	if !preHasData {
+		if statusPausedForDelete {
+			InvalidateAdtySiteCache()
+		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		cleanupErr := cleanupAdtySiteCloudDomainsForHardDelete(cleanupCtx, siteID)
 		cancel()
 		if cleanupErr != nil {
+			releaseDeleteReservation()
 			return "", "", cleanupErr
 		}
 	}
@@ -81,7 +148,10 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 		// Zero business/financial data: safe hard delete.
 		oldSnapshot := map[string]any{
 			"id": site.Id, "subdomain": site.Subdomain, "root_domain": site.RootDomain,
-			"owner_user_id": site.OwnerUserId, "status": site.Status,
+			"owner_user_id": site.OwnerUserId, "status": prevStatus,
+		}
+		if oldSnapshot["status"] == "" {
+			oldSnapshot["status"] = site.Status
 		}
 		var domainIDs []int
 		if tx.Migrator().HasTable(&model.AdtySiteDomain{}) {
@@ -104,8 +174,8 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			&model.AdtySiteStaff{},
 			&model.AdtySiteMailConfig{},
 			&model.AdtySiteSenderDomain{},
+			&model.AdtySenderDomainCleanup{},
 			&model.AdtySiteTierEvaluation{},
-			&model.AdtySiteTierPrincipalAdjustment{},
 			&model.AdtySiteOwnership{},
 		} {
 			if tx.Migrator().HasTable(tableModel) {
@@ -132,6 +202,9 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 		return err
 	})
 	if err != nil {
+		if !preHasData {
+			releaseDeleteReservation()
+		}
 		return "", "", err
 	}
 	if deletedOwnerID > 0 {
@@ -267,6 +340,16 @@ func adtySiteHasBusinessDataTx(tx *gorm.DB, siteID int) (bool, error) {
 		{&model.AdtyTicket{}, "site_id = ? OR handling_site_id = ?", []any{siteID, siteID}},
 		{&model.AdtySiteInviteCommission{}, "site_id = ?", []any{siteID}},
 		{&model.AdtySiteInviteWithdrawal{}, "site_id = ?", []any{siteID}},
+		{&model.AdtySiteTierPrincipalAdjustment{}, "site_id = ?", []any{siteID}},
+		{&model.AdtyFinancialAdjustment{}, "site_id = ?", []any{siteID}},
+		{&model.AdtyGiftFulfillment{}, "site_id = ?", []any{siteID}},
+		{&model.AdtyOrderPaymentEvent{}, "site_id = ?", []any{siteID}},
+		{&model.AdtySiteEarningEvent{}, "site_id = ?", []any{siteID}},
+		{&model.AdtyCommissionRecovery{}, "site_id = ?", []any{siteID}},
+		{&model.AdtyAnomalyDisposition{}, "site_id = ?", []any{siteID}},
+		{&model.AdtyStaffBalanceRequest{}, "site_id = ?", []any{siteID}},
+		{&model.AdtyPriceRevision{}, "site_id = ?", []any{siteID}},
+		{&model.AdtySiteCloseMailBatch{}, "site_id = ?", []any{siteID}},
 	}
 	for _, chk := range checks {
 		if !tx.Migrator().HasTable(chk.model) {
@@ -314,8 +397,9 @@ func maybeDeleteEmptyStandaloneOwnerTx(tx *gorm.DB, userID int) (bool, error) {
 		return false, err
 	}
 	if err := tx.Model(&model.User{}).Where("id = ?", userID).Updates(map[string]any{
-		"status":       common.UserStatusDisabled,
-		"access_token": "",
+		"status":                  common.UserStatusDisabled,
+		"access_token":            nil,
+		"access_token_created_at": nil,
 	}).Error; err != nil {
 		return false, err
 	}

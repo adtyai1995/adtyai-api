@@ -40,7 +40,6 @@ export const adminReferralKeys = {
 }
 
 export type ReferralBadges = {
-  partners: number
   pending_withdrawals: number
   approved_withdrawals: number
   total: number
@@ -59,8 +58,6 @@ export type ReferralOverview = {
 export type ReferralSettings = {
   enabled: boolean
   default_rate: number | null
-  partner_min_rate: number | null
-  partner_max_rate: number | null
   cookie_ttl_days: number
   freeze_days: number
   min_withdraw_usd: number | null
@@ -78,22 +75,14 @@ export type ReferralSettings = {
 export type ReferralSettingsUpdate = Partial<
   Omit<
     ReferralSettings,
-    | 'default_rate'
-    | 'partner_min_rate'
-    | 'partner_max_rate'
-    | 'min_withdraw_usd'
-    | 'usdt_withdraw_fee'
+    'default_rate' | 'min_withdraw_usd' | 'usdt_withdraw_fee'
   >
 > & {
   default_rate?: number
-  partner_min_rate?: number
-  partner_max_rate?: number
   min_withdraw_usd?: number
   usdt_withdraw_fee?: number
   clear?: Array<
     | 'default_rate'
-    | 'partner_min_rate'
-    | 'partner_max_rate'
     | 'min_withdraw_usd'
     | 'usdt_withdraw_fee'
     | 'withdraw_cny_rate'
@@ -171,11 +160,8 @@ export type AdminReferralCommissionsParams = {
   q?: string
 }
 
-export const getAffiliates = (params: {
-  p: number
-  keyword?: string
-  partner_status?: string
-}) => getPage<AdminReferralAffiliate>('/affiliates', params)
+export const getAffiliates = (params: { p: number; keyword?: string }) =>
+  getPage<AdminReferralAffiliate>('/affiliates', params)
 
 export const getAdminWithdrawals = (params: { p: number; status?: string }) =>
   getPage<AdminReferralWithdrawal>('/withdrawals', params)

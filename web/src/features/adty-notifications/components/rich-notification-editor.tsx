@@ -124,10 +124,10 @@ export function RichNotificationEditor(props: RichNotificationEditorProps) {
     const el = editorRef.current
     if (!el) return
     if (props.value !== lastEmittedRef.current) {
-      el.innerHTML = props.value
+      el.innerHTML = sanitizeNotificationHtml(props.value)
       lastEmittedRef.current = props.value
     } else if (el.innerHTML === '' && props.value !== '') {
-      el.innerHTML = props.value
+      el.innerHTML = sanitizeNotificationHtml(props.value)
     }
   }, [props.value])
 

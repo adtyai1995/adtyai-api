@@ -78,9 +78,13 @@ func (t AdtyTicket) HandlingSite() int {
 // TransferAdtyTicketsToMain moves handling authority while retaining the original site.
 func TransferAdtyTicketsToMain(tx *gorm.DB, sites *gorm.DB) error {
 	return tx.Model(&AdtyTicket{}).Where("site_id IN (?) AND handling_site_id IS NULL", sites).
-		UpdateColumns(map[string]any{"handling_site_id": 0, "assignee_id": 0,
+		UpdateColumns(map[string]any{
+			"handling_site_id": 0,
+			"assignee_id":      0,
 			"status": gorm.Expr("CASE WHEN status IN ? THEN status ELSE ? END",
-				[]string{AdtyTicketClosed, AdtyTicketResolved}, AdtyTicketPendingAssignment)}).Error
+				[]string{AdtyTicketClosed, AdtyTicketResolved}, AdtyTicketPendingAssignment),
+			"updated_at": time.Now().Unix(),
+		}).Error
 }
 
 func (AdtyTicket) TableName() string { return "adty_tickets" }

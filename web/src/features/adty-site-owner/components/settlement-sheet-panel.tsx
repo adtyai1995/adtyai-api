@@ -110,7 +110,7 @@ export type SettlementPrintHtmlOptions = {
 }
 
 const PURE_DECIMAL_RE = /^-?\d+(?:\.\d+)?$/
-const CSV_FORMULA_PREFIX_RE = /^[=+\-@\t\r]/
+const CSV_FORMULA_PREFIX_RE = /^[\s]*[=+\-@]|^[\t\r\n]/
 
 /** True when a numeric string or number represents zero (including empty / "-0.00"). */
 export function isZeroAmount(value: string | number | undefined): boolean {

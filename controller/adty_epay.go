@@ -169,13 +169,18 @@ func RequestAdtyEpayPay(c *gin.Context) {
 		if result.Mode != "submit" && result.Mode != method.ReturnType {
 			_ = model.UpdateAdtyEpayMethodReturnType(method.Id, result.Mode)
 		}
-		if err := model.UpdateAdtyTopupOrderFields(topUp.TradeNo, map[string]any{
+		updated, err := model.UpdatePendingAdtyTopupOrderCheckout(topUp.TradeNo, nil, map[string]any{
 			"qr_code":          result.QRCode,
 			"pay_url":          result.PayURL,
 			"url_scheme":       result.URLScheme,
 			"gateway_trade_id": result.GatewayTradeNo,
-		}); err != nil {
+		})
+		if err != nil {
 			writeAdtyTopUpError(c, err)
+			return
+		}
+		if !updated {
+			writeAdtyTopUpError(c, model.ErrAdtyTopUpNotCancel)
 			return
 		}
 		view, err := model.GetUserAdtyTopUp(topUp.TradeNo, topUp.UserId)

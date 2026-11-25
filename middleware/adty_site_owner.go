@@ -39,7 +39,7 @@ func adtyOwnerDashboardAllowed(c *gin.Context, user *model.UserBase) bool {
 		isBlocked("/api/adty/site-commissions") ||
 		isBlocked("/api/log/self") ||
 		isBlocked("/api/mj/self") ||
-		isBlocked("/api/task/self") ||
+		isBlocked("/api/task") ||
 		isBlocked("/api/data/self") ||
 		isBlocked("/api/adty/orders") ||
 		rawPath == "/api/adty/site/wallets/earning-to-personal" ||

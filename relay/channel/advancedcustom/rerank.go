@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -13,14 +14,20 @@ import (
 )
 
 func (a *Adaptor) doSGLangRerankResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (any, *types.NewAPIError) {
-	defer service.CloseResponseBodyGracefully(resp)
+	if resp != nil {
+		defer service.CloseResponseBodyGracefully(resp)
+	}
+	responseBody, apiErr := helper.ReadResponseBody(c, resp, types.ErrorCodeBadResponseBody)
+	if apiErr != nil {
+		return nil, apiErr
+	}
 	// SGLang v0.5.19 returns a sorted array with score, not a Jina results envelope.
 	// https://github.com/sgl-project/sglang/blob/v0.5.19/python/sglang/srt/entrypoints/openai/serving_rerank.py
 	var results []struct {
 		Index *int     `json:"index"`
 		Score *float64 `json:"score"`
 	}
-	if err := common.DecodeJson(resp.Body, &results); err != nil {
+	if err := common.Unmarshal(responseBody, &results); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
 	if results == nil {

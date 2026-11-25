@@ -38,12 +38,19 @@ type AdtySiteInviteWithdrawalInput struct {
 // Balance completes immediately into quota. External payout methods are Alipay or USDT
 // only (DEC-025); cash methods stay pending for that site's owner.
 func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model.AdtySiteInviteWithdrawal, error) {
-	if !input.Amount.Equal(input.Amount.Round(8)) {
+	method := strings.TrimSpace(input.Method)
+	scale := int32(2)
+	switch method {
+	case "usdt":
+		scale = 6
+	case "balance":
+		scale = 6
+	}
+	if !input.Amount.Equal(input.Amount.Truncate(scale)) {
 		return nil, common.NewMessage("Invalid parameters")
 	}
-	amount := input.Amount.Round(8)
+	amount := input.Amount.Truncate(scale)
 	key := strings.TrimSpace(input.IdempotencyKey)
-	method := strings.TrimSpace(input.Method)
 	if input.UserID <= 0 || input.SiteID < 0 || !amount.IsPositive() || key == "" || len(key) > 128 {
 		return nil, common.NewMessage("Invalid parameters")
 	}
@@ -667,8 +674,12 @@ func requireSiteInviteProcessor(tx *gorm.DB, ownerID, siteID int, platform bool)
 
 // Only the affected commission item can be resized. Approved amounts keep their
 // original payable value until the owner reconciles the external result.
+// Refund clawbacks consume unfrozen free hold first, then shrink pending
+// withdrawals, and only mark approved withdrawals as deferred clawbacks as a last resort.
 func releaseSiteInviteCommissionFreezeTx(tx *gorm.DB, commission *model.AdtySiteInviteCommission, amount decimal.Decimal) (decimal.Decimal, error) {
-	left := decimal.Min(amount, commission.FrozenUSD.Sub(commission.PendingPayoutClawUSD))
+	unfrozenHold := decimal.Max(commission.EarningsHoldUSD.Add(commission.MarginHoldUSD).Sub(commission.FrozenUSD), decimal.Zero)
+	needFromFreeze := decimal.Max(amount.Sub(unfrozenHold), decimal.Zero)
+	left := decimal.Min(needFromFreeze, decimal.Max(commission.FrozenUSD.Sub(commission.PendingPayoutClawUSD), decimal.Zero))
 	deferred := decimal.Zero
 	if !left.IsPositive() {
 		return deferred, nil
@@ -677,59 +688,84 @@ func releaseSiteInviteCommissionFreezeTx(tx *gorm.DB, commission *model.AdtySite
 	if err := tx.Where("commission_id = ? AND status = ?", commission.Id, model.AdtySiteInviteWithdrawItemFrozen).Order("id").Find(&items).Error; err != nil {
 		return deferred, err
 	}
+	type lockedPair struct {
+		item       model.AdtySiteInviteWithdrawalItem
+		withdrawal model.AdtySiteInviteWithdrawal
+	}
+	pendingPairs := make([]lockedPair, 0, len(items))
+	approvedPairs := make([]lockedPair, 0, len(items))
 	for _, item := range items {
-		if !left.IsPositive() {
-			break
-		}
 		var withdrawal model.AdtySiteInviteWithdrawal
 		if err := model.AdtyLockForUpdate(tx).First(&withdrawal, item.WithdrawalId).Error; err != nil {
 			return deferred, err
 		}
+		switch withdrawal.Status {
+		case model.AdtySiteInviteWithdrawPending:
+			pendingPairs = append(pendingPairs, lockedPair{item: item, withdrawal: withdrawal})
+		case model.AdtySiteInviteWithdrawApproved:
+			approvedPairs = append(approvedPairs, lockedPair{item: item, withdrawal: withdrawal})
+		}
+	}
+	// Phase 1: shrink or cancel pending withdrawals first so funds return immediately.
+	for _, pair := range pendingPairs {
+		if !left.IsPositive() {
+			break
+		}
+		item := pair.item
+		withdrawal := pair.withdrawal
 		take := decimal.Min(left, item.AmountUSD.Sub(item.RefundUSD))
 		if !take.IsPositive() {
 			continue
 		}
-		if withdrawal.Status == model.AdtySiteInviteWithdrawApproved {
-			if err := tx.Model(&item).Update("refund_usd", item.RefundUSD.Add(take)).Error; err != nil {
+		remaining := item.AmountUSD.Sub(take)
+		changes := map[string]any{"amount_usd": remaining, "released_usd": gorm.Expr("released_usd + ?", take)}
+		if remaining.IsZero() {
+			changes["status"] = model.AdtySiteInviteWithdrawItemReleased
+		}
+		if err := tx.Model(&item).Updates(changes).Error; err != nil {
+			return deferred, err
+		}
+		gross := withdrawal.AmountUSD.Sub(take)
+		changes = map[string]any{"amount_usd": gross, "net_usd": decimal.Max(gross.Sub(withdrawal.FeeUSD), decimal.Zero)}
+		if !withdrawal.RequestedUSD.IsPositive() {
+			changes["requested_usd"] = withdrawal.AmountUSD
+		}
+		if withdrawal.Method == "alipay" || withdrawal.Method == "usdt" {
+			rate, err := decimal.NewFromString(withdrawal.Rate)
+			if withdrawal.Method == "usdt" {
+				rate, err = decimal.NewFromInt(1), nil
+			}
+			if err != nil {
 				return deferred, err
 			}
-			deferred = deferred.Add(take)
-		} else if withdrawal.Status == model.AdtySiteInviteWithdrawPending {
-			remaining := item.AmountUSD.Sub(take)
-			changes := map[string]any{"amount_usd": remaining, "released_usd": gorm.Expr("released_usd + ?", take)}
-			if remaining.IsZero() {
-				changes["status"] = model.AdtySiteInviteWithdrawItemReleased
-			}
-			if err := tx.Model(&item).Updates(changes).Error; err != nil {
-				return deferred, err
-			}
-			gross := withdrawal.AmountUSD.Sub(take)
-			changes = map[string]any{"amount_usd": gross, "net_usd": decimal.Max(gross.Sub(withdrawal.FeeUSD), decimal.Zero)}
-			if !withdrawal.RequestedUSD.IsPositive() {
-				changes["requested_usd"] = withdrawal.AmountUSD
-			}
-			if withdrawal.Method == "alipay" || withdrawal.Method == "usdt" {
-				rate, err := decimal.NewFromString(withdrawal.Rate)
-				if withdrawal.Method == "usdt" {
-					rate, err = decimal.NewFromInt(1), nil
-				}
-				if err != nil {
-					return deferred, err
-				}
-				changes["payout_amount"] = siteInvitePayable(gross, withdrawal.FeeUSD, rate, withdrawal.Method)
-			}
-			if gross.IsZero() {
-				changes["status"] = model.AdtySiteInviteWithdrawCanceled
-			}
-			if err := tx.Model(&withdrawal).Updates(changes).Error; err != nil {
-				return deferred, err
-			}
-			if err := tx.Model(commission).Update("frozen_usd", gorm.Expr("frozen_usd - ?", take)).Error; err != nil {
-				return deferred, err
-			}
-		} else {
+			changes["payout_amount"] = siteInvitePayable(gross, withdrawal.FeeUSD, rate, withdrawal.Method)
+		}
+		if gross.IsZero() {
+			changes["status"] = model.AdtySiteInviteWithdrawCanceled
+		}
+		if err := tx.Model(&withdrawal).Updates(changes).Error; err != nil {
+			return deferred, err
+		}
+		if err := tx.Model(commission).Update("frozen_usd", gorm.Expr("frozen_usd - ?", take)).Error; err != nil {
+			return deferred, err
+		}
+		commission.FrozenUSD = decimal.Max(commission.FrozenUSD.Sub(take), decimal.Zero)
+		left = left.Sub(take)
+	}
+	// Phase 2: only if still short, mark approved withdrawals for deferred reconciliation.
+	for _, pair := range approvedPairs {
+		if !left.IsPositive() {
+			break
+		}
+		item := pair.item
+		take := decimal.Min(left, item.AmountUSD.Sub(item.RefundUSD))
+		if !take.IsPositive() {
 			continue
 		}
+		if err := tx.Model(&item).Update("refund_usd", item.RefundUSD.Add(take)).Error; err != nil {
+			return deferred, err
+		}
+		deferred = deferred.Add(take)
 		left = left.Sub(take)
 	}
 	return deferred, nil

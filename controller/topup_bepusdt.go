@@ -13,7 +13,6 @@ import (
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 // 从旧项目改写（任务 4.2）：按 USD 下单，站内支付窗显示地址和数量，回调以 POST JSON 为准。
@@ -61,7 +60,7 @@ func RequestBEpusdtPay(c *gin.Context) {
 	if minutes <= 0 {
 		minutes = 15
 	}
-	topUp, ext, err := createAdtyOrder(c, adtyOrderDraft{
+	topUp, _, err := createAdtyOrder(c, adtyOrderDraft{
 		paymentScene: req.PaymentScene,
 		prefix:       "EPU",
 		provider:     model.PaymentProviderAdtyBEpusdt,
@@ -92,23 +91,24 @@ func RequestBEpusdtPay(c *gin.Context) {
 		return
 	}
 	money, _ := order.ActualAmount.Float64()
-	if err := model.DB.Transaction(func(tx *gorm.DB) error {
-		// Match callback/cancel lock order: top-up before its extension.
-		if err := tx.Model(&model.TopUp{}).Where("id = ?", topUp.Id).Update("money", money).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&model.AdtyTopupOrder{}).Where("id = ?", ext.Id).Updates(map[string]any{
-			"pay_address":      order.Address,
-			"pay_amount":       order.ActualAmount,
-			"expire_at":        order.ExpireAt,
-			"gateway_trade_id": order.TradeId,
-			"pay_url":          order.PaymentURL,
-		}).Error; err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
+	updated, err := model.UpdatePendingAdtyTopupOrderCheckout(topUp.TradeNo, &money, map[string]any{
+		"pay_address":      order.Address,
+		"pay_amount":       order.ActualAmount,
+		"expire_at":        order.ExpireAt,
+		"gateway_trade_id": order.TradeId,
+		"pay_url":          order.PaymentURL,
+	})
+	if err != nil {
 		writeAdtyTopUpError(c, err)
+		return
+	}
+	if !updated {
+		if order.TradeId != "" {
+			if cancelErr := service.CancelBEpusdtOrder(order.TradeId); cancelErr != nil {
+				common.SysError(common.LogText("bepusdt cancel stale order trade_no=%s gateway_id=%s failed: %s", topUp.TradeNo, order.TradeId, cancelErr.Error()))
+			}
+		}
+		writeAdtyTopUpError(c, model.ErrAdtyTopUpNotCancel)
 		return
 	}
 	view, err := model.GetUserAdtyTopUp(topUp.TradeNo, topUp.UserId)

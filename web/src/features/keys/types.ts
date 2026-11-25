@@ -105,11 +105,6 @@ export interface ApiKeyFormData {
   cross_group_retry: boolean
 }
 
-export interface TokenAutoGroupsConfig {
-  groups: string[]
-  max_count: number
-}
-
 // ============================================================================
 // Dialog Types
 // ============================================================================

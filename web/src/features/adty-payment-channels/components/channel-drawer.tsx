@@ -395,6 +395,7 @@ export function ChannelDrawer(props: ChannelDrawerProps) {
                         id={`min-${m.method}`}
                         type='number'
                         min={0}
+                        step='0.01'
                         value={m.min_cny}
                         onChange={(e) =>
                           setMethod(index, { min_cny: e.target.value })
@@ -409,6 +410,7 @@ export function ChannelDrawer(props: ChannelDrawerProps) {
                         id={`max-${m.method}`}
                         type='number'
                         min={0}
+                        step='0.01'
                         value={m.max_cny}
                         onChange={(e) =>
                           setMethod(index, { max_cny: e.target.value })
@@ -423,6 +425,7 @@ export function ChannelDrawer(props: ChannelDrawerProps) {
                         id={`daily-${m.method}`}
                         type='number'
                         min={0}
+                        step='0.01'
                         value={m.daily_limit_cny}
                         onChange={(e) =>
                           setMethod(index, { daily_limit_cny: e.target.value })

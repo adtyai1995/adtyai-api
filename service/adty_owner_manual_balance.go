@@ -602,6 +602,7 @@ func AdjustAdtySiteTierPrincipal(siteID, operatorID int, mode string, amountUSD 
 	var out *AdtySiteTierPrincipalAdjustResult
 	var auditLog *model.AuditLog
 	var hasIntent bool
+	var costFactorChanged bool
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteID).First(&site).Error; err != nil {
@@ -667,6 +668,7 @@ func AdjustAdtySiteTierPrincipal(siteID, operatorID int, mode string, amountUSD 
 		if err := tx.Model(&model.AdtySite{}).Where("id = ?", siteID).Update("tier_principal_adjustment_usd", adjustAfter).Error; err != nil {
 			return err
 		}
+		beforeEff, beforeOK := AdtySiteCostFactor(&site)
 		tierBefore := site.TierCode
 		tierAfter := site.TierCode
 		if site.TierMode != AdtySiteTierModeManual {
@@ -684,7 +686,7 @@ func AdjustAdtySiteTierPrincipal(siteID, operatorID int, mode string, amountUSD 
 			if selected == nil {
 				selected = lowestEnabledAdtySiteTier(tiers)
 			}
-			if selected != nil && selected.CostFactor.IsPositive() {
+			if selected != nil && selected.CostFactor != nil && selected.CostFactor.IsPositive() {
 				tierAfter = selected.Code
 				if tierAfter != tierBefore {
 					if err := applyAdtySiteTierAssignmentTx(tx, siteID, selected, time.Now().Unix()); err != nil {
@@ -762,6 +764,8 @@ func AdjustAdtySiteTierPrincipal(siteID, operatorID int, mode string, amountUSD 
 		if err := tx.Where("id = ?", siteID).First(&refreshed).Error; err != nil {
 			return err
 		}
+		afterEff, afterOK := AdtySiteCostFactor(&refreshed)
+		costFactorChanged = beforeOK != afterOK || !beforeEff.Equal(afterEff)
 		statsAfter := statsBefore
 		statsAfter.AdjustmentUSD = adjustAfter
 		statsAfter.PrincipalUSD = effectiveAfter
@@ -779,6 +783,9 @@ func AdjustAdtySiteTierPrincipal(siteID, operatorID int, mode string, amountUSD 
 	if out != nil && !out.Replayed {
 		InvalidateAdtySiteCache()
 		deliverStaffBalanceOfficialAudit(auditLog, hasIntent)
+		if costFactorChanged && out.Site != nil && AdtyOnSiteCostFactorChanged != nil {
+			AdtyOnSiteCostFactorChanged(out.Site)
+		}
 	}
 	return out, nil
 }

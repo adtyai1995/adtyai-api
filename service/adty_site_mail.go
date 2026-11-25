@@ -1576,6 +1576,7 @@ func adtySendSitePricingMail(site *model.AdtySite, user *model.User, message Adt
 }
 
 // adtyNotifySiteCostFactorPending 在提高 d 写入待生效时通知站长，不把新系数当成已经生效。
+// 平台向站长发送的管理通知固定使用平台发信通道（site = nil），不走分站自有发件域。
 func adtyNotifySiteCostFactorPending(site *model.AdtySite) {
 	if site == nil || site.PendingCostFactor == nil {
 		return
@@ -1585,13 +1586,14 @@ func adtyNotifySiteCostFactorPending(site *model.AdtySite) {
 		common.SysError(common.LogText("load site %d owner for pending cost factor mail: %s", site.Id, err.Error()))
 		return
 	}
-	adtySendSitePricingMail(site, owner, AdtyMailMessage{
+	adtySendSitePricingMail(nil, owner, AdtyMailMessage{
 		Title: "Your site cost factor will change",
 		Intro: "Your site cost factor will change to " + site.PendingCostFactor.String() + " on " + adtyMailWhen(site.PendingCostFactorAt) + ". Until then the current factor applies.",
 	})
 }
 
 // adtyNotifySiteCostFactor 给站长发邮件，说明当前生效的 d。
+// 平台向站长发送的管理通知固定使用平台发信通道（site = nil），不走分站自有发件域。
 func adtyNotifySiteCostFactor(site *model.AdtySite) {
 	if site == nil {
 		return
@@ -1605,7 +1607,7 @@ func adtyNotifySiteCostFactor(site *model.AdtySite) {
 	if !ok {
 		factor = decimal.Zero
 	}
-	adtySendSitePricingMail(site, owner, AdtyMailMessage{
+	adtySendSitePricingMail(nil, owner, AdtyMailMessage{
 		Title: "Your site cost factor changed",
 		Intro: "Your site cost factor is now " + factor.String() + ".",
 	})

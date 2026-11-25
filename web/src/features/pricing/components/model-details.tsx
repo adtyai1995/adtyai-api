@@ -624,37 +624,6 @@ function PriceSection(props: {
   )
 }
 
-// ----------------------------------------------------------------------------
-// Auto group chain (used inside group pricing section)
-// ----------------------------------------------------------------------------
-
-function AutoGroupChain(props: { model: PricingModel; autoGroups: string[] }) {
-  const { t } = useTranslation()
-  const modelEnableGroups = Array.isArray(props.model.enable_groups)
-    ? props.model.enable_groups
-    : []
-  const autoChain = props.autoGroups.filter((g) =>
-    modelEnableGroups.includes(g)
-  )
-
-  if (autoChain.length === 0) return null
-
-  return (
-    <div className='text-muted-foreground mb-3 flex flex-wrap items-center gap-1 text-xs'>
-      <span className='font-medium'>{t('Auto Group Chain')}</span>
-      <span className='text-muted-foreground/40'>→</span>
-      {autoChain.map((g, idx) => (
-        <span key={g} className='flex items-center gap-1'>
-          <GroupBadge group={g} size='sm' />
-          {idx < autoChain.length - 1 && (
-            <span className='text-muted-foreground/40'>→</span>
-          )}
-        </span>
-      ))}
-    </div>
-  )
-}
-
 type DynamicPriceOptions = Parameters<typeof getDynamicPriceEntries>[1]
 type DynamicPricingTier = ReturnType<typeof getDynamicPricingTiers>[number]
 type DynamicFormattedPricesByTier = Map<DynamicPricingTier, Map<string, string>>
@@ -697,7 +666,6 @@ type GroupPricingSectionProps = {
   model: PricingModel
   groupRatio: Record<string, number>
   usableGroup: Record<string, PricingUsableGroupValue>
-  autoGroups: string[]
   priceRate: number
   usdExchangeRate: number
   tokenUnit: TokenUnit
@@ -809,7 +777,6 @@ function ProviderGroupPricingSection(
         {!props.hideTitle && (
           <SectionTitle>{t('Pricing by Group')}</SectionTitle>
         )}
-        <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
         <p className='text-muted-foreground text-sm'>
           {t(
             'This model is not available in any group, or no group pricing information is configured.'
@@ -836,7 +803,6 @@ function ProviderGroupPricingSection(
           {!props.hideTitle && (
             <SectionTitle>{t('Pricing by Group')}</SectionTitle>
           )}
-          <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
           <div className='rounded-lg border border-amber-200/70 bg-amber-50/70 p-3 dark:border-amber-500/20 dark:bg-amber-500/10'>
             <div className='text-sm font-medium text-amber-800 dark:text-amber-200'>
               {props.hideRawExpression
@@ -905,7 +871,6 @@ function ProviderGroupPricingSection(
         {!props.hideTitle && (
           <SectionTitle>{t('Pricing by Group')}</SectionTitle>
         )}
-        <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
         <div className='space-y-3'>
           {availableGroups.map((group) => {
             const ratio = getConfiguredGroupRatio(effectiveGroupRatio, group)
@@ -1076,7 +1041,6 @@ function ProviderGroupPricingSection(
         {!props.hideTitle && (
           <SectionTitle>{t('Pricing by Group')}</SectionTitle>
         )}
-        <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
         <UnconfiguredTaskPricingNotice model={props.model} />
       </section>
     )
@@ -1106,7 +1070,6 @@ function ProviderGroupPricingSection(
   return (
     <section>
       {!props.hideTitle && <SectionTitle>{t('Pricing by Group')}</SectionTitle>}
-      <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
       <StaticDataTable
         className='-mx-4 rounded-none border-0 sm:mx-0'
         tableClassName='text-sm'
@@ -1204,7 +1167,7 @@ export interface ModelDetailsContentProps {
   groupRatio: Record<string, number>
   usableGroup: Record<string, PricingUsableGroupValue>
   endpointMap: Record<string, { path?: string; method?: string }>
-  autoGroups: string[]
+  autoGroups?: string[]
   priceRate: number
   usdExchangeRate: number
   tokenUnit: TokenUnit
@@ -1287,7 +1250,6 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
               model={props.model}
               groupRatio={props.groupRatio}
               usableGroup={props.usableGroup}
-              autoGroups={props.autoGroups}
               priceRate={props.priceRate}
               usdExchangeRate={props.usdExchangeRate}
               tokenUnit={props.tokenUnit}
@@ -1357,7 +1319,6 @@ export function ModelDetails() {
     groupRatio,
     usableGroup,
     endpointMap,
-    autoGroups,
     hasData,
     isLoading,
     isFetching,
@@ -1459,7 +1420,6 @@ export function ModelDetails() {
           model={model}
           groupRatio={groupRatio || {}}
           usableGroup={usableGroup || {}}
-          autoGroups={autoGroups || []}
           priceRate={priceRate ?? 1}
           usdExchangeRate={usdExchangeRate ?? 1}
           tokenUnit={tokenUnit}

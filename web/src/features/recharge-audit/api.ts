@@ -571,11 +571,17 @@ export type ManualRefundResult = {
 export async function previewTopupRefund(
   tradeNo: string,
   refundUsd?: string,
-  ownerMode = false
+  ownerMode = false,
+  reconcileOrphanId?: number
 ) {
+  const params: Record<string, string | number> = {}
+  if (refundUsd) params.refund_usd = refundUsd
+  if (!ownerMode && reconcileOrphanId && reconcileOrphanId > 0) {
+    params.reconcile_orphan_id = reconcileOrphanId
+  }
   const res = await api.get<ApiResponse<TopupRefundResult>>(
     `${ownerMode ? '/api/adty/site/orders' : '/api/adty/admin/topup'}/${encodeURIComponent(tradeNo)}/refund-preview`,
-    { params: refundUsd ? { refund_usd: refundUsd } : undefined }
+    { params: Object.keys(params).length > 0 ? params : undefined }
   )
   return requireServerSuccess(res.data).data
 }

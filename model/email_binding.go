@@ -231,21 +231,77 @@ func isSiteOwnerForEmailBindingWithTx(tx *gorm.DB, userID, siteID int) (bool, er
 	return count > 0, nil
 }
 
-func resolveEmailBindingOriginSiteWithTx(tx *gorm.DB, identity AuthSessionIdentity, userSiteID int) (int, error) {
+func resolveEmailBindingOriginSiteWithTx(tx *gorm.DB, identity AuthSessionIdentity, userSiteID int, originHost string) (int, error) {
 	issuedSite, ok := identity.IssuedSite()
-	if !ok || issuedSite == userSiteID {
-		return userSiteID, nil
-	}
-	if userSiteID == 0 && issuedSite > 0 {
-		isOwner, err := isSiteOwnerForEmailBindingWithTx(tx, identity.UserID, issuedSite)
-		if err != nil {
-			return 0, err
+	if ok {
+		if issuedSite == userSiteID {
+			return userSiteID, nil
 		}
-		if isOwner {
-			return issuedSite, nil
+		if userSiteID == 0 && issuedSite > 0 {
+			isOwner, err := isSiteOwnerForEmailBindingWithTx(tx, identity.UserID, issuedSite)
+			if err != nil {
+				return 0, err
+			}
+			if isOwner {
+				return issuedSite, nil
+			}
+		}
+		return 0, ErrAuthFlowInvalid
+	}
+	if userSiteID == 0 && originHost != "" {
+		if _, isPAT := ParseAccessTokenSessionID(identity.SessionID); isPAT {
+			if siteID, err := resolveOwnerSubsiteIDForHostWithTx(tx, identity.UserID, originHost); err != nil {
+				return 0, err
+			} else if siteID > 0 {
+				return siteID, nil
+			}
 		}
 	}
-	return 0, ErrAuthFlowInvalid
+	return userSiteID, nil
+}
+
+func resolveOwnerSubsiteIDForHostWithTx(tx *gorm.DB, ownerUserID int, host string) (int, error) {
+	if tx == nil {
+		tx = DB
+	}
+	host = NormalizeEmailBindingHost(host)
+	if ownerUserID <= 0 || host == "" || !tx.Migrator().HasTable(&AdtySite{}) {
+		return 0, nil
+	}
+	for _, mainHost := range mainConfiguredHosts(tx) {
+		if host == mainHost {
+			return 0, nil
+		}
+	}
+	var sites []AdtySite
+	if err := tx.Select("id", "subdomain", "root_domain", "status").
+		Where("owner_user_id = ? AND status NOT IN ?", ownerUserID, []string{AdtySiteStatusClosed, AdtySiteStatusPending}).
+		Find(&sites).Error; err != nil {
+		return 0, err
+	}
+	if len(sites) == 0 {
+		return 0, nil
+	}
+	ownedIDs := make([]int, 0, len(sites))
+	for _, s := range sites {
+		ownedIDs = append(ownedIDs, s.Id)
+		rootDom := strings.ToLower(strings.TrimSpace(s.RootDomain))
+		if s.Subdomain != "" && rootDom != "" && host == strings.ToLower(strings.TrimSpace(s.Subdomain))+"."+rootDom {
+			return s.Id, nil
+		}
+	}
+	if tx.Migrator().HasTable(&AdtySiteDomain{}) {
+		var domain AdtySiteDomain
+		res := tx.Where("LOWER(hostname) = ? AND site_id IN ? AND status = ? AND desired_state <> ?",
+			host, ownedIDs, AdtySiteDomainActive, "removed").Limit(1).Find(&domain)
+		if res.Error != nil {
+			return 0, res.Error
+		}
+		if res.RowsAffected > 0 {
+			return domain.SiteId, nil
+		}
+	}
+	return 0, nil
 }
 
 func CreateEmailBinding(identity AuthSessionIdentity, state EmailBindingState, originHost ...string) (string, *AuthFlow, error) {
@@ -261,7 +317,7 @@ func CreateEmailBinding(identity AuthSessionIdentity, state EmailBindingState, o
 		if err != nil {
 			return err
 		}
-		originSiteID, err := resolveEmailBindingOriginSiteWithTx(tx, identity, siteID)
+		originSiteID, err := resolveEmailBindingOriginSiteWithTx(tx, identity, siteID, state.OriginHost)
 		if err != nil {
 			return err
 		}
@@ -312,7 +368,7 @@ func GetEmailBinding(identity AuthSessionIdentity, token string, originHost ...s
 	if err := matchEmailBindingOriginHost(state.OriginHost, originHost...); err != nil {
 		return nil, nil, err
 	}
-	originSiteID, err := resolveEmailBindingOriginSiteWithTx(DB, identity, state.SiteID)
+	originSiteID, err := resolveEmailBindingOriginSiteWithTx(DB, identity, state.SiteID, state.OriginHost)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -472,7 +528,7 @@ func validateEmailBindingAccountWithTx(tx *gorm.DB, identity AuthSessionIdentity
 	if state.SiteID != siteID {
 		return ErrAuthFlowInvalid
 	}
-	originSiteID, err := resolveEmailBindingOriginSiteWithTx(tx, identity, siteID)
+	originSiteID, err := resolveEmailBindingOriginSiteWithTx(tx, identity, siteID, state.OriginHost)
 	if err != nil {
 		return err
 	}

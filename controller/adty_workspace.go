@@ -732,7 +732,6 @@ func GetAdtyTicketImage(c *gin.Context) {
 	c.Header("Content-Encoding", "identity")
 	c.Header("Content-Type", cleanMime)
 	c.Header("X-Content-Type-Options", "nosniff")
-	c.Header("Cache-Control", "private, max-age=300")
 	c.File(path)
 }
 

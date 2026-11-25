@@ -19,7 +19,6 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
-	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay"
 	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -142,16 +141,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	defer func() {
 		recovered := recover()
-		resultErr := newAPIError
 		if recovered != nil {
 			// 退款 defer 先执行，当时 newAPIError 还是 nil，预扣不会退。这里补上。
-			resultErr = noteRelayPanic(c, relayInfo, newAPIError, recovered)
-			newAPIError = resultErr
-		}
-		if relayFormat != types.RelayFormatOpenAIRealtime {
-			perfmetrics.RecordRelayResult(c.Request.Context(), relayInfo, resultErr)
-		}
-		if recovered != nil {
+			newAPIError = noteRelayPanic(c, relayInfo, newAPIError, recovered)
 			panic(recovered)
 		}
 	}()

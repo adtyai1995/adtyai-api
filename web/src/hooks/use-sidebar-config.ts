@@ -199,11 +199,6 @@ function isNavItemVisible(
   adminConfig: SidebarModulesAdminConfig,
   userConfig: SidebarModulesUserConfig
 ): boolean {
-  // R-32 #14: Chat presets have been removed from sidebar navigation.
-  if ('type' in item && item.type === 'chat-presets') {
-    return false
-  }
-
   // Handle direct link type
   if ('url' in item && item.url) {
     const configUrls = item.configUrls ?? [item.url]

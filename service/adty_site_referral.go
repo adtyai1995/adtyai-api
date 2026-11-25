@@ -1,9 +1,13 @@
 package service
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"math"
+	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
@@ -15,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
+	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -429,21 +434,26 @@ func BindAdtyOwnerSiteInviteFromIP(siteID, ownerID, inviterID, inviteeID int, ip
 	return BindAdtyOwnerSiteInviteFromIPWithAudit(siteID, ownerID, inviterID, inviteeID, ipHash, "", "")
 }
 
-// BindAdtyOwnerSiteInviteFromIPWithAudit binds an invite for the owner's site and logs an audit entry.
+// BindAdtyOwnerSiteInviteFromIPWithAudit binds an invite for the owner's site and logs an audit entry atomically.
 func BindAdtyOwnerSiteInviteFromIPWithAudit(siteID, ownerID, inviterID, inviteeID int, ipHash, ip, ua string) error {
 	if _, err := lockOwnerSite(siteID, ownerID); err != nil {
 		return err
 	}
-	if err := BindSiteInviteFromIP(siteID, inviterID, inviteeID, ipHash); err != nil {
-		return err
-	}
-	if model.DB != nil {
-		_ = recordSiteReferralAuditTx(model.DB, siteID, "invite_bind", inviteeID, ownerID, "", ip, ua, nil, map[string]any{
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := bindSiteInviteFromIPTx(tx, siteID, inviterID, inviteeID, ipHash); err != nil {
+			return err
+		}
+		return recordSiteReferralAuditTx(tx, siteID, "invite_bind", inviteeID, ownerID, "", ip, ua, nil, map[string]any{
 			"inviter_id": inviterID,
 			"invitee_id": inviteeID,
 		})
+	})
+	if err == errSiteInviteNeedsReview {
+		if writeErr := recordSiteInviteBatchAnomaly(siteID, inviterID); writeErr != nil {
+			return writeErr
+		}
 	}
-	return nil
+	return err
 }
 
 // SaveAdtyOwnerSiteTeamDiscount updates one site team's supply-price multiplier.
@@ -599,13 +609,31 @@ func ensureAdtySiteCustomerInviteCode(userID, siteID int) (string, error) {
 			return nil
 		})
 		if err != nil {
-			continue
+			if isAdtyUniqueConflictError(err) {
+				continue
+			}
+			return "", err
 		}
 		if !retry && code != "" {
 			return code, nil
 		}
 	}
 	return "", common.NewMessage("Failed to generate site invite code")
+}
+
+func isAdtyUniqueConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "23505") ||
+		strings.Contains(msg, "1062") ||
+		strings.Contains(msg, "duplicate key") ||
+		strings.Contains(msg, "duplicate entry") ||
+		strings.Contains(msg, "unique constraint")
 }
 
 // GetAdtySiteCustomerReferralProfile returns the subsite customer's level-1 invite
@@ -736,36 +764,12 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 	return profile, nil
 }
 
-// ParseAdtySiteInviteCookie decodes the same-host adty_site_invite cookie written
-// by the frontend (`<urlEncodedCode>|<capturedUnix>` or legacy `<urlEncodedCode>`).
-func ParseAdtySiteInviteCookie(raw string) (code string, capturedAt int64) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", 0
-	}
-	codePart := raw
-	if idx := strings.LastIndex(raw, "|"); idx > 0 {
-		codePart = raw[:idx]
-		if ts, err := strconv.ParseInt(strings.TrimSpace(raw[idx+1:]), 10, 64); err == nil && ts > 0 {
-			capturedAt = ts
-		}
-	}
-	decoded, err := url.QueryUnescape(codePart)
-	if err != nil {
-		decoded = codePart
-	}
-	code = strings.ToUpper(strings.TrimSpace(decoded))
-	return code, capturedAt
-}
+// AdtySiteInviteCookie is the server-signed HttpOnly cookie capturing a subsite invite click.
+const AdtySiteInviteCookie = "adty_site_invite"
 
-// AdtySiteInviteCookieExpired reports whether a subsite invite cookie captured at
-// capturedAt has exceeded the site's configured CookieTTLDays (default 30 days).
-func AdtySiteInviteCookieExpired(siteID int, capturedAt, nowUnix int64) bool {
-	if siteID <= 0 || capturedAt <= 0 {
-		return false
-	}
+func adtySiteInviteCookieTTLDays(siteID int) int64 {
 	ttlDays := int64(30)
-	if model.DB != nil {
+	if siteID > 0 && model.DB != nil {
 		var site model.AdtySite
 		if err := model.DB.Select("id", "invite_cookie_ttl_days").First(&site, siteID).Error; err == nil {
 			if site.MarketingPolicy.CookieTTLDays != nil && *site.MarketingPolicy.CookieTTLDays > 0 {
@@ -773,7 +777,134 @@ func AdtySiteInviteCookieExpired(siteID int, capturedAt, nowUnix int64) bool {
 			}
 		}
 	}
+	return ttlDays
+}
+
+// BuildAdtySiteInviteCookie builds a server-signed subsite invite cookie:
+// base64("v1.<siteID>.<CODE>.<issuedUnix>.<hmac>").
+func BuildAdtySiteInviteCookie(siteID int, code string, issuedAt time.Time) (string, error) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	secret := referralSecret()
+	if siteID <= 0 || code == "" || len(code) > 24 || secret == "" {
+		return "", errors.New("cannot sign site invite cookie")
+	}
+	payload := fmt.Sprintf("v1.%d.%s.%d", siteID, code, issuedAt.Unix())
+	return base64.StdEncoding.EncodeToString([]byte(payload + "." + common.HmacSha256(payload, secret))), nil
+}
+
+// ParseAdtySiteInviteCookie verifies the server-signed adty_site_invite cookie
+// for siteID, rejecting unsigned, tampered, cross-site, missing-timestamp, or
+// future-dated values (R2-51).
+func ParseAdtySiteInviteCookie(siteID int, raw string, nowUnix int64) (code string, capturedAt int64, ok bool) {
+	raw = strings.TrimSpace(raw)
+	secret := referralSecret()
+	if siteID <= 0 || raw == "" || secret == "" {
+		return "", 0, false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return "", 0, false
+	}
+	parts := strings.Split(string(decoded), ".")
+	if len(parts) != 5 || parts[0] != "v1" {
+		return "", 0, false
+	}
+	payload := strings.Join(parts[:4], ".")
+	if !hmac.Equal([]byte(common.HmacSha256(payload, secret)), []byte(parts[4])) {
+		return "", 0, false
+	}
+	parsedSiteID, err := strconv.Atoi(parts[1])
+	if err != nil || parsedSiteID != siteID {
+		return "", 0, false
+	}
+	code = strings.ToUpper(strings.TrimSpace(parts[2]))
+	if code == "" || len(code) > 24 {
+		return "", 0, false
+	}
+	ts, err := strconv.ParseInt(parts[3], 10, 64)
+	if err != nil || ts <= 0 {
+		return "", 0, false
+	}
+	if nowUnix > 0 && ts > nowUnix+300 {
+		return "", 0, false
+	}
+	return code, ts, true
+}
+
+// AdtySiteInviteCookieExpired reports whether a signed subsite invite cookie
+// captured at capturedAt has exceeded the site's configured CookieTTLDays.
+func AdtySiteInviteCookieExpired(siteID int, capturedAt, nowUnix int64) bool {
+	if siteID <= 0 || capturedAt <= 0 {
+		return true
+	}
+	if nowUnix > 0 && capturedAt > nowUnix+300 {
+		return true
+	}
+	ttlDays := adtySiteInviteCookieTTLDays(siteID)
 	return nowUnix-capturedAt > ttlDays*86400
+}
+
+// ValidateAdtySiteInviteCode verifies that code belongs to an active referrer on
+// an open subsite with referral enabled and positive effective rate.
+func ValidateAdtySiteInviteCode(siteID int, code string) (string, error) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if siteID <= 0 || code == "" || len(code) > 24 {
+		return "", common.NewMessage("Invalid site invite code")
+	}
+	var site model.AdtySite
+	if err := model.DB.Select("id", "status").First(&site, siteID).Error; err != nil {
+		return "", common.NewMessage("Invalid site invite code")
+	}
+	if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusClosing {
+		return "", common.NewMessage("Site referral is not enabled")
+	}
+	var rate model.AdtySiteReferralRate
+	if err := model.DB.Where("site_id = ?", siteID).First(&rate).Error; err != nil || !rate.Enabled {
+		return "", common.NewMessage("Site referral is not enabled")
+	}
+	var cust model.AdtySiteCustomer
+	lookup := model.AdtyLiveSiteCustomer(model.DB).Where("site_id = ? AND invite_code = ?", siteID, code).Limit(1).Find(&cust)
+	if lookup.Error != nil {
+		return "", lookup.Error
+	}
+	if lookup.RowsAffected == 0 || cust.UserId <= 0 {
+		return "", common.NewMessage("Invalid site invite code")
+	}
+	effectiveRate := rate.Rate
+	if aff, found, affErr := loadSiteReferralAffiliateTx(model.DB, siteID, cust.UserId); affErr == nil && found {
+		if aff.Status == model.AdtySiteAffiliateStatusDisabled {
+			return "", common.NewMessage("Site referral is not enabled")
+		}
+		if aff.RateOverride != nil {
+			effectiveRate = *aff.RateOverride
+		}
+	}
+	if !effectiveRate.IsPositive() {
+		return "", common.NewMessage("Site referral is not enabled")
+	}
+	return code, nil
+}
+
+// SetAdtySiteInviteCookie writes a server-signed HttpOnly subsite invite cookie
+// whose Max-Age matches the site's configured CookieTTLDays.
+func SetAdtySiteInviteCookie(c *gin.Context, siteID int, code string) (int64, error) {
+	value, err := BuildAdtySiteInviteCookie(siteID, code, time.Now())
+	if err != nil {
+		return 0, err
+	}
+	ttlDays := adtySiteInviteCookieTTLDays(siteID)
+	maxAge := int(ttlDays * 86400)
+	secure := c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(AdtySiteInviteCookie, value, maxAge, "/", "", secure, true)
+	return ttlDays, nil
+}
+
+// ClearAdtySiteInviteCookie clears the server-signed subsite invite cookie.
+func ClearAdtySiteInviteCookie(c *gin.Context) {
+	secure := c != nil && c.Request != nil && (c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https"))
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(AdtySiteInviteCookie, "", -1, "/", "", secure, true)
 }
 
 // BindSiteInviteByCodeFromIP resolves a subsite customer invite code within siteID

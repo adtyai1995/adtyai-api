@@ -39,8 +39,6 @@ export function canonicalWithdrawNetworks(list?: string[]): UsdtNetwork[] {
 
 export type MoneyKey =
   | 'default_rate'
-  | 'partner_min_rate'
-  | 'partner_max_rate'
   | 'min_withdraw_usd'
   | 'usdt_withdraw_fee'
 export type RuleKey =
@@ -53,8 +51,6 @@ export type RuleKey =
 
 export const MONEY_KEYS: MoneyKey[] = [
   'default_rate',
-  'partner_min_rate',
-  'partner_max_rate',
   'min_withdraw_usd',
   'usdt_withdraw_fee',
 ]
@@ -73,7 +69,7 @@ export function toDrafts(settings: ReferralSettings): Drafts {
   const drafts = { cny_rate: settings.withdraw_cny_rate } as Drafts
   for (const key of MONEY_KEYS) {
     const value = settings[key]
-    drafts[key] = value === null ? '' : String(value)
+    drafts[key] = value === null || value === undefined ? '' : String(value)
   }
   for (const key of RULE_KEYS) drafts[key] = String(settings[key])
   return drafts
@@ -90,7 +86,7 @@ export function buildSettingsUpdate(
   for (const key of MONEY_KEYS) {
     const draft = drafts[key].trim()
     if (draft === '') {
-      if (saved[key] !== null) clear.push(key)
+      if (saved[key] !== null && saved[key] !== undefined) clear.push(key)
     } else if (Number(draft) !== saved[key]) {
       body[key] = Number(draft)
     }

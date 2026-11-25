@@ -108,6 +108,9 @@ export function SiteCommissionPanel(props: { onConverted: () => void }) {
             void client.invalidateQueries({
               queryKey: ['adty-site-commissions'],
             })
+            void client.invalidateQueries({
+              queryKey: ['adty-topup', 'balance'],
+            })
           }}
         />
       ))}
@@ -118,6 +121,9 @@ export function SiteCommissionPanel(props: { onConverted: () => void }) {
             props.onConverted()
             void client.invalidateQueries({
               queryKey: ['adty-site-commissions'],
+            })
+            void client.invalidateQueries({
+              queryKey: ['adty-topup', 'balance'],
             })
           }}
         />

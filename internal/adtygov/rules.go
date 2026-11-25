@@ -4,10 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 //go:embed official_rule_ids.jsonl
@@ -54,7 +55,7 @@ func DecodeRuleCatalog(r io.Reader) ([]RuleMapping, error) {
 			continue
 		}
 		var row officialRuleID
-		if err := json.Unmarshal([]byte(line), &row); err != nil {
+		if err := common.Unmarshal([]byte(line), &row); err != nil {
 			return nil, fmt.Errorf("rule catalog: %w", err)
 		}
 		if row.RuleID == "" || seen[row.RuleID] {

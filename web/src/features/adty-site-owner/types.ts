@@ -289,20 +289,6 @@ export type SenderDnsRecord = {
   priority?: number
 }
 
-/** GET /api/adty/site/sender-domain (model.AdtySiteSenderDomain, task 11.3). */
-export type SenderDomain = {
-  site_id: number
-  domain: string
-  status: 'pending' | 'verified' | 'failed' | 'removing' | 'disabled'
-  /** JSON array of SenderDnsRecord. */
-  records: string
-  disabled_by?: number
-  disabled_by_platform?: boolean
-  cleanup_error?: string
-  last_checked_at: number
-  created_at: number
-}
-
 /** Result of PUT /api/adty/site/pricing. */
 export type PricingResult = {
   version: number

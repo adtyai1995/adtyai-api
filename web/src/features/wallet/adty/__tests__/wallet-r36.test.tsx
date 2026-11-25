@@ -386,7 +386,7 @@ describe('R-36 Items 2, 3, and 4', () => {
     })
   })
 
-  it('formats bonus rate percentages <= 1% without multiplying by 100 and scales fraction rates by 100 (R1-09)', async () => {
+  it('formats bonus rate percentages <= 1% without multiplying by 100 and scales fraction rates by 100 (R1-09, R2-01)', async () => {
     expect(formatBonusRatePercent('0.5')).toBe('0.5')
     expect(formatBonusRatePercent('1')).toBe('1')
     expect(formatBonusRatePercent('2.5')).toBe('2.5')
@@ -402,7 +402,7 @@ describe('R-36 Items 2, 3, and 4', () => {
       quote: {
         amount_usd: '100',
         face_usd: '100',
-        bonus_rate: '0.5',
+        bonus_rate: '0.005',
         bonus_usd: '0.50',
         credit_quota: 50_250_000,
         pay_amount: '700.00',
@@ -427,6 +427,39 @@ describe('R-36 Items 2, 3, and 4', () => {
       expect(screen.getByText(/\(\+0\.5%\)/)).toBeTruthy()
     })
     expect(screen.queryByText(/\(\+50%\)/)).toBeNull()
+  })
+
+  it('scales decimal quote.bonus_rate 0.05 to +5% in AdtyRechargeCard (R2-01)', async () => {
+    quoteAdtyTopupMock.mockResolvedValueOnce({
+      available: true,
+      quote: {
+        amount_usd: '100',
+        face_usd: '100',
+        bonus_rate: '0.05',
+        bonus_usd: '5.00',
+        credit_quota: 52_500_000,
+        pay_amount: '700.00',
+        pay_currency: 'CNY',
+        price_cny_per_usd: '7.00',
+      },
+    })
+
+    renderWithQuery(
+      <AdtyRechargeCard
+        info={SINGLE_SCENE_INFO}
+        loading={false}
+        paying={false}
+        onPay={vi.fn()}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '$10' }))
+    fireEvent.click(screen.getByRole('button', { name: /Alipay/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/\(\+5%\)/)).toBeTruthy()
+    })
+    expect(screen.queryByText(/\(\+0\.05%\)/)).toBeNull()
   })
 
   it('shows Referral sidebar entry for migrated main-site user with adty_has_legacy_site_commissions even when referral is off (R1-12)', () => {

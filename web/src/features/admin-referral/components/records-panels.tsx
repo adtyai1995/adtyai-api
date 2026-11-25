@@ -37,6 +37,8 @@ import {
 
 function auditActionLabel(t: TFunction, action: string) {
   switch (action) {
+    case 'settings_update':
+      return t('Updated referral settings')
     case 'partner_approve':
       return t('Approved partner application')
     case 'partner_reject':

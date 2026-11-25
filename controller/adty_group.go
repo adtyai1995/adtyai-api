@@ -182,6 +182,8 @@ func DeleteAdtyGroup(c *gin.Context) {
 		return
 	}
 	service.InvalidateAdtySiteCache()
+	service.ResetAdtyModelProbeGroup(id)
+	InvalidateUptimeStatusCache()
 	model.InvalidatePricingCache()
 	recordManageAudit(c, "adty.group.delete", map[string]any{"id": id})
 	common.ApiSuccess(c, nil)

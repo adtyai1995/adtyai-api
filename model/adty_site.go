@@ -152,6 +152,14 @@ type AdtySiteReferralAuditLog struct {
 
 func (AdtySiteReferralAuditLog) TableName() string { return "adty_site_referral_audit_logs" }
 
+func (a *AdtySiteReferralAuditLog) BeforeCreate(*gorm.DB) error {
+	a.Reason = RedactAuditText(a.Reason)
+	a.UserAgent = RedactAuditText(a.UserAgent)
+	a.OldValue = RedactAuditText(a.OldValue)
+	a.NewValue = RedactAuditText(a.NewValue)
+	return nil
+}
+
 // AdtySiteInviteCode 是开站邀请码：有效就直接开成 active，并用码上预设的供货倍率。
 type AdtySiteInviteCode struct {
 	MaxMarkup  *decimal.Decimal `json:"-" gorm:"type:decimal(10,4);->"` // historical metadata
@@ -181,6 +189,13 @@ type AdtySiteAudit struct {
 }
 
 func (AdtySiteAudit) TableName() string { return "adty_site_audits" }
+
+func (a *AdtySiteAudit) BeforeCreate(*gorm.DB) error {
+	a.Reason = RedactAuditText(a.Reason)
+	a.OldValue = RedactAuditText(a.OldValue)
+	a.NewValue = RedactAuditText(a.NewValue)
+	return nil
+}
 
 // 分站客户成员状态。关站继承到主站时归档原站成员关系，不删除行。
 const (
@@ -499,8 +514,9 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 			}
 		}
 		if err := tx.Model(&User{}).Where("id IN ?", staffIDs).Updates(map[string]any{
-			"status":       common.UserStatusDisabled,
-			"access_token": "",
+			"status":                  common.UserStatusDisabled,
+			"access_token":            nil,
+			"access_token_created_at": nil,
 		}).Error; err != nil {
 			return nil, 0, err
 		}

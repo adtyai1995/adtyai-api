@@ -26,7 +26,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { siteWalletLedgerTypeLabel } from '../site-wallet-labels'
 import { SiteWalletLedger } from '../site-wallet-ledger'
 import { UserLedgerDialog } from '../user-ledger-dialog'
-import { VoucherTable } from '../voucher-table'
 
 const { apiGetMock } = vi.hoisted(() => ({
   apiGetMock: vi.fn(),
@@ -206,68 +205,5 @@ describe('adty-ledger user identity and redemption code labels', () => {
     expect(screen.queryByText('Recharge code redeemed')).toBeNull()
     expect(screen.queryByText('#9')).toBeNull()
     expect(screen.queryByText('#12')).toBeNull()
-  })
-
-  it('uses redemption code empty state by default in VoucherTable and supports emptyText override', () => {
-    const { rerender } = render(
-      <VoucherTable
-        label='Codes'
-        rows={[]}
-        busy={false}
-        onFreeze={vi.fn()}
-        onCancel={vi.fn()}
-      />
-    )
-    expect(screen.getByText('No redemption codes')).toBeTruthy()
-
-    rerender(
-      <VoucherTable
-        label='Margin codes'
-        rows={[]}
-        busy={false}
-        onFreeze={vi.fn()}
-        onCancel={vi.fn()}
-        emptyText='No margin recharge codes'
-      />
-    )
-    expect(screen.getByText('No margin recharge codes')).toBeTruthy()
-  })
-
-  it('formats VoucherTable issuer and redeemer with ID / username', () => {
-    render(
-      <VoucherTable
-        label='Codes'
-        showIssuer
-        rows={[
-          {
-            id: 1,
-            code_tail: 'ABCD12',
-            purpose: 'main_user',
-            status: 'redeemed',
-            amount_usd: '10.00',
-            quota: 5000000,
-            source_kind: 'platform',
-            source_site_id: 0,
-            target_site_id: 0,
-            issuer_id: 1,
-            issuer_username: 'root',
-            redeemer_id: 22,
-            redeemer_username: 'bob',
-            inherited_by_main: false,
-            trade_no: 'T-1',
-            created_at: 1700000000,
-            redeemed_at: 1700003600,
-          },
-        ]}
-        busy={false}
-        onFreeze={vi.fn()}
-        onCancel={vi.fn()}
-      />
-    )
-
-    expect(screen.getByText('1 / root')).toBeTruthy()
-    expect(screen.getByText(/22 \/ bob/)).toBeTruthy()
-    expect(screen.queryByText('#1')).toBeNull()
-    expect(screen.queryByText(/#22/)).toBeNull()
   })
 })

@@ -46,9 +46,8 @@ function parseUsableMap(value: string): Record<string, string> {
   })
 }
 
-// "auto" may sit in UserUsableGroups but is not a group (it has no ratio), so
-// it never becomes a row; serializeGroupPricingRows carries it through as is.
-const AUTO_GROUP_KEY = 'auto'
+// Ignore legacy "auto" entries if present in old database options.
+const LEGACY_AUTO_GROUP_KEY = 'auto'
 
 export function buildGroupPricingRows(
   groupRatio: string,
@@ -62,7 +61,7 @@ export function buildGroupPricingRows(
     ...Object.keys(usableMap),
     ...extraIds,
   ])
-  ids.delete(AUTO_GROUP_KEY)
+  ids.delete(LEGACY_AUTO_GROUP_KEY)
 
   return [...ids].map((id) => ({
     id,
@@ -73,14 +72,10 @@ export function buildGroupPricingRows(
 
 export function serializeGroupPricingRows(
   rows: GroupPricingRow[],
-  sourceUsableGroups: string
+  _sourceUsableGroups?: string
 ) {
   const groupRatio: Record<string, number> = {}
   const userUsableGroups: Record<string, string> = {}
-  const sourceUsable = parseUsableMap(sourceUsableGroups)
-  if (Object.hasOwn(sourceUsable, AUTO_GROUP_KEY)) {
-    userUsableGroups[AUTO_GROUP_KEY] = sourceUsable[AUTO_GROUP_KEY]
-  }
 
   for (const row of rows) {
     groupRatio[row.id] = normalizeRatio(row.ratio)
@@ -95,9 +90,9 @@ export function serializeGroupPricingRows(
 
 export function groupPricingSignature(
   rows: GroupPricingRow[],
-  sourceUsableGroups: string
+  _sourceUsableGroups?: string
 ): string {
-  const serialized = serializeGroupPricingRows(rows, sourceUsableGroups)
+  const serialized = serializeGroupPricingRows(rows)
   return JSON.stringify({
     groupRatio: parseRatioMap(serialized.GroupRatio),
     userUsableGroups: parseUsableMap(serialized.UserUsableGroups),

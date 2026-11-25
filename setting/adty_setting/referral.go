@@ -14,9 +14,7 @@ import (
 // 和钱有关的三项没有内置值（约定 I）：nil 表示未设置，存成 "null"。0% 和没设是两回事。
 type ReferralSetting struct {
 	Enabled                  bool     `json:"enabled"`
-	DefaultRate              *float64 `json:"default_rate"`     // 没设时不计佣，也不能打开 enabled
-	PartnerMinRate           *float64 `json:"partner_min_rate"` // 合作伙伴审核比例下限；nil 表示未单独限制，按 0–100 校验
-	PartnerMaxRate           *float64 `json:"partner_max_rate"` // 合作伙伴审核比例上限；nil 表示未单独限制，按 0–100 校验
+	DefaultRate              *float64 `json:"default_rate"` // 没设时不计佣，也不能打开 enabled
 	CookieTTLDays            int      `json:"cookie_ttl_days"`
 	FreezeDays               int      `json:"freeze_days"`
 	MinWithdrawUSD           *float64 `json:"min_withdraw_usd"`  // 没设时不能提现到 USDT 和支付宝
@@ -192,8 +190,6 @@ func GetReferralSetting() *ReferralSetting {
 	common.OptionMapRWMutex.RLock()
 	snap := referralSetting
 	snap.DefaultRate = cloneFloat64Ptr(referralSetting.DefaultRate)
-	snap.PartnerMinRate = cloneFloat64Ptr(referralSetting.PartnerMinRate)
-	snap.PartnerMaxRate = cloneFloat64Ptr(referralSetting.PartnerMaxRate)
 	snap.MinWithdrawUSD = cloneFloat64Ptr(referralSetting.MinWithdrawUSD)
 	snap.USDTWithdrawFee = cloneFloat64Ptr(referralSetting.USDTWithdrawFee)
 	snap.WithdrawMethods = slices.Clone(referralSetting.WithdrawMethods)

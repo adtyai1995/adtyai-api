@@ -69,6 +69,18 @@ func init() {
 	adtyMasterTasks = append(adtyMasterTasks, StartAdtyModelProbes)
 }
 
+// ResetAdtyModelProbeGroup removes a deleted group's cached last-run timestamp
+// so re-creating or inspecting probes never sees stale scheduler state.
+func ResetAdtyModelProbeGroup(groupID string) {
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return
+	}
+	adtyModelProbeGroupLastRunMu.Lock()
+	delete(adtyModelProbeGroupLastRun, groupID)
+	adtyModelProbeGroupLastRunMu.Unlock()
+}
+
 // AdtyModelProbeRunSummary summarizes a completed probe batch.
 type AdtyModelProbeRunSummary struct {
 	Probed    int   `json:"probed"`

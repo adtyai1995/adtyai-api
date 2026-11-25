@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useStatus } from '@/hooks/use-status'
 
-import type { AnnouncementItem, ApiInfoItem, FAQItem } from '../types'
+import type { AnnouncementItem, FAQItem } from '../types'
 
 /**
  * Get specific list from status data
@@ -32,13 +32,6 @@ export function useStatusData<T = unknown>(
   const items = (enabled ? status?.[dataKey] || [] : []) as T[]
 
   return { items, loading }
-}
-
-/**
- * Get API info list
- */
-export function useApiInfo() {
-  return useStatusData<ApiInfoItem>('api_info_enabled', 'api_info')
 }
 
 /**
@@ -66,7 +59,6 @@ export function useDashboardContentVisibility() {
   const hasStatus = Boolean(status)
 
   return {
-    apiInfo: true,
     announcements: hasStatus && status?.announcements_enabled !== false,
     faq: hasStatus && status?.faq_enabled !== false,
     uptimeKuma: hasStatus && status?.uptime_kuma_enabled !== false,

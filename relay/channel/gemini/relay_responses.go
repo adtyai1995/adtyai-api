@@ -32,10 +32,6 @@ func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	info.ObserveResponseModel(gjson.GetBytes(responseBody, "modelVersion").Str)
-	var grounding geminiGroundingCounter
-	grounding.observe(&geminiResponse)
-	grounding.commit(info)
-	countGeminiBillableFunctionCalls(info, &geminiResponse)
 	if len(geminiResponse.Candidates) == 0 {
 		usage := buildUsageFromGeminiResponse(c, info, &geminiResponse)
 		if geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
@@ -54,6 +50,15 @@ func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 			http.StatusInternalServerError,
 		)
 	}
+	if reason := geminiAbnormalFinishReason(&geminiResponse); reason != "" && !geminiHasVisibleOutput(&geminiResponse) {
+		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_abnormal_finish=%s", reason))
+		return nil, types.NewOpenAIError(fmt.Errorf("gemini stopped abnormally: finishReason=%s", reason), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	}
+
+	var grounding geminiGroundingCounter
+	grounding.observe(&geminiResponse)
+	grounding.commit(info)
+	countGeminiBillableFunctionCalls(info, &geminiResponse)
 
 	usage := buildUsageFromGeminiResponse(c, info, &geminiResponse)
 

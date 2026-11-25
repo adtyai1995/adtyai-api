@@ -131,8 +131,6 @@ func GetReferralSettings(c *gin.Context) {
 func UpdateReferralSettings(c *gin.Context) {
 	var body struct {
 		DefaultRate              *float64  `json:"default_rate"`
-		PartnerMinRate           *float64  `json:"partner_min_rate"`
-		PartnerMaxRate           *float64  `json:"partner_max_rate"`
 		CookieTTLDays            *int      `json:"cookie_ttl_days"`
 		FreezeDays               *int      `json:"freeze_days"`
 		MinWithdrawUSD           *float64  `json:"min_withdraw_usd"`
@@ -145,7 +143,7 @@ func UpdateReferralSettings(c *gin.Context) {
 		WithdrawCNYRate          string    `json:"withdraw_cny_rate"`
 		WithdrawMethods          *[]string `json:"withdraw_methods"`
 		WithdrawUSDTNetworks     *[]string `json:"withdraw_usdt_networks"`
-		// Clear 列出要改回「未设置」的钱款项：default_rate、partner_min_rate、partner_max_rate、min_withdraw_usd、usdt_withdraw_fee、withdraw_cny_rate（约定 I）。
+		// Clear 列出要改回「未设置」的钱款项：default_rate、min_withdraw_usd、usdt_withdraw_fee、withdraw_cny_rate（约定 I）。
 		Clear []string `json:"clear"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
@@ -443,6 +441,9 @@ func UpdateReferralAffiliate(c *gin.Context) {
 			if err := service.CheckReferralAdminTargetUserTx(tx, userID, adminID, actorRole, denyAdminTarget); err != nil {
 				return err
 			}
+			if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: 0, AccountID: userID}); err != nil {
+				return err
+			}
 			if decimal.NewFromFloat(acc.AvailableAmount).Add(delta).IsNegative() {
 				return service.ErrReferralInsufficient
 			}
@@ -647,7 +648,11 @@ func GetReferralAdminAuditLogs(c *gin.Context) {
 	}
 	query := model.DB.Model(&model.ReferralAdminAuditLog{})
 	if siteID != nil {
-		query = service.ScopeAdtyReferralUsersQuery(query.Where("target_user_id > 0"), "target_user_id", siteID)
+		if *siteID == 0 {
+			query = query.Where("target_user_id = 0 OR target_user_id IN (?)", model.DB.Model(&model.User{}).Select("id").Where("site_id = ?", 0))
+		} else {
+			query = service.ScopeAdtyReferralUsersQuery(query.Where("target_user_id > 0"), "target_user_id", siteID)
+		}
 	}
 	var rows []model.ReferralAdminAuditLog
 	pageInfo, ok := referralPageRows(c, query, &rows)

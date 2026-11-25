@@ -60,7 +60,7 @@ var auditSecretPEM = regexp.MustCompile(`(?is)-----BEGIN [A-Z0-9 ]*PRIVATE KEY--
 
 var auditSecretJSONKV = regexp.MustCompile(`(?i)("(?:password|passwd|secret|token|api[_-]?key|apikey|access[_-]?token|bot[_-]?token|authorization|private[_-]?key|client[_-]?secret|verification[_-]?code|verify[_-]?code|otp|session[_-]?token|payment[_-]?secret|payment[_-]?key|merchant[_-]?key|merchant[_-]?private[_-]?key|webhook[_-]?secret|refresh[_-]?token|bearer|backup[_-]?codes?|smtp[_-]?token|smtp[_-]?password|mail[_-]?password|resend[_-]?api[_-]?key|gotify[_-]?token|generated[_-]?password|new[_-]?password|old[_-]?password|original[_-]?password|totp[_-]?secret|recovery[_-]?codes?|reset[_-]?token|email[_-]?code|cf[_-]?api[_-]?token|alidns[_-]?access[_-]?key[_-]?secret|access[_-]?key[_-]?secret|epay[_-]?private[_-]?key|signing[_-]?secret|secret[_-]?key|key[_-]?secret)"\s*:\s*)"(?:[^"\\]|\\.)*"`)
 
-var auditSecretText = regexp.MustCompile(`(?i)(sk-[A-Za-z0-9_\-]{8,}|nap_[A-Za-z0-9_\-]{12,}|bot\d{6,}:[A-Za-z0-9_\-]{10,}|\d{6,12}:[A-Za-z0-9_\-]{20,}|(?:api[_-]?key|password|passwd|secret|token)\s*[:=：]\s*\S+|验证码\s*[:=：]\s*\S+)`)
+var auditSecretText = regexp.MustCompile(`(?i)(sk-[A-Za-z0-9_\-]{8,}|nap_[A-Za-z0-9_\-]{12,}|re_[A-Za-z0-9_]{16,}|bot\d{6,}:[A-Za-z0-9_\-]{10,}|\d{6,12}:[A-Za-z0-9_\-]{20,}|(?:api[_-]?key|apikey|password|passwd|secret|token|authorization|private[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|session[_-]?token|bot[_-]?token|merchant[_-]?key|merchant[_-]?private[_-]?key|webhook[_-]?secret|signing[_-]?secret|smtp[_-]?password|mail[_-]?password|resend[_-]?api[_-]?key|cf[_-]?api[_-]?token|access[_-]?key[_-]?secret|totp[_-]?secret|verification[_-]?code|verify[_-]?code|email[_-]?code|otp|recovery[_-]?codes?|backup[_-]?codes?)\s*[:=：]\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)|(?:验证码|密码|密钥|令牌)\s*[:=：]\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+))`)
 
 var auditSecretKeyNames = map[string]struct{}{
 	"password":                 {},
@@ -403,6 +403,8 @@ func redactAuditLog(entry *AuditLog) {
 	if entry == nil {
 		return
 	}
+	entry.ObjectId = redactAuditText(entry.ObjectId)
+	entry.UserAgent = redactAuditText(entry.UserAgent)
 	entry.Content = redactAuditText(entry.Content)
 	entry.BeforeValue = redactAuditText(entry.BeforeValue)
 	entry.AfterValue = redactAuditText(entry.AfterValue)

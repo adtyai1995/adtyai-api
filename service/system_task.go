@@ -408,7 +408,7 @@ func runLogCleanupTask(ctx context.Context, task *model.SystemTask, runnerID str
 		}
 		remaining, err := model.CountOldLog(ctx, payload.TargetTimestamp)
 		if err != nil {
-			failSystemTask(task, runnerID, err)
+			handleLogCleanupQueryError(ctx, task, runnerID, state, err)
 			return
 		}
 		syncLogCleanupStateFromRemaining(&state, remaining)
@@ -431,7 +431,7 @@ func runLogCleanupTask(ctx context.Context, task *model.SystemTask, runnerID str
 			}
 			rowsAffected, err := model.DeleteOldLogBatch(ctx, payload.TargetTimestamp, payload.BatchSize)
 			if err != nil {
-				failSystemTask(task, runnerID, err)
+				handleLogCleanupQueryError(ctx, task, runnerID, state, err)
 				return
 			}
 			if rowsAffected == 0 {
@@ -478,11 +478,37 @@ func runLogCleanupTask(ctx context.Context, task *model.SystemTask, runnerID str
 	}
 }
 
+func handleLogCleanupQueryError(ctx context.Context, task *model.SystemTask, runnerID string, state LogCleanupState, err error) {
+	if errors.Is(err, context.Canceled) {
+		cancelled, checkErr := model.SystemTaskCancelRequested(task.TaskID)
+		if checkErr != nil {
+			logger.LogWarn(context.Background(), common.LogText("system task %s cancel check failed after context cancellation: %v", task.TaskID, checkErr))
+			return
+		}
+		if cancelled {
+			_ = finishCancelledLogCleanup(task, runnerID, state)
+			return
+		}
+		logSystemTaskLockError(ctx, task, model.ErrSystemTaskLockLost)
+		return
+	}
+	failSystemTask(task, runnerID, err)
+}
+
 func stopLogCleanupIfCancelled(ctx context.Context, task *model.SystemTask, runnerID string, state LogCleanupState) (bool, error) {
 	if ctx != nil {
 		select {
 		case <-ctx.Done():
-			return true, finishCancelledLogCleanup(task, runnerID, state)
+			cancelled, err := model.SystemTaskCancelRequested(task.TaskID)
+			if err != nil {
+				logger.LogWarn(context.Background(), common.LogText("system task %s cancel check failed: %v", task.TaskID, err))
+				return true, err
+			}
+			if cancelled {
+				return true, finishCancelledLogCleanup(task, runnerID, state)
+			}
+			logSystemTaskLockError(ctx, task, model.ErrSystemTaskLockLost)
+			return true, nil
 		default:
 		}
 	}

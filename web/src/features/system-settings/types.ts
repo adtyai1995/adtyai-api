@@ -158,33 +158,22 @@ export type AuthSettings = {
 }
 
 export type ContentSettings = {
-  'console_setting.api_info': string
   'console_setting.announcements': string
   'console_setting.faq': string
   'console_setting.uptime_kuma_groups': string
   'console_setting.model_probe_interval_minutes': number
   'console_setting.image_probe_interval_minutes': number
   'console_setting.model_probe_timeout_seconds': number
-  'console_setting.api_info_enabled': boolean
   'console_setting.announcements_enabled': boolean
   'console_setting.faq_enabled': boolean
   'console_setting.uptime_kuma_enabled': boolean
   DataExportEnabled: boolean
   DataExportDefaultTime: string
   DataExportInterval: number
-  Chats: string
-  DrawingEnabled: boolean
-  MjNotifyEnabled: boolean
-  MjAccountFilterEnabled: boolean
-  MjForwardUrlEnabled: boolean
-  MjModeClearEnabled: boolean
-  MjActionCheckSuccessEnabled: boolean
   // adty: JSON objects of content language → Markdown (task 8.6)
   'adty_legal_setting.user_agreement': string
   'adty_legal_setting.privacy_policy': string
   'adty_legal_setting.refund_policy': string
-  'adty_legal_setting.site_customer_terms': string
-  'adty_legal_setting.site_customer_terms_version': number
 }
 
 export type ModelSettings = {
@@ -302,10 +291,6 @@ export type OperationsSettings = {
   'performance_setting.monitor_cpu_threshold': number
   'performance_setting.monitor_memory_threshold': number
   'performance_setting.monitor_disk_threshold': number
-  'perf_metrics_setting.enabled': boolean
-  'perf_metrics_setting.flush_interval': number
-  'perf_metrics_setting.bucket_time': 'hour' | 'minute' | '5min'
-  'perf_metrics_setting.retention_days': number
 }
 
 export type SecuritySettings = {

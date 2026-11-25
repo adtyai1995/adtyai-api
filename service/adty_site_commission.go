@@ -377,25 +377,46 @@ func ResumeAdtySiteInviteCoverage(siteID int, now time.Time) error {
 // ResumeAdtySiteInviteCoverageWithAudit resumes pending coverage and writes a
 // site referral audit entry for manual owner triggers.
 func ResumeAdtySiteInviteCoverageWithAudit(siteID, operatorID int, now time.Time, ip, ua string) error {
-	var beforePending int64
-	if siteID > 0 && model.DB != nil {
-		_ = model.DB.Model(&model.AdtySiteInviteCommission{}).
-			Where("site_id = ? AND status = ?", siteID, model.AdtySiteCommissionPendingCoverage).
-			Count(&beforePending).Error
+	if siteID <= 0 || model.DB == nil {
+		return common.NewMessage("Invalid parameters")
 	}
-	if err := ResumeAdtySiteInviteCoverage(siteID, now); err != nil {
+	var ids []int64
+	if err := model.DB.Model(&model.AdtySiteInviteCommission{}).
+		Where("site_id = ? AND status = ?", siteID, model.AdtySiteCommissionPendingCoverage).
+		Order("created_at, id").Pluck("id", &ids).Error; err != nil {
 		return err
 	}
-	var afterPending int64
-	if siteID > 0 && model.DB != nil {
-		_ = model.DB.Model(&model.AdtySiteInviteCommission{}).
-			Where("site_id = ? AND status = ?", siteID, model.AdtySiteCommissionPendingCoverage).
-			Count(&afterPending).Error
-		_ = recordSiteReferralAuditTx(model.DB, siteID, "coverage_resume", 0, operatorID, "", ip, ua,
-			map[string]any{"pending_coverage_count": beforePending},
-			map[string]any{"pending_coverage_count": afterPending})
+	beforePending := int64(len(ids))
+	processed := 0
+	var runErr error
+	for _, id := range ids {
+		if err := model.DB.Transaction(func(tx *gorm.DB) error {
+			return coverAdtySiteInviteCommissionTx(tx, id, now, true)
+		}); err != nil {
+			runErr = err
+			break
+		}
+		processed++
 	}
-	return nil
+	if runErr != nil && processed == 0 {
+		return runErr
+	}
+	var afterPending int64
+	_ = model.DB.Model(&model.AdtySiteInviteCommission{}).
+		Where("site_id = ? AND status = ?", siteID, model.AdtySiteCommissionPendingCoverage).
+		Count(&afterPending).Error
+	newSnap := map[string]any{
+		"pending_coverage_count": afterPending,
+		"processed_count":        processed,
+		"partial":                runErr != nil,
+	}
+	auditErr := recordSiteReferralAuditTx(model.DB, siteID, "coverage_resume", 0, operatorID, "", ip, ua,
+		map[string]any{"pending_coverage_count": beforePending},
+		newSnap)
+	if runErr != nil {
+		return runErr
+	}
+	return auditErr
 }
 
 func coverAdtySiteInviteCommissionTx(tx *gorm.DB, id int64, now time.Time, resume bool) error {

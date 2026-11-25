@@ -168,7 +168,7 @@ export function CCSwitchDialog(props: Props) {
       ? props.tokenKey
       : `sk-${props.tokenKey}`
     const url = buildCCSwitchURL(app, name, models, key, resolvedEndpoint)
-    window.open(url, '_blank')
+    window.open(url, '_blank', 'noopener,noreferrer')
     props.onOpenChange(false)
   }
 

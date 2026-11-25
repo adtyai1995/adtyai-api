@@ -23,7 +23,11 @@ import { useTranslation } from 'react-i18next'
 import { IconBadge } from '@/components/ui/icon-badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useAnnouncements } from '@/features/dashboard/hooks/use-status-data'
-import { getPreviewText } from '@/features/dashboard/lib'
+import {
+  getPreviewText,
+  resolveLocalizedAnnouncement,
+  type LocalizedAnnouncementFields,
+} from '@/features/dashboard/lib/text'
 import type { AnnouncementItem } from '@/features/dashboard/types'
 import { getAnnouncementColorClass } from '@/lib/colors'
 import { formatDateTimeObject } from '@/lib/time'
@@ -31,6 +35,8 @@ import { cn } from '@/lib/utils'
 
 import { PanelWrapper } from '../ui/panel-wrapper'
 import { AnnouncementDetailModal } from './announcement-detail-dialog'
+
+type DashboardAnnouncementItem = AnnouncementItem & LocalizedAnnouncementFields
 
 const AnnouncementStatusDot = memo(function AnnouncementStatusDot(props: {
   type?: string
@@ -46,13 +52,14 @@ const AnnouncementStatusDot = memo(function AnnouncementStatusDot(props: {
 })
 
 export function AnnouncementsPanel() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const { items: list, loading } = useAnnouncements()
   const [selectedAnnouncement, setSelectedAnnouncement] =
-    useState<AnnouncementItem | null>(null)
+    useState<DashboardAnnouncementItem | null>(null)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
+  const currentLanguage = i18n.resolvedLanguage || i18n.language
 
-  const handleAnnouncementClick = (item: AnnouncementItem) => {
+  const handleAnnouncementClick = (item: DashboardAnnouncementItem) => {
     setSelectedAnnouncement(item)
     setIsDialogOpen(true)
   }
@@ -77,27 +84,49 @@ export function AnnouncementsPanel() {
       <ScrollArea className='h-72'>
         <div>
           {list.map((item: AnnouncementItem, idx: number) => {
-            const key = item.id ?? `announcement-${idx}`
+            const announcement: DashboardAnnouncementItem = item
+            const key = announcement.id ?? `announcement-${idx}`
+            const { title, content } = resolveLocalizedAnnouncement(
+              announcement,
+              currentLanguage
+            )
+            const titlePreview = title ? getPreviewText(title, 80) : ''
+            const contentPreview = getPreviewText(content, 100)
             return (
               <button
                 key={key}
                 type='button'
-                onClick={() => handleAnnouncementClick(item)}
+                onClick={() => handleAnnouncementClick(announcement)}
                 className={cn(
                   'group hover:bg-muted/40 w-full px-3 py-3 text-left transition-colors sm:px-5 sm:py-3.5',
                   idx < list.length - 1 && 'border-border/60 border-b'
                 )}
               >
                 <div className='flex items-start gap-2.5'>
-                  <AnnouncementStatusDot type={item.type} />
+                  <AnnouncementStatusDot type={announcement.type} />
                   <div className='flex min-w-0 flex-1 flex-col gap-1'>
-                    <p className='line-clamp-1 text-sm font-medium'>
-                      {getPreviewText(item.content)}
-                    </p>
+                    {titlePreview ? (
+                      <>
+                        <p className='line-clamp-1 text-sm font-medium'>
+                          {titlePreview}
+                        </p>
+                        {contentPreview && contentPreview !== titlePreview && (
+                          <p className='text-muted-foreground line-clamp-2 text-xs whitespace-pre-line'>
+                            {contentPreview}
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <p className='line-clamp-2 text-sm font-medium whitespace-pre-line'>
+                        {contentPreview}
+                      </p>
+                    )}
                     <div className='flex items-center justify-between'>
-                      {item.publishDate && (
+                      {announcement.publishDate && (
                         <time className='text-muted-foreground/60 text-xs'>
-                          {formatDateTimeObject(new Date(item.publishDate))}
+                          {formatDateTimeObject(
+                            new Date(announcement.publishDate)
+                          )}
                         </time>
                       )}
                       <span className='text-muted-foreground/40 text-xs opacity-0 transition-opacity group-hover:opacity-100'>

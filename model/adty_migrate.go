@@ -101,6 +101,18 @@ func MigrateAdtyTablesOn(db *gorm.DB) error {
 			return err
 		}
 	}
+	if db.Migrator().HasTable(&User{}) {
+		switch db.Dialector.Name() {
+		case "postgres":
+			if err := db.Exec(`ALTER TABLE users ALTER COLUMN "group" SET DEFAULT ''`).Error; err != nil {
+				return err
+			}
+		case "mysql":
+			if err := db.Exec("ALTER TABLE `users` ALTER COLUMN `group` SET DEFAULT ''").Error; err != nil {
+				return err
+			}
+		}
+	}
 	if db.Migrator().HasTable(&Token{}) {
 		if err := db.Model(&Token{}).Where("status=?", common.TokenStatusExhausted).UpdateColumn("status", common.TokenStatusEnabled).Error; err != nil {
 			return err

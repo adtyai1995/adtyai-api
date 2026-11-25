@@ -70,7 +70,7 @@ func buildSiteAdminViews(sites []model.AdtySite) ([]adtySiteAdminView, error) {
 			SiteId int
 			Total  int64
 		}
-		if err := model.DB.Model(&model.User{}).Select("site_id, COUNT(*) AS total").Where("site_id IN ?", siteIds).Group("site_id").Scan(&rows).Error; err != nil {
+		if err := model.DB.Model(&model.User{}).Select("site_id, COUNT(*) AS total").Where("site_id IN ? AND staff_site_id = ?", siteIds, 0).Group("site_id").Scan(&rows).Error; err != nil {
 			return nil, err
 		}
 		for _, row := range rows {
@@ -477,7 +477,7 @@ func GetAdtyAdminSiteCustomers(c *gin.Context) {
 		return
 	}
 	pageInfo := common.GetPageQuery(c)
-	query := model.DB.Model(&model.User{}).Where("site_id = ?", id)
+	query := model.DB.Model(&model.User{}).Where("site_id = ? AND staff_site_id = ?", id, 0)
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		common.ApiError(c, err)

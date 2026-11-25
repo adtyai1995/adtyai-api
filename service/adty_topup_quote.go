@@ -48,7 +48,7 @@ type AdtyQuote struct {
 	Business        string          `json:"business,omitempty"`
 	SiteID          int             `json:"-"`
 	FaceUSD         decimal.Decimal `json:"face_usd"`
-	BonusRate       decimal.Decimal `json:"bonus_rate"` // 百分数，2.5 表示 2.5%
+	BonusRate       decimal.Decimal `json:"bonus_rate"` // 小数比例，0.025 表示 2.5%
 	BonusUSD        decimal.Decimal `json:"bonus_usd"`
 	CreditQuota     int64           `json:"credit_quota"`
 	PayAmount       decimal.Decimal `json:"pay_amount"`

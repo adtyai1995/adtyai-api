@@ -536,7 +536,7 @@ export function SiteReferralPanel() {
                 disabled={disabled}
                 type='number'
                 min={0}
-                step='0.01'
+                step='0.000001'
                 value={draft.fee_usd}
                 placeholder={t('Not set')}
                 aria-invalid={Boolean(feeMissingError)}

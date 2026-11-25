@@ -16,7 +16,6 @@ import (
 	taskdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
-	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 
@@ -861,15 +860,13 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	return nil
 }
 
-// finalizeTerminalTask 终态统一收尾：先采样，再结算，失败时再兜底退款。
-// 待结算恢复仍重入本函数，结算不能跳过。去重在 RecordTaskResult 内：
-// 样本提交成功后才写 tasks.perf_sampled_at。标记已成立时，热桶清空或跨桶重放不再累计。
+// finalizeTerminalTask 终态统一收尾：先结算，失败时再兜底退款。
+// 待结算恢复仍重入本函数，结算不能跳过。
 func finalizeTerminalTask(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo) {
 	// The terminal CAS has committed. Finish its accounting independently of
 	// lease/client cancellation, while keeping completion hooks bounded.
 	ctx, cancel := TaskPollContext(context.WithoutCancel(ctx))
 	defer cancel()
-	perfmetrics.RecordTaskResult(task, taskResult)
 	billingSettled := settleTaskBillingOnComplete(ctx, adaptor, task, taskResult)
 	if !billingSettled {
 		if task.Status == model.TaskStatusFailure {

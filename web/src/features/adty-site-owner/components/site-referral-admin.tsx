@@ -162,6 +162,8 @@ function siteAuditActionLabel(t: TFunction, action: string): string {
   switch (action) {
     case 'settings_update':
       return t('Updated referral settings')
+    case 'coverage_resume':
+      return t('Resumed pending commission coverage')
     case 'invite_bind':
       return t('Bound invite manually')
     case 'withdrawal_approve':

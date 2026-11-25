@@ -245,10 +245,13 @@ func isRetiredOptionKey(k string) bool {
 		"MaxTokenAutoGroups",
 		"DefaultUseAutoGroup",
 		"console_setting.uptime_kuma_base_url",
+		"console_setting.api_info",
+		"console_setting.api_info_enabled",
 		"Chats":
 		return true
 	}
-	return strings.HasPrefix(k, "adty_legal_setting.site_agreement") ||
+	return strings.HasPrefix(k, "perf_metrics_setting.") ||
+		strings.HasPrefix(k, "adty_legal_setting.site_agreement") ||
 		strings.HasPrefix(k, "adty_legal_setting.site_customer_terms") ||
 		strings.HasPrefix(k, "adty_reseller_setting.cost_factor") ||
 		strings.HasPrefix(k, "adty_reseller_setting.pending_cost_factor") ||

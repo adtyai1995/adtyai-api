@@ -23,8 +23,6 @@ export type ReferralAffiliate = {
   user_id: number
   invite_code: string
   status: 'approved' | 'disabled'
-  partner_status: '' | 'pending' | 'approved' | 'rejected'
-  applicant_note: string
   rate_override: number | null
   acquisition_enabled: boolean
   settlement_enabled: boolean

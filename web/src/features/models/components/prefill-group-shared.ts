@@ -25,20 +25,20 @@ export type PrefillGroupType = PrefillGroup['type']
 export const PREFILL_GROUP_TYPES = [
   {
     value: 'model' as PrefillGroupType,
-    label: 'Model Group',
-    description: 'Reusable sets of models you can attach to channels.',
+    labelKey: 'Model Group',
+    descriptionKey: 'Reusable sets of models you can attach to channels.',
     badge: 'blue' as StatusBadgeProps['variant'],
   },
   {
     value: 'tag' as PrefillGroupType,
-    label: 'Tag Group',
-    description: 'Collections of metadata tags for bulk operations.',
+    labelKey: 'Tag Group',
+    descriptionKey: 'Collections of metadata tags for bulk operations.',
     badge: 'purple' as StatusBadgeProps['variant'],
   },
   {
     value: 'endpoint' as PrefillGroupType,
-    label: 'Endpoint Group',
-    description: 'HTTP endpoint mappings shared across providers.',
+    labelKey: 'Endpoint Group',
+    descriptionKey: 'HTTP endpoint mappings shared across providers.',
     badge: 'cyan' as StatusBadgeProps['variant'],
   },
 ] as const
@@ -46,16 +46,16 @@ export const PREFILL_GROUP_TYPES = [
 export const PREFILL_GROUP_TYPE_META = PREFILL_GROUP_TYPES.reduce<
   Record<
     PrefillGroupType,
-    { label: string; badge: StatusBadgeProps['variant'] }
+    { labelKey: string; badge: StatusBadgeProps['variant'] }
   >
 >(
   (acc, type) => {
-    acc[type.value] = { label: type.label, badge: type.badge }
+    acc[type.value] = { labelKey: type.labelKey, badge: type.badge }
     return acc
   },
   {} as Record<
     PrefillGroupType,
-    { label: string; badge: StatusBadgeProps['variant'] }
+    { labelKey: string; badge: StatusBadgeProps['variant'] }
   >
 )
 

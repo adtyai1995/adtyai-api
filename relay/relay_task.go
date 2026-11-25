@@ -151,9 +151,11 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 
 	// 提取 remix 参数（时长、分辨率 → OtherRatios）
 	if info.Action == constant.TaskActionRemix {
+		originRatios := map[string]float64{}
 		if originTask.PrivateData.BillingContext != nil {
 			// 新的 remix 逻辑：直接从原始任务的 BillingContext 中提取 OtherRatios（如果存在）
 			for s, f := range originTask.PrivateData.BillingContext.OtherRatios {
+				originRatios[s] = f
 				info.PriceData.AddOtherRatio(s, f)
 			}
 		} else {
@@ -170,11 +172,17 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 				seconds = relaycommon.MaxTaskDurationSeconds
 			}
 			sizeStr, _ := taskData["size"].(string)
+			originRatios["seconds"] = float64(seconds)
+			originRatios["size"] = 1
 			info.PriceData.AddOtherRatio("seconds", float64(seconds))
 			info.PriceData.AddOtherRatio("size", 1)
 			if sizeStr == "1792x1024" || sizeStr == "1024x1792" {
+				originRatios["size"] = 1.666667
 				info.PriceData.AddOtherRatio("size", 1.666667)
 			}
+		}
+		if len(originRatios) > 0 {
+			info.TaskOriginOtherRatios = originRatios
 		}
 	}
 
@@ -376,10 +384,10 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			return nil, service.TaskErrorWrapper(err, "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
 		}
 	}
-	// R14-008: Preserve OtherRatios preset before ModelPriceHelperPerCall (e.g. Sora
-	// remix seconds/size ratios populated by ResolveOriginTask) so per-call pricing
-	// does not wipe them when EstimateBilling returns an empty map.
-	presetRatios := info.PriceData.OtherRatios()
+	// R14-008 / R2-60: Read immutable preset OtherRatios populated once by
+	// ResolveOriginTask before the retry loop, instead of reading back mutated
+	// ratios from info.PriceData which would compound across channel retries.
+	presetRatios := info.TaskOriginOtherRatios
 	info.PriceData = priceData
 
 	// 5. 计费估算：让适配器根据用户请求提供 OtherRatios（时长、分辨率等）

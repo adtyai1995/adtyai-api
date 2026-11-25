@@ -2,12 +2,11 @@ package adtygov
 
 import (
 	"bufio"
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"gopkg.in/yaml.v3"
 )
 
@@ -109,10 +108,12 @@ func NewReviewRun(runID string) (*ReviewRun, error) {
 
 // WriteFindingsJSONL writes finding records to the official jsonl store format.
 func WriteFindingsJSONL(w io.Writer, findings []Finding) error {
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
 	for _, finding := range findings {
-		if err := enc.Encode(finding); err != nil {
+		data, err := common.Marshal(finding)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(append(data, '\n')); err != nil {
 			return err
 		}
 	}
@@ -130,7 +131,7 @@ func ReadFindingsJSONL(r io.Reader) ([]Finding, error) {
 			continue
 		}
 		var finding Finding
-		if err := json.Unmarshal([]byte(line), &finding); err != nil {
+		if err := common.Unmarshal([]byte(line), &finding); err != nil {
 			return nil, err
 		}
 		out = append(out, finding)
@@ -140,11 +141,9 @@ func ReadFindingsJSONL(r io.Reader) ([]Finding, error) {
 
 // EncodeReviewRun serializes a review run record.
 func EncodeReviewRun(run *ReviewRun) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(run); err != nil {
+	data, err := common.Marshal(run)
+	if err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	return append(data, '\n'), nil
 }

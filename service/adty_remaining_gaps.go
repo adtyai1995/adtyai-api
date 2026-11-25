@@ -1499,159 +1499,7 @@ func BindSiteInviteFromIP(siteID, inviterID, inviteeID int, ipHash string) error
 		return common.NewMessage("Invalid parameters")
 	}
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		firstID, secondID := inviterID, inviteeID
-		if secondID < firstID {
-			firstID, secondID = secondID, firstID
-		}
-		var firstUser, secondUser model.User
-		if err := model.AdtyLockForUpdate(tx).First(&firstUser, firstID).Error; err != nil {
-			return err
-		}
-		if err := model.AdtyLockForUpdate(tx).First(&secondUser, secondID).Error; err != nil {
-			return err
-		}
-		inviter, invitee := firstUser, secondUser
-		if inviterID != firstID {
-			inviter, invitee = secondUser, firstUser
-		}
-		if inviter.SiteId != siteID || invitee.SiteId != siteID ||
-			inviter.Status != common.UserStatusEnabled || invitee.Status != common.UserStatusEnabled ||
-			inviter.StaffSiteId != 0 || invitee.StaffSiteId != 0 ||
-			inviter.Role != common.RoleCommonUser || invitee.Role != common.RoleCommonUser {
-			return common.NewMessage("No permission to perform this action")
-		}
-		if isEmp, empErr := adtyIsIndependentTeamEmployeeTx(tx, inviterID); empErr != nil {
-			return empErr
-		} else if isEmp {
-			return common.NewMessage("No permission to perform this action")
-		}
-		if isEmp, empErr := adtyIsIndependentTeamEmployeeTx(tx, inviteeID); empErr != nil {
-			return empErr
-		} else if isEmp {
-			return common.NewMessage("No permission to perform this action")
-		}
-		var site model.AdtySite
-		if err := tx.First(&site, siteID).Error; err != nil {
-			return err
-		}
-		if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusClosing {
-			return common.NewMessage("Site is not open for registration")
-		}
-		var rate model.AdtySiteReferralRate
-		if err := tx.Where("site_id = ?", siteID).First(&rate).Error; err != nil {
-			return common.NewMessage("Site invite rate is not configured")
-		}
-		if !rate.Enabled {
-			return common.NewMessage("Site referral is disabled")
-		}
-		effectiveRate := rate.Rate
-		if aff, affFound, affErr := loadSiteReferralAffiliateTx(tx, siteID, inviterID); affErr != nil {
-			return affErr
-		} else if affFound {
-			if aff.Status == model.AdtySiteAffiliateStatusDisabled {
-				return common.NewMessage("This affiliate is disabled")
-			}
-			if aff.RateOverride != nil {
-				effectiveRate = *aff.RateOverride
-			}
-		}
-		var paid int64
-		if err := tx.Model(&model.TopUp{}).Where("user_id = ? AND status IN ?", inviteeID, []string{common.TopUpStatusSuccess, model.TopUpStatusRefunded}).Count(&paid).Error; err != nil {
-			return err
-		}
-		if paid > 0 {
-			return common.NewMessage("This customer already has a paid order")
-		}
-		var existing model.AdtySiteInvite
-		lookup := tx.Where("invitee_id = ?", inviteeID).Limit(1).Find(&existing)
-		if lookup.Error != nil {
-			return lookup.Error
-		}
-		if lookup.RowsAffected > 0 {
-			if existing.InviterId != inviterID || existing.SiteId != siteID {
-				return common.NewMessage("Invitee already has an inviter")
-			}
-			return nil
-		}
-		// R14-025: Prevent mutual or cyclic subsite invite chains (matching main-site referral rules).
-		ancestorID := inviterID
-		visited := map[int]struct{}{inviteeID: {}}
-		for hops := 0; hops < 64 && ancestorID > 0; hops++ {
-			if _, seen := visited[ancestorID]; seen {
-				return common.NewMessage("Cannot create a circular invite relationship")
-			}
-			visited[ancestorID] = struct{}{}
-			var parent model.AdtySiteInvite
-			parentLookup := tx.Select("inviter_id").Where("site_id = ? AND invitee_id = ?", siteID, ancestorID).Limit(1).Find(&parent)
-			if parentLookup.Error != nil {
-				return parentLookup.Error
-			}
-			if parentLookup.RowsAffected == 0 || parent.InviterId <= 0 {
-				break
-			}
-			ancestorID = parent.InviterId
-		}
-		if site.MarketingPolicy.BatchRegisterThreshold == nil {
-			if err := refuseSiteInviteBatchTx(tx, siteID, inviterID, ipHash); err != nil {
-				return err
-			}
-		}
-		trimmedIP := strings.TrimSpace(ipHash)
-		riskFlag := ""
-		if site.MarketingPolicy.SelfInviteWindowDays != nil && *site.MarketingPolicy.SelfInviteWindowDays > 0 && tx.Migrator().HasTable(&model.AdtyUserFingerprint{}) {
-			deviceHash := ""
-			var latestFP model.AdtyUserFingerprint
-			if tx.Where("user_id = ?", inviteeID).Order("id DESC").Limit(1).Find(&latestFP).RowsAffected > 0 {
-				deviceHash = strings.TrimSpace(latestFP.DeviceHash)
-				if trimmedIP == "" {
-					trimmedIP = strings.TrimSpace(latestFP.IpHash)
-				}
-			}
-			if trimmedIP != "" || deviceHash != "" {
-				since := time.Now().Unix() - (*site.MarketingPolicy.SelfInviteWindowDays)*86400
-				fpQ := tx.Model(&model.AdtyUserFingerprint{}).Where("user_id = ? AND created_at >= ?", inviterID, since)
-				switch {
-				case trimmedIP != "" && deviceHash != "":
-					fpQ = fpQ.Where("(ip_hash = ? OR device_hash = ?)", trimmedIP, deviceHash)
-				case trimmedIP != "":
-					fpQ = fpQ.Where("ip_hash = ?", trimmedIP)
-				default:
-					fpQ = fpQ.Where("device_hash = ?", deviceHash)
-				}
-				var fpMatches int64
-				if err := fpQ.Count(&fpMatches).Error; err == nil && fpMatches > 0 {
-					riskFlag = model.ReferralRiskSelfInvite
-					note := "self invite: invitee shares IP or device with the inviter"
-					if err := upsertSiteReferralAffiliateRiskTx(tx, siteID, inviterID, false, model.ReferralRiskSelfInvite, note); err != nil {
-						return err
-					}
-					if err := upsertSiteReferralAffiliateRiskTx(tx, siteID, inviteeID, false, model.ReferralRiskSelfInvite, note); err != nil {
-						return err
-					}
-				}
-			}
-		}
-		if err := tx.Create(&model.AdtySiteInvite{
-			SiteId: siteID, InviterId: inviterID, InviteeId: inviteeID, Rate: effectiveRate, IpHash: trimmedIP, RiskFlag: riskFlag,
-		}).Error; err != nil {
-			return err
-		}
-		if site.MarketingPolicy.BatchRegisterThreshold != nil && *site.MarketingPolicy.BatchRegisterThreshold > 0 && trimmedIP != "" {
-			hours := int64(24)
-			if site.MarketingPolicy.BatchRegisterWindowHours != nil && *site.MarketingPolicy.BatchRegisterWindowHours > 0 {
-				hours = *site.MarketingPolicy.BatchRegisterWindowHours
-			}
-			since := time.Now().Unix() - hours*3600
-			var recentCount int64
-			if err := tx.Model(&model.AdtySiteInvite{}).
-				Where("site_id = ? AND inviter_id = ? AND ip_hash = ? AND created_at >= ?", siteID, inviterID, trimmedIP, since).
-				Count(&recentCount).Error; err == nil && recentCount >= *site.MarketingPolicy.BatchRegisterThreshold {
-				if err := upsertSiteReferralAffiliateRiskTx(tx, siteID, inviterID, true, model.ReferralRiskBatchRegister, "settlement frozen: several sign-ups from one IP"); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
+		return bindSiteInviteFromIPTx(tx, siteID, inviterID, inviteeID, ipHash)
 	})
 	if err == errSiteInviteNeedsReview {
 		if writeErr := recordSiteInviteBatchAnomaly(siteID, inviterID); writeErr != nil {
@@ -1659,6 +1507,191 @@ func BindSiteInviteFromIP(siteID, inviterID, inviteeID int, ipHash string) error
 		}
 	}
 	return err
+}
+
+func bindSiteInviteFromIPTx(tx *gorm.DB, siteID, inviterID, inviteeID int, ipHash string) error {
+	if siteID <= 0 || inviterID <= 0 || inviteeID <= 0 || inviterID == inviteeID {
+		return common.NewMessage("Invalid parameters")
+	}
+	firstID, secondID := inviterID, inviteeID
+	if secondID < firstID {
+		firstID, secondID = secondID, firstID
+	}
+	var firstUser, secondUser model.User
+	if err := model.AdtyLockForUpdate(tx).First(&firstUser, firstID).Error; err != nil {
+		return err
+	}
+	if err := model.AdtyLockForUpdate(tx).First(&secondUser, secondID).Error; err != nil {
+		return err
+	}
+	inviter, invitee := firstUser, secondUser
+	if inviterID != firstID {
+		inviter, invitee = secondUser, firstUser
+	}
+	if inviter.SiteId != siteID || invitee.SiteId != siteID ||
+		inviter.Status != common.UserStatusEnabled || invitee.Status != common.UserStatusEnabled ||
+		inviter.StaffSiteId != 0 || invitee.StaffSiteId != 0 ||
+		inviter.Role != common.RoleCommonUser || invitee.Role != common.RoleCommonUser {
+		return common.NewMessage("No permission to perform this action")
+	}
+	if isEmp, empErr := adtyIsIndependentTeamEmployeeTx(tx, inviterID); empErr != nil {
+		return empErr
+	} else if isEmp {
+		return common.NewMessage("No permission to perform this action")
+	}
+	if isEmp, empErr := adtyIsIndependentTeamEmployeeTx(tx, inviteeID); empErr != nil {
+		return empErr
+	} else if isEmp {
+		return common.NewMessage("No permission to perform this action")
+	}
+	var site model.AdtySite
+	if err := tx.First(&site, siteID).Error; err != nil {
+		return err
+	}
+	if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusClosing {
+		return common.NewMessage("Site is not open for registration")
+	}
+	var rate model.AdtySiteReferralRate
+	if err := tx.Where("site_id = ?", siteID).First(&rate).Error; err != nil {
+		return common.NewMessage("Site invite rate is not configured")
+	}
+	if !rate.Enabled {
+		return common.NewMessage("Site referral is disabled")
+	}
+	effectiveRate := rate.Rate
+	if aff, affFound, affErr := loadSiteReferralAffiliateTx(tx, siteID, inviterID); affErr != nil {
+		return affErr
+	} else if affFound {
+		if aff.Status == model.AdtySiteAffiliateStatusDisabled {
+			return common.NewMessage("This affiliate is disabled")
+		}
+		if aff.RateOverride != nil {
+			effectiveRate = *aff.RateOverride
+		}
+	}
+	if !effectiveRate.IsPositive() {
+		return common.NewMessage("Site invite rate is not configured")
+	}
+	var paid int64
+	if err := tx.Model(&model.TopUp{}).Where("user_id = ? AND status IN ?", inviteeID, []string{common.TopUpStatusSuccess, model.TopUpStatusRefunded}).Count(&paid).Error; err != nil {
+		return err
+	}
+	if paid > 0 {
+		return common.NewMessage("This customer already has a paid order")
+	}
+	var existing model.AdtySiteInvite
+	lookup := tx.Where("invitee_id = ?", inviteeID).Limit(1).Find(&existing)
+	if lookup.Error != nil {
+		return lookup.Error
+	}
+	if lookup.RowsAffected > 0 {
+		if existing.InviterId != inviterID || existing.SiteId != siteID {
+			return common.NewMessage("Invitee already has an inviter")
+		}
+		return nil
+	}
+	// R14-025: Prevent mutual or cyclic subsite invite chains (matching main-site referral rules).
+	ancestorID := inviterID
+	visited := map[int]struct{}{inviteeID: {}}
+	for hops := 0; hops < 64 && ancestorID > 0; hops++ {
+		if _, seen := visited[ancestorID]; seen {
+			return common.NewMessage("Cannot create a circular invite relationship")
+		}
+		visited[ancestorID] = struct{}{}
+		var parent model.AdtySiteInvite
+		parentLookup := tx.Select("inviter_id").Where("site_id = ? AND invitee_id = ?", siteID, ancestorID).Limit(1).Find(&parent)
+		if parentLookup.Error != nil {
+			return parentLookup.Error
+		}
+		if parentLookup.RowsAffected == 0 || parent.InviterId <= 0 {
+			break
+		}
+		ancestorID = parent.InviterId
+	}
+	if site.MarketingPolicy.BatchRegisterThreshold == nil {
+		if err := refuseSiteInviteBatchTx(tx, siteID, inviterID, ipHash); err != nil {
+			return err
+		}
+	}
+	trimmedIP := strings.TrimSpace(ipHash)
+	riskFlag := ""
+	selfInviteDays := int64(30)
+	if site.MarketingPolicy.SelfInviteWindowDays != nil {
+		selfInviteDays = *site.MarketingPolicy.SelfInviteWindowDays
+	}
+	if selfInviteDays > 0 && tx.Migrator().HasTable(&model.AdtyUserFingerprint{}) {
+		since := time.Now().Unix() - selfInviteDays*86400
+		ipSet := map[string]struct{}{}
+		deviceSet := map[string]struct{}{}
+		if trimmedIP != "" {
+			ipSet[trimmedIP] = struct{}{}
+		}
+		var inviteeFPs []model.AdtyUserFingerprint
+		if err := tx.Where("user_id = ? AND created_at >= ?", inviteeID, since).Order("id DESC").Find(&inviteeFPs).Error; err == nil {
+			for _, fp := range inviteeFPs {
+				if v := strings.TrimSpace(fp.IpHash); v != "" {
+					ipSet[v] = struct{}{}
+					if trimmedIP == "" {
+						trimmedIP = v
+					}
+				}
+				if v := strings.TrimSpace(fp.DeviceHash); v != "" {
+					deviceSet[v] = struct{}{}
+				}
+			}
+		}
+		ips := make([]string, 0, len(ipSet))
+		for v := range ipSet {
+			ips = append(ips, v)
+		}
+		devices := make([]string, 0, len(deviceSet))
+		for v := range deviceSet {
+			devices = append(devices, v)
+		}
+		if len(ips) > 0 || len(devices) > 0 {
+			fpQ := tx.Model(&model.AdtyUserFingerprint{}).Where("user_id = ? AND created_at >= ?", inviterID, since)
+			switch {
+			case len(ips) > 0 && len(devices) > 0:
+				fpQ = fpQ.Where("(ip_hash IN ? OR device_hash IN ?)", ips, devices)
+			case len(ips) > 0:
+				fpQ = fpQ.Where("ip_hash IN ?", ips)
+			default:
+				fpQ = fpQ.Where("device_hash IN ?", devices)
+			}
+			var fpMatches int64
+			if err := fpQ.Count(&fpMatches).Error; err == nil && fpMatches > 0 {
+				riskFlag = model.ReferralRiskSelfInvite
+				note := "self invite: invitee shares IP or device with the inviter"
+				if err := upsertSiteReferralAffiliateRiskTx(tx, siteID, inviterID, false, model.ReferralRiskSelfInvite, note); err != nil {
+					return err
+				}
+				if err := upsertSiteReferralAffiliateRiskTx(tx, siteID, inviteeID, false, model.ReferralRiskSelfInvite, note); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if err := tx.Create(&model.AdtySiteInvite{
+		SiteId: siteID, InviterId: inviterID, InviteeId: inviteeID, Rate: effectiveRate, IpHash: trimmedIP, RiskFlag: riskFlag,
+	}).Error; err != nil {
+		return err
+	}
+	if site.MarketingPolicy.BatchRegisterThreshold != nil && *site.MarketingPolicy.BatchRegisterThreshold > 0 && trimmedIP != "" {
+		hours := int64(24)
+		if site.MarketingPolicy.BatchRegisterWindowHours != nil && *site.MarketingPolicy.BatchRegisterWindowHours > 0 {
+			hours = *site.MarketingPolicy.BatchRegisterWindowHours
+		}
+		since := time.Now().Unix() - hours*3600
+		var recentCount int64
+		if err := tx.Model(&model.AdtySiteInvite{}).
+			Where("site_id = ? AND inviter_id = ? AND ip_hash = ? AND created_at >= ?", siteID, inviterID, trimmedIP, since).
+			Count(&recentCount).Error; err == nil && recentCount >= *site.MarketingPolicy.BatchRegisterThreshold {
+			if err := upsertSiteReferralAffiliateRiskTx(tx, siteID, inviterID, true, model.ReferralRiskBatchRegister, "settlement frozen: several sign-ups from one IP"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func refuseSiteInviteBatchTx(tx *gorm.DB, siteID, inviterID int, ipHash string) error {

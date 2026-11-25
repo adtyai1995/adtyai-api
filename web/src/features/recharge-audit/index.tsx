@@ -271,26 +271,28 @@ export function RechargeAudit(props: {
                   </option>
                 ))}
               </NativeSelect>
-              <NativeSelect
-                aria-label={t('Provider')}
-                value={filters.provider ?? ''}
-                onChange={(event) =>
-                  setFilters((prev) => ({
-                    ...prev,
-                    provider: event.target.value,
-                    page: 1,
-                  }))
-                }
-              >
-                <option value=''>{t('All providers')}</option>
-                {(summaryQuery.data?.provider_capabilities ?? []).map(
-                  (provider) => (
-                    <option key={provider.provider} value={provider.provider}>
-                      {t(provider.label)}
-                    </option>
-                  )
-                )}
-              </NativeSelect>
+              {!props.ownerMode && (
+                <NativeSelect
+                  aria-label={t('Provider')}
+                  value={filters.provider ?? ''}
+                  onChange={(event) =>
+                    setFilters((prev) => ({
+                      ...prev,
+                      provider: event.target.value,
+                      page: 1,
+                    }))
+                  }
+                >
+                  <option value=''>{t('All providers')}</option>
+                  {(summaryQuery.data?.provider_capabilities ?? []).map(
+                    (provider) => (
+                      <option key={provider.provider} value={provider.provider}>
+                        {t(provider.label)}
+                      </option>
+                    )
+                  )}
+                </NativeSelect>
+              )}
               <Button variant='brand' type='submit'>{t('Search')}</Button>
             </form>
 

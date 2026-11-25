@@ -137,8 +137,11 @@ func SendResendEmailWithConfig(apiKey, fromAddr, displayName, subject, receiver,
 // do not expose credentials, verification codes or reset links in errors/logs.
 // This transport does not change token expiry, single-use or session rules.
 func sendResendEmail(apiKey, from, subject, receiver, content string) error {
-	OptionMapRWMutex.RLock()
-	defaultName := SystemName
-	OptionMapRWMutex.RUnlock()
+	defaultName := ""
+	if parsed, err := mail.ParseAddress(strings.TrimSpace(from)); err != nil || strings.TrimSpace(parsed.Name) == "" {
+		OptionMapRWMutex.RLock()
+		defaultName = SystemName
+		OptionMapRWMutex.RUnlock()
+	}
 	return SendResendEmailWithConfig(apiKey, from, defaultName, subject, receiver, content)
 }

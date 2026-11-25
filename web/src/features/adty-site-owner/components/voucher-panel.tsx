@@ -128,12 +128,15 @@ export function VoucherPanel(props: { siteId: number }) {
     void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
   }
 
-  const issue = useVerifiedOwnerMutation<{
-    amount: string
-    count: number
-    reason: string
-    intentKey: string
-  }>({
+  const issue = useVerifiedOwnerMutation<
+    {
+      amount: string
+      count: number
+      reason: string
+      intentKey: string
+    },
+    { replayed: boolean; count: number }
+  >({
     action: 'voucher.issue',
     target: () => props.siteId,
     run: async (vars, proof) => {
@@ -167,7 +170,7 @@ export function VoucherPanel(props: { siteId: number }) {
           replayed: Boolean(issued.replayed),
         })
         invalidateVoucherQueries()
-        return
+        return { replayed: true, count: resolvedCount }
       }
       setReconciled(null)
       setBatchResult(normalized)
@@ -177,8 +180,9 @@ export function VoucherPanel(props: { siteId: number }) {
       setCountRaw('1')
       setReason('')
       invalidateVoucherQueries()
+      return { replayed: false, count: normalized.count }
     },
-    successMessage: t('Code issued'),
+    successMessage: (result) => (result?.replayed ? null : t('Code issued')),
   })
 
   const freeze = useVerifiedOwnerMutation<number>({
@@ -263,7 +267,7 @@ export function VoucherPanel(props: { siteId: number }) {
                 setReconciled(null)
               }}
             >
-              {t('Prepare replacement code')}
+              {t('Prepare replacement batch')}
             </Button>
           </div>
         </div>
@@ -333,6 +337,7 @@ export function VoucherPanel(props: { siteId: number }) {
               event.preventDefault()
               if (
                 issue.isPending ||
+                reconciled !== null ||
                 !batchSummary.valid ||
                 !preview.valid ||
                 (wallets.isSuccess && !preview.sufficient) ||
@@ -340,7 +345,6 @@ export function VoucherPanel(props: { siteId: number }) {
               ) {
                 return
               }
-              setReconciled(null)
               const trimmedAmount = amount.trim()
               const trimmedReason = reason.trim()
               const payload = `site_customer:${trimmedAmount}:${batchSummary.count}:${trimmedReason}`
@@ -363,7 +367,10 @@ export function VoucherPanel(props: { siteId: number }) {
                   inputMode='decimal'
                   placeholder='10.00'
                   value={amount}
-                  onChange={(event) => setAmount(event.target.value)}
+                  onChange={(event) => {
+                    setAmount(event.target.value)
+                    setReconciled(null)
+                  }}
                 />
               </div>
               <div className='flex flex-col gap-1.5'>
@@ -376,7 +383,10 @@ export function VoucherPanel(props: { siteId: number }) {
                   max={VOUCHER_BATCH_MAX_COUNT}
                   step={1}
                   value={countRaw}
-                  onChange={(event) => setCountRaw(event.target.value)}
+                  onChange={(event) => {
+                    setCountRaw(event.target.value)
+                    setReconciled(null)
+                  }}
                 />
               </div>
             </div>
@@ -413,7 +423,10 @@ export function VoucherPanel(props: { siteId: number }) {
                 id='voucher-reason'
                 placeholder={t('e.g. Customer campaign / offline top-up')}
                 value={reason}
-                onChange={(event) => setReason(event.target.value)}
+                onChange={(event) => {
+                  setReason(event.target.value)
+                  setReconciled(null)
+                }}
               />
             </div>
 
@@ -423,6 +436,7 @@ export function VoucherPanel(props: { siteId: number }) {
                 type='submit'
                 disabled={
                   issue.isPending ||
+                  reconciled !== null ||
                   !batchSummary.valid ||
                   !preview.valid ||
                   (wallets.isSuccess && !preview.sufficient) ||

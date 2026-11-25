@@ -343,22 +343,22 @@ function resolveRateLimitWindows(data: RateLimitSource | null): {
 
 const PLAN_TYPE_BADGE: Record<
   string,
-  { label: string; variant: StatusBadgeProps['variant'] }
+  { labelKey: string; variant: StatusBadgeProps['variant'] }
 > = {
-  enterprise: { label: 'Enterprise', variant: 'success' },
-  team: { label: 'Team', variant: 'info' },
-  pro: { label: 'Pro', variant: 'blue' },
-  plus: { label: 'Plus', variant: 'purple' },
-  free: { label: 'Free', variant: 'warning' },
+  enterprise: { labelKey: 'Enterprise', variant: 'success' },
+  team: { labelKey: 'Team', variant: 'info' },
+  pro: { labelKey: 'Pro', variant: 'blue' },
+  plus: { labelKey: 'Plus', variant: 'purple' },
+  free: { labelKey: 'Free tier', variant: 'warning' },
 }
 
 const RESET_CREDIT_STATUS_BADGE: Record<
   string,
-  { label: string; variant: StatusBadgeProps['variant'] }
+  { labelKey: string; variant: StatusBadgeProps['variant'] }
 > = {
-  available: { label: 'Available', variant: 'success' },
-  redeemed: { label: 'Redeemed', variant: 'neutral' },
-  expired: { label: 'Expired', variant: 'warning' },
+  available: { labelKey: 'Available', variant: 'success' },
+  redeemed: { labelKey: 'Redeemed', variant: 'neutral' },
+  expired: { labelKey: 'Expired', variant: 'warning' },
 }
 
 function getAccountTypeBadge(
@@ -366,12 +366,17 @@ function getAccountTypeBadge(
   t: (key: string) => string
 ): { label: string; variant: StatusBadgeProps['variant'] } {
   const normalized = normalizePlanType(value)
-  return (
-    PLAN_TYPE_BADGE[normalized] ?? {
-      label: String(value || '') || t('Unknown'),
-      variant: 'neutral' as const,
+  const matched = PLAN_TYPE_BADGE[normalized]
+  if (matched) {
+    return {
+      label: t(matched.labelKey),
+      variant: matched.variant,
     }
-  )
+  }
+  return {
+    label: String(value || '') || t('Unknown'),
+    variant: 'neutral' as const,
+  }
 }
 
 function getResetCreditStatusBadge(
@@ -379,12 +384,17 @@ function getResetCreditStatusBadge(
   t: (key: string) => string
 ): { label: string; variant: StatusBadgeProps['variant'] } {
   const normalized = normalizeResetCreditStatus(value)
-  return (
-    RESET_CREDIT_STATUS_BADGE[normalized] ?? {
-      label: String(value || '') || t('Unknown'),
-      variant: 'neutral' as const,
+  const matched = RESET_CREDIT_STATUS_BADGE[normalized]
+  if (matched) {
+    return {
+      label: t(matched.labelKey),
+      variant: matched.variant,
     }
-  )
+  }
+  return {
+    label: String(value || '') || t('Unknown'),
+    variant: 'neutral' as const,
+  }
 }
 
 function windowLabel(windowData?: CodexRateLimitWindow | null) {
@@ -496,7 +506,10 @@ function RateLimitWindow(props: RateLimitWindowProps) {
         {hasData ? (
           <Progress
             value={percent}
-            aria-label={`${props.title} usage: ${percent}%`}
+            aria-label={t('{{title}} usage: {{percent}}%', {
+              title: props.title,
+              percent,
+            })}
             className='mt-1'
           />
         ) : (
@@ -588,7 +601,7 @@ function RateLimitGroupSection(props: RateLimitGroupSectionProps) {
       {props.meteredFeature ? (
         <div className='bg-background ring-border/60 inline-flex max-w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-2 py-1 text-xs ring-1'>
           <span className='text-muted-foreground text-[11px]'>
-            metered_feature
+            {t('Metered feature')}
           </span>
           <span className='min-w-0 font-mono break-all'>
             {props.meteredFeature}
@@ -690,7 +703,7 @@ function ResetCreditItem(props: { credit: CodexResetCredit; index: number }) {
               {title}
             </div>
             <StatusBadge
-              label={t(statusBadge.label)}
+              label={statusBadge.label}
               variant={statusBadge.variant}
               copyable={false}
             />
@@ -828,7 +841,7 @@ function ResetCreditsPanel(props: {
           copyable={false}
         />
         <InfoField
-          label='HTTP'
+          label={t('HTTP status')}
           value={String(props.response?.upstream_status ?? '-')}
           mono
           copyable={false}
@@ -1140,7 +1153,9 @@ export function CodexUsageDialog({
               />
               {getUsageStatusBadge(rateLimit, t)}
               <StatusBadge
-                label={`HTTP ${response?.upstream_status ?? '-'}`}
+                label={t('HTTP {{status}}', {
+                  status: response?.upstream_status ?? '-',
+                })}
                 variant='neutral'
                 copyable={false}
               />
@@ -1172,7 +1187,7 @@ export function CodexUsageDialog({
                 copyable={false}
               />
               <InfoField
-                label='User ID'
+                label={t('User ID')}
                 value={payload?.user_id}
                 mono
                 className='md:col-span-2'

@@ -2,8 +2,9 @@ package adtygov
 
 import (
 	_ "embed"
-	"encoding/json"
 	"fmt"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 //go:embed official_features.json
@@ -25,7 +26,7 @@ func OfficialFeatures() ([]OfficialFeature, error) {
 		PlanSHA256    string            `json:"plan_sha256"`
 		Features      []OfficialFeature `json:"features"`
 	}
-	if err := json.Unmarshal(officialFeaturesJSON, &catalog); err != nil {
+	if err := common.Unmarshal(officialFeaturesJSON, &catalog); err != nil {
 		return nil, fmt.Errorf("feature catalog: %w", err)
 	}
 	if catalog.SchemaVersion != "2.0" || catalog.DocVersion != "v2.7-unified" || len(catalog.PlanSHA256) != 64 || len(catalog.Features) != 240 {

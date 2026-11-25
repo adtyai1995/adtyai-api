@@ -33,9 +33,9 @@ func GetAdtyEpayChannels(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	now := time.Now().Unix()
-	dayStart := time.Unix(now, 0)
-	start := time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), 0, 0, 0, 0, dayStart.Location()).Unix()
+	loc := model.AdtyBusinessLocation(nil)
+	dayStart := time.Now().In(loc)
+	start := time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), 0, 0, 0, 0, loc).Unix()
 	out := make([]adtyEpayChannelView, 0, len(channels))
 	for _, channel := range channels {
 		today := map[string]string{}

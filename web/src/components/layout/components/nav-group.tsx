@@ -71,12 +71,7 @@ export function NavGroup({ title, items }: NavGroupProps) {
       </SidebarGroupLabel>
       <SidebarMenu>
         {items.map((item) => {
-          const key = `${item.title}-${item.url || item.type}`
-
-          // R-32 #14: Chat presets have been removed from sidebar navigation.
-          if (item.type === 'chat-presets') {
-            return null
-          }
+          const key = `${item.title}-${item.url ?? 'collapsible'}`
 
           // If no sub-items, render regular link
           if (!item.items) {

@@ -76,8 +76,6 @@ type referralProfile struct {
 	Affiliate            *model.ReferralAffiliate         `json:"affiliate"`
 	Account              *model.ReferralCommissionAccount `json:"account"`
 	Rate                 string                           `json:"rate"`
-	PartnerMinRate       *float64                         `json:"partner_min_rate"` // null：未设置
-	PartnerMaxRate       *float64                         `json:"partner_max_rate"` // null：未设置
 	FreezeDays           int                              `json:"freeze_days"`
 	MinWithdrawUSD       *float64                         `json:"min_withdraw_usd"`  // null：未设置
 	USDTWithdrawFee      *float64                         `json:"usdt_withdraw_fee"` // null：未设置
@@ -130,7 +128,6 @@ func GetReferralProfile(c *gin.Context) {
 	redactedAffiliate := redactReferralAffiliateForUser(affiliate)
 	profile := referralProfile{
 		Affiliate: redactedAffiliate, Account: &account,
-		PartnerMinRate: nil, PartnerMaxRate: nil,
 		FreezeDays: cfg.FreezeDays, MinWithdrawUSD: cfg.MinWithdrawUSD, USDTWithdrawFee: cfg.USDTWithdrawFee,
 		CancelWindowMins: cfg.CancelWindowMinutes, Enabled: cfg.Enabled, SiteOwner: affiliate.SiteOwnerSince > 0,
 	}

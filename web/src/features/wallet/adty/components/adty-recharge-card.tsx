@@ -41,7 +41,6 @@ import { cn } from '@/lib/utils'
 
 import {
   formatBonusRateFraction,
-  formatBonusRatePercent,
   quoteAdtyTopup,
   type AdtyTopupInfo,
 } from '../api'
@@ -179,7 +178,7 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
   }
   let bonusPercent: string | null = null
   if (bonusUsd > 0) {
-    bonusPercent = formatBonusRatePercent(quote?.bonus_rate)
+    bonusPercent = formatBonusRateFraction(quote?.bonus_rate)
     if (!bonusPercent && principalUsd > 0) {
       bonusPercent = formatBonusRateFraction(bonusUsd / principalUsd)
     }

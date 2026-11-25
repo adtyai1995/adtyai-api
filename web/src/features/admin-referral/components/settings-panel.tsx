@@ -56,40 +56,18 @@ import {
   canonicalWithdrawMethods,
   canonicalWithdrawNetworks,
   CASH_WITHDRAW_METHODS,
+  MONEY_KEYS,
   RULE_KEYS,
+  toDrafts,
   type CashWithdrawMethod,
+  type Drafts,
   type MoneyKey,
   type RuleKey,
 } from '../lib/settings'
 
-type VisibleMoneyKey = Exclude<
-  MoneyKey,
-  'partner_min_rate' | 'partner_max_rate'
->
-
-const VISIBLE_MONEY_KEYS: VisibleMoneyKey[] = [
-  'default_rate',
-  'min_withdraw_usd',
-  'usdt_withdraw_fee',
-]
-
-type VisibleDrafts = Record<VisibleMoneyKey | RuleKey, string> & {
-  cny_rate: string
-}
-
-function toVisibleDrafts(settings: ReferralSettings): VisibleDrafts {
-  const drafts = { cny_rate: settings.withdraw_cny_rate } as VisibleDrafts
-  for (const key of VISIBLE_MONEY_KEYS) {
-    const value = settings[key]
-    drafts[key] = value === null || value === undefined ? '' : String(value)
-  }
-  for (const key of RULE_KEYS) drafts[key] = String(settings[key])
-  return drafts
-}
-
-function buildVisibleSettingsUpdate(
+function buildReferralSettingsUpdate(
   saved: ReferralSettings,
-  drafts: VisibleDrafts,
+  drafts: Drafts,
   enabled: boolean,
   withdrawMethods: CashWithdrawMethod[],
   withdrawUsdtNetworks: UsdtNetwork[]
@@ -97,7 +75,7 @@ function buildVisibleSettingsUpdate(
   const body: ReferralSettingsUpdate = {}
   const clear: NonNullable<ReferralSettingsUpdate['clear']> = []
   let withdrawalTouched = false
-  for (const key of VISIBLE_MONEY_KEYS) {
+  for (const key of MONEY_KEYS) {
     const draft = drafts[key].trim()
     if (draft === '') {
       if (saved[key] !== null && saved[key] !== undefined) {
@@ -143,7 +121,7 @@ export function SettingsPanel(props: { canWrite: boolean }) {
     queryKey: adminReferralKeys.settings,
     queryFn: getReferralSettings,
   })
-  const [drafts, setDrafts] = useState<VisibleDrafts | null>(null)
+  const [drafts, setDrafts] = useState<Drafts | null>(null)
   const [enabled, setEnabled] = useState(false)
   const [withdrawMethods, setWithdrawMethods] = useState<CashWithdrawMethod[]>(
     []
@@ -155,7 +133,7 @@ export function SettingsPanel(props: { canWrite: boolean }) {
 
   useEffect(() => {
     if (!saved) return
-    setDrafts(toVisibleDrafts(saved))
+    setDrafts(toDrafts(saved))
     setEnabled(saved.enabled)
     setWithdrawMethods(canonicalWithdrawMethods(saved.withdraw_methods))
     setWithdrawUsdtNetworks(
@@ -205,7 +183,7 @@ export function SettingsPanel(props: { canWrite: boolean }) {
     !!saved &&
       !!drafts &&
       (enabled !== saved.enabled ||
-        JSON.stringify(drafts) !== JSON.stringify(toVisibleDrafts(saved)) ||
+        JSON.stringify(drafts) !== JSON.stringify(toDrafts(saved)) ||
         JSON.stringify(withdrawMethods) !== JSON.stringify(savedMethods) ||
         JSON.stringify(withdrawUsdtNetworks) !== JSON.stringify(savedNetworks))
   )
@@ -213,7 +191,7 @@ export function SettingsPanel(props: { canWrite: boolean }) {
   if (!saved || !drafts) return <LoadingState />
   const disabled = !props.canWrite || save.isPending
 
-  const labels: Record<VisibleMoneyKey | RuleKey, string> = {
+  const labels: Record<MoneyKey | RuleKey, string> = {
     default_rate: t('Default commission rate (%)'),
     min_withdraw_usd: t('Minimum withdrawal (USD)'),
     usdt_withdraw_fee: t('USDT withdrawal fee (USDT)'),
@@ -226,7 +204,7 @@ export function SettingsPanel(props: { canWrite: boolean }) {
     ),
     batch_register_window_hours: t('Batch sign-up window (hours)'),
   }
-  const set = (key: keyof VisibleDrafts, value: string) =>
+  const set = (key: keyof Drafts, value: string) =>
     setDrafts((prev) => (prev ? { ...prev, [key]: value } : prev))
   const rateMissing = drafts.default_rate.trim() === ''
   const usdtEnabled = withdrawMethods.includes('usdt')
@@ -277,7 +255,7 @@ export function SettingsPanel(props: { canWrite: boolean }) {
         event.preventDefault()
         if (disabled || hasWithdrawValidationError) return
         save.mutate(
-          buildVisibleSettingsUpdate(
+          buildReferralSettingsUpdate(
             saved,
             drafts,
             enabled,
@@ -418,7 +396,7 @@ export function SettingsPanel(props: { canWrite: boolean }) {
                 disabled={disabled}
                 type='number'
                 min={0}
-                step='0.01'
+                step='0.000001'
                 value={drafts.usdt_withdraw_fee}
                 placeholder={t('Not set')}
                 aria-invalid={Boolean(feeMissingError)}

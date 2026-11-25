@@ -380,6 +380,16 @@ func (usage *BillingUsage) canonicalOpenAIUsage() *Usage {
 	if canonical.PromptTokensDetails.CachedTokens <= 0 && canonical.PromptCacheHitTokens > 0 {
 		canonical.PromptTokensDetails.CachedTokens = canonical.PromptCacheHitTokens
 	}
+	if canonical.OutputTokensDetails != nil {
+		// OutputTokensDetails fills fields that CompletionTokenDetails omitted;
+		// existing CompletionTokenDetails values stay canonical on overlap.
+		filled := *canonical.OutputTokensDetails
+		mergeOutputTokenDetails(&filled, canonical.CompletionTokenDetails)
+		canonical.CompletionTokenDetails = filled
+	}
+	if canonical.CompletionTokenDetails.ReasoningTokens <= 0 && canonical.ReasoningTokens > 0 {
+		canonical.CompletionTokenDetails.ReasoningTokens = canonical.ReasoningTokens
+	}
 	if canonical.PromptTokens <= 0 && canonical.InputTokens > 0 {
 		canonical.PromptTokens = canonical.InputTokens
 	}
@@ -498,6 +508,10 @@ func cloneOpenAIUsage(usage *Usage) *Usage {
 	if usage.InputTokensDetails != nil {
 		inputTokensDetails := usage.InputTokensDetails.Clone()
 		clone.InputTokensDetails = &inputTokensDetails
+	}
+	if usage.OutputTokensDetails != nil {
+		outputTokensDetails := *usage.OutputTokensDetails
+		clone.OutputTokensDetails = &outputTokensDetails
 	}
 	return &clone
 }

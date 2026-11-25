@@ -25,6 +25,7 @@ import {
   isHtmlNotificationContent,
   sanitizeNotificationHtml,
 } from '@/features/adty-notifications/lib/rich-text'
+import { resolveLocalizedAnnouncement } from '@/features/dashboard/lib/text'
 import { formatDateTimeObject } from '@/lib/time'
 
 interface AnnouncementDetailModalProps {
@@ -48,13 +49,12 @@ export function AnnouncementDetailModal({
   announcement,
 }: AnnouncementDetailModalProps) {
   const { t, i18n } = useTranslation()
-  const isEnglish = !(i18n.resolvedLanguage || i18n.language || '')
-    .toLowerCase()
-    .startsWith('zh')
-  const rawContent =
-    (isEnglish && announcement?.content_en?.trim()) ||
-    announcement?.content ||
-    ''
+  const currentLanguage = i18n.resolvedLanguage || i18n.language
+  const {
+    title: displayTitle,
+    content: rawContent,
+    extra: displayExtra,
+  } = resolveLocalizedAnnouncement(announcement, currentLanguage)
   const contentMode = isHtmlNotificationContent(
     rawContent,
     announcement?.content_format
@@ -67,7 +67,7 @@ export function AnnouncementDetailModal({
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      title={t('Announcement Details')}
+      title={displayTitle || t('Announcement Details')}
       description={
         announcement?.publishDate
           ? `${t('Published:')} ${formatDateTimeObject(new Date(announcement.publishDate))}`
@@ -85,14 +85,14 @@ export function AnnouncementDetailModal({
               <RichContent mode={contentMode} breaks content={safeContent} />
             </div>
           )}
-          {announcement?.extra && (
+          {displayExtra && (
             <div>
               <h4 className='mb-2 font-medium'>
                 {t('Additional Information')}
               </h4>
               <RichContent
                 breaks
-                content={announcement.extra}
+                content={displayExtra}
                 className='text-muted-foreground'
               />
             </div>

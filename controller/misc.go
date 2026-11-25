@@ -126,13 +126,11 @@ func GetStatus(c *gin.Context) {
 		"data_export_default_time":      common.DataExportDefaultTime,
 		"default_collapse_sidebar":      common.DefaultCollapseSidebar,
 		"mj_notify_enabled":             setting.MjNotifyEnabled,
-		"chats":                         setting.GetChats(),
 		"demo_site_enabled":             operation_setting.GetDemoSiteEnabled(),
 		"self_use_mode_enabled":         operation_setting.GetSelfUseModeEnabled(),
 		"register_enabled":              common.RegisterEnabled,
 		"password_login_enabled":        common.PasswordLoginEnabled,
 		"password_register_enabled":     common.PasswordRegisterEnabled,
-		"default_use_auto_group":        setting.GetDefaultUseAutoGroup(),
 
 		"password_login_encryption_enabled": common.PasswordLoginEncryptionEnabled,
 
@@ -140,7 +138,6 @@ func GetStatus(c *gin.Context) {
 		"price":             operation_setting.GetPrice(),
 
 		// 面板启用开关
-		"api_info_enabled":      cs.ApiInfoEnabled,
 		"uptime_kuma_enabled":   cs.UptimeKumaEnabled,
 		"announcements_enabled": cs.AnnouncementsEnabled,
 		"faq_enabled":           cs.FAQEnabled,
@@ -169,9 +166,6 @@ func GetStatus(c *gin.Context) {
 	common.OptionMapRWMutex.RUnlock()
 
 	// 根据启用状态注入可选内容
-	if cs.ApiInfoEnabled {
-		data["api_info"] = console_setting.GetApiInfo()
-	}
 	if cs.AnnouncementsEnabled {
 		// 从这里起数据源是 `adty_notification_publications`，不再是
 		// `console_setting.announcements`（那个 option 只作为回滚源保留）。

@@ -81,7 +81,9 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 			return newApiErr
 		}
 
-		service.PostTextConsumeQuota(c, info, usage, nil)
+		if settleErr := service.PostTextConsumeQuota(c, info, usage, nil); settleErr != nil {
+			return types.NewError(settleErr, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+		}
 		return nil
 	}
 

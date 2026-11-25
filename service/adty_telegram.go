@@ -1126,9 +1126,118 @@ func mustOpenTelegramToken(row model.AdtyTelegramBot) string {
 	return plain
 }
 
+const adtyTelegramMaxMessageUnits = 3800
+
+func adtyTelegramRuneUnits(r rune) int {
+	if r > 0xFFFF {
+		return 2
+	}
+	return 1
+}
+
+func adtyTelegramTextUnits(text string) int {
+	units := 0
+	for _, r := range text {
+		units += adtyTelegramRuneUnits(r)
+	}
+	return units
+}
+
+// splitAdtyTelegramMessage splits text into sequential chunks whose UTF-16 code unit
+// count stays within maxUnits (safely below Telegram's 4096-character sendMessage limit),
+// preferring paragraph breaks ("\n\n"), then line breaks ("\n"), and finally rune boundaries.
+func splitAdtyTelegramMessage(text string, maxUnits int) []string {
+	if text == "" {
+		return nil
+	}
+	if maxUnits <= 0 {
+		maxUnits = adtyTelegramMaxMessageUnits
+	}
+	if adtyTelegramTextUnits(text) <= maxUnits {
+		return []string{text}
+	}
+	chunks := make([]string, 0, 2)
+	rem := text
+	for rem != "" {
+		if adtyTelegramTextUnits(rem) <= maxUnits {
+			if strings.TrimSpace(rem) != "" {
+				chunks = append(chunks, rem)
+			}
+			break
+		}
+		limitByte := 0
+		units := 0
+		for limitByte < len(rem) {
+			r, size := utf8.DecodeRuneInString(rem[limitByte:])
+			u := adtyTelegramRuneUnits(r)
+			if limitByte > 0 && units+u > maxUnits {
+				break
+			}
+			units += u
+			limitByte += size
+		}
+		if limitByte <= 0 || limitByte >= len(rem) {
+			if strings.TrimSpace(rem) != "" {
+				chunks = append(chunks, rem)
+			}
+			break
+		}
+		window := rem[:limitByte]
+		rest := rem[limitByte:]
+		var chunk string
+		var next string
+
+		switch {
+		case strings.HasPrefix(rest, "\n\n") && strings.TrimSpace(window) != "":
+			chunk = strings.TrimRight(window, "\n")
+			next = strings.TrimLeft(rest[2:], "\n")
+		case strings.HasSuffix(window, "\n") && strings.HasPrefix(rest, "\n") && strings.TrimSpace(window[:len(window)-1]) != "":
+			chunk = strings.TrimRight(window[:len(window)-1], "\n")
+			next = strings.TrimLeft(rest[1:], "\n")
+		default:
+			if pos := strings.LastIndex(window, "\n\n"); pos > 0 && strings.TrimSpace(window[:pos]) != "" {
+				chunk = strings.TrimRight(window[:pos], "\n")
+				next = strings.TrimLeft(rem[pos+2:], "\n")
+			} else if strings.HasPrefix(rest, "\n") && strings.TrimSpace(window) != "" {
+				chunk = window
+				next = rest[1:]
+			} else if pos := strings.LastIndex(window, "\n"); pos > 0 && strings.TrimSpace(window[:pos]) != "" {
+				chunk = window[:pos]
+				next = rem[pos+1:]
+			} else {
+				chunk = window
+				next = rest
+			}
+		}
+
+		if strings.TrimSpace(chunk) != "" {
+			chunks = append(chunks, chunk)
+		}
+		rem = next
+	}
+	if len(chunks) == 0 {
+		return []string{text}
+	}
+	return chunks
+}
+
 // adtyTelegramSendMessageHTTP 发一条消息到 chat（`@name` 或数字 id）。
 // 只在 ADTY_TELEGRAM_ALLOW_NETWORK=1 时被装上，测试里永远是 nil。
+// 超过 Telegram 4096 字符安全边界时自动按段落、换行或 rune 边界拆分为多段顺序发送。
 func adtyTelegramSendMessageHTTP(token, chat, text string) error {
+	chunks := splitAdtyTelegramMessage(text, adtyTelegramMaxMessageUnits)
+	if len(chunks) == 0 {
+		return adtyTelegramSendSingleMessageHTTP(token, chat, text)
+	}
+	for _, chunk := range chunks {
+		if err := adtyTelegramSendSingleMessageHTTP(token, chat, chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func adtyTelegramSendSingleMessageHTTP(token, chat, text string) error {
 	payload := url.Values{}
 	payload.Set("chat_id", chat)
 	payload.Set("text", text)

@@ -89,7 +89,7 @@ func defaultPluginProtocolBridgeDeps() pluginProtocolBridgeDeps {
 		heartbeatInterval:  heartbeat,
 		admissionTimeout:   pluginruntime.DefaultCallTimeout,
 		getByTaskId:        model.GetByTaskId,
-		resolvePlugin:      resolveTaskPluginForProtocolRetrieve,
+		resolveTaskPlugin:  resolveTaskPluginForTaskRetrieve,
 		imagePollInterval:  taskPluginImagePollInterval,
 		pollTask:           pollTaskPluginImageTask,
 		downloadImage:      service.GetImageFromUrl,

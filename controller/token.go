@@ -14,7 +14,6 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
@@ -238,43 +237,6 @@ func tokenRequestSiteID(c *gin.Context) int {
 	return 0
 }
 
-func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) bool {
-	if len(groups) == 0 {
-		if err := token.SetAutoGroups(nil); err != nil {
-			common.ApiError(c, err)
-			return false
-		}
-		return true
-	}
-
-	maxCount := setting.GetMaxTokenAutoGroups()
-	if len(groups) > maxCount {
-		common.ApiErrorT(c, "A token can select at most {{max}} Auto groups", map[string]any{"max": maxCount})
-		return false
-	}
-
-	siteID := tokenRequestSiteID(c)
-	seen := make(map[string]struct{}, len(groups))
-	for _, group := range groups {
-		group = strings.TrimSpace(group)
-		if _, ok := seen[group]; ok {
-			common.ApiErrorT(c, "Auto group {{group}} is duplicated", map[string]any{"group": group})
-			return false
-		}
-		seen[group] = struct{}{}
-		if group == "" || group == "auto" || !ratio_setting.ContainsGroupRatio(group) || !service.SiteGroupAllowed(siteID, group) {
-			common.ApiErrorT(c, "Auto group {{group}} is unavailable or unauthorized", map[string]any{"group": group})
-			return false
-		}
-	}
-
-	if err := token.SetAutoGroups(groups); err != nil {
-		common.ApiError(c, err)
-		return false
-	}
-	return true
-}
-
 func GetAllTokens(c *gin.Context) {
 	userId := c.GetInt("id")
 	pageInfo := common.GetPageQuery(c)
@@ -319,26 +281,6 @@ func GetToken(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, buildMaskedTokenResponse(token))
-}
-
-func GetTokenAutoGroups(c *gin.Context) {
-	userGroup, err := getTokenRequestUserGroup(c)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	siteID := tokenRequestSiteID(c)
-	raw := service.GetUserAutoGroup(userGroup)
-	groups := make([]string, 0, len(raw))
-	for _, g := range raw {
-		if service.SiteGroupAllowed(siteID, g) {
-			groups = append(groups, g)
-		}
-	}
-	common.ApiSuccess(c, gin.H{
-		"groups":    groups,
-		"max_count": setting.GetMaxTokenAutoGroups(),
-	})
 }
 
 func GetTokenKey(c *gin.Context) {

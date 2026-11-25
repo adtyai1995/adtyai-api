@@ -219,7 +219,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.POST("/adty/tickets/:id/images", middleware.UserAuth(), controller.PostAdtyTicketImage)
 	apiRouter.GET("/adty/tickets/:id/images/:imageId", middleware.UserAuth(), controller.GetAdtyTicketImage)
 	apiRouter.DELETE("/adty/tickets/:id/images/:imageId", middleware.UserAuth(), controller.DeleteAdtyTicketImage)
-	apiRouter.GET("/adty/groups/health", middleware.UserAuth(), controller.GetAdtyAdminGroupHealth)
+	apiRouter.GET("/adty/groups/health", middleware.UserAuth(), controller.GetAdtyGroupHealth)
 }
 
 // registerAdtyTopUpRoutes 挂钱包的充值接口（任务 3.3），令牌规则照上游钱包接口。
@@ -310,6 +310,7 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	topup.GET("/self", controller.GetAdtyTopUpSelf)
 	// R1-062: Enforce site customer terms gate on voucher redemption and site-commission writes.
 	apiRouter.POST("/adty/vouchers/redeem", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), middleware.UserCriticalRateLimit("CT:voucher-redeem"), controller.PostAdtyVoucherRedeem)
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/site-referral/click", "session", "")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-referral/profile", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/site-referral/bind", "scope", "wallet:write")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions", "scope", "wallet:read")
@@ -321,6 +322,7 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions/withdrawals/by-key", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions/:id/convert/by-key", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/site-commissions/:id/convert", "scope", "wallet:write")
+	apiRouter.POST("/adty/site-referral/click", middleware.CriticalRateLimit(), middleware.AnonymousRequestBodyLimit(), controller.PostAdtySiteReferralClick)
 	apiRouter.GET("/adty/site-referral/profile", middleware.UserAuth(), controller.GetAdtySiteCustomerReferralProfile)
 	apiRouter.POST("/adty/site-referral/bind", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), middleware.UserCriticalRateLimit("CT:site-invite-bind"), controller.PostAdtySiteCustomerReferralBind)
 	apiRouter.GET("/adty/site-commissions", middleware.UserAuth(), controller.GetAdtySiteCommissions)
@@ -374,7 +376,7 @@ func registerAdtyBEpusdtRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/user/bepusdt/pay", "scope", "wallet:write")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/user/bepusdt/notify", "session", "")
 	apiRouter.POST("/user/bepusdt/pay", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), middleware.UserCriticalRateLimit("CT:pay-bepusdt"), controller.RequestBEpusdtPay)
-	apiRouter.POST("/user/bepusdt/notify", middleware.AnonymousRequestBodyLimit(), controller.BEpusdtTopUpNotify)
+	apiRouter.POST("/user/bepusdt/notify", middleware.PaymentNotifyRateLimit(), middleware.AnonymousRequestBodyLimit(), controller.BEpusdtTopUpNotify)
 }
 
 // registerAdtyEpayRoutes 挂易支付多通道（任务 5.2、5.4）。静态的 /api/user/epay/notify 是上游的，和这里不冲突。

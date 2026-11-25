@@ -27,7 +27,7 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/status", controller.GetStatus)
 		apiRouter.GET("/ready", controller.GetReady)
 		apiRouter.GET("/health", controller.GetReady)
-		apiRouter.GET("/uptime/status", middleware.TryUserAuth(), controller.GetUptimeKumaStatus)
+		apiRouter.GET("/uptime/status", middleware.UserAuth(), controller.GetUptimeKumaStatus)
 		apiRouter.POST("/uptime/probe", middleware.RootAuth(), middleware.UserCriticalRateLimit("CT:uptime-probe"), controller.PostAdtyModelProbeRun)
 		apiRouter.GET("/models", middleware.UserAuth(), controller.DashboardListModels)
 		apiRouter.GET("/status/test", middleware.AdminAuth(), controller.TestStatus)
@@ -67,7 +67,7 @@ func SetApiRouter(router *gin.Engine) {
 			userRoute.POST("/passkey/login/begin", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PasskeyLoginBegin)
 			userRoute.POST("/passkey/login/finish", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PasskeyLoginFinish)
 			//userRoute.POST("/tokenlog", middleware.CriticalRateLimit(), controller.TokenLog)
-			userRoute.GET("/groups", controller.GetUserGroups)
+			userRoute.GET("/groups", middleware.UserAuth(), controller.GetUserGroups)
 
 			selfRoute := userRoute.Group("/")
 			selfRoute.Use(middleware.DisableCache(), middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms())

@@ -81,8 +81,8 @@ func lockAdtyRefundOrderForActorTx(tx *gorm.DB, tradeNo string, actor AdtyRefund
 			}
 		}
 		// Preserve R2-022 canonical ascending user_id lock order when an invite
-		// commission exists on this subsite order so locking the target user here
-		// never inverts [inviter, invitee] locking later in Complete (R12-014).
+		// commission exists on this subsite or main-site order so locking the
+		// target user here never inverts [inviter, invitee] locking later in Complete (R12-014).
 		var inviterID int
 		if ext.TeamId == 0 && ext.SiteId > 0 && tx.Migrator().HasTable(&AdtySiteInviteCommission{}) {
 			var commStub AdtySiteInviteCommission
@@ -91,6 +91,14 @@ func lockAdtyRefundOrderForActorTx(tx *gorm.DB, tradeNo string, actor AdtyRefund
 			}
 			if commStub.InviterId > 0 && commStub.InviterId != topUp.UserId {
 				inviterID = commStub.InviterId
+			}
+		} else if ext.TeamId == 0 && ext.SiteId == 0 && tx.Migrator().HasTable(&ReferralCommission{}) {
+			var refStub ReferralCommission
+			if err := tx.Select("affiliate_user_id").Where("source_type = ? AND source_trade_no = ?", ReferralSourceTopup, ext.TradeNo).Limit(1).Find(&refStub).Error; err != nil {
+				return nil, nil, err
+			}
+			if refStub.AffiliateUserId > 0 && refStub.AffiliateUserId != topUp.UserId {
+				inviterID = refStub.AffiliateUserId
 			}
 		}
 		if inviterID > 0 && inviterID < topUp.UserId {
@@ -499,8 +507,16 @@ type AdtyRefundPageFacts struct {
 // In-progress and unknown occupancy is not included in that ratio preview.
 // It does not write.
 func LoadAdtyRefundPageFacts(tradeNo string, requestUSD decimal.Decimal) (*AdtyRefundPageFacts, error) {
+	return LoadAdtyRefundPageFactsWithReconcile(tradeNo, requestUSD, 0)
+}
+
+// LoadAdtyRefundPageFactsWithReconcile reads the order refund page facts and,
+// when reconcileOrphanID > 0, previews the occupancy and commission split as if
+// the requested refund is bound to that pending_review external reversal orphan.
+// It does not write.
+func LoadAdtyRefundPageFactsWithReconcile(tradeNo string, requestUSD decimal.Decimal, reconcileOrphanID int64) (*AdtyRefundPageFacts, error) {
 	tradeNo = strings.TrimSpace(tradeNo)
-	if tradeNo == "" {
+	if tradeNo == "" || reconcileOrphanID < 0 {
 		return nil, common.NewMessage("Invalid parameters")
 	}
 	var ext AdtyTopupOrder
@@ -523,7 +539,22 @@ func LoadAdtyRefundPageFacts(tradeNo string, requestUSD decimal.Decimal) (*AdtyR
 	if err := DB.Where("trade_no = ?", tradeNo).Order("id").Find(&refunds).Error; err != nil {
 		return nil, err
 	}
-	occupancy, err := adtyComputeManualRefundOccupancyTx(DB, &ext, refunds, 0)
+	var availOrphanCap int64
+	var occupancy *AdtyManualRefundOccupancy
+	var err error
+	if reconcileOrphanID > 0 {
+		err = DB.Transaction(func(tx *gorm.DB) error {
+			capVal, valErr := adtyValidateReconcileOrphanTx(tx, &ext, refunds, "", reconcileOrphanID, 0)
+			if valErr != nil {
+				return valErr
+			}
+			availOrphanCap = capVal
+			occupancy, valErr = adtyComputeManualRefundOccupancyWithExtraReconcileTx(tx, &ext, refunds, 0, reconcileOrphanID, availOrphanCap)
+			return valErr
+		})
+	} else {
+		occupancy, err = adtyComputeManualRefundOccupancyTx(DB, &ext, refunds, 0)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -645,6 +676,9 @@ func LoadAdtyRefundPageFacts(tradeNo string, requestUSD decimal.Decimal) (*AdtyR
 		requestQuota, err := ManualRefundUSDQuota(ext.FaceUSD, decimal.NewFromInt(occupancy.OccupiedQuota).Div(common.QuotaPerUnitDecimal()), requestUSD)
 		if err != nil {
 			return nil, err
+		}
+		if reconcileOrphanID > 0 && requestQuota > availOrphanCap {
+			return nil, common.NewMessage("Refund amount exceeds the verified external reversal amount")
 		}
 		if requestQuota > occupancy.RemainingQuota || (ext.IsOwnerSelfUse() && !requestUSD.Mul(common.QuotaPerUnitDecimal()).Equal(decimal.NewFromInt(requestQuota))) {
 			return nil, common.NewMessage("Refund amount exceeds the remaining principal")

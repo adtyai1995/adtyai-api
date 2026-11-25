@@ -38,7 +38,6 @@ import type {
   OwnerSite,
   OwnerTopUp,
   PricingResult,
-  SenderDomain,
   SiteBrand,
   SiteDomain,
   SiteDomainRole,
@@ -1036,31 +1035,6 @@ export async function uploadLogo(file: File): Promise<string> {
   form.append('file', file)
   const res = await api.post<ApiResponse<{ url: string }>>(`${BASE}/logo`, form)
   return requireServerSuccess(res.data).data.url
-}
-
-/** The site's sender domain, or null when none was added. */
-export async function getSenderDomain(): Promise<SenderDomain | null> {
-  const res = await api.get<ApiResponse<SenderDomain | null>>(
-    `${BASE}/sender-domain`
-  )
-  return requireServerSuccess(res.data).data
-}
-
-export async function addSenderDomain(domain: string): Promise<SenderDomain> {
-  const res = await api.post<ApiResponse<SenderDomain>>(
-    `${BASE}/sender-domain`,
-    { domain }
-  )
-  return requireServerSuccess(res.data).data
-}
-
-/** Proof: action `sender.delete`, target = site id. */
-export async function removeSenderDomain(proof: string): Promise<void> {
-  const res = await api.delete<ApiResponse<unknown>>(
-    `${BASE}/sender-domain`,
-    proofHeaders(proof)
-  )
-  requireServerSuccess(res.data)
 }
 
 export type ExportKind = 'earnings' | 'stats' | 'customers'

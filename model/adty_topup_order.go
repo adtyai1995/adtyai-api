@@ -732,32 +732,80 @@ func transitionPendingAdtyTopUpWithConfirm(tradeNo string, userId int, targetSta
 		}
 		return nil, err
 	}
-	if confirm != nil {
-		if err := confirm(&snapshot); err != nil {
+	for attempt := 0; attempt < 2; attempt++ {
+		if confirm != nil {
+			if err := confirm(&snapshot); err != nil {
+				return nil, err
+			}
+		}
+		var ext *AdtyTopupOrder
+		var retrySnapshot *AdtyTopupOrder
+		err := DB.Transaction(func(tx *gorm.DB) error {
+			lockedTop, locked, err := lockAdtyTopUpTx(tx, tradeNo)
+			if err != nil {
+				return err
+			}
+			if lockedTop.UserId != userId {
+				return ErrTopUpNotFound
+			}
+			if lockedTop.Status != common.TopUpStatusPending {
+				return ErrAdtyTopUpNotCancel
+			}
+			// Re-verify gateway_trade_id under row lock so a concurrent order creation
+			// that populated a remote BEpusdt trade ID after our unlocked snapshot cannot
+			// skip remote cancellation.
+			if confirm != nil && locked.GatewayTradeId != snapshot.GatewayTradeId {
+				copied := *locked
+				retrySnapshot = &copied
+				return nil
+			}
+			ext = locked
+			if AdtyReleaseTopUpReserveTx != nil {
+				if err := AdtyReleaseTopUpReserveTx(tx, locked); err != nil {
+					return err
+				}
+			}
+			return tx.Model(&TopUp{}).Where("id = ? AND status = ?", lockedTop.Id, common.TopUpStatusPending).Update("status", targetStatus).Error
+		})
+		if err != nil {
 			return nil, err
 		}
+		if retrySnapshot != nil {
+			snapshot = *retrySnapshot
+			continue
+		}
+		return ext, nil
 	}
-	var ext *AdtyTopupOrder
+	return nil, ErrAdtyTopUpNotCancel
+}
+
+// UpdatePendingAdtyTopupOrderCheckout atomically persists gateway checkout fields
+// only while the top-up order is still pending. Returns updated=false if the order
+// was concurrently canceled, replaced, failed, or paid before checkout writeback.
+func UpdatePendingAdtyTopupOrderCheckout(tradeNo string, money *float64, fields map[string]any) (bool, error) {
+	updated := false
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		lockedTop, locked, err := lockAdtyTopUpTx(tx, tradeNo)
+		lockedTop, lockedExt, err := lockAdtyTopUpTx(tx, tradeNo)
 		if err != nil {
 			return err
 		}
-		if lockedTop.UserId != userId {
-			return ErrTopUpNotFound
-		}
 		if lockedTop.Status != common.TopUpStatusPending {
-			return ErrAdtyTopUpNotCancel
+			return nil
 		}
-		ext = locked
-		if AdtyReleaseTopUpReserveTx != nil {
-			if err := AdtyReleaseTopUpReserveTx(tx, locked); err != nil {
+		if money != nil {
+			if err := tx.Model(&TopUp{}).Where("id = ?", lockedTop.Id).Update("money", *money).Error; err != nil {
 				return err
 			}
 		}
-		return tx.Model(&TopUp{}).Where("id = ? AND status = ?", lockedTop.Id, common.TopUpStatusPending).Update("status", targetStatus).Error
+		if len(fields) > 0 {
+			if err := tx.Model(&AdtyTopupOrder{}).Where("id = ?", lockedExt.Id).Updates(fields).Error; err != nil {
+				return err
+			}
+		}
+		updated = true
+		return nil
 	})
-	return ext, err
+	return updated, err
 }
 
 // FailPendingAdtyTopUp atomically marks a pending ADTY top-up order as failed

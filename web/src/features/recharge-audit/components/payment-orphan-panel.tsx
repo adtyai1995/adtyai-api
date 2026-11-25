@@ -16,8 +16,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
@@ -37,6 +42,7 @@ import {
 } from '@/components/ui/card'
 import { SecureVerificationDialog } from '@/features/auth/secure-verification/components/secure-verification-dialog'
 import { useSecureVerification } from '@/features/auth/secure-verification/hooks/use-secure-verification'
+import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatTimestamp } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 
@@ -56,13 +62,22 @@ export function PaymentOrphanPanel(props: PaymentOrphanPanelProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [status, setStatus] = useState('pending_review')
+  const [page, setPage] = useState(1)
   const [reviewEvent, setReviewEvent] = useState<PaymentOrphanEvent | null>(
     null
   )
   const query = useQuery({
-    queryKey: ['recharge-audit', 'orphans', status],
-    queryFn: () => getPaymentOrphans(status, 1),
+    queryKey: ['recharge-audit', 'orphans', status, page],
+    queryFn: () => getPaymentOrphans(status, page),
+    placeholderData: keepPreviousData,
   })
+  const total = query.data?.total
+  const pageSize = query.data?.page_size || 20
+  useEffect(() => {
+    if (total === undefined) return
+    const lastPage = Math.max(1, Math.ceil(total / pageSize))
+    if (page > lastPage) setPage(lastPage)
+  }, [page, total, pageSize])
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['recharge-audit'] })
     void invalidateSidebarBadges(queryClient)
@@ -106,20 +121,24 @@ export function PaymentOrphanPanel(props: PaymentOrphanPanelProps) {
                 key={value}
                 size='sm'
                 variant={status === value ? 'default' : 'outline'}
-                onClick={() => setStatus(value)}
+                onClick={() => {
+                  setStatus(value)
+                  setPage(1)
+                }}
               >
                 {value === 'all' ? t('All') : t('Pending review')}
               </Button>
             ))}
           </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className='flex flex-col gap-4'>
           {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
           {query.isPending ? (
             <LoadingState />
           ) : (
             query.data && (
-              <StaticDataTable
+              <>
+                <StaticDataTable
                 tableClassName='min-w-[760px]'
                 tableProps={{ 'aria-label': t('Payments needing review') }}
                 data={query.data?.items ?? []}
@@ -205,6 +224,13 @@ export function PaymentOrphanPanel(props: PaymentOrphanPanelProps) {
                   },
                 ]}
               />
+              <PageSwitcher
+                page={page}
+                total={Number(query.data.total) || 0}
+                pageSize={pageSize}
+                onPageChange={setPage}
+              />
+              </>
             )
           )}
         </CardContent>

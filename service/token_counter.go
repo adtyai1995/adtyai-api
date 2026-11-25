@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/tokenkit"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 )
 
 func getImageToken(c *gin.Context, fileMeta *types.FileMeta, model string, stream bool) (int, error) {
@@ -90,11 +91,18 @@ func CountRequestToken(c *gin.Context, meta *types.TokenCountMeta, info *relayco
 				return 0, fmt.Errorf("invalid audio duration")
 			}
 			// 一分钟 1000 token，与 $price / minute 对齐，单文件最少按 1 token 计。
-			fileTokens := common.QuotaRound(math.Ceil(duration) / 60.0 * 1000)
+			fileTokens, clamp := common.QuotaFromFloatChecked(math.Ceil(duration) / 60.0 * 1000)
+			if clamp != nil {
+				noteQuotaClamp(info, clamp)
+			}
 			if fileTokens < 1 {
 				fileTokens = 1
 			}
-			totalAudioToken += fileTokens
+			sumTokens, addClamp := common.QuotaFromDecimalChecked(decimal.NewFromInt(int64(totalAudioToken)).Add(decimal.NewFromInt(int64(fileTokens))))
+			if addClamp != nil {
+				noteQuotaClamp(info, addClamp)
+			}
+			totalAudioToken = sumTokens
 		}
 		return totalAudioToken, nil
 	}
@@ -187,10 +195,11 @@ func CountTokenRealtime(info *relaycommon.RelayInfo, request dto.RealtimeEvent, 
 		}
 	case dto.RealtimeEventResponseAudioDelta:
 		// count audio token
-		atk, err := CountAudioTokenOutput(request.Delta, info.OutputAudioFormat)
+		atk, clamp, err := CountAudioTokenOutputChecked(request.Delta, info.OutputAudioFormat)
 		if err != nil {
 			return 0, 0, fmt.Errorf("error counting audio token: %v", err)
 		}
+		noteQuotaClamp(info, clamp)
 		audioToken += atk
 	case dto.RealtimeEventResponseAudioTranscriptionDelta, dto.RealtimeEventResponseFunctionCallArgumentsDelta:
 		// count text token
@@ -198,10 +207,11 @@ func CountTokenRealtime(info *relaycommon.RelayInfo, request dto.RealtimeEvent, 
 		textToken += tkm
 	case dto.RealtimeEventInputAudioBufferAppend:
 		// count audio token
-		atk, err := CountAudioTokenInput(request.Audio, info.InputAudioFormat)
+		atk, clamp, err := CountAudioTokenInputChecked(request.Audio, info.InputAudioFormat)
 		if err != nil {
 			return 0, 0, fmt.Errorf("error counting audio token: %v", err)
 		}
+		noteQuotaClamp(info, clamp)
 		audioToken += atk
 	case dto.RealtimeEventConversationItemCreated:
 		if request.Item != nil {
@@ -251,33 +261,43 @@ func CountTokenInput(input any, model string) int {
 }
 
 func CountAudioTokenInput(audioBase64 string, audioFormat string) (int, error) {
+	tokens, _, err := CountAudioTokenInputChecked(audioBase64, audioFormat)
+	return tokens, err
+}
+
+func CountAudioTokenInputChecked(audioBase64 string, audioFormat string) (int, *common.QuotaClamp, error) {
 	if audioBase64 == "" {
-		return 0, nil
+		return 0, nil, nil
 	}
 	duration, err := parseAudio(audioBase64, audioFormat)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	// duration 来自用户提供的音频元数据，饱和转换防止 int 回绕并记录告警
 	tokens, clamp := common.QuotaFromFloatChecked(duration / 60 * 100 / 0.06)
 	if clamp != nil {
 		common.SysLog(common.LogText("audio input token count saturated: %s", clamp.Error()))
 	}
-	return tokens, nil
+	return tokens, clamp, nil
 }
 
 func CountAudioTokenOutput(audioBase64 string, audioFormat string) (int, error) {
+	tokens, _, err := CountAudioTokenOutputChecked(audioBase64, audioFormat)
+	return tokens, err
+}
+
+func CountAudioTokenOutputChecked(audioBase64 string, audioFormat string) (int, *common.QuotaClamp, error) {
 	if audioBase64 == "" {
-		return 0, nil
+		return 0, nil, nil
 	}
 	duration, err := parseAudio(audioBase64, audioFormat)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	// duration 来自上游返回的音频元数据，饱和转换防止 int 回绕并记录告警
 	tokens, clamp := common.QuotaFromFloatChecked(duration / 60 * 200 / 0.24)
 	if clamp != nil {
 		common.SysLog(common.LogText("audio output token count saturated: %s", clamp.Error()))
 	}
-	return tokens, nil
+	return tokens, clamp, nil
 }

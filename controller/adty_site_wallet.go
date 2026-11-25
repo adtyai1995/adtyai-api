@@ -199,7 +199,7 @@ func PostAdtyAnomalyDispositionReview(c *gin.Context) {
 
 func GetAdtyFundAnomalies(c *gin.Context) {
 	siteID, err := strconv.Atoi(c.Query("site_id"))
-	if err != nil || siteID <= 0 {
+	if err != nil || siteID < 0 {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}

@@ -15,6 +15,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/common_handler"
 	"github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -191,9 +192,15 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 	if info.RelayMode == constant.RelayModeRerank {
 		usage, err = common_handler.RerankHandler(c, info, resp)
 	} else if info.RelayMode == constant.RelayModeEmbeddings {
-		defer service.CloseResponseBodyGracefully(resp)
+		if resp != nil {
+			defer service.CloseResponseBodyGracefully(resp)
+		}
+		responseBody, apiErr := helper.ReadResponseBody(c, resp, types.ErrorCodeBadResponseBody)
+		if apiErr != nil {
+			return nil, apiErr
+		}
 		var response map[string]any
-		if decodeErr := common.DecodeJson(resp.Body, &response); decodeErr != nil {
+		if decodeErr := common.Unmarshal(responseBody, &response); decodeErr != nil {
 			return nil, types.NewError(decodeErr, types.ErrorCodeBadResponseBody)
 		}
 		if response["error"] != nil {

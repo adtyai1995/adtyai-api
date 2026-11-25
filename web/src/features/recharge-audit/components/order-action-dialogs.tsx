@@ -280,8 +280,32 @@ export function RefundDialog(
       userId,
       props.order?.trade_no,
     ],
-    queryFn: () =>
-      getOrderTrace(props.order?.trade_no ?? '', 'exceptions', 1, false),
+    queryFn: async () => {
+      const tradeNo = props.order?.trade_no ?? ''
+      const first = await getOrderTrace(tradeNo, 'exceptions', 1, false)
+      const items: OrderTraceEntry[] = [...(first.items ?? [])]
+      const pageSize = first.page_size > 0 ? first.page_size : 20
+      const maxPages = 50
+      const totalPages = Math.min(
+        maxPages,
+        Math.max(1, Math.ceil((first.total ?? items.length) / pageSize))
+      )
+      if (totalPages > 1) {
+        const seen = new Set(items.map((item) => item.id))
+        for (let page = 2; page <= totalPages; page += 1) {
+          const next = await getOrderTrace(tradeNo, 'exceptions', page, false)
+          const pageItems = next.items ?? []
+          if (pageItems.length === 0) break
+          for (const entry of pageItems) {
+            if (!seen.has(entry.id)) {
+              seen.add(entry.id)
+              items.push(entry)
+            }
+          }
+        }
+      }
+      return { ...first, items }
+    },
     enabled: props.order !== null && !props.ownerMode,
     retry: false,
     meta: { errorToast: false },
@@ -290,6 +314,8 @@ export function RefundDialog(
     (entry) =>
       entry.status === 'pending_review' && isExternalReversalTraceEntry(entry)
   )
+  const reconcileOrphanParam =
+    parsedReconcileOrphanId > 0 ? parsedReconcileOrphanId : undefined
   const preview = useQuery({
     queryKey: [
       'topup-refund-preview',
@@ -298,12 +324,14 @@ export function RefundDialog(
       props.ownerSiteId,
       props.order?.trade_no,
       typedReady ? typedAmount : '',
+      reconcileOrphanParam ?? 0,
     ],
     queryFn: () =>
       previewTopupRefund(
         props.order?.trade_no ?? '',
         typedReady ? typedAmount : undefined,
-        props.ownerMode === true
+        props.ownerMode === true,
+        reconcileOrphanParam
       ),
     enabled: props.order !== null && typedReady,
   })

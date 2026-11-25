@@ -947,8 +947,11 @@ func DeleteAdtyGroup(id string) error {
 	var channelsChanged bool
 	affectedUsers := map[int]struct{}{}
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		// R9-008: Pre-lock all 8 group option keys in sorted order BEFORE adty_groups -> adty_sites -> users -> channels.
-		if err := preLockAdtyGroupOptionsTx(tx, adtyGroupOptionKeysSorted); err != nil {
+		// R9-008 / R2-44: Pre-lock all group option keys plus console_setting.uptime_kuma_groups
+		// in sorted order BEFORE adty_groups -> adty_sites -> users -> channels.
+		lockKeys := append(slices.Clone(adtyGroupOptionKeysSorted), "console_setting.uptime_kuma_groups")
+		slices.Sort(lockKeys)
+		if err := preLockAdtyGroupOptionsTx(tx, lockKeys); err != nil {
 			return err
 		}
 		activeIDs, err := ActiveAdtyGroupIDsTx(tx, true)
@@ -1078,6 +1081,11 @@ func DeleteAdtyGroup(id string) error {
 						}
 					}
 				}
+			}
+		}
+		if tx.Migrator().HasTable(&AdtyModelProbe{}) {
+			if err := tx.Where("group_id = ?", id).Delete(&AdtyModelProbe{}).Error; err != nil {
+				return err
 			}
 		}
 		if err := tx.Where("id = ?", id).Delete(&AdtyGroup{}).Error; err != nil {

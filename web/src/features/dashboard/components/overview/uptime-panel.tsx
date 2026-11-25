@@ -129,6 +129,33 @@ function formatPingLabel(pingMs: number, msLabel: string): string {
   return `${pingMs} ${msLabel}`
 }
 
+function resolveRowUptime(params: {
+  explicitUptime?: number | null
+  monitorUptime?: number | null
+  status?: number
+  statusLabel?: string
+  hasSamples: boolean
+}): number | null {
+  const { explicitUptime, monitorUptime, status, statusLabel, hasSamples } =
+    params
+  if (!hasSamples && (status === -1 || statusLabel === 'unknown')) {
+    return null
+  }
+  if (explicitUptime != null && Number.isFinite(explicitUptime)) {
+    return Math.min(1, Math.max(0, explicitUptime))
+  }
+  if (
+    hasSamples &&
+    status !== -1 &&
+    statusLabel !== 'unknown' &&
+    monitorUptime != null &&
+    Number.isFinite(monitorUptime)
+  ) {
+    return Math.min(1, Math.max(0, monitorUptime))
+  }
+  return null
+}
+
 function getGroupRows(group: UptimeGroupResult): UptimePanelRow[] {
   if (group.models && group.models.length > 0) {
     return group.models.map((item) => {
@@ -137,7 +164,12 @@ function getGroupRows(group: UptimeGroupResult): UptimePanelRow[] {
         key: `model:${item.model}`,
         name: item.model,
         status: item.status,
-        uptime: item.uptime,
+        uptime: resolveRowUptime({
+          explicitUptime: item.uptime,
+          status: item.status,
+          statusLabel: item.statusLabel || group.statusLabel,
+          hasSamples: heartbeats.length > 0,
+        }),
         pingMs: resolveRowPingMs(item.avgPingMs ?? group.avgPingMs, heartbeats),
         lastMessage: item.lastMessage,
         heartbeats,
@@ -147,11 +179,18 @@ function getGroupRows(group: UptimeGroupResult): UptimePanelRow[] {
   if (group.monitors && group.monitors.length > 0) {
     return group.monitors.map((monitor) => {
       const heartbeats = monitor.heartbeats ?? group.heartbeats ?? []
+      const status = monitor.status ?? group.status ?? -1
       return {
         key: `monitor:${monitor.name}`,
         name: monitor.name,
-        status: monitor.status,
-        uptime: Number.isFinite(monitor.uptime) ? monitor.uptime : null,
+        status,
+        uptime: resolveRowUptime({
+          explicitUptime: group.uptime,
+          monitorUptime: monitor.uptime,
+          status,
+          statusLabel: group.statusLabel,
+          hasSamples: heartbeats.length > 0,
+        }),
         pingMs: resolveRowPingMs(group.avgPingMs, heartbeats),
         heartbeats,
         group: monitor.group,
@@ -168,10 +207,12 @@ function getGroupRows(group: UptimeGroupResult): UptimePanelRow[] {
     const modelName =
       group.probeModel?.trim() || group.categoryName || group.groupId || '—'
     const status = group.status ?? -1
-    const uptime =
-      group.uptime != null && Number.isFinite(group.uptime)
-        ? group.uptime
-        : null
+    const uptime = resolveRowUptime({
+      explicitUptime: group.uptime,
+      status,
+      statusLabel: group.statusLabel,
+      hasSamples: heartbeats.length > 0,
+    })
     return [
       {
         key: `group:${group.groupId || group.categoryName || modelName}`,
@@ -300,7 +341,14 @@ export function UptimePanel() {
                           {formatPingLabel(row.pingMs, t('ms'))}
                         </span>
                       )}
-                      <span className='text-foreground w-16 text-right font-mono text-xs font-semibold tabular-nums sm:text-sm'>
+                      <span
+                        className={cn(
+                          'w-16 text-right font-mono text-xs font-semibold tabular-nums sm:text-sm',
+                          row.uptime !== null
+                            ? 'text-foreground'
+                            : 'text-muted-foreground'
+                        )}
+                      >
                         {row.uptime !== null
                           ? `${(row.uptime * 100).toFixed(2)}%`
                           : '—'}

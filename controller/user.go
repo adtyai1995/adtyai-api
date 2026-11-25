@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -259,8 +260,8 @@ func Register(c *gin.Context) {
 	}
 	var payload struct {
 		model.User
-		AgreementAccepted bool   `json:"agreement_accepted"`
-		SiteInviteCode    string `json:"site_invite_code"`
+		AgreementAccepted bool    `json:"agreement_accepted"`
+		SiteInviteCode    *string `json:"site_invite_code"`
 	}
 	err := common.DecodeJson(c.Request.Body, &payload)
 	if err != nil {
@@ -370,55 +371,78 @@ func Register(c *gin.Context) {
 	// 二开：注册即推广员、按推广 cookie 绑定、记指纹（任务 6.2、6.5）
 	service.AdtyAfterRegister(c, &insertedUser)
 	if insertedUser.SiteId > 0 {
-		siteInviteCode := strings.TrimSpace(payload.SiteInviteCode)
-		explicitQueryCode := strings.TrimSpace(c.Query("site_invite"))
-		if siteInviteCode == "" {
-			siteInviteCode = explicitQueryCode
-		}
-		cookieRaw, _ := c.Cookie("adty_site_invite")
-		cookieCode, cookieCapturedAt := service.ParseAdtySiteInviteCookie(cookieRaw)
+		nowUnix := common.GetTimestamp()
+		cookieRaw, cookieErr := c.Cookie(service.AdtySiteInviteCookie)
+		hasCookie := cookieErr == nil && strings.TrimSpace(cookieRaw) != ""
+		siteInviteCode := ""
 		fromCookie := false
-		if siteInviteCode == "" && cookieCode != "" {
-			siteInviteCode = cookieCode
-			fromCookie = true
-		} else if explicitQueryCode == "" && cookieCode != "" && strings.EqualFold(siteInviteCode, cookieCode) {
-			fromCookie = true
+		var cookieCapturedAt int64
+		if payload.SiteInviteCode != nil {
+			// Explicit user input (including explicit empty string "" when the user clears the input) overrides cookie attribution.
+			siteInviteCode = strings.TrimSpace(*payload.SiteInviteCode)
+		} else if explicitQueryCode := strings.TrimSpace(c.Query("site_invite")); explicitQueryCode != "" {
+			siteInviteCode = explicitQueryCode
+		} else if hasCookie {
+			if parsedCode, capturedAt, ok := service.ParseAdtySiteInviteCookie(insertedUser.SiteId, cookieRaw, nowUnix); ok {
+				siteInviteCode = parsedCode
+				cookieCapturedAt = capturedAt
+				fromCookie = true
+			}
 		}
 		if siteInviteCode != "" {
-			if fromCookie && service.AdtySiteInviteCookieExpired(insertedUser.SiteId, cookieCapturedAt, common.GetTimestamp()) {
+			if fromCookie && service.AdtySiteInviteCookieExpired(insertedUser.SiteId, cookieCapturedAt, nowUnix) {
 				common.SysLog(common.LogText("site invite bind on register skipped user_id=%d site_id=%d: invite cookie expired", insertedUser.Id, insertedUser.SiteId))
 			} else if bindErr := service.BindSiteInviteByCodeFromIP(insertedUser.SiteId, siteInviteCode, insertedUser.Id, service.HashReferralRiskValue(c.ClientIP())); bindErr != nil {
 				common.SysLog(common.LogText("site invite bind on register skipped user_id=%d site_id=%d: %s", insertedUser.Id, insertedUser.SiteId, bindErr.Error()))
 			}
 		}
+		if hasCookie {
+			service.ClearAdtySiteInviteCookie(c)
+		}
 	}
 	if payload.AgreementAccepted {
 		model.RecordLog(insertedUser.Id, model.LogTypeSystem, common.NewMessage("Accepted the current user agreement and privacy policy"))
 	}
-	// 生成默认令牌
+	// 生成默认令牌（R2-46：仅在存在可用非 auto 分组时为该分组创建默认 Key，绝不创建空分组 Key）
 	if constant.GenerateDefaultToken {
-		key, err := common.GenerateKey()
-		if err != nil {
-			common.ApiErrorT(c, "Failed to generate default token")
-			common.SysLog(common.LogText("failed to generate token key: %s", err.Error()))
-			return
+		usableGroups := service.GetUserUsableGroups(insertedUser.Group)
+		defaultGroup := ""
+		groupNames := make([]string, 0, len(usableGroups))
+		for g := range usableGroups {
+			trimmed := strings.TrimSpace(g)
+			if trimmed == "" || trimmed == "auto" || !service.SiteGroupAllowed(insertedUser.SiteId, trimmed) {
+				continue
+			}
+			groupNames = append(groupNames, trimmed)
 		}
-		// 生成默认令牌
-		token := model.Token{
-			UserId:             insertedUser.Id, // 使用插入后的用户ID
-			Name:               i18n.T(c, i18n.MsgUserDefaultTokenName, map[string]any{"Username": cleanUser.Username}),
-			Key:                key,
-			CreatedTime:        common.GetTimestamp(),
-			AccessedTime:       common.GetTimestamp(),
-			ExpiredTime:        -1,     // 永不过期
-			RemainQuota:        500000, // 示例额度
-			UnlimitedQuota:     true,
-			ModelLimitsEnabled: false,
+		slices.Sort(groupNames)
+		if len(groupNames) > 0 {
+			defaultGroup = groupNames[0]
 		}
-		token.AllowUserQuotaQuery = true
-		if err := token.InsertWithLimit(operation_setting.GetMaxUserTokens()); err != nil && !errors.Is(err, model.ErrTokenLimit) {
-			common.ApiErrorT(c, "Failed to create default token")
-			return
+		if defaultGroup != "" {
+			key, err := common.GenerateKey()
+			if err != nil {
+				common.ApiErrorT(c, "Failed to generate default token")
+				common.SysLog(common.LogText("failed to generate token key: %s", err.Error()))
+				return
+			}
+			token := model.Token{
+				UserId:             insertedUser.Id, // 使用插入后的用户ID
+				Name:               i18n.T(c, i18n.MsgUserDefaultTokenName, map[string]any{"Username": cleanUser.Username}),
+				Key:                key,
+				Group:              defaultGroup,
+				CreatedTime:        common.GetTimestamp(),
+				AccessedTime:       common.GetTimestamp(),
+				ExpiredTime:        -1,     // 永不过期
+				RemainQuota:        500000, // 示例额度
+				UnlimitedQuota:     true,
+				ModelLimitsEnabled: false,
+			}
+			token.AllowUserQuotaQuery = true
+			if err := token.InsertWithLimit(operation_setting.GetMaxUserTokens()); err != nil && !errors.Is(err, model.ErrTokenLimit) {
+				common.ApiErrorT(c, "Failed to create default token")
+				return
+			}
 		}
 	}
 
@@ -458,6 +482,7 @@ type adminUserResponse struct {
 	InheritedFromSiteId int                        `json:"inherited_from_site_id"`
 	StaffSiteId         int                        `json:"staff_site_id"`
 	IsTeamEmployee      bool                       `json:"is_team_employee"`
+	AdtySiteOwner       bool                       `json:"adty_site_owner"`
 	AdminPermissions    map[string]map[string]bool `json:"admin_permissions,omitempty"`
 }
 
@@ -497,6 +522,19 @@ func buildAdminUserResponses(users []*model.User) ([]adminUserResponse, error) {
 	if err != nil {
 		return nil, err
 	}
+	siteOwners := map[int]bool{}
+	if len(userIDs) > 0 && model.DB != nil && model.DB.Migrator().HasTable(&model.AdtySite{}) {
+		var ownerIDs []int
+		if err := model.DB.Model(&model.AdtySite{}).
+			Where("owner_user_id IN ? AND status NOT IN ?", userIDs, []string{model.AdtySiteStatusClosed, "deleted", "rejected"}).
+			Distinct("owner_user_id").
+			Pluck("owner_user_id", &ownerIDs).Error; err != nil {
+			return nil, err
+		}
+		for _, oid := range ownerIDs {
+			siteOwners[oid] = true
+		}
+	}
 	items := make([]adminUserResponse, len(users))
 	for i, user := range users {
 		items[i] = adminUserResponse{
@@ -528,6 +566,7 @@ func buildAdminUserResponses(users []*model.User) ([]adminUserResponse, error) {
 			InheritedFromSiteId: user.InheritedFromSiteId,
 			StaffSiteId:         user.StaffSiteId,
 			IsTeamEmployee:      teamEmployees[user.Id],
+			AdtySiteOwner:       siteOwners[user.Id],
 			AdminPermissions:    user.AdminPermissions,
 		}
 	}
@@ -871,12 +910,13 @@ func GetUserModels(c *gin.Context) {
 	switch {
 	case group == "":
 		for g := range groups {
-			groupsToQuery = append(groupsToQuery, g)
+			if g != "auto" {
+				groupsToQuery = append(groupsToQuery, g)
+			}
 		}
 	case group == "auto":
-		if _, ok := groups[group]; ok {
-			groupsToQuery = service.GetUserAutoGroup(user.Group)
-		}
+		common.ApiErrorT(c, "Auto group has been retired; select a specific group")
+		return
 	default:
 		if _, ok := groups[group]; ok {
 			groupsToQuery = []string{group}

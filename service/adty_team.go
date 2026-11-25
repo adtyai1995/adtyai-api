@@ -1137,7 +1137,7 @@ func createAdtyTeamTx(tx *gorm.DB, leaderId, siteId int, name string, discount d
 	if err != nil {
 		return nil, err
 	}
-	if leader.SiteId != siteId || leader.StaffSiteId != 0 {
+	if leader.SiteId != siteId || leader.StaffSiteId != 0 || leader.Role != common.RoleCommonUser {
 		return nil, ErrAdtyTeamForbidden
 	}
 	if err := rejectTeamStaffOrOwnerIdentityTx(tx, leader.Id); err != nil {

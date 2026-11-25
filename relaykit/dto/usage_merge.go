@@ -63,17 +63,18 @@ func MergeUsageNonZero(current *Usage, incoming *Usage) *Usage {
 		}
 	}
 
-	if incoming.CompletionTokenDetails.TextTokens > 0 {
-		current.CompletionTokenDetails.TextTokens = incoming.CompletionTokenDetails.TextTokens
-	}
-	if incoming.CompletionTokenDetails.AudioTokens > 0 {
-		current.CompletionTokenDetails.AudioTokens = incoming.CompletionTokenDetails.AudioTokens
-	}
-	if incoming.CompletionTokenDetails.ImageTokens > 0 {
-		current.CompletionTokenDetails.ImageTokens = incoming.CompletionTokenDetails.ImageTokens
-	}
-	if incoming.CompletionTokenDetails.ReasoningTokens > 0 {
-		current.CompletionTokenDetails.ReasoningTokens = incoming.CompletionTokenDetails.ReasoningTokens
+	mergeOutputTokenDetails(&current.CompletionTokenDetails, incoming.CompletionTokenDetails)
+	if incoming.OutputTokensDetails != nil {
+		details := *incoming.OutputTokensDetails
+		if details.TextTokens > 0 ||
+			details.AudioTokens > 0 ||
+			details.ImageTokens > 0 ||
+			details.ReasoningTokens > 0 {
+			if current.OutputTokensDetails == nil {
+				current.OutputTokensDetails = &OutputTokenDetails{}
+			}
+			mergeOutputTokenDetails(current.OutputTokensDetails, details)
+		}
 	}
 
 	if incoming.UsageSemantic != "" {
@@ -359,5 +360,20 @@ func mergeInputTokenDetails(current *InputTokenDetails, incoming InputTokenDetai
 	}
 	if incoming.ImageTokens > 0 {
 		current.ImageTokens = incoming.ImageTokens
+	}
+}
+
+func mergeOutputTokenDetails(current *OutputTokenDetails, incoming OutputTokenDetails) {
+	if incoming.TextTokens > 0 {
+		current.TextTokens = incoming.TextTokens
+	}
+	if incoming.AudioTokens > 0 {
+		current.AudioTokens = incoming.AudioTokens
+	}
+	if incoming.ImageTokens > 0 {
+		current.ImageTokens = incoming.ImageTokens
+	}
+	if incoming.ReasoningTokens > 0 {
+		current.ReasoningTokens = incoming.ReasoningTokens
 	}
 }

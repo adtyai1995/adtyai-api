@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -325,15 +326,49 @@ func referralCommissionRefundBalanceTx(tx *gorm.DB, commission *model.ReferralCo
 			remaining = remaining.Add(moneyDec(entry.DeltaPending)).Add(moneyDec(entry.DeltaAvailable)).Add(moneyDec(entry.DeltaFrozen))
 		}
 	}
+	extRecovered, cvtRecovered, err := referralCommissionRecoveriesByKindTx(tx, commission.Id)
+	if err != nil {
+		return
+	}
+	cvtClawed, err := referralCommissionConvertedClawedTx(tx, commission.Id)
+	if err != nil {
+		return
+	}
+	recovered = extRecovered.Add(cvtRecovered).Add(cvtClawed)
+	remaining = decimal.Max(remaining.Sub(recovered), decimal.Zero)
+	return
+}
+
+func referralCommissionRecoveriesByKindTx(tx *gorm.DB, commissionID int) (externalRecovered, convertedRecovered decimal.Decimal, err error) {
 	var rows []model.AdtyCommissionRecovery
-	if err = tx.Where("commission_id = ? AND kind = ?", commission.Id, adtyReferralCommissionRecoveryKind).Find(&rows).Error; err != nil {
+	if err = tx.Where("commission_id = ? AND kind IN ?", commissionID, []string{adtyReferralCommissionRecoveryKind, adtyReferralConvertedRecoveryKind}).Find(&rows).Error; err != nil {
 		return
 	}
 	for _, row := range rows {
-		recovered = recovered.Add(row.AmountUSD)
+		switch row.Kind {
+		case adtyReferralConvertedRecoveryKind:
+			convertedRecovered = convertedRecovered.Add(row.AmountUSD)
+		default:
+			externalRecovered = externalRecovered.Add(row.AmountUSD)
+		}
 	}
-	remaining = decimal.Max(remaining.Sub(recovered), decimal.Zero)
 	return
+}
+
+func referralCommissionConvertedClawedTx(tx *gorm.DB, commissionID int) (decimal.Decimal, error) {
+	if !tx.Migrator().HasTable(&model.AdtyBalanceLedger{}) {
+		return decimal.Zero, nil
+	}
+	var sumQuota int64
+	err := tx.Model(&model.AdtyBalanceLedger{}).
+		Select("COALESCE(SUM(-delta_quota), 0)").
+		Where("type = ? AND ref_type = ? AND ref_id = ? AND delta_quota < 0",
+			model.AdtyLedgerTypeCommissionTransfer, "referral_commission_clawback", strconv.Itoa(commissionID)).
+		Scan(&sumQuota).Error
+	if err != nil || sumQuota <= 0 {
+		return decimal.Zero, err
+	}
+	return decimal.NewFromInt(sumQuota).Div(common.QuotaPerUnitDecimal()), nil
 }
 
 // adtyReferralAfterRefundTx 在退款事务里按累计退掉的本金比例 ratio = P ÷ F 处理佣金（赠金不退，用户花掉的部分照样计佣）。
@@ -473,9 +508,14 @@ func clawBackCommissionPartTx(tx *gorm.DB, account *model.ReferralCommissionAcco
 }
 
 // adtyReferralCommissionRecoveryKind 把主站已提现邀请佣金的追偿和分站 kind=withdrawn 分开，避免 commission_id 撞号。
-const adtyReferralCommissionRecoveryKind = "ref_withdrawn"
+const (
+	adtyReferralCommissionRecoveryKind = "ref_withdrawn"
+	adtyReferralConvertedRecoveryKind  = "ref_converted"
+)
 
-// clawBackSettledCommissionTx 冲回已入账佣金：还在可提现或冻结里的按实有余额扣，不为负；已经提现的记追偿，不扣可提现。
+// clawBackSettledCommissionTx 冲回已入账佣金：还在可提现或冻结里的按实有余额扣，不为负；
+// 转入站内余额的优先从原提现批次回收未消费余额，仅已消费差额登记 ref_converted 追偿；
+// 外部已提现的记 ref_withdrawn 追偿，不扣可提现。
 // 从待处理或已审核提现里扣回的冻结占用，会同步缩减或解除对应提现单，避免后续打款或驳回再按原冻结额搬账户。
 func clawBackSettledCommissionTx(tx *gorm.DB, account *model.ReferralCommissionAccount, commission *model.ReferralCommission, part decimal.Decimal, tradeNo string, entry model.ReferralCommissionLedger) error {
 	if !part.IsPositive() {
@@ -494,27 +534,65 @@ func clawBackSettledCommissionTx(tx *gorm.DB, account *model.ReferralCommissionA
 	if err != nil {
 		return err
 	}
-	if commission.Status == model.ReferralCommissionStatusPaid {
-		if err := recordReferralCommissionRecoveryTx(tx, commission, recovered.Add(part), tradeNo); err != nil {
-			return err
-		}
-		return addReferralLedgerTx(tx, &entry)
-	}
-	frozenAlloc, withdrawnAlloc, err := commissionAllocatedTx(tx, commission.Id)
+	frozenAlloc, convertedAlloc, externalAlloc, balanceItems, err := commissionAllocatedByChannelTx(tx, commission.Id)
 	if err != nil {
 		return err
 	}
-	withdrawnAlloc = decimal.Max(withdrawnAlloc.Sub(recovered), decimal.Zero)
+	extRecovered, cvtRecovered, err := referralCommissionRecoveriesByKindTx(tx, commission.Id)
+	if err != nil {
+		return err
+	}
+	cvtClawed, err := referralCommissionConvertedClawedTx(tx, commission.Id)
+	if err != nil {
+		return err
+	}
+	convertedLeft := decimal.Max(convertedAlloc.Sub(cvtClawed).Sub(cvtRecovered), decimal.Zero)
+	externalLeft := decimal.Max(externalAlloc.Sub(extRecovered), decimal.Zero)
+	if commission.Status == model.ReferralCommissionStatusPaid {
+		// Legacy paid commissions without withdrawal_items fallback to external recovery.
+		if !convertedLeft.IsPositive() && !externalLeft.IsPositive() {
+			externalLeft = part
+		}
+		paidParts := splitDecimalByWeights(part, []decimal.Decimal{convertedLeft, externalLeft})
+		if paidParts[0].IsPositive() {
+			shortfall, reclaimErr := reclaimConvertedReferralCommissionTx(tx, commission, balanceItems, paidParts[0], entry.ExternalRefId)
+			if reclaimErr != nil {
+				return reclaimErr
+			}
+			if shortfall.IsPositive() {
+				if err := recordReferralCommissionRecoveryByKindTx(tx, commission, adtyReferralConvertedRecoveryKind, cvtRecovered.Add(shortfall), tradeNo); err != nil {
+					return err
+				}
+			}
+		}
+		if paidParts[1].IsPositive() {
+			if err := recordReferralCommissionRecoveryByKindTx(tx, commission, adtyReferralCommissionRecoveryKind, extRecovered.Add(paidParts[1]), tradeNo); err != nil {
+				return err
+			}
+		}
+		return addReferralLedgerTx(tx, &entry)
+	}
 	frozenAlloc = decimal.Max(frozenAlloc, decimal.Zero)
-	free := decimal.Max(remaining.Sub(frozenAlloc).Sub(withdrawnAlloc), decimal.Zero)
-	parts := splitDecimalByWeights(part, []decimal.Decimal{withdrawnAlloc, frozenAlloc, free})
+	free := decimal.Max(remaining.Sub(frozenAlloc).Sub(convertedLeft).Sub(externalLeft), decimal.Zero)
+	parts := splitDecimalByWeights(part, []decimal.Decimal{convertedLeft, externalLeft, frozenAlloc, free})
 	if parts[0].IsPositive() {
-		if err := recordReferralCommissionRecoveryTx(tx, commission, recovered.Add(parts[0]), tradeNo); err != nil {
+		shortfall, reclaimErr := reclaimConvertedReferralCommissionTx(tx, commission, balanceItems, parts[0], entry.ExternalRefId)
+		if reclaimErr != nil {
+			return reclaimErr
+		}
+		if shortfall.IsPositive() {
+			if err := recordReferralCommissionRecoveryByKindTx(tx, commission, adtyReferralConvertedRecoveryKind, cvtRecovered.Add(shortfall), tradeNo); err != nil {
+				return err
+			}
+		}
+	}
+	if parts[1].IsPositive() {
+		if err := recordReferralCommissionRecoveryByKindTx(tx, commission, adtyReferralCommissionRecoveryKind, extRecovered.Add(parts[1]), tradeNo); err != nil {
 			return err
 		}
 	}
-	deductFrozen := clawbackLimitedToBalance(account.FrozenAmount, parts[1])
-	deductAvailable := clawbackLimitedToBalance(account.AvailableAmount, parts[2])
+	deductFrozen := clawbackLimitedToBalance(account.FrozenAmount, parts[2])
+	deductAvailable := clawbackLimitedToBalance(account.AvailableAmount, parts[3])
 	// Keep paid allocations in the book value; remove only cash already clawed back.
 	// Withdrawal allocation uses CommissionAmount minus the original paid and frozen items.
 	booked := remaining.Add(recovered).Sub(deductFrozen).Sub(deductAvailable)
@@ -532,6 +610,91 @@ func clawBackSettledCommissionTx(tx *gorm.DB, account *model.ReferralCommissionA
 	return AdjustAccountTx(tx, account, decimal.Zero, deductAvailable.Neg(), deductFrozen.Neg(), decimal.Zero, entry)
 }
 
+func reclaimConvertedReferralCommissionTx(tx *gorm.DB, commission *model.ReferralCommission, balanceItems []referralConvertedWithdrawalItem, amount decimal.Decimal, idemSuffix string) (decimal.Decimal, error) {
+	if !amount.IsPositive() || commission == nil || commission.AffiliateUserId <= 0 || len(balanceItems) == 0 {
+		return amount, nil
+	}
+	exact := amount.Mul(common.QuotaPerUnitDecimal())
+	wanted, err := common.WalletQuotaFromDecimalStrict(exact.Floor())
+	if err != nil {
+		return decimal.Zero, err
+	}
+	if wanted <= 0 {
+		return amount, nil
+	}
+	var user model.User
+	if err := model.AdtyLockForUpdate(tx).First(&user, commission.AffiliateUserId).Error; err != nil {
+		return decimal.Zero, err
+	}
+	var reclaimed int64
+	left := int64(wanted)
+	if tx.Migrator().HasTable(&model.AdtyFundBatch{}) {
+		for _, item := range balanceItems {
+			if left <= 0 {
+				break
+			}
+			source := fmt.Sprintf("referral-withdrawal-%d", item.WithdrawalId)
+			var lot model.AdtyFundBatch
+			res := tx.Where("user_id = ? AND source = ? AND kind = ?", commission.AffiliateUserId, source, model.AdtyFundBatchKindPrincipal).Limit(1).Find(&lot)
+			if res.Error != nil {
+				return decimal.Zero, res.Error
+			}
+			if res.RowsAffected == 0 || lot.Remaining <= 0 {
+				continue
+			}
+			own, err := common.WalletQuotaFromDecimalStrict(item.AllocatedAmount.Mul(common.QuotaPerUnitDecimal()).Floor())
+			if err != nil {
+				return decimal.Zero, err
+			}
+			provable := lot.Remaining - max(lot.Original-int64(own), 0)
+			if provable <= 0 {
+				continue
+			}
+			got, err := model.ReclaimAdtyFundBatchesBySourceTx(tx, commission.AffiliateUserId, source, min(provable, left), 0)
+			if err != nil {
+				return decimal.Zero, err
+			}
+			reclaimed += got
+			left -= got
+		}
+	}
+	if reclaimed <= 0 {
+		return amount, nil
+	}
+	before, debited, err := model.AdtyDebitUserQuotaTx(tx, commission.AffiliateUserId, reclaimed)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	if debited != reclaimed {
+		return decimal.Zero, model.ErrAdtyFundBatchShortfall
+	}
+	if debited > 0 {
+		key := fmt.Sprintf("ref-cvt-claw:%d:%s", commission.Id, idemSuffix)
+		if len(key) > 64 {
+			key = fmt.Sprintf("ref-cvt-claw:%d:%s", commission.Id, common.Sha1([]byte(idemSuffix)))
+		}
+		if err := model.InsertAdtyLedgerTx(tx, &model.AdtyBalanceLedger{
+			UserId:         commission.AffiliateUserId,
+			DeltaQuota:     -debited,
+			BalanceBefore:  before,
+			BalanceAfter:   before - debited,
+			Type:           model.AdtyLedgerTypeCommissionTransfer,
+			RefType:        "referral_commission_clawback",
+			RefId:          strconv.Itoa(commission.Id),
+			Reason:         "referral commission balance clawback",
+			IdempotencyKey: &key,
+		}); err != nil {
+			return decimal.Zero, err
+		}
+	}
+	debitedUSD := decimal.NewFromInt(debited).Div(common.QuotaPerUnitDecimal())
+	shortfall := amount.Sub(debitedUSD)
+	if shortfall.IsNegative() {
+		return decimal.Zero, nil
+	}
+	return shortfall, nil
+}
+
 func clawbackLimitedToBalance(have float64, want decimal.Decimal) decimal.Decimal {
 	if !want.IsPositive() {
 		return decimal.Zero
@@ -547,11 +710,15 @@ func clawbackLimitedToBalance(have float64, want decimal.Decimal) decimal.Decima
 }
 
 func recordReferralCommissionRecoveryTx(tx *gorm.DB, commission *model.ReferralCommission, target decimal.Decimal, tradeNo string) error {
+	return recordReferralCommissionRecoveryByKindTx(tx, commission, adtyReferralCommissionRecoveryKind, target, tradeNo)
+}
+
+func recordReferralCommissionRecoveryByKindTx(tx *gorm.DB, commission *model.ReferralCommission, kind string, target decimal.Decimal, tradeNo string) error {
 	if !target.IsPositive() {
 		return nil
 	}
 	var rows []model.AdtyCommissionRecovery
-	if err := tx.Where("commission_id = ? AND kind = ?", commission.Id, adtyReferralCommissionRecoveryKind).Find(&rows).Error; err != nil {
+	if err := tx.Where("commission_id = ? AND kind = ?", commission.Id, kind).Find(&rows).Error; err != nil {
 		return err
 	}
 	already := decimal.Zero
@@ -562,16 +729,20 @@ func recordReferralCommissionRecoveryTx(tx *gorm.DB, commission *model.ReferralC
 	if !part.IsPositive() {
 		return nil
 	}
-	key := fmt.Sprintf("referral-recovery:%d:%s", commission.Id, target.String())
+	prefix := "referral-recovery"
+	if kind == adtyReferralConvertedRecoveryKind {
+		prefix = "referral-cvt-recovery"
+	}
+	key := fmt.Sprintf("%s:%d:%s", prefix, commission.Id, target.String())
 	if len(key) > 128 {
-		key = fmt.Sprintf("referral-recovery:%d:%s", commission.Id, part.String())
+		key = fmt.Sprintf("%s:%d:%s", prefix, commission.Id, part.String())
 		if len(key) > 128 {
 			return fmt.Errorf("referral commission recovery key too long")
 		}
 	}
 	return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "idempotency_key"}}, DoNothing: true}).Create(&model.AdtyCommissionRecovery{
 		SiteId: 0, CommissionId: int64(commission.Id), TradeNo: tradeNo, AmountUSD: part,
-		Kind: adtyReferralCommissionRecoveryKind, Status: "open", IdempotencyKey: key,
+		Kind: kind, Status: "open", IdempotencyKey: key,
 	}).Error
 }
 
@@ -620,10 +791,21 @@ func init() {
 			return
 		}
 		var row model.AdtySiteInviteCommission
-		if err := model.DB.Select("inviter_id").Where("trade_no = ?", ext.TradeNo).Limit(1).Find(&row).Error; err != nil || row.InviterId <= 0 {
-			return
+		if err := model.DB.Select("inviter_id").Where("trade_no = ?", ext.TradeNo).Limit(1).Find(&row).Error; err == nil && row.InviterId > 0 {
+			model.AdtySyncUserQuotaCache(row.InviterId, "site invite commission clawback")
 		}
-		model.AdtySyncUserQuotaCache(row.InviterId, "site invite commission clawback")
+		var refRows []model.ReferralCommission
+		if err := model.DB.Select("affiliate_user_id").Where("source_type = ? AND source_trade_no = ?", model.ReferralSourceTopup, ext.TradeNo).Find(&refRows).Error; err == nil {
+			seen := map[int]struct{}{}
+			for _, refRow := range refRows {
+				if refRow.AffiliateUserId > 0 {
+					if _, dup := seen[refRow.AffiliateUserId]; !dup {
+						seen[refRow.AffiliateUserId] = struct{}{}
+						model.AdtySyncUserQuotaCache(refRow.AffiliateUserId, "referral commission balance clawback")
+					}
+				}
+			}
+		}
 	}
 	adtyMasterTasks = append(adtyMasterTasks, startReferralSettlementTask)
 }

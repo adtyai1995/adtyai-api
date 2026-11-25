@@ -48,7 +48,6 @@ export type NavLink = BaseNavItem & {
   linkOptions?: LinkProps
   url: LinkProps['to'] | (string & {})
   items?: never
-  type?: never
 }
 
 /**
@@ -57,22 +56,12 @@ export type NavLink = BaseNavItem & {
 export type NavCollapsible = BaseNavItem & {
   items: (BaseNavItem & { url: LinkProps['to'] | (string & {}) })[]
   url?: never
-  type?: never
-}
-
-/**
- * Dynamic chat presets type - dynamically loaded chat preset list from API
- */
-export type NavChatPresets = BaseNavItem & {
-  type: 'chat-presets'
-  url?: never
-  items?: never
 }
 
 /**
  * Navigation item union type
  */
-export type NavItem = NavCollapsible | NavLink | NavChatPresets
+export type NavItem = NavCollapsible | NavLink
 
 /**
  * Navigation group type - a group of navigation items in sidebar

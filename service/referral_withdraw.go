@@ -107,7 +107,10 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 	if input.AccountType == model.ReferralWithdrawToUSDT {
 		scale = 6
 	}
-	amount := input.Amount.Round(scale)
+	if !input.Amount.Equal(input.Amount.Truncate(scale)) {
+		return nil, common.NewMessage("Invalid parameters")
+	}
+	amount := input.Amount.Truncate(scale)
 	if !amount.IsPositive() {
 		return nil, common.NewMessage("Enter a withdrawal amount")
 	}
@@ -687,6 +690,9 @@ func (s *ReferralService) ReviewWithdrawalForActor(withdrawalId, adminId, actorR
 			if err := CheckReferralAdminTargetUserTx(tx, withdrawal.UserId, adminId, actorRole, denyAdminTarget); err != nil {
 				return err
 			}
+			if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: 0, AccountID: withdrawal.UserId}); err != nil {
+				return err
+			}
 			if withdrawal.Status != model.ReferralWithdrawalStatusPending {
 				return common.NewMessage("Only pending withdrawals can be reviewed")
 			}
@@ -763,6 +769,9 @@ func (s *ReferralService) MarkWithdrawalPaidForActor(withdrawalId, adminId, acto
 		if err := CheckReferralAdminTargetUserTx(tx, withdrawal.UserId, adminId, actorRole, denyAdminTarget); err != nil {
 			return err
 		}
+		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: 0, AccountID: withdrawal.UserId}); err != nil {
+			return err
+		}
 		amount, err := withdrawalMovableFrozenTx(tx, &withdrawal, account)
 		if err != nil {
 			return err
@@ -795,7 +804,14 @@ func (s *ReferralService) MarkWithdrawalPaidForActor(withdrawalId, adminId, acto
 }
 
 func renderReferralWithdrawalMail(site *model.AdtySite, withdrawal *model.ReferralWithdrawal, paid bool, reason string) (subject, body string) {
-	amount := "$" + moneyDec(withdrawal.Amount).StringFixed(2)
+	scale := int32(2)
+	if withdrawal != nil && withdrawal.AccountType == model.ReferralWithdrawToUSDT {
+		scale = 6
+	}
+	amount := "$" + strings.TrimRight(strings.TrimRight(moneyDec(withdrawal.Amount).StringFixed(scale), "0"), ".")
+	if withdrawal == nil || withdrawal.AccountType != model.ReferralWithdrawToUSDT {
+		amount = "$" + moneyDec(withdrawal.Amount).StringFixed(2)
+	}
 	var message AdtyMailMessage
 	if paid {
 		message.Title = "Your withdrawal of " + amount + " has been paid"
@@ -889,6 +905,49 @@ func (s *ReferralService) updateWithdrawalItemsTx(tx *gorm.DB, withdrawalId int,
 		}
 	}
 	return nil
+}
+
+type referralConvertedWithdrawalItem struct {
+	WithdrawalId    int
+	AllocatedAmount decimal.Decimal
+}
+
+func commissionAllocatedByChannelTx(tx *gorm.DB, commissionId int) (frozen, converted, externalWithdrawn decimal.Decimal, balanceItems []referralConvertedWithdrawalItem, err error) {
+	var items []struct {
+		WithdrawalId    int
+		AllocatedAmount float64
+		Status          string
+		AccountType     string
+	}
+	err = tx.Table("referral_withdrawal_items AS i").
+		Select("i.withdrawal_id, i.allocated_amount, i.status, COALESCE(w.account_type, '') AS account_type").
+		Joins("LEFT JOIN referral_withdrawals AS w ON w.id = i.withdrawal_id").
+		Where("i.commission_id = ?", commissionId).
+		Order("i.id ASC").
+		Scan(&items).Error
+	if err != nil {
+		return
+	}
+	for _, item := range items {
+		amt := moneyDec(item.AllocatedAmount)
+		switch item.Status {
+		case model.ReferralWithdrawalItemStatusFrozen:
+			frozen = frozen.Add(amt)
+		case model.ReferralWithdrawalItemStatusWithdrawn:
+			if item.AccountType == model.ReferralWithdrawToBalance {
+				converted = converted.Add(amt)
+				if amt.IsPositive() {
+					balanceItems = append(balanceItems, referralConvertedWithdrawalItem{
+						WithdrawalId:    item.WithdrawalId,
+						AllocatedAmount: amt,
+					})
+				}
+			} else {
+				externalWithdrawn = externalWithdrawn.Add(amt)
+			}
+		}
+	}
+	return
 }
 
 func commissionAllocatedTx(tx *gorm.DB, commissionId int) (frozen, withdrawn decimal.Decimal, err error) {
@@ -1216,53 +1275,6 @@ func validateReferralWithdrawSettingsTx(tx *gorm.DB, values map[string]string, w
 		if !minSet || !rateSet {
 			return common.NewMessage("Set the minimum withdrawal and CNY exchange rate before enabling Alipay withdrawals")
 		}
-	}
-	return nil
-}
-
-// validatePartnerRateBoundsTx validates effective partner_min_rate <= partner_max_rate
-// inside the transaction by merging partial updates against stored DB values (R2-049).
-func validatePartnerRateBoundsTx(tx *gorm.DB, values map[string]string) error {
-	const minKey = "adty_referral_setting.partner_min_rate"
-	const maxKey = "adty_referral_setting.partner_max_rate"
-	_, hasMinUpdate := values[minKey]
-	_, hasMaxUpdate := values[maxKey]
-	if !hasMinUpdate && !hasMaxUpdate {
-		return nil
-	}
-	resolve := func(key string) (decimal.Decimal, bool, error) {
-		raw, ok := values[key]
-		if !ok {
-			var opt model.Option
-			res := tx.Where("key = ?", key).Limit(1).Find(&opt)
-			if res.Error != nil {
-				return decimal.Zero, false, res.Error
-			}
-			if res.RowsAffected == 0 {
-				return decimal.Zero, false, nil
-			}
-			raw = opt.Value
-		}
-		trimmed := strings.TrimSpace(raw)
-		if trimmed == "" || strings.EqualFold(trimmed, "null") {
-			return decimal.Zero, false, nil
-		}
-		val, err := decimal.NewFromString(trimmed)
-		if err != nil {
-			return decimal.Zero, false, common.NewMessage("Invalid parameters")
-		}
-		return val, true, nil
-	}
-	effMin, minSet, err := resolve(minKey)
-	if err != nil {
-		return err
-	}
-	effMax, maxSet, err := resolve(maxKey)
-	if err != nil {
-		return err
-	}
-	if minSet && maxSet && effMin.GreaterThan(effMax) {
-		return common.NewMessage("Invalid parameters")
 	}
 	return nil
 }

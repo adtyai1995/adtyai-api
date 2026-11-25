@@ -280,9 +280,15 @@ func cohereRerankHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 }
 
 func cohereEmbeddingHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (*dto.Usage, *types.NewAPIError) {
-	defer service.CloseResponseBodyGracefully(resp)
+	if resp != nil {
+		defer service.CloseResponseBodyGracefully(resp)
+	}
+	responseBody, apiErr := helper.ReadResponseBody(c, resp, types.ErrorCodeBadResponseBody)
+	if apiErr != nil {
+		return nil, apiErr
+	}
 	var response CohereEmbeddingResponse
-	if err := common.DecodeJson(resp.Body, &response); err != nil {
+	if err := common.Unmarshal(responseBody, &response); err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	data := make([]map[string]any, 0, len(response.Embeddings.Float)+len(response.Embeddings.Base64))

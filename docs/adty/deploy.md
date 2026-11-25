@@ -53,11 +53,10 @@ sudo cp .env.example .env && sudo chmod 600 .env
 | `ANONYMOUS_REQUEST_BODY_LIMIT_KB` | 否 | 512 | 匿名请求体上限（`common/init.go:191`） |
 | `TASK_PLUGIN_ENABLED` | 否 | true | 任务插件总开关（`common/init.go:198`） |
 | `TASK_PLUGIN_PROTOCOL_TIMEOUT_SECONDS` | 否 | 600 | 客户端等待插件任务的协议超时，超时回 504（`common/init.go:214`） |
-| `ADTY_GROUP_PROBE_INTERVAL_SECONDS` | 否 | 300 | 主节点分组健康主动探测间隔，单位秒，最少 30 秒，0 表示禁用 |
 | `REFERRAL_SETTLEMENT_INTERVAL_SECONDS` | 否 | 60 | 主节点返佣结算间隔，最少 10 秒（`service/referral_commission.go:534`） |
 | `ADTY_TOPUP_MAINTENANCE_INTERVAL_SECONDS` | 否 | 60 | 主节点充值单维护间隔（`service/adty_topup_task.go:73`） |
 
-最后三个只在主节点生效。
+最后两个只在主节点生效。
 
 ### 后台必须配置的 option 键
 

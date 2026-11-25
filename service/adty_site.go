@@ -965,8 +965,10 @@ func ApplyDueAdtySiteCostFactors(now int64) (int64, error) {
 		return 0, err
 	}
 	var applied int64
+	changedSiteIDs := make([]int, 0, len(dueIDs))
 	for _, siteID := range dueIDs {
 		var rowApplied int64
+		var effectiveChanged bool
 		err := model.DB.Transaction(func(tx *gorm.DB) error {
 			var site model.AdtySite
 			if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteID).First(&site).Error; err != nil {
@@ -978,6 +980,7 @@ func ApplyDueAdtySiteCostFactors(now int64) (int64, error) {
 			if site.PendingCostFactor == nil || site.PendingCostFactorAt <= 0 || site.PendingCostFactorAt > now {
 				return nil
 			}
+			beforeEff, beforeOK := AdtySiteCostFactor(&site)
 			res := tx.Model(&model.AdtySite{}).Where("id = ?", site.Id).Updates(map[string]any{
 				"cost_factor":            *site.PendingCostFactor,
 				"pending_cost_factor":    gorm.Expr("NULL"),
@@ -987,15 +990,34 @@ func ApplyDueAdtySiteCostFactors(now int64) (int64, error) {
 				return res.Error
 			}
 			rowApplied = res.RowsAffected
+			if rowApplied > 0 {
+				afterSite := site
+				val := *site.PendingCostFactor
+				afterSite.CostFactor = &val
+				afterSite.PendingCostFactor = nil
+				afterSite.PendingCostFactorAt = 0
+				afterEff, afterOK := AdtySiteCostFactor(&afterSite)
+				effectiveChanged = beforeOK != afterOK || !beforeEff.Equal(afterEff)
+			}
 			return nil
 		})
 		if err != nil {
 			return applied, err
 		}
 		applied += rowApplied
+		if effectiveChanged {
+			changedSiteIDs = append(changedSiteIDs, siteID)
+		}
 	}
 	if applied > 0 {
 		InvalidateAdtySiteCache()
+		if AdtyOnSiteCostFactorChanged != nil {
+			for _, id := range changedSiteIDs {
+				if updated, getErr := GetAdtySite(id); getErr == nil && updated != nil {
+					AdtyOnSiteCostFactorChanged(updated)
+				}
+			}
+		}
 	}
 	return applied, nil
 }
@@ -1011,8 +1033,10 @@ func ApplyDueAdtySiteTierCostFactors(now int64) (int64, error) {
 		return 0, err
 	}
 	var applied int64
+	changedSiteIDs := make([]int, 0, len(dueIDs))
 	for _, siteID := range dueIDs {
 		var rowApplied int64
+		var effectiveChanged bool
 		err := model.DB.Transaction(func(tx *gorm.DB) error {
 			var site model.AdtySite
 			if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteID).First(&site).Error; err != nil {
@@ -1024,6 +1048,7 @@ func ApplyDueAdtySiteTierCostFactors(now int64) (int64, error) {
 			if site.PendingTierCostFactor == nil || site.PendingTierCostFactorAt <= 0 || site.PendingTierCostFactorAt > now || site.TierMode != "" || site.TierCode != "" {
 				return nil
 			}
+			beforeEff, beforeOK := AdtySiteCostFactor(&site)
 			res := tx.Model(&model.AdtySite{}).Where("id = ?", site.Id).Updates(map[string]any{
 				"tier_cost_factor":            *site.PendingTierCostFactor,
 				"pending_tier_cost_factor":    gorm.Expr("NULL"),
@@ -1033,15 +1058,34 @@ func ApplyDueAdtySiteTierCostFactors(now int64) (int64, error) {
 				return res.Error
 			}
 			rowApplied = res.RowsAffected
+			if rowApplied > 0 {
+				afterSite := site
+				val := *site.PendingTierCostFactor
+				afterSite.TierCostFactor = &val
+				afterSite.PendingTierCostFactor = nil
+				afterSite.PendingTierCostFactorAt = 0
+				afterEff, afterOK := AdtySiteCostFactor(&afterSite)
+				effectiveChanged = beforeOK != afterOK || !beforeEff.Equal(afterEff)
+			}
 			return nil
 		})
 		if err != nil {
 			return applied, err
 		}
 		applied += rowApplied
+		if effectiveChanged {
+			changedSiteIDs = append(changedSiteIDs, siteID)
+		}
 	}
 	if applied > 0 {
 		InvalidateAdtySiteCache()
+		if AdtyOnSiteCostFactorChanged != nil {
+			for _, id := range changedSiteIDs {
+				if updated, getErr := GetAdtySite(id); getErr == nil && updated != nil {
+					AdtyOnSiteCostFactorChanged(updated)
+				}
+			}
+		}
 	}
 	return applied, nil
 }

@@ -139,3 +139,14 @@ export async function recordReferralClick(
   )
   requireServerSuccess(res.data)
 }
+
+/** Records a subsite invite click so the server issues a signed HttpOnly cookie. */
+export async function recordSiteReferralClick(
+  code: string
+): Promise<{ code: string; ttl_days: number }> {
+  const res = await api.post<ApiResponse<{ code: string; ttl_days: number }>>(
+    '/api/adty/site-referral/click',
+    { code }
+  )
+  return requireServerSuccess(res.data).data
+}

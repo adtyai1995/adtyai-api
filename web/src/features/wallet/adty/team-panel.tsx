@@ -45,6 +45,7 @@ import {
   requireServerSuccess,
 } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { adtyTopupQueryKeys, getAdtyTopupInfo, quoteAdtyTopup } from './api'
 import { EpayPayDialog } from './components/epay-pay-dialog'
@@ -103,6 +104,7 @@ type TeamMine = {
   site_id?: number
   source_site_id?: number
   role: string
+  independent_employee?: boolean
   discount?: string
   shared_quota: number
   status: string
@@ -173,8 +175,27 @@ export function TeamPanel() {
   const [ttlHours, setTtlHours] = useState('24')
   const [tokenId, setTokenId] = useState('')
   const [confirmClose, setConfirmClose] = useState(false)
+  const [confirmLeave, setConfirmLeave] = useState(false)
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
+  const currentUserId = useAuthStore((state) => state.auth.user?.id)
+  const selfMember = team?.members?.find(
+    (member) => member.user_id === currentUserId
+  )
+  const independentEmployeeFlag =
+    team?.independent_employee ?? selfMember?.independent_employee
+  let leaveConfirmDescription = t(
+    'Leaving the team revokes your bound team keys immediately. If this is an independent team employee account, it will be permanently disabled and cannot be recovered.'
+  )
+  if (independentEmployeeFlag === true) {
+    leaveConfirmDescription = t(
+      'After leaving the team, this independent employee account will be permanently disabled and cannot be recovered, and all bound team keys will be revoked immediately.'
+    )
+  } else if (independentEmployeeFlag === false) {
+    leaveConfirmDescription = t(
+      'After leaving the team, you will lose access to the team shared quota and your bound team keys will be revoked.'
+    )
+  }
   const topupMethod =
     topupMethods.find(
       (method) => paymentMethodKey(method) === topupMethodKey
@@ -1036,18 +1057,10 @@ export function TeamPanel() {
                 type='button'
                 variant='outline'
                 disabled={pending}
-                onClick={() =>
-                  void run(async () => {
-                    const response = await api.post(
-                      `/api/adty/teams/${team.team_id}/leave`
-                    )
-                    if (!response.data?.success) {
-                      throw new Error(
-                        response.data?.message || 'Failed to save'
-                      )
-                    }
-                  })
-                }
+                onClick={() => {
+                  setError('')
+                  setConfirmLeave(true)
+                }}
               >
                 {t('Leave team')}
               </Button>
@@ -1206,6 +1219,38 @@ export function TeamPanel() {
           )}
         </div>
       </Dialog>
+      <ConfirmDialog
+        open={confirmLeave}
+        onOpenChange={(open) => {
+          if (!open && !pending) {
+            setConfirmLeave(false)
+            setError('')
+          }
+        }}
+        title={t('Leave team')}
+        desc={leaveConfirmDescription}
+        confirmText={t('Confirm leave')}
+        destructive
+        isLoading={pending}
+        handleConfirm={() => {
+          if (!team) return
+          void run(async () => {
+            const response = await api.post(
+              `/api/adty/teams/${team.team_id}/leave`
+            )
+            if (!response.data?.success) {
+              throw new Error(response.data?.message || 'Failed to save')
+            }
+            setConfirmLeave(false)
+          })
+        }}
+      >
+        {error && (
+          <p role='alert' className='text-destructive text-sm'>
+            {error}
+          </p>
+        )}
+      </ConfirmDialog>
       <ConfirmDialog
         open={deleteEmployee !== null}
         onOpenChange={(open) => {

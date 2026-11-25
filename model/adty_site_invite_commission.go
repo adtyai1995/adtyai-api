@@ -250,14 +250,23 @@ func SiteInviteCommissionRefundParts(row AdtySiteInviteCommission, withdrawnLive
 // SiteInviteCommissionOfficialStates lists live amounts under official DEC-025
 // names. It does not use covered, available, or clawed_back as product states.
 func SiteInviteCommissionOfficialStates(row AdtySiteInviteCommission, withdrawnLive decimal.Decimal) []AdtySiteCommissionStateAmount {
-	hold := siteInviteCommissionHoldUSD(row)
-	pendingWithdrawal := row.FrozenUSD
-	if pendingWithdrawal.IsNegative() {
-		pendingWithdrawal = decimal.Zero
+	totalHold := row.EarningsHoldUSD.Add(row.MarginHoldUSD)
+	if totalHold.IsNegative() {
+		totalHold = decimal.Zero
 	}
-	onHold := hold.Sub(pendingWithdrawal)
+	frozen := row.FrozenUSD
+	if frozen.IsNegative() {
+		frozen = decimal.Zero
+	}
+	// PendingPayoutClawUSD is a subset of FrozenUSD awaiting approved-payout reconciliation.
+	// Do not subtract it twice from on_hold.
+	onHold := totalHold.Sub(frozen)
 	if onHold.IsNegative() {
 		onHold = decimal.Zero
+	}
+	pendingWithdrawal := frozen.Sub(row.PendingPayoutClawUSD)
+	if pendingWithdrawal.IsNegative() {
+		pendingWithdrawal = decimal.Zero
 	}
 	states := make([]AdtySiteCommissionStateAmount, 0, 5)
 	appendPositive := func(state string, amount decimal.Decimal) {

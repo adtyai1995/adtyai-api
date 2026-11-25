@@ -28,7 +28,7 @@ func IsAdtyGroupOption(key string) bool {
 }
 
 // ValidateAdtyGroupOption 检查分组类配置里出现的每个分组 ID 都在分组表里（未删除）。
-// auto 只能出现在 UserUsableGroups 的键和特殊可用分组的内层键里。
+// auto 分组已退役，禁止在任何分组配置项中出现。
 // GroupRatio 还不能漏掉任何未删除的分组：删除分组只能走迁移和删除。
 // GroupModelAllow 额外在保存前强校验「分组 ID → 非空模型名数组」结构，其余配置项的格式错误留给上游各自的检查。
 func ValidateAdtyGroupOption(key, value string) error {
@@ -130,7 +130,7 @@ func groupIDsInOption(key, value string) ([]adtyGroupRef, error) {
 			return nil, err
 		}
 		for id := range object {
-			add(id, key == "UserUsableGroups")
+			add(id, false)
 		}
 	case "GroupGroupRatio":
 		nested := map[string]map[string]any{}
@@ -164,7 +164,7 @@ func groupIDsInOption(key, value string) ([]adtyGroupRef, error) {
 				} else if after, ok := strings.CutPrefix(id, "-:"); ok {
 					id = after
 				}
-				add(id, true)
+				add(id, false)
 			}
 		}
 	}

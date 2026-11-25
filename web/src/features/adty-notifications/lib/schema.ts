@@ -43,6 +43,24 @@ export const ALL_TARGET_AUDIENCES = [
 
 export type NotificationTargetAudience = (typeof ALL_TARGET_AUDIENCES)[number]
 
+export const LEGACY_NOTIFICATION_AUDIENCES = [
+  'all_users',
+  'all_sites',
+  'site',
+  'team',
+  'user',
+] as const
+
+export type LegacyNotificationAudience =
+  (typeof LEGACY_NOTIFICATION_AUDIENCES)[number]
+
+export const NOTIFICATION_AUDIENCES = [
+  ...LEGACY_NOTIFICATION_AUDIENCES,
+  ...ALL_TARGET_AUDIENCES,
+  'multi',
+  'all',
+] as const
+
 export const NOTIFICATION_CONTENT_FORMATS = [
   'html',
   'markdown',
@@ -56,7 +74,7 @@ const baseNotificationObject = z.object({
   content: z.string().max(60000, 'Invalid parameters'),
   content_format: z.enum(NOTIFICATION_CONTENT_FORMATS),
   kind: z.enum(['platform', 'system', 'maintenance', 'rules']),
-  audience: z.enum(['all_users', 'all_sites', 'site', 'team', 'user']),
+  audience: z.enum(NOTIFICATION_AUDIENCES),
   target_audiences: z.array(z.enum(ALL_TARGET_AUDIENCES)),
   target_site_ids: z.array(z.number().int().positive()),
   target_site_id: z.number().int().nonnegative(),
@@ -189,7 +207,7 @@ export function deriveLegacyAudience(
   targetAudiences: NotificationTargetAudience[],
   targetSiteIds: number[]
 ): {
-  audience: NotificationInput['audience']
+  audience: LegacyNotificationAudience
   target_site_id: number
 } {
   if (mode === 'owner') {

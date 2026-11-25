@@ -35,10 +35,6 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	info.ObserveResponseModel(gjson.GetBytes(responseBody, "modelVersion").Str)
-	var grounding geminiGroundingCounter
-	grounding.observe(&geminiResponse)
-	grounding.commit(info)
-	countGeminiBillableFunctionCalls(info, &geminiResponse)
 
 	if len(geminiResponse.Candidates) == 0 && geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
 		info.PerformanceBusinessRejection = true
@@ -46,6 +42,13 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 	} else if reason := geminiAbnormalFinishReason(&geminiResponse); reason != "" && !geminiHasVisibleOutput(&geminiResponse) {
 		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_abnormal_finish=%s", reason))
 		return nil, types.NewOpenAIError(fmt.Errorf("gemini stopped abnormally: finishReason=%s", reason), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	}
+
+	if len(geminiResponse.Candidates) > 0 {
+		var grounding geminiGroundingCounter
+		grounding.observe(&geminiResponse)
+		grounding.commit(info)
+		countGeminiBillableFunctionCalls(info, &geminiResponse)
 	}
 
 	// 计算使用量（优先上游 UsageMetadata，缺失时本地估算并保留 Gemini 计费语义）

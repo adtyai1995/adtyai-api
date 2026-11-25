@@ -121,17 +121,23 @@ export function PrefillGroupManagementDialog({
   const normalizedGroups = useMemo(
     () =>
       sortedGroups.map((group) => {
-        const meta = PREFILL_GROUP_TYPE_META[group.type] || {
-          label: group.type,
-          badge: 'neutral' as const,
-        }
+        const typeMeta = PREFILL_GROUP_TYPE_META[group.type]
+        const meta = typeMeta
+          ? {
+              label: t(typeMeta.labelKey),
+              badge: typeMeta.badge,
+            }
+          : {
+              label: group.type,
+              badge: 'neutral' as const,
+            }
         const parsedItems =
           group.type === 'endpoint'
             ? parseEndpointKeys(group.items)
             : parseStringItems(group.items)
         return { group, meta, parsedItems }
       }),
-    [sortedGroups]
+    [sortedGroups, t]
   )
 
   useEffect(() => {
@@ -227,7 +233,7 @@ export function PrefillGroupManagementDialog({
                   </CardDescription>
                 ) : (
                   <CardDescription className='text-muted-foreground italic'>
-                    No description provided
+                    {t('No description provided')}
                   </CardDescription>
                 )}
               </div>
@@ -255,10 +261,14 @@ export function PrefillGroupManagementDialog({
               </div>
             </CardHeader>
             <CardContent className='space-y-3'>
-              <div className='text-muted-foreground flex flex-wrap items-center gap-2 text-xs font-medium tracking-wide uppercase'>
-                <span>Items</span>
+              <div className='text-muted-foreground flex flex-wrap items-center gap-2 text-xs font-medium tracking-wide'>
+                <span>{t('Items')}</span>
                 <StatusBadge
-                  label={`${parsedItems.length} item${parsedItems.length === 1 ? '' : 's'}`}
+                  label={
+                    parsedItems.length === 1
+                      ? t('{{count}} item', { count: parsedItems.length })
+                      : t('{{count}} items', { count: parsedItems.length })
+                  }
                   variant='neutral'
                   size='sm'
                   copyable={false}
@@ -276,7 +286,9 @@ export function PrefillGroupManagementDialog({
                   ))}
                   {parsedItems.length > 6 && (
                     <StatusBadge
-                      label={`+${parsedItems.length - 6} more`}
+                      label={t('+{{count}} more', {
+                        count: parsedItems.length - 6,
+                      })}
                       variant='neutral'
                       size='sm'
                       copyable={false}
@@ -286,8 +298,8 @@ export function PrefillGroupManagementDialog({
               ) : (
                 <p className='text-muted-foreground text-sm'>
                   {group.type === 'endpoint'
-                    ? 'No endpoint mappings configured.'
-                    : 'No items configured yet.'}
+                    ? t('No endpoint mappings configured.')
+                    : t('No items configured yet.')}
                 </p>
               )}
             </CardContent>
@@ -316,7 +328,7 @@ export function PrefillGroupManagementDialog({
                   <p className='text-dim text-[12.5px]'>{group.description}</p>
                 ) : (
                   <p className='text-dim text-[12.5px] italic'>
-                    No description provided
+                    {t('No description provided')}
                   </p>
                 )}
               </div>
@@ -355,7 +367,9 @@ export function PrefillGroupManagementDialog({
                       ))}
                       {parsedItems.length > 6 && (
                         <StatusBadge
-                          label={`+${parsedItems.length - 6} more`}
+                          label={t('+{{count}} more', {
+                            count: parsedItems.length - 6,
+                          })}
                           variant='neutral'
                           size='sm'
                           copyable={false}
@@ -365,14 +379,15 @@ export function PrefillGroupManagementDialog({
                   ) : (
                     <p className='text-muted-foreground text-sm'>
                       {group.type === 'endpoint'
-                        ? 'No endpoint mappings configured.'
-                        : 'No items configured yet.'}
+                        ? t('No endpoint mappings configured.')
+                        : t('No items configured yet.')}
                     </p>
                   )}
                 </div>
-                <div className='text-muted-foreground mt-2 text-xs font-medium tracking-wide uppercase'>
-                  {parsedItems.length} item
-                  {parsedItems.length === 1 ? '' : 's'}
+                <div className='text-muted-foreground mt-2 text-xs font-medium tracking-wide'>
+                  {parsedItems.length === 1
+                    ? t('{{count}} item', { count: parsedItems.length })
+                    : t('{{count}} items', { count: parsedItems.length })}
                 </div>
               </>
             ),
@@ -446,7 +461,11 @@ export function PrefillGroupManagementDialog({
             </Button>
           </div>
           <StatusBadge
-            label={`${groups.length} group${groups.length === 1 ? '' : 's'}`}
+            label={
+              groups.length === 1
+                ? t('{{count}} group', { count: groups.length })
+                : t('{{count}} groups', { count: groups.length })
+            }
             variant='neutral'
             copyable={false}
           />
@@ -458,7 +477,7 @@ export function PrefillGroupManagementDialog({
               <AlertTitle>{t('Unable to load groups')}</AlertTitle>
               <AlertDescription>
                 {(error as Error).message ||
-                  'Please retry or refresh the page.'}
+                  t('Please retry or refresh the page.')}
               </AlertDescription>
             </Alert>
           )}

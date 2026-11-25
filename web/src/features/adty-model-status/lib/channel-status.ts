@@ -238,9 +238,26 @@ export function resolveChannelCard(
     primaryMonitor?.heartbeats ??
     []
 
-  const rawUptime = normalizeFiniteNumber(
-    group.uptime ?? primaryModel?.uptime ?? primaryMonitor?.uptime
+  const statusCode =
+    group.status ?? primaryModel?.status ?? primaryMonitor?.status
+  const hasSamples = heartbeats.length > 0
+
+  const explicitUptime = normalizeFiniteNumber(
+    group.uptime ?? primaryModel?.uptime
   )
+  const fallbackMonitorUptime =
+    explicitUptime === null &&
+    hasSamples &&
+    statusCode !== -1 &&
+    primaryMonitor?.status !== -1 &&
+    group.statusLabel !== 'unknown'
+      ? normalizeFiniteNumber(primaryMonitor?.uptime)
+      : null
+
+  const rawUptime =
+    !hasSamples && (statusCode === -1 || group.statusLabel === 'unknown')
+      ? null
+      : (explicitUptime ?? fallbackMonitorUptime)
   const uptime = rawUptime !== null ? Math.min(1, Math.max(0, rawUptime)) : null
 
   const rawPing = normalizeFiniteNumber(
@@ -257,13 +274,11 @@ export function resolveChannelCard(
     heartbeats.at(-1)?.time ??
     null
 
-  const statusCode =
-    group.status ?? primaryModel?.status ?? primaryMonitor?.status
   const status = resolveStatusLabel(
     group.statusLabel,
     statusCode,
     uptime,
-    heartbeats.length > 0
+    hasSamples
   )
 
   return {

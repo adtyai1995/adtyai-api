@@ -2,10 +2,11 @@ package adtygov
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 // IssueRecord covers the official plan 3.13.1 problem-list fields used by
@@ -77,7 +78,7 @@ func ValidateIssueManifest(r io.Reader) ([]IssueRecord, error) {
 			continue
 		}
 		var rec IssueRecord
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		if err := common.Unmarshal([]byte(line), &rec); err != nil {
 			return nil, fmt.Errorf("line %d: %w", lineNo, err)
 		}
 		if err := ValidateIssueRecord(rec); err != nil {

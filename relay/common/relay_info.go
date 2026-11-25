@@ -161,6 +161,10 @@ type RelayInfo struct {
 	ParamOverrideAudit        []string
 
 	PriceData hosttypes.PriceData
+	// TaskOriginOtherRatios stores the immutable OtherRatios seeded once by
+	// ResolveOriginTask before the channel retry loop so retries do not
+	// compound previously estimated ratios (R2-60).
+	TaskOriginOtherRatios map[string]float64
 
 	// QuotaClamp is set (non-nil) when a quota conversion saturated at the
 	// supported single-request bound (or NaN fallback) while computing this request's charge.
@@ -336,8 +340,15 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	info.VendorToolUsage = nil
 	info.WebSearchBillingKey = ""
 	info.WebFetchBillingKey = ""
-	if info.requestInferredToolKey != "" && info.ResponsesUsageInfo != nil {
-		delete(info.ResponsesUsageInfo.BuiltInTools, info.requestInferredToolKey)
+	if info.ResponsesUsageInfo != nil {
+		if info.requestInferredToolKey != "" {
+			delete(info.ResponsesUsageInfo.BuiltInTools, info.requestInferredToolKey)
+		}
+		for _, usage := range info.ResponsesUsageInfo.BuiltInTools {
+			if usage != nil {
+				usage.CallCount = 0
+			}
+		}
 	}
 	info.requestInferredToolKey = ""
 	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || channelMeta.ChannelSetting.PassThroughBodyEnabled {

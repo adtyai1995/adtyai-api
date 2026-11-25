@@ -186,7 +186,7 @@ export function PrefillGroupFormDrawer({
 
       if (response.success) {
         toast.success(
-          isEdit ? 'Prefill group updated' : 'Prefill group created'
+          isEdit ? t('Prefill group updated') : t('Prefill group created')
         )
         queryClient.invalidateQueries({
           queryKey: prefillGroupsQueryKeys.lists(),
@@ -294,18 +294,20 @@ export function PrefillGroupFormDrawer({
                 name='type'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Group Type</FormLabel>
+                    <FormLabel>{t('Group Type')}</FormLabel>
                     <Select
                       items={PREFILL_GROUP_TYPES.map((type) => ({
                         value: type.value,
                         label: (
                           <div className='flex flex-col text-left'>
-                            <span className='font-medium'>{type.label}</span>
+                            <span className='font-medium'>
+                              {t(type.labelKey)}
+                            </span>
                             <span
                               data-prefill-description
                               className='text-dim text-[12.5px]'
                             >
-                              {type.description}
+                              {t(type.descriptionKey)}
                             </span>
                           </div>
                         ),
@@ -327,13 +329,13 @@ export function PrefillGroupFormDrawer({
                             <SelectItem key={type.value} value={type.value}>
                               <div className='flex flex-col text-left'>
                                 <span className='font-medium'>
-                                  {type.label}
+                                  {t(type.labelKey)}
                                 </span>
                                 <span
                                   data-prefill-description
                                   className='text-dim text-[12.5px]'
                                 >
-                                  {type.description}
+                                  {t(type.descriptionKey)}
                                 </span>
                               </div>
                             </SelectItem>
@@ -353,7 +355,7 @@ export function PrefillGroupFormDrawer({
                 <div className='flex items-center gap-2'>
                   <h4 className='text-sm font-medium'>{t('Project')}</h4>
                   <StatusBadge
-                    label={meta.label}
+                    label={t(meta.labelKey)}
                     variant={meta.badge}
                     size='sm'
                     copyable={false}
@@ -370,7 +372,7 @@ export function PrefillGroupFormDrawer({
                           <JsonEditor
                             value={(field.value as string) || ''}
                             onChange={field.onChange}
-                            keyPlaceholder='provider'
+                            keyPlaceholder={t('Provider')}
                             valuePlaceholder='{"path": "/v1/...","method": "POST"}'
                             keyLabel={t('Provider')}
                             valueLabel={t('Endpoint config')}

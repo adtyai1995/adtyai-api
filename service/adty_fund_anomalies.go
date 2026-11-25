@@ -286,25 +286,34 @@ func adtySiteCustomerPrincipalAndGiftQuota(siteID int) (principalQuota int64, gi
 	}
 
 	type batchSplit struct {
-		principal int64
-		gift      int64
-		hasLots   bool
+		sitePrincipal int64
+		siteGift      int64
+		allPrincipal  int64
+		allGift       int64
+		hasAnyLots    bool
 	}
 	byUser := make(map[int]batchSplit, len(users))
 	if model.DB.Migrator().HasTable(&model.AdtyFundBatch{}) {
 		var batches []model.AdtyFundBatch
-		if err := model.DB.Where("user_id IN ? AND (site_id = ? OR site_id IS NULL)", userIDs, siteID).
+		if err := model.DB.Where("user_id IN ?", userIDs).
 			Find(&batches).Error; err != nil {
 			return 0, 0, 0, err
 		}
 		for _, b := range batches {
 			split := byUser[b.UserId]
-			split.hasLots = true
+			split.hasAnyLots = true
+			inTargetSite := b.SiteId != nil && *b.SiteId == siteID
 			switch b.Kind {
 			case model.AdtyFundBatchKindPrincipal:
-				split.principal += b.Remaining
+				split.allPrincipal += b.Remaining
+				if inTargetSite {
+					split.sitePrincipal += b.Remaining
+				}
 			case model.AdtyFundBatchKindBonus, model.AdtyFundBatchKindExpiringBonus:
-				split.gift += b.Remaining
+				split.allGift += b.Remaining
+				if inTargetSite {
+					split.siteGift += b.Remaining
+				}
 			}
 			byUser[b.UserId] = split
 		}
@@ -319,7 +328,7 @@ func adtySiteCustomerPrincipalAndGiftQuota(siteID int) (principalQuota int64, gi
 		if err := model.DB.Table("adty_fund_allocations AS a").
 			Joins("JOIN adty_fund_batches b ON b.id = a.batch_id").
 			Select("a.user_id, COALESCE(SUM(a.held - a.settled), 0) AS quota").
-			Where("a.user_id IN ? AND a.held > a.settled AND a.operation_id NOT LIKE ? AND (b.site_id = ? OR b.site_id IS NULL)", userIDs, "owner-refund:%", siteID).
+			Where("a.user_id IN ? AND a.held > a.settled AND a.operation_id NOT LIKE ?", userIDs, "owner-refund:%").
 			Group("a.user_id").Scan(&held).Error; err != nil {
 			return 0, 0, 0, err
 		}
@@ -331,16 +340,17 @@ func adtySiteCustomerPrincipalAndGiftQuota(siteID int) (principalQuota int64, gi
 	for _, u := range users {
 		logical := int64(u.Quota) + int64(u.QuotaPending)
 		split := byUser[u.Id]
-		if !split.hasLots {
-			// Historical accounts without lots retain the logical-balance fallback.
+		if !split.hasAnyLots {
+			// Historical accounts without any lots retain the logical-balance fallback.
 			principalQuota += logical
 			continue
 		}
-		// Reservation shares remain in the lots until settlement. Add the held
-		// amount only for the independent lot/wallet check, never as new principal.
-		principalQuota += split.principal
-		giftQuota += split.gift
-		gap := logical + heldByUser[u.Id] - split.principal - split.gift
+		// Return only target-site lots for this site's operating balance, while
+		// reconciling the user's global wallet against all of their lots so valid
+		// cross-site lots (e.g. legacy owner self-use lots) never trigger false gaps.
+		principalQuota += split.sitePrincipal
+		giftQuota += split.siteGift
+		gap := logical + heldByUser[u.Id] - split.allPrincipal - split.allGift
 		if gap < 0 {
 			gap = -gap
 		}

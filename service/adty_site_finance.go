@@ -941,6 +941,7 @@ func UpdateAdtySiteTiers(tiers []model.AdtySiteTier) error {
 }
 
 func saveAdtySiteTiers(tiers []model.AdtySiteTier, existingOnly bool) error {
+	changedSiteIDs := map[int]struct{}{}
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		seen := map[string]struct{}{}
 		for _, input := range tiers {
@@ -980,11 +981,26 @@ func saveAdtySiteTiers(tiers []model.AdtySiteTier, existingOnly bool) error {
 			}
 			// Fixed mode fixes the assigned level, not an obsolete copy of
 			// that level's Root-managed financial terms.
+			var affectedBefore []model.AdtySite
+			if err := tx.Where("tier_code = ? AND status <> ?", input.Code, model.AdtySiteStatusClosed).Find(&affectedBefore).Error; err != nil {
+				return err
+			}
 			if err := tx.Model(&model.AdtySite{}).Where("tier_code = ?", input.Code).Updates(map[string]any{
 				"tier_cost_factor":         input.CostFactor,
 				"pending_tier_cost_factor": nil, "pending_tier_cost_factor_at": 0,
 			}).Error; err != nil {
 				return err
+			}
+			for _, beforeSite := range affectedBefore {
+				beforeEff, beforeOK := AdtySiteCostFactor(&beforeSite)
+				afterSite := beforeSite
+				afterSite.TierCostFactor = input.CostFactor
+				afterSite.PendingTierCostFactor = nil
+				afterSite.PendingTierCostFactorAt = 0
+				afterEff, afterOK := AdtySiteCostFactor(&afterSite)
+				if beforeOK != afterOK || !beforeEff.Equal(afterEff) {
+					changedSiteIDs[beforeSite.Id] = struct{}{}
+				}
 			}
 			sites := tx.Model(&model.AdtySite{}).Select("id").Where("tier_code = ?", input.Code)
 			if err := tx.Model(&model.AdtySiteWallet{}).
@@ -1016,6 +1032,13 @@ func saveAdtySiteTiers(tiers []model.AdtySiteTier, existingOnly bool) error {
 	})
 	if err == nil {
 		InvalidateAdtySiteCache()
+		if AdtyOnSiteCostFactorChanged != nil && len(changedSiteIDs) > 0 {
+			for id := range changedSiteIDs {
+				if updated, getErr := GetAdtySite(id); getErr == nil && updated != nil {
+					AdtyOnSiteCostFactorChanged(updated)
+				}
+			}
+		}
 	}
 	return err
 }
@@ -1082,7 +1105,7 @@ func SelectAdtySiteTier(tiers []model.AdtySiteTier, stats AdtySiteTierStats) *mo
 	var selected *model.AdtySiteTier
 	for i := range tiers {
 		tier := &tiers[i]
-		if !tier.Enabled || !tier.CostFactor.IsPositive() || !stats.Meets(*tier) {
+		if !tier.Enabled || tier.CostFactor == nil || !tier.CostFactor.IsPositive() || !stats.Meets(*tier) {
 			continue
 		}
 		if selected == nil || adtySiteTierHigher(*tier, *selected) {
@@ -1223,6 +1246,7 @@ func EvaluateAdtySiteTierAt(siteID int, now int64, periodID string) (*model.Adty
 	}
 	var site model.AdtySite
 	var warn bool
+	var costFactorChanged bool
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteID).First(&site).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1230,6 +1254,7 @@ func EvaluateAdtySiteTierAt(siteID int, now int64, periodID string) (*model.Adty
 			}
 			return err
 		}
+		beforeEff, beforeOK := AdtySiteCostFactor(&site)
 		if err := ensureAdtySiteWalletsTx(tx, siteID); err != nil {
 			return err
 		}
@@ -1279,7 +1304,12 @@ func EvaluateAdtySiteTierAt(siteID int, now int64, periodID string) (*model.Adty
 			return nil
 		}
 		site = model.AdtySite{}
-		return tx.Where("id = ?", siteID).First(&site).Error
+		if err := tx.Where("id = ?", siteID).First(&site).Error; err != nil {
+			return err
+		}
+		afterEff, afterOK := AdtySiteCostFactor(&site)
+		costFactorChanged = beforeOK != afterOK || !beforeEff.Equal(afterEff)
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -1288,6 +1318,9 @@ func EvaluateAdtySiteTierAt(siteID int, now int64, periodID string) (*model.Adty
 		notifyAdtySiteTierBelowMinimum(siteID, periodID)
 	}
 	InvalidateAdtySiteCache()
+	if costFactorChanged && AdtyOnSiteCostFactorChanged != nil {
+		AdtyOnSiteCostFactorChanged(&site)
+	}
 	return &site, nil
 }
 
@@ -1370,7 +1403,7 @@ func SetAdtySiteTier(siteID int, code, mode string, now int64) (*model.AdtySite,
 				}
 				return err
 			}
-			if !selected.CostFactor.IsPositive() {
+			if selected.CostFactor == nil || !selected.CostFactor.IsPositive() {
 				return ErrAdtySiteTierInvalid
 			}
 		} else if mode == AdtySiteTierModeAuto {
@@ -1390,7 +1423,7 @@ func SetAdtySiteTier(siteID int, code, mode string, now int64) (*model.AdtySite,
 				code = selected.Code
 			}
 		}
-		if selected == nil || !selected.CostFactor.IsPositive() {
+		if selected == nil || selected.CostFactor == nil || !selected.CostFactor.IsPositive() {
 			return common.NewMessage("Keep at least one enabled site level with a positive supply discount while reseller sites are active")
 		}
 		if err := ensureAdtySiteWalletsTx(tx, siteID); err != nil {

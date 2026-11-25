@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -145,6 +146,10 @@ func visionEmbeddingResponse(c *gin.Context, resp *http.Response, info *relaycom
 		return nil, types.NewOpenAIError(errors.New("invalid Volcengine vision embedding response"), types.ErrorCodeBadResponse, http.StatusBadGateway)
 	}
 	defer service.CloseResponseBodyGracefully(resp)
+	responseBody, apiErr := helper.ReadResponseBody(c, resp, types.ErrorCodeBadResponseBody)
+	if apiErr != nil {
+		return nil, apiErr
+	}
 	var response struct {
 		Model string `json:"model"`
 		Data  struct {
@@ -160,7 +165,7 @@ func visionEmbeddingResponse(c *gin.Context, resp *http.Response, info *relaycom
 			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 	}
-	if err := common.DecodeJson(resp.Body, &response); err != nil {
+	if err := common.Unmarshal(responseBody, &response); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
 	if response.Error != nil {

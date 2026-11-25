@@ -117,8 +117,10 @@ export function Referral() {
     queryFn: getReferralProfile,
     enabled: !isSubsiteCustomer && mainReferralEnabled,
   })
-  const refresh = () =>
-    queryClient.invalidateQueries({ queryKey: referralQueryKeys.all })
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: referralQueryKeys.all })
+    void queryClient.invalidateQueries({ queryKey: ['adty-topup', 'balance'] })
+  }
   const profile = profileQuery.data
 
   if (isSubsiteCustomer) {
@@ -154,6 +156,9 @@ export function Referral() {
           onConverted={() => {
             void queryClient.invalidateQueries({
               queryKey: ['adty-site-commissions'],
+            })
+            void queryClient.invalidateQueries({
+              queryKey: ['adty-topup', 'balance'],
             })
             if (mainReferralEnabled) {
               void refresh()

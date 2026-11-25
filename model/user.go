@@ -105,7 +105,7 @@ type User struct {
 	// CheckinQuota 是还在钱包里的签到赠送。花掉的钱先算本金，所以只有余额掉到它下面才减少。退款不能把它当成本金。
 	CheckinQuota        int                        `json:"-" gorm:"type:int;default:0;column:checkin_quota"`
 	RequestCount        int                        `json:"request_count" gorm:"type:int;default:0;"` // request number
-	Group               string                     `json:"group" gorm:"type:varchar(64);default:'default'"`
+	Group               string                     `json:"group" gorm:"type:varchar(64);default:''"`
 	DeletedAt           gorm.DeletedAt             `gorm:"index"`
 	LinuxDOId           string                     `json:"linux_do_id" gorm:"column:linux_do_id;index"`
 	Setting             string                     `json:"setting" gorm:"type:text;column:setting"`
@@ -917,6 +917,32 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 		updates["role"] = user.Role
 	}
 	if user.Status != 0 && user.Status != current.Status {
+		// R2-31: Prevent admin enable from resurrecting disabled/deleted subsite
+		// staff accounts or staff accounts belonging to a closed/closing subsite.
+		if user.Status == common.UserStatusEnabled && current.StaffSiteId > 0 {
+			if tx.Migrator().HasTable(&AdtySiteStaff{}) {
+				var staff AdtySiteStaff
+				res := tx.Where("user_id = ?", current.Id).Limit(1).Find(&staff)
+				if res.Error != nil {
+					return false, res.Error
+				}
+				if res.RowsAffected == 0 || staff.Status == "deleted" {
+					return false, common.NewMessage("Deleted site staff accounts cannot be re-enabled")
+				}
+				if staff.Status != "active" {
+					return false, common.NewMessage("Disabled site staff accounts must be re-enabled by the site owner")
+				}
+			}
+			if tx.Migrator().HasTable(&AdtySite{}) {
+				var site AdtySite
+				if err := tx.Select("id", "status").Where("id = ?", current.StaffSiteId).Limit(1).Find(&site).Error; err != nil {
+					return false, err
+				}
+				if site.Id == 0 || (site.Status != AdtySiteStatusActive && site.Status != AdtySiteStatusPaused) {
+					return false, common.NewMessage("Cannot enable a staff account of a closed site")
+				}
+			}
+		}
 		// R3-022: Prevent admin enable from resurrecting permanently deleted/left
 		// independent team employees or employees belonging to a non-active team.
 		if user.Status == common.UserStatusEnabled && tx.Migrator().HasTable(&AdtyTeamMember{}) {

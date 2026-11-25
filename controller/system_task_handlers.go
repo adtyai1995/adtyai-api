@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -65,6 +66,10 @@ func (channelTestHandler) Run(ctx context.Context, task *model.SystemTask, runne
 		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
 		return
 	}
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, ctx.Err())
+		return
+	}
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 
@@ -111,6 +116,10 @@ func (modelUpdateHandler) Run(ctx context.Context, task *model.SystemTask, runne
 		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, err)
 		return
 	}
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, ctx.Err())
+		return
+	}
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 
@@ -132,6 +141,10 @@ func (midjourneyPollHandler) NewPayload() any { return nil }
 
 func (midjourneyPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	summary := runMidjourneyTaskUpdateOnce(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, ctx.Err())
+		return
+	}
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 
@@ -152,13 +165,35 @@ func (asyncTaskPollHandler) NewPayload() any { return nil }
 
 func (asyncTaskPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	summary := service.RunTaskPollingOnce(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, ctx.Err())
+		return
+	}
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 
 func finishSystemTaskHandler(task *model.SystemTask, runnerID string, status model.SystemTaskStatus, result any, runErr error) {
+	if task == nil {
+		return
+	}
 	errorMessage := ""
 	if runErr != nil {
-		errorMessage = runErr.Error()
+		if errors.Is(runErr, context.Canceled) {
+			cancelled, checkErr := model.SystemTaskCancelRequested(task.TaskID)
+			if checkErr != nil {
+				common.SysLog(common.LogText("system task %s cancel check failed after context cancellation: %v", task.TaskID, checkErr))
+				return
+			}
+			if !cancelled {
+				// Context cancellation without cancel_requested indicates lease loss;
+				// do not overwrite the task state.
+				return
+			}
+			status = model.SystemTaskStatusCancelled
+			errorMessage = "cancelled"
+		} else {
+			errorMessage = runErr.Error()
+		}
 	}
 	if err := model.FinishSystemTask(task.TaskID, runnerID, status, result, errorMessage); err != nil {
 		common.SysLog(common.LogText("system task %s failed to persist result: %v", task.TaskID, err))

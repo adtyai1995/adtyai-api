@@ -20,6 +20,35 @@ func PutAdtySiteReferralCap(c *gin.Context) {
 	common.ApiErrorStatus(c, http.StatusGone, service.ErrSiteMarketingOwnerOnly)
 }
 
+// PostAdtySiteReferralClick validates a subsite invite code on the current
+// subsite host and issues a server-signed HttpOnly cookie using the site's
+// configured CookieTTLDays (R2-51).
+func PostAdtySiteReferralClick(c *gin.Context) {
+	siteID := service.AdtyRequestSiteID(c)
+	if siteID <= 0 {
+		common.ApiErrorT(c, "Site referral is not enabled")
+		return
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	canonicalCode, err := service.ValidateAdtySiteInviteCode(siteID, body.Code)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	ttlDays, err := service.SetAdtySiteInviteCookie(c, siteID, canonicalCode)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"code": canonicalCode, "ttl_days": ttlDays})
+}
+
 func GetAdtySiteInviteBatchPolicy(c *gin.Context) {
 	if c.GetInt("role") != common.RoleRootUser {
 		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
