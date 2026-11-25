@@ -594,7 +594,13 @@ func scopedAdtyTickets(tx *gorm.DB, actor adtyTicketActor) *gorm.DB {
 	case "staff":
 		return query.Where("COALESCE(handling_site_id,site_id) = ?", actor.Staff.SiteId)
 	case "participant":
-		return query.Where("(user_id = ? AND COALESCE(team_shared,false)=false) OR team_id = ?", actor.User.Id, actor.TeamId)
+		if actor.TeamId > 0 && actor.TeamRole == model.AdtyTeamRoleLeader {
+			return query.Where("(user_id = ? AND COALESCE(team_shared,false)=false) OR team_id = ?", actor.User.Id, actor.TeamId)
+		}
+		if actor.TeamId > 0 {
+			return query.Where("(user_id = ? AND COALESCE(team_shared,false)=false) OR (team_id = ? AND team_shared = ?)", actor.User.Id, actor.TeamId, true)
+		}
+		return query.Where("user_id = ? AND COALESCE(team_shared,false)=false", actor.User.Id)
 	case "team":
 		query = query.Where("team_id = ?", actor.TeamId)
 		if actor.TeamRole != model.AdtyTeamRoleLeader {

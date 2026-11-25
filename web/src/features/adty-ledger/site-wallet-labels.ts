@@ -85,12 +85,22 @@ export function siteWalletLedgerTypeLabel(t: TFunction, type: string): string {
       return t('Customer top-up principal')
     case 'principal_consume':
       return t('Customer principal used')
+    case 'principal_clawback':
+      return t('Principal clawback')
+    case 'principal_adjust_debit':
+      return t('Principal adjustment debit')
+    case 'principal_refund':
+      return t('Customer principal refunded')
+    case 'principal_site_close_migrate':
+      return t('Site-close principal migration')
     case 'site_earning_settlement':
       return t('Earnings settlement')
     case 'earning_withdraw_freeze':
       return t('Earnings withdrawal')
     case 'earning_withdraw_release':
       return t('Withdrawal returned')
+    case 'earning_withdraw_paid':
+      return t('Earnings withdrawal paid')
     case 'earning_to_margin':
       return t('Earnings moved to margin')
     case 'margin_root_credit':
@@ -103,6 +113,12 @@ export function siteWalletLedgerTypeLabel(t: TFunction, type: string): string {
       return t('Commission held')
     case 'commission_release':
       return t('Commission hold released')
+    case 'commission_deduct':
+      return t('Commission deducted')
+    case 'commission_closed_payout_deduct':
+      return t('Closed-site commission payout deducted')
+    case 'commission_clawback_return':
+      return t('Commission clawback returned')
     case 'gift_reserve':
       return t('Bonus reserved')
     case 'gift_release':
@@ -123,6 +139,8 @@ export function siteWalletLedgerTypeLabel(t: TFunction, type: string): string {
       return t('Manual team balance credit')
     case 'staff_balance':
       return t('Staff balance request approved')
+    case 'financial_adjustment':
+      return t('Financial adjustment')
     default:
       return type
   }

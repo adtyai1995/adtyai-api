@@ -421,9 +421,8 @@ func adtyRecordConsumeEarning(c *gin.Context, userId int, params *model.RecordCo
 		reqID = strings.TrimPrefix(strings.TrimSpace(c.GetString(adtyBillingOperationContextKey)), "request:")
 	}
 	if c.GetBool(adtyDurableBillingContextKey) {
-		if lineErr := upsertAdtySiteEarningLineTx(model.DB, siteID, c.GetInt(AdtySiteOwnerContextKey), userId, params.ModelName, params.Group, reqID, charged, k, d); lineErr != nil {
-			common.SysError(common.LogText("record site earning line failed site=%d user=%d: %s", siteID, userId, lineErr.Error()))
-		}
+		// Durable billing writes earning lines solely in recordDurableAdtySiteEarningLineTx
+		// after review/skip gating and projected commit, preventing duplicate or unreviewed rows.
 		return
 	}
 	AdtySiteEarningHook(siteID, userId, charged, k, d, model.AdtySiteEarningUsage, c.GetInt(AdtySiteOwnerContextKey))
@@ -503,11 +502,8 @@ func adtyRecordTaskBillingEarning(params *model.RecordTaskBillingLogParams) {
 		lineQuota = -quota
 	}
 	if adminInfo["billing_operation_key"] != nil {
-		ownerID := adtyAnyInt(adminInfo["site_owner_user_id"])
-		opKey := strings.TrimSpace(fmt.Sprint(adminInfo["billing_operation_key"]))
-		if lineErr := upsertAdtySiteEarningLineTx(model.DB, siteId, ownerID, params.UserId, params.ModelName, params.Group, opKey, lineQuota, k, d); lineErr != nil {
-			common.SysError(common.LogText("record site earning line failed site=%d user=%d: %s", siteId, params.UserId, lineErr.Error()))
-		}
+		// Durable task billing operations project earning lines atomically via
+		// recordDurableAdtySiteEarningLineTx, honoring NeedsReview and OriginalSkipped.
 		return
 	}
 	ownerID, err := model.ResolveAdtySiteFinancialOwnerTx(model.DB, siteId, adtyAnyInt(adminInfo["site_owner_user_id"]))

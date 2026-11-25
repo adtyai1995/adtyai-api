@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"net/mail"
 	"net/netip"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
@@ -608,10 +611,18 @@ func sendSubsiteConfiguredEmail(site *model.AdtySite, subject, receiver, content
 				ForceAuthLogin:     cfg.SMTPForceAuthLogin,
 				DialContext:        subsiteSMTPDialContext,
 			}, "", subject, receiver, content)
-			if sendErr != nil && token != "" && strings.Contains(sendErr.Error(), token) {
-				return common.SanitizeOutboundError(sendErr, token)
+			if sendErr != nil {
+				var msg *common.Message
+				if errors.As(sendErr, &msg) {
+					return sendErr
+				}
+				secrets := []string{token}
+				if token != "" {
+					secrets = append(secrets, "\x00"+cfg.SMTPAccount+"\x00"+token)
+				}
+				return common.SanitizeOutboundError(sendErr, secrets...)
 			}
-			return sendErr
+			return nil
 
 		case model.AdtySiteMailProviderResend:
 			if strings.TrimSpace(cfg.ResendApiKeyCipher) == "" {
@@ -630,11 +641,77 @@ func sendSubsiteConfiguredEmail(site *model.AdtySite, subject, receiver, content
 			if displayName == "" {
 				displayName = adtySubsiteFallbackDisplayName(site)
 			}
-			return adtySendSubsiteResend(apiKey, cfg.ResendFrom, displayName, subject, receiver, content)
+			if sendErr := adtySendSubsiteResend(apiKey, cfg.ResendFrom, displayName, subject, receiver, content); sendErr != nil {
+				var msg *common.Message
+				if errors.As(sendErr, &msg) {
+					return sendErr
+				}
+				return common.SanitizeOutboundError(sendErr, apiKey)
+			}
+			return nil
 		}
 	}
 
-	return adtySendSubsitePlatform(AdtySenderFor(site), subject, receiver, content)
+	if sendErr := adtySendSubsitePlatform(AdtySenderFor(site), subject, receiver, content); sendErr != nil {
+		common.OptionMapRWMutex.RLock()
+		platSecrets := []string{common.SMTPToken, common.OptionMap["ResendApiKey"]}
+		common.OptionMapRWMutex.RUnlock()
+		common.SysError(common.LogText("subsite %d platform mail delivery failed: %s", site.Id, common.SanitizeOutboundError(sendErr, platSecrets...).Error()))
+		var msg *common.Message
+		if errors.As(sendErr, &msg) {
+			return sendErr
+		}
+		return common.NewMessage("Failed to send email via platform mail service")
+	}
+	return nil
+}
+
+func classifySubsiteTestMailError(siteID int, sendErr error) error {
+	if sendErr == nil {
+		return nil
+	}
+	var msg *common.Message
+	if errors.As(sendErr, &msg) {
+		return sendErr
+	}
+	common.SysError(common.LogText("subsite %d test email delivery failed: %s", siteID, sendErr.Error()))
+	var tpErr *textproto.Error
+	if errors.As(sendErr, &tpErr) {
+		switch tpErr.Code {
+		case 530, 534, 535, 538:
+			return common.NewMessage("Email authentication failed")
+		default:
+			return common.NewMessage("Mail server rejected the test message")
+		}
+	}
+	if errors.Is(sendErr, context.DeadlineExceeded) {
+		return common.NewMessage("Connection to mail server timed out")
+	}
+	var netErr net.Error
+	if errors.As(sendErr, &netErr) && netErr.Timeout() {
+		return common.NewMessage("Connection to mail server timed out")
+	}
+	var unknownAuth x509.UnknownAuthorityError
+	var hostErr x509.HostnameError
+	var certInvalid x509.CertificateInvalidError
+	if errors.As(sendErr, &unknownAuth) || errors.As(sendErr, &hostErr) || errors.As(sendErr, &certInvalid) {
+		return common.NewMessage("TLS handshake with mail server failed")
+	}
+	lower := strings.ToLower(sendErr.Error())
+	switch {
+	case strings.Contains(lower, "tls:") || strings.Contains(lower, "x509:") || strings.Contains(lower, "starttls"):
+		return common.NewMessage("TLS handshake with mail server failed")
+	case strings.Contains(lower, "535") || strings.Contains(lower, "authentication") || strings.Contains(lower, "invalid api key") || strings.Contains(lower, "unauthorized"):
+		return common.NewMessage("Email authentication failed")
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "timed out") || strings.Contains(lower, "deadline exceeded"):
+		return common.NewMessage("Connection to mail server timed out")
+	case strings.Contains(lower, "resend"):
+		return common.NewMessage("Resend API request failed")
+	case strings.Contains(lower, "connection refused") || strings.Contains(lower, "no such host") || strings.Contains(lower, "unreachable") || strings.Contains(lower, "eof"):
+		return common.NewMessage("Could not connect to mail server")
+	default:
+		return common.NewMessage("Failed to send test email")
+	}
 }
 
 // TestAdtySiteMailConfig sends a test email to a single validated recipient
@@ -667,5 +744,5 @@ func TestAdtySiteMailConfig(ctx context.Context, ownerUserID int, toEmail string
 			"Your site email configuration is working properly.",
 		},
 	})
-	return AdtySendSiteEmail(site, subject, parsed.Address, content)
+	return classifySubsiteTestMailError(site.Id, AdtySendSiteEmail(site, subject, parsed.Address, content))
 }

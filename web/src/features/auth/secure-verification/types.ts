@@ -20,7 +20,6 @@ import type { AuthBundle } from '@/stores/auth-store'
 
 export type VerificationMethod =
   | '2fa'
-  | 'passkey'
   | 'password'
   | 'email_code'
   | 'session'
@@ -28,8 +27,6 @@ export type VerificationMethod =
 export type SecurityProofScope =
   | 'api_key.read'
   | 'channel.key.read'
-  | 'passkey.register'
-  | 'passkey.delete'
   | '2fa.setup'
   | '2fa.disable'
   | '2fa.backup_codes.regenerate'
@@ -45,7 +42,6 @@ export type SecurityProofScope =
   | 'admin.user.delete'
   | 'admin.user.manage'
   | 'admin.user.quota'
-  | 'admin.user.passkey.reset'
   | 'admin.user.2fa.disable'
   | 'admin.user.binding.clear'
   | 'site.owner.manage'
@@ -68,9 +64,7 @@ export type SecurityProofScope =
 export type SiteOwnerAction =
   | 'pricing'
   | 'bonus'
-  | 'customer.balance'
   | 'customer.password'
-  | 'team.balance'
   | 'domain.delete'
   | 'sender.delete'
   | 'mail.config'
@@ -78,7 +72,6 @@ export type SiteOwnerAction =
   | 'staff.update'
   | 'staff.password'
   | 'staff.delete'
-  | 'staff.balance_review'
   | 'voucher.issue'
   | 'voucher.freeze'
   | 'voucher.cancel'
@@ -109,7 +102,6 @@ export type VerificationOperation =
         | 'admin.user.update'
         | 'admin.user.delete'
         | 'admin.user.quota'
-        | 'admin.user.passkey.reset'
         | 'admin.user.2fa.disable'
       context: { user_id: number }
     }
@@ -221,7 +213,6 @@ export type VerificationInput =
   | { method: '2fa'; code: string }
   | { method: 'password'; password: string }
   | { method: 'email_code'; code: string }
-  | { method: 'passkey'; rpID?: string }
   | { method: 'session' }
   | { method: 'root_exempt' }
 

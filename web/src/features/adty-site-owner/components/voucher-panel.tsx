@@ -140,6 +140,13 @@ export function VoucherPanel(props: { siteId: number }) {
   >({
     action: 'voucher.issue',
     target: () => props.siteId,
+    request: (vars) => ({
+      purpose: 'site_customer',
+      amount_usd: vars.amount,
+      count: vars.count,
+      reason: vars.reason,
+      intent_key: vars.intentKey,
+    }),
     run: async (vars, proof) => {
       const issued = await issueOwnerVoucherBatch(
         {

@@ -11,9 +11,10 @@ import (
 )
 
 type RequestInput struct {
-	Headers map[string]string
-	Body    []byte
-	Usage   map[string]any
+	Headers      map[string]string
+	Body         []byte
+	FrozenParams map[string]any
+	Usage        map[string]any
 	// ImageCount is a validated billing quantity, separate from the frozen
 	// request's n. Settlement can replace it with the actual returned count.
 	ImageCount *int
@@ -96,9 +97,11 @@ type BillingSnapshot struct {
 	EstimatedFixedPrice       *float64       `json:"estimated_fixed_price,omitempty"`
 	QuotaPerUnit              float64        `json:"quota_per_unit"`
 	ExprVersion               int            `json:"expr_version"`
-	TaskUsageBilling          bool           `json:"task_usage_billing,omitempty"`
-	UsageFacts                map[string]any `json:"usage_facts,omitempty"`
-	AcceptedAt                int64          `json:"accepted_at,omitempty"`
+	TaskUsageBilling          bool              `json:"task_usage_billing,omitempty"`
+	UsageFacts                map[string]any    `json:"usage_facts,omitempty"`
+	FrozenHeaders             map[string]string `json:"frozen_headers,omitempty"`
+	FrozenParams              map[string]any    `json:"frozen_params,omitempty"`
+	AcceptedAt                int64             `json:"accepted_at,omitempty"`
 	BusinessTimezone          string         `json:"business_timezone,omitempty"`
 	AcceptedLocal             string         `json:"accepted_local,omitempty"`
 }

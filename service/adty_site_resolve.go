@@ -584,14 +584,19 @@ func AdtyOverrideStatus(c *gin.Context, data map[string]any) {
 		return
 	}
 	brand := AdtyBrandFor(site)
-	legal := AdtySiteLegalFor(site)
+	legal, legalErr := AdtySiteLegalForWithError(site)
 	data["system_name"] = brand.Name
 	data["logo"] = brand.LogoURL
 	data["site_title"] = brand.Title
 	data["favicon"] = brand.FaviconURL
 	delete(data, "theme_color")
-	data["user_agreement_enabled"] = AdtyHasLegalText(legal.UserAgreement)
-	data["privacy_policy_enabled"] = AdtyHasLegalText(legal.PrivacyPolicy)
+	if legalErr != nil {
+		data["user_agreement_enabled"] = true
+		data["privacy_policy_enabled"] = false
+	} else {
+		data["user_agreement_enabled"] = AdtyHasLegalText(legal.UserAgreement)
+		data["privacy_policy_enabled"] = AdtyHasLegalText(legal.PrivacyPolicy)
+	}
 	data["server_address"] = AdtySiteAPIBaseURL(site)
 	data["adty_site"] = map[string]any{"id": site.Id, "status": site.Status, "subdomain": site.Subdomain}
 	for _, key := range []string{"github_oauth", "discord_oauth", "linuxdo_oauth", "telegram_oauth", "wechat_login", "oidc_enabled", "passkey_login"} {
@@ -664,23 +669,21 @@ func adtySessionHostAllowed(c *gin.Context) bool {
 		return true
 	}
 	site, err := AdtySiteForHostWithError(host)
-	if err != nil {
+	if err != nil || site == nil {
 		return false
 	}
-	if site != nil {
-		if !AdtySiteServesCustomers(site) {
+	if !AdtySiteServesCustomers(site) {
+		return false
+	}
+	// 权威查库复验分站状态，避免多实例旧缓存在另一实例关站后短暂放行登录。
+	if model.DB != nil {
+		var fresh model.AdtySite
+		if err := model.DB.Select("id", "status").Where("id = ?", site.Id).First(&fresh).Error; err != nil {
 			return false
 		}
-		// 权威查库复验分站状态，避免多实例旧缓存在另一实例关站后短暂放行登录。
-		if model.DB != nil {
-			var fresh model.AdtySite
-			if err := model.DB.Select("id", "status").Where("id = ?", site.Id).First(&fresh).Error; err != nil {
-				return false
-			}
-			if !AdtySiteServesCustomers(&fresh) {
-				InvalidateAdtySiteCache()
-				return false
-			}
+		if !AdtySiteServesCustomers(&fresh) {
+			InvalidateAdtySiteCache()
+			return false
 		}
 	}
 	return true

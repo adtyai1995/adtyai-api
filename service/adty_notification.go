@@ -368,12 +368,15 @@ func SaveAdtyNotificationPublicationWithAudit(actorID int, issuer *model.AdtySit
 		}
 	}
 	row := model.AdtyNotificationPublication{IssuerSiteId: issuerID}
+	var existing *model.AdtyNotificationPublication
 	var beforeSnap map[string]any
 	currentStatus := ""
 	if id > 0 {
 		if err := model.DB.Where("id = ? AND issuer_site_id = ?", id, issuerID).First(&row).Error; err != nil {
 			return nil, "", err
 		}
+		existingCopy := row
+		existing = &existingCopy
 		beforeSnap = adtyNotificationAuditSnapshot(row)
 		currentStatus = row.Status
 		if input.Revision <= 0 {
@@ -483,7 +486,7 @@ func SaveAdtyNotificationPublicationWithAudit(actorID int, issuer *model.AdtySit
 		return nil, "", common.NewMessage("Invalid parameters")
 	}
 
-	resolved, err := resolveAdtyNotificationTargets(issuer, issuerID, input)
+	resolved, err := resolveAdtyNotificationTargets(issuer, issuerID, input, existing)
 	if err != nil {
 		return nil, "", err
 	}
@@ -573,8 +576,46 @@ type resolvedAdtyNotificationTargets struct {
 	UsesTargetAudiences bool
 }
 
-func resolveAdtyNotificationTargets(issuer *model.AdtySite, issuerID int, input AdtyNotificationInput) (resolvedAdtyNotificationTargets, error) {
+func resolveAdtyNotificationTargets(issuer *model.AdtySite, issuerID int, input AdtyNotificationInput, existing *model.AdtyNotificationPublication) (resolvedAdtyNotificationTargets, error) {
 	rawAudience := strings.TrimSpace(input.Audience)
+	if existing != nil && (existing.Audience == "user" || existing.Audience == "team") && len(existing.ParsedTargetAudiences()) == 0 {
+		hasTargetAudiences := false
+		for _, item := range input.TargetAudiences {
+			if strings.TrimSpace(item) != "" {
+				hasTargetAudiences = true
+				break
+			}
+		}
+		if hasTargetAudiences || len(input.TargetSiteIDs) > 0 {
+			return resolvedAdtyNotificationTargets{}, common.NewMessage("Targeted user or team notifications cannot be broadened to group broadcasts")
+		}
+		if len(input.TargetAudiences) > 0 {
+			return resolvedAdtyNotificationTargets{}, common.NewMessage("Invalid parameters")
+		}
+		if rawAudience != "" && rawAudience != existing.Audience {
+			switch rawAudience {
+			case "all", "all_users", "all_sites", "site", "multi",
+				"main_users", "main_teams", "site_users", "site_teams",
+				"subsite_users", "all_site_owners":
+				return resolvedAdtyNotificationTargets{}, common.NewMessage("Targeted user or team notifications cannot be broadened to group broadcasts")
+			case "team":
+				if existing.Audience == "user" {
+					return resolvedAdtyNotificationTargets{}, common.NewMessage("Targeted user or team notifications cannot be broadened to group broadcasts")
+				}
+				return resolvedAdtyNotificationTargets{}, common.NewMessage("Invalid parameters")
+			default:
+				return resolvedAdtyNotificationTargets{}, common.NewMessage("Invalid parameters")
+			}
+		}
+		return resolvedAdtyNotificationTargets{
+			Audience:            existing.Audience,
+			TargetAudiences:     existing.TargetAudiences,
+			TargetSiteIDs:       existing.TargetSiteIDs,
+			TargetSiteId:        existing.TargetSiteId,
+			TargetSiteName:      existing.TargetSiteName,
+			UsesTargetAudiences: false,
+		}, nil
+	}
 	useMulti := len(input.TargetAudiences) > 0 || slices.Contains(adtyNewTargetAudiences, rawAudience)
 	if !useMulti {
 		if !slices.Contains([]string{"all_users", "all_sites", "site", "team", "user"}, rawAudience) {
@@ -1226,11 +1267,14 @@ func adtyNotificationTargetedRecipientSets(tx *gorm.DB, row *model.AdtyNotificat
 }
 
 func adtyNotificationPrivateRecipientSets(tx *gorm.DB, row *model.AdtyNotificationPublication) ([]int, []int, error) {
-	if row == nil {
+	if tx == nil || row == nil {
 		return nil, nil, nil
 	}
 	if audiences := row.ParsedTargetAudiences(); len(audiences) > 0 {
 		return adtyNotificationTargetedRecipientSets(tx, row, audiences)
+	}
+	if row.IssuerSiteId > 0 && row.TargetSiteId != row.IssuerSiteId {
+		return nil, nil, nil
 	}
 	switch row.Audience {
 	case "user":
@@ -1242,7 +1286,41 @@ func adtyNotificationPrivateRecipientSets(tx *gorm.DB, row *model.AdtyNotificati
 		if err != nil || uid <= 0 {
 			return nil, nil, nil
 		}
-		return []int{uid}, nil, nil
+		var user model.User
+		lookup := tx.Select("id", "site_id", "staff_site_id", "status").
+			Where("id = ? AND status = ? AND staff_site_id = 0", uid, common.UserStatusEnabled).
+			Limit(1).Find(&user)
+		if lookup.Error != nil {
+			return nil, nil, lookup.Error
+		}
+		if lookup.RowsAffected == 0 {
+			return nil, nil, nil
+		}
+		if user.SiteId != row.TargetSiteId {
+			// Site owner accounts always have users.site_id = 0; allow Root-issued
+			// historical user notices that recorded the owned open site ID.
+			ownerMatch := false
+			if row.IssuerSiteId == 0 && row.TargetSiteId > 0 && user.SiteId == 0 && tx.Migrator().HasTable(&model.AdtySite{}) {
+				var ownedCount int64
+				if err := tx.Model(&model.AdtySite{}).
+					Where("id = ? AND owner_user_id = ? AND status IN ?", row.TargetSiteId, user.Id, adtyOpenSiteStatuses).
+					Count(&ownedCount).Error; err != nil {
+					return nil, nil, err
+				}
+				ownerMatch = ownedCount > 0
+			}
+			if !ownerMatch {
+				return nil, nil, nil
+			}
+		}
+		isStaff, err := adtyUserIsStaffWithDB(tx, &user)
+		if err != nil {
+			return nil, nil, err
+		}
+		if isStaff {
+			return nil, nil, nil
+		}
+		return []int{user.Id}, nil, nil
 	case "team":
 		tidStr, ok := strings.CutPrefix(row.TargetSiteName, "team:")
 		if !ok {
@@ -1252,13 +1330,55 @@ func adtyNotificationPrivateRecipientSets(tx *gorm.DB, row *model.AdtyNotificati
 		if err != nil || tid <= 0 {
 			return nil, nil, nil
 		}
-		if !tx.Migrator().HasTable(&model.AdtyTeamMember{}) {
+		if !tx.Migrator().HasTable(&model.AdtyTeam{}) || !tx.Migrator().HasTable(&model.AdtyTeamMember{}) {
+			return nil, nil, nil
+		}
+		var team model.AdtyTeam
+		teamLookup := tx.Select("id").
+			Where("id = ? AND status = ? AND site_id = ?", tid, model.AdtyTeamStatusActive, row.TargetSiteId).
+			Limit(1).Find(&team)
+		if teamLookup.Error != nil {
+			return nil, nil, teamLookup.Error
+		}
+		if teamLookup.RowsAffected == 0 {
+			return nil, nil, nil
+		}
+		var memberIDs []int
+		if err := tx.Model(&model.AdtyTeamMember{}).
+			Where("team_id = ? AND status = ?", tid, model.AdtyTeamMemberActive).
+			Order("user_id ASC").Pluck("user_id", &memberIDs).Error; err != nil {
+			return nil, nil, err
+		}
+		if len(memberIDs) == 0 {
+			return nil, nil, nil
+		}
+		staffSet := map[int]bool{}
+		if tx.Migrator().HasTable(&model.AdtySiteStaff{}) {
+			var staffIDs []int
+			if err := tx.Model(&model.AdtySiteStaff{}).
+				Where("user_id IN ?", memberIDs).
+				Distinct("user_id").Pluck("user_id", &staffIDs).Error; err != nil {
+				return nil, nil, err
+			}
+			for _, sid := range staffIDs {
+				if sid > 0 {
+					staffSet[sid] = true
+				}
+			}
+		}
+		candidates := make([]int, 0, len(memberIDs))
+		for _, uid := range memberIDs {
+			if uid > 0 && !staffSet[uid] {
+				candidates = append(candidates, uid)
+			}
+		}
+		if len(candidates) == 0 {
 			return nil, nil, nil
 		}
 		var userIDs []int
-		if err := tx.Model(&model.AdtyTeamMember{}).
-			Where("team_id = ? AND status = ?", tid, model.AdtyTeamMemberActive).
-			Order("user_id").Pluck("user_id", &userIDs).Error; err != nil {
+		if err := tx.Model(&model.User{}).
+			Where("id IN ? AND status = ? AND site_id = ? AND staff_site_id = 0", candidates, common.UserStatusEnabled, row.TargetSiteId).
+			Order("id ASC").Pluck("id", &userIDs).Error; err != nil {
 			return nil, nil, err
 		}
 		return userIDs, nil, nil

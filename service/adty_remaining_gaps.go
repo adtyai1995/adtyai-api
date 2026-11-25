@@ -1868,10 +1868,13 @@ func recordSiteInviteBatchAnomaly(siteID, inviterID int) error {
 	})
 }
 
-// SetSiteReferralRate stores the site's one-level invite rate. Rate is a fraction in [0, 1].
+// SetSiteReferralRate stores the site's one-level invite rate. Rate is a fraction in [0, 0.30].
 func SetSiteReferralRate(siteID int, rate decimal.Decimal) error {
-	if siteID <= 0 || rate.IsNegative() || rate.GreaterThan(decimal.NewFromInt(1)) {
-		return common.NewMessage("Invalid parameters")
+	if siteID <= 0 || rate.IsNegative() {
+		return common.NewMessage("Commission rate must be between 0% and 30%")
+	}
+	if rate.GreaterThan(adtySiteMaxReferralRate) {
+		return ErrAdtySiteReferralRateLimit
 	}
 	row := model.AdtySiteReferralRate{SiteId: siteID, Rate: rate}
 	return model.DB.Where(model.AdtySiteReferralRate{SiteId: siteID}).Assign(map[string]any{"rate": rate}).FirstOrCreate(&row).Error

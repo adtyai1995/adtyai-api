@@ -209,6 +209,9 @@ func SaveAdtyTranslationConfig(input AdtyTranslationInput, audits ...model.Audit
 		if lookup.Error != nil && !missing {
 			return lookup.Error
 		}
+		if input.Mode == model.AdtyTranslationModeOwn && strings.TrimSpace(input.Token) == "" && strings.TrimSpace(saved.TokenCipher) == "" {
+			return common.NewMessage("API key is required for independent translation mode")
+		}
 		snapshot := func(row model.AdtyTranslationConfig) map[string]any {
 			return map[string]any{"mode": row.Mode, "protocol": row.Protocol, "model_name": row.ModelName, "backup_model": row.BackupModel, "timeout_sec": row.TimeoutSec, "concurrency": row.Concurrency, "max_chars": row.MaxChars, "daily_quota": row.DailyQuota, "retry_limit": row.RetryLimit, "enabled": row.Enabled, "configured": row.TokenCipher != ""}
 		}
@@ -919,6 +922,36 @@ func ListAdtyTranslationTasks(status string) ([]AdtyTranslationTaskView, error) 
 		return nil, err
 	}
 	out := make([]AdtyTranslationTaskView, 0, len(heads))
+	if len(heads) == 0 {
+		return out, nil
+	}
+	type jobLookupKey struct {
+		objectKey string
+		version   int
+	}
+	objectKeys := make([]string, 0, len(heads))
+	seenKeys := make(map[string]struct{}, len(heads))
+	for _, h := range heads {
+		if _, ok := seenKeys[h.ObjectKey]; !ok {
+			seenKeys[h.ObjectKey] = struct{}{}
+			objectKeys = append(objectKeys, h.ObjectKey)
+		}
+	}
+	jobsByKey := make(map[jobLookupKey]model.AdtyTranslationJob, len(heads))
+	if len(objectKeys) > 0 {
+		var jobs []model.AdtyTranslationJob
+		if err := model.DB.Where("object_key IN ?", objectKeys).Order("id DESC").Find(&jobs).Error; err == nil {
+			for _, job := range jobs {
+				if job.Id <= 0 {
+					continue
+				}
+				k := jobLookupKey{objectKey: job.ObjectKey, version: job.Version}
+				if _, exists := jobsByKey[k]; !exists {
+					jobsByKey[k] = job
+				}
+			}
+		}
+	}
 	for _, h := range heads {
 		view := AdtyTranslationTaskView{
 			Id:          h.Id,
@@ -934,8 +967,7 @@ func ListAdtyTranslationTasks(status string) ([]AdtyTranslationTaskView, error) 
 			Notice:      h.Notice,
 			UpdatedAt:   h.UpdatedAt,
 		}
-		var job model.AdtyTranslationJob
-		if err := model.DB.Where("object_key = ? AND version = ?", h.ObjectKey, h.Version).Limit(1).Find(&job).Error; err == nil && job.Id > 0 {
+		if job, ok := jobsByKey[jobLookupKey{objectKey: h.ObjectKey, version: h.Version}]; ok && job.Id > 0 {
 			view.JobId = job.Id
 			view.FinishedAt = job.FinishedAt
 			if view.ModelName == "" {

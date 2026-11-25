@@ -10,6 +10,7 @@ import (
 	"github.com/expr-lang/expr/ast"
 	"github.com/expr-lang/expr/parser"
 	"github.com/expr-lang/expr/vm"
+	"github.com/tidwall/gjson"
 )
 
 const maxCacheSize = 256
@@ -111,14 +112,16 @@ func usesRequestProbe(node ast.Node) bool {
 }
 
 type cachedEntry struct {
-	prog          *vm.Program
-	tree          ast.Node
-	body          string
-	usedVars      map[string]bool
-	usedUsageKeys map[string]bool
-	requestRules  []RequestRuleTrace
-	version       int
-	fixedPricing  bool
+	prog           *vm.Program
+	tree           ast.Node
+	body           string
+	usedVars       map[string]bool
+	usedUsageKeys  map[string]bool
+	usedHeaderKeys map[string]bool
+	usedParamPaths map[string]bool
+	requestRules   []RequestRuleTrace
+	version        int
+	fixedPricing   bool
 }
 
 var (
@@ -229,14 +232,16 @@ func compileEntryFromCacheByHash(exprStr, hash string) (*cachedEntry, error) {
 	}
 
 	entry := &cachedEntry{
-		prog:          prog,
-		tree:          tree.Node,
-		body:          body,
-		usedVars:      extractUsedVars(prog),
-		usedUsageKeys: extractUsedUsageKeys(prog),
-		requestRules:  patcher.requestRules,
-		version:       version,
-		fixedPricing:  fixedPricing,
+		prog:           prog,
+		tree:           tree.Node,
+		body:           body,
+		usedVars:       extractUsedVars(prog),
+		usedUsageKeys:  extractUsedUsageKeys(prog),
+		usedHeaderKeys: extractUsedCallStringArgs(tree.Node, "header", true),
+		usedParamPaths: extractUsedCallStringArgs(tree.Node, "param", false),
+		requestRules:   patcher.requestRules,
+		version:        version,
+		fixedPricing:   fixedPricing,
 	}
 	cacheMu.Lock()
 	if len(cache) >= maxCacheSize {
@@ -282,24 +287,86 @@ func extractUsedVars(prog *vm.Program) map[string]bool {
 }
 
 func extractUsedUsageKeys(prog *vm.Program) map[string]bool {
+	return extractUsedCallStringArgs(prog.Node(), "u", false)
+}
+
+func extractUsedCallStringArgs(root ast.Node, fnName string, lower bool) map[string]bool {
 	keys := make(map[string]bool)
-	ast.Find(prog.Node(), func(node ast.Node) bool {
+	ast.Find(root, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallNode)
 		if !ok || len(call.Arguments) != 1 {
 			return false
 		}
 		callee, ok := call.Callee.(*ast.IdentifierNode)
-		if !ok || callee.Value != "u" {
+		if !ok || callee.Value != fnName {
 			return false
 		}
 		literal, ok := call.Arguments[0].(*ast.StringNode)
 		if !ok {
 			return false
 		}
-		keys[strings.TrimSpace(literal.Value)] = true
+		val := strings.TrimSpace(literal.Value)
+		if lower {
+			val = strings.ToLower(val)
+		}
+		if val != "" {
+			keys[val] = true
+		}
 		return false
 	})
 	return keys
+}
+
+const maxFrozenRequestValueBytes = 4096
+
+// FreezeRequestInputs extracts only the headers and body param paths referenced
+// by exprStr so asynchronous task completion can re-evaluate request rules
+// deterministically without persisting full request payloads.
+func FreezeRequestInputs(exprStr, hash string, request RequestInput) (map[string]string, map[string]any) {
+	if exprStr == "" {
+		return nil, nil
+	}
+	if hash == "" {
+		hash = ExprHashString(exprStr)
+	}
+	entry, err := compileEntryFromCacheByHash(exprStr, hash)
+	if err != nil || entry == nil {
+		return nil, nil
+	}
+	var frozenHeaders map[string]string
+	if len(entry.usedHeaderKeys) > 0 {
+		normHeaders := normalizeHeaders(request.Headers)
+		for key := range entry.usedHeaderKeys {
+			if val, ok := normHeaders[key]; ok && val != "" && len(val) <= maxFrozenRequestValueBytes {
+				if frozenHeaders == nil {
+					frozenHeaders = make(map[string]string, len(entry.usedHeaderKeys))
+				}
+				frozenHeaders[key] = val
+			}
+		}
+	}
+	var frozenParams map[string]any
+	if len(entry.usedParamPaths) > 0 {
+		for path := range entry.usedParamPaths {
+			if len(request.Body) > 0 {
+				res := gjson.GetBytes(request.Body, path)
+				if res.Exists() && len(res.Raw) <= maxFrozenRequestValueBytes {
+					if frozenParams == nil {
+						frozenParams = make(map[string]any, len(entry.usedParamPaths))
+					}
+					frozenParams[path] = res.Value()
+				}
+			} else if request.FrozenParams != nil {
+				if val, ok := request.FrozenParams[path]; ok {
+					if frozenParams == nil {
+						frozenParams = make(map[string]any, len(entry.usedParamPaths))
+					}
+					frozenParams[path] = val
+				}
+			}
+		}
+	}
+	return frozenHeaders, frozenParams
 }
 
 // UsedVars returns the set of identifier names referenced by an expression.

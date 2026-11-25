@@ -402,16 +402,6 @@ func validateOptionValue(key string, value string) error {
 		if err != nil || n < 1 || n > 1440 {
 			return common.NewMessage("{{key}} must be an integer between {{min}} and {{max}}", map[string]any{"key": key, "min": 1, "max": 1440})
 		}
-	case "perf_metrics_setting.flush_interval":
-		n, err := strconv.Atoi(strings.TrimSpace(value))
-		if err != nil || n < 1 || n > 1440 {
-			return common.NewMessage("{{key}} must be an integer between {{min}} and {{max}}", map[string]any{"key": key, "min": 1, "max": 1440})
-		}
-	case "perf_metrics_setting.retention_days":
-		n, err := strconv.Atoi(strings.TrimSpace(value))
-		if err != nil || n < 0 || n > 3650 {
-			return common.NewMessage("{{key}} must be an integer between {{min}} and {{max}}", map[string]any{"key": key, "min": 0, "max": 3650})
-		}
 	case "ModelRequestRateLimitGroup":
 		if err := setting.CheckModelRequestRateLimitGroup(value); err != nil {
 			return err

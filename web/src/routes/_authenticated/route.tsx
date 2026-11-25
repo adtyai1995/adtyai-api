@@ -29,8 +29,6 @@ function isAllowedPureSiteOwnerPath(pathname: string): boolean {
     pathname.startsWith('/site-owner/') ||
     pathname === '/security' ||
     pathname.startsWith('/security/') ||
-    pathname === '/profile' ||
-    pathname.startsWith('/profile/') ||
     pathname.startsWith('/errors/')
   )
 }

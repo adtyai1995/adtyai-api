@@ -76,7 +76,7 @@ export function CompleteStep(props: CompleteStepProps) {
       <div className='bg-card w-full rounded-[14px] border p-6 text-left shadow-sm sm:p-8'>
         <dl className='grid gap-6'>
           <div className='space-y-1.5'>
-            <dt className='text-muted-foreground text-xs font-medium tracking-wide uppercase'>
+            <dt className='text-muted-foreground text-xs font-medium'>
               {t('Database')}
             </dt>
             <dd className='flex flex-wrap items-center gap-2'>
@@ -92,7 +92,7 @@ export function CompleteStep(props: CompleteStepProps) {
           <Separator />
 
           <div className='space-y-1.5'>
-            <dt className='text-muted-foreground text-xs font-medium tracking-wide uppercase'>
+            <dt className='text-muted-foreground text-xs font-medium'>
               {t('Administrator account')}
             </dt>
             <dd className='text-sm font-semibold'>{adminAccountLabel}</dd>
@@ -101,7 +101,7 @@ export function CompleteStep(props: CompleteStepProps) {
           <Separator />
 
           <div className='space-y-1.5'>
-            <dt className='text-muted-foreground text-xs font-medium tracking-wide uppercase'>
+            <dt className='text-muted-foreground text-xs font-medium'>
               {t('Usage mode')}
             </dt>
             <dd className='text-sm font-semibold'>{t(usageLabelKey)}</dd>

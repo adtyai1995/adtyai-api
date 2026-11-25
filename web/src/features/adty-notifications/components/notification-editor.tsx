@@ -37,7 +37,7 @@ import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { DraftDiscardDialog } from '@/features/system-settings/components/draft-discard-dialog'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
-import { getUserSites } from '@/features/users/api'
+import { api } from '@/lib/api'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { requireServerSuccess } from '@/lib/server-error-message'
@@ -58,8 +58,11 @@ import {
 import {
   createNotificationSchema,
   deriveLegacyAudience,
+  formatNotificationRecipients,
+  isPreservedLegacyNotification,
   notificationKindLabels,
   resolveInitialTargets,
+  resolveLegacyTargetIds,
   type NotificationInput,
   type NotificationTargetAudience,
 } from '../lib/schema'
@@ -116,13 +119,22 @@ export function NotificationEditor(props: {
   const client = useQueryClient()
   const [discarding, setDiscarding] = useState(false)
 
+  const isLegacyPreserved = useMemo(
+    () => isPreservedLegacyNotification(props.row),
+    [props.row]
+  )
+  const preservedLegacyIds = useMemo(
+    () => resolveLegacyTargetIds(props.row),
+    [props.row]
+  )
+
   const publishSchema = useMemo(
-    () => createNotificationSchema(props.mode, false),
-    [props.mode]
+    () => createNotificationSchema(props.mode, false, isLegacyPreserved),
+    [props.mode, isLegacyPreserved]
   )
   const draftSchema = useMemo(
-    () => createNotificationSchema(props.mode, true),
-    [props.mode]
+    () => createNotificationSchema(props.mode, true, isLegacyPreserved),
+    [props.mode, isLegacyPreserved]
   )
 
   const initialTargets = useMemo(
@@ -151,12 +163,24 @@ export function NotificationEditor(props: {
           ),
           content_format: 'html',
           kind: props.row.kind ?? 'platform',
-          audience: initialLegacyAudience.audience,
-          target_audiences: initialTargets.target_audiences,
-          target_site_ids: initialTargets.target_site_ids,
-          target_site_id: Math.max(0, initialLegacyAudience.target_site_id),
-          target_team_id: Math.max(0, props.row.target_team_id ?? 0),
-          target_user_id: Math.max(0, props.row.target_user_id ?? 0),
+          audience: isLegacyPreserved
+            ? props.row.audience
+            : initialLegacyAudience.audience,
+          target_audiences: isLegacyPreserved
+            ? []
+            : initialTargets.target_audiences,
+          target_site_ids: isLegacyPreserved
+            ? []
+            : initialTargets.target_site_ids,
+          target_site_id: isLegacyPreserved
+            ? preservedLegacyIds.target_site_id
+            : Math.max(0, initialLegacyAudience.target_site_id),
+          target_team_id: isLegacyPreserved
+            ? preservedLegacyIds.target_team_id
+            : Math.max(0, props.row.target_team_id ?? 0),
+          target_user_id: isLegacyPreserved
+            ? preservedLegacyIds.target_user_id
+            : Math.max(0, props.row.target_user_id ?? 0),
           business: props.row.business ?? '',
           sync_telegram:
             (props.row.telegram_at ?? 0) > 0 ||
@@ -191,14 +215,23 @@ export function NotificationEditor(props: {
   const plainLength = getNotificationPlainLength(contentValue)
   const isContentOverLimit = plainLength > MAX_NOTIFICATION_PLAIN_LENGTH
   const showSubsitePicker =
-    props.mode === 'root' && targetAudiences.includes('site_users')
+    !isLegacyPreserved &&
+    props.mode === 'root' &&
+    targetAudiences.includes('site_users')
   const canSpecifyTelegramChannel = props.mode === 'root'
 
   useDraftNavigation(form.formState.isDirty)
 
   const sites = useQuery({
-    queryKey: ['adty-notification-targets', props.userId],
-    queryFn: async () => requireServerSuccess(await getUserSites()).data,
+    queryKey: ['adty-notification-targets', props.userId, 'open-only'],
+    queryFn: async () => {
+      const response = await api.get<{
+        success: boolean
+        message?: string
+        data?: { site_id: number; site_name: string }[]
+      }>('/api/user/sites', { params: { open_only: 1 } })
+      return requireServerSuccess(response.data).data ?? []
+    },
     enabled: showSubsitePicker,
   })
   const subsites = useMemo(
@@ -213,6 +246,23 @@ export function NotificationEditor(props: {
 
   const preparePayload = (input: NotificationInput): NotificationInput => {
     const sanitizedContent = sanitizeNotificationHtml(input.content)
+    if (isLegacyPreserved && props.row) {
+      return {
+        ...input,
+        content: sanitizedContent,
+        content_format: 'html',
+        audience: props.row.audience,
+        target_audiences: [],
+        target_site_ids: [],
+        target_site_id: preservedLegacyIds.target_site_id,
+        target_team_id: preservedLegacyIds.target_team_id,
+        target_user_id: preservedLegacyIds.target_user_id,
+        sync_telegram: input.sync_telegram,
+        telegram_channel: canSpecifyTelegramChannel
+          ? input.telegram_channel
+          : '',
+      }
+    }
     const filteredSiteIds =
       props.mode === 'root' && input.target_audiences.includes('site_users')
         ? [...new Set(input.target_site_ids.filter((siteId) => siteId > 0))]
@@ -308,25 +358,42 @@ export function NotificationEditor(props: {
   const handleDraftSave = () => {
     form.clearErrors()
     const raw = form.getValues()
-    const filteredSiteIds =
-      props.mode === 'root' && raw.target_audiences.includes('site_users')
-        ? [...new Set(raw.target_site_ids.filter((siteId) => siteId > 0))]
-        : []
-    const legacy = deriveLegacyAudience(
-      props.mode,
-      props.siteId,
-      raw.target_audiences,
-      filteredSiteIds
-    )
-    const parsed = draftSchema.safeParse({
-      ...raw,
-      audience: legacy.audience,
-      target_site_id: Math.max(0, legacy.target_site_id),
-      target_site_ids: filteredSiteIds,
-      content_format: 'html',
-      sync_telegram: raw.sync_telegram,
-      telegram_channel: canSpecifyTelegramChannel ? raw.telegram_channel : '',
-    })
+    let candidate: NotificationInput
+    if (isLegacyPreserved && props.row) {
+      candidate = {
+        ...raw,
+        audience: props.row.audience,
+        target_audiences: [],
+        target_site_ids: [],
+        target_site_id: preservedLegacyIds.target_site_id,
+        target_team_id: preservedLegacyIds.target_team_id,
+        target_user_id: preservedLegacyIds.target_user_id,
+        content_format: 'html',
+        sync_telegram: raw.sync_telegram,
+        telegram_channel: canSpecifyTelegramChannel ? raw.telegram_channel : '',
+      }
+    } else {
+      const filteredSiteIds =
+        props.mode === 'root' && raw.target_audiences.includes('site_users')
+          ? [...new Set(raw.target_site_ids.filter((siteId) => siteId > 0))]
+          : []
+      const legacy = deriveLegacyAudience(
+        props.mode,
+        props.siteId,
+        raw.target_audiences,
+        filteredSiteIds
+      )
+      candidate = {
+        ...raw,
+        audience: legacy.audience,
+        target_site_id: Math.max(0, legacy.target_site_id),
+        target_site_ids: filteredSiteIds,
+        content_format: 'html',
+        sync_telegram: raw.sync_telegram,
+        telegram_channel: canSpecifyTelegramChannel ? raw.telegram_channel : '',
+      }
+    }
+    const parsed = draftSchema.safeParse(candidate)
     if (!parsed.success) {
       for (const issue of parsed.error.issues) {
         const field = issue.path[0] as keyof NotificationInput | undefined
@@ -452,37 +519,77 @@ export function NotificationEditor(props: {
 
             <Field data-invalid={!!errors.target_audiences}>
               <FieldLabel>{t('Recipients')}</FieldLabel>
-              <div className='grid gap-2 rounded-lg border p-3 sm:grid-cols-2'>
-                {audienceOptions.map((option) => {
-                  const checkboxId = `${id}-audience-${option.value}`
-                  const isChecked = targetAudiences.includes(option.value)
-                  return (
-                    <div key={option.value} className='flex items-start gap-2.5'>
-                      <Checkbox
-                        id={checkboxId}
-                        disabled={save.isPending}
-                        checked={isChecked}
-                        onCheckedChange={(checked) =>
-                          toggleAudience(option.value, checked === true)
-                        }
-                      />
-                      <div className='min-w-0 leading-snug'>
-                        <Label
-                          htmlFor={checkboxId}
-                          className='cursor-pointer text-sm font-normal'
-                        >
-                          {t(option.labelKey)}
-                        </Label>
-                        {option.descriptionKey && (
-                          <p className='text-muted-foreground mt-0.5 text-xs'>
-                            {t(option.descriptionKey)}
-                          </p>
-                        )}
+              {isLegacyPreserved && props.row ? (
+                <div className='bg-muted/40 space-y-1.5 rounded-lg border p-3 text-sm'>
+                  <p className='font-medium'>
+                    {formatNotificationRecipients(
+                      {
+                        ...props.row,
+                        target_team_id: preservedLegacyIds.target_team_id,
+                        target_user_id: preservedLegacyIds.target_user_id,
+                      },
+                      t
+                    )}
+                  </p>
+                  <div className='text-muted-foreground flex flex-wrap gap-x-3 gap-y-1 text-xs tabular-nums'>
+                    {preservedLegacyIds.target_site_id > 0 && (
+                      <span>
+                        {t('Site ID')}: {preservedLegacyIds.target_site_id}
+                      </span>
+                    )}
+                    {preservedLegacyIds.target_team_id > 0 && (
+                      <span>
+                        {t('Team ID')}: {preservedLegacyIds.target_team_id}
+                      </span>
+                    )}
+                    {preservedLegacyIds.target_user_id > 0 && (
+                      <span>
+                        {t('User ID')}: {preservedLegacyIds.target_user_id}
+                      </span>
+                    )}
+                  </div>
+                  <p className='text-muted-foreground text-xs'>
+                    {t(
+                      'Legacy audience targeting is preserved and cannot be changed while editing.'
+                    )}
+                  </p>
+                </div>
+              ) : (
+                <div className='grid gap-2 rounded-lg border p-3 sm:grid-cols-2'>
+                  {audienceOptions.map((option) => {
+                    const checkboxId = `${id}-audience-${option.value}`
+                    const isChecked = targetAudiences.includes(option.value)
+                    return (
+                      <div
+                        key={option.value}
+                        className='flex items-start gap-2.5'
+                      >
+                        <Checkbox
+                          id={checkboxId}
+                          disabled={save.isPending}
+                          checked={isChecked}
+                          onCheckedChange={(checked) =>
+                            toggleAudience(option.value, checked === true)
+                          }
+                        />
+                        <div className='min-w-0 leading-snug'>
+                          <Label
+                            htmlFor={checkboxId}
+                            className='cursor-pointer text-sm font-normal'
+                          >
+                            {t(option.labelKey)}
+                          </Label>
+                          {option.descriptionKey && (
+                            <p className='text-muted-foreground mt-0.5 text-xs'>
+                              {t(option.descriptionKey)}
+                            </p>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  )
-                })}
-              </div>
+                    )
+                  })}
+                </div>
+              )}
               <FieldError>
                 {errors.target_audiences?.message
                   ? t(errors.target_audiences.message)

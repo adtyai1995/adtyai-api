@@ -50,6 +50,14 @@ function auditActionLabel(t: TFunction, action: string) {
       return t('Rejected withdrawal')
     case 'withdrawal_pay':
       return t('Marked withdrawal paid')
+    case 'site_invite_withdrawal_approve':
+      return t('Approved closed-site withdrawal')
+    case 'site_invite_withdrawal_reject':
+      return t('Rejected closed-site withdrawal')
+    case 'site_invite_withdrawal_pay':
+      return t('Marked closed-site withdrawal paid')
+    case 'site_invite_withdrawal_fail':
+      return t('Recorded failed closed-site withdrawal')
     case 'withdraw_cny_rate':
       return t('Changed withdrawal CNY rate')
     case 'rate':

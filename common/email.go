@@ -43,6 +43,10 @@ func SanitizeOutboundError(err error, secrets ...string) error {
 		msg = strings.ReplaceAll(msg, s, "[REDACTED]")
 		msg = strings.ReplaceAll(msg, url.QueryEscape(s), "[REDACTED]")
 		msg = strings.ReplaceAll(msg, url.PathEscape(s), "[REDACTED]")
+		if len(s) >= 4 {
+			msg = strings.ReplaceAll(msg, base64.StdEncoding.EncodeToString([]byte(s)), "[REDACTED]")
+			msg = strings.ReplaceAll(msg, base64.RawStdEncoding.EncodeToString([]byte(s)), "[REDACTED]")
+		}
 	}
 	return errors.New(msg)
 }

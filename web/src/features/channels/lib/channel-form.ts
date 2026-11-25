@@ -54,6 +54,8 @@ const SUPPORTED_PROXY_PROTOCOLS = new Set([
   'socks5h:',
 ])
 
+const RESERVED_CHANNEL_GROUPS = new Set(['auto', 'all'])
+
 function isOptionalProxyURL(value: string | undefined): boolean {
   const trimmedValue = value?.trim() || ''
   if (!trimmedValue) return true
@@ -212,7 +214,16 @@ export const channelFormSchema = z
     key: z.string(),
     openai_organization: z.string().optional(),
     models: z.string().min(1, ERROR_MESSAGES.REQUIRED_MODELS),
-    group: z.array(z.string()).min(1, ERROR_MESSAGES.REQUIRED_GROUP),
+    group: z
+      .array(z.string())
+      .min(1, ERROR_MESSAGES.REQUIRED_GROUP)
+      .refine(
+        (groups) =>
+          !groups.some((group) =>
+            RESERVED_CHANNEL_GROUPS.has(group.trim().toLowerCase())
+          ),
+        'Reserved groups auto and all cannot be assigned to channels'
+      ),
     model_mapping: z
       .string()
       .optional()

@@ -136,6 +136,8 @@ func (l *InMemoryRateLimiter) deleteExpiredEntries(now time.Time) {
 	}
 }
 
+const maxInMemoryRateLimitEntries = 100000
+
 // touchEntry returns the key's bucket, creating it on demand, and marks it as
 // the most recently active key. The caller must hold the mutex.
 func (l *InMemoryRateLimiter) touchEntry(key string, now time.Time, windowDuration time.Duration) *rateLimitEntry {
@@ -145,6 +147,19 @@ func (l *InMemoryRateLimiter) touchEntry(key string, now time.Time, windowDurati
 	}
 	entry, ok := l.store[key]
 	if !ok {
+		if len(l.store) >= maxInMemoryRateLimitEntries {
+			for cur := l.lru.Back(); cur != nil && len(l.store) >= maxInMemoryRateLimitEntries; {
+				prev := cur.Prev()
+				victim := cur.Value.(*rateLimitEntry)
+				if l.reservations[victim.key] == 0 {
+					delete(l.store, victim.key)
+					l.lru.Remove(cur)
+					victim.element = nil
+					victim.requests.clear()
+				}
+				cur = prev
+			}
+		}
 		entry = &rateLimitEntry{
 			key:        key,
 			lastActive: now,

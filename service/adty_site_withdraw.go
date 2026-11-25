@@ -88,13 +88,16 @@ func SaveAdtySiteWithdrawRules(rules AdtySiteWithdrawRules, operatorID int) erro
 }
 
 func SaveAdtySiteWithdrawRulesWithAudit(rules AdtySiteWithdrawRules, operatorID int) (string, error) {
-	_, minRaw, err := requiredPositiveDecimal(rules.MinUSD)
+	minDec, minRaw, err := requiredPositiveDecimal(rules.MinUSD)
 	if err != nil {
 		return "", common.NewMessage("Invalid parameters")
 	}
-	_, feeRaw, err := requiredPositiveDecimal(rules.FeeUSD)
+	feeDec, feeRaw, err := requiredPositiveDecimal(rules.FeeUSD)
 	if err != nil {
 		return "", common.NewMessage("Invalid parameters")
+	}
+	if !feeDec.LessThan(minDec) {
+		return "", common.NewMessage("Withdrawal fee must be less than minimum withdrawal amount")
 	}
 	_, usdtRaw, err := requiredPositiveDecimal(rules.USDTUSDRate)
 	if err != nil {

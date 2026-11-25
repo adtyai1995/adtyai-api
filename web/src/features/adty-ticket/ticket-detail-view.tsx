@@ -121,6 +121,52 @@ export function TicketDetailView(props: {
     (event) => event.action !== 'note' || detail?.can_note
   )
 
+  const knownUsernames = new Map<number, string>()
+  if (detail) {
+    if (detail.ticket.user_id > 0 && detail.ticket.username) {
+      knownUsernames.set(detail.ticket.user_id, detail.ticket.username)
+    }
+    if (detail.ticket.assignee_id && detail.ticket.assignee_username) {
+      knownUsernames.set(
+        detail.ticket.assignee_id,
+        detail.ticket.assignee_username
+      )
+    }
+    for (const handler of detail.assignees ?? []) {
+      if (handler.id > 0 && handler.username) {
+        knownUsernames.set(handler.id, handler.username)
+      }
+    }
+    for (const msg of detail.messages) {
+      if (msg.author_id > 0 && msg.author_username) {
+        knownUsernames.set(msg.author_id, msg.author_username)
+      }
+    }
+    for (const ev of detail.events ?? []) {
+      if (ev.actor_id && ev.actor_username) {
+        knownUsernames.set(ev.actor_id, ev.actor_username)
+      }
+      if (ev.from_assignee_id && ev.from_assignee_username) {
+        knownUsernames.set(ev.from_assignee_id, ev.from_assignee_username)
+      }
+      if (ev.to_assignee_id && ev.to_assignee_username) {
+        knownUsernames.set(ev.to_assignee_id, ev.to_assignee_username)
+      }
+    }
+  }
+
+  const formatEventAssignee = (
+    assigneeId: number,
+    assigneeUsername?: string
+  ): string => {
+    if (assigneeId <= 0) {
+      return t('Unassigned')
+    }
+    const resolvedName =
+      assigneeUsername?.trim() || knownUsernames.get(assigneeId)
+    return formatUserIdentity(assigneeId, resolvedName)
+  }
+
   const relatedEntries = detail
     ? Object.entries({
         [t('Business reference')]: detail.ticket.related_ref,
@@ -740,8 +786,56 @@ export function TicketDetailView(props: {
               {eventsExpanded && (
                 <div className='border-border divide-border divide-y border-t px-4 py-2'>
                   {visibleEvents.map((event) => {
+                    let actorLabel = ''
+                    if (
+                      detail.can_manage &&
+                      ((event.actor_id ?? 0) > 0 || event.actor_username)
+                    ) {
+                      const fallbackActorName = event.actor_id
+                        ? knownUsernames.get(event.actor_id)
+                        : undefined
+                      actorLabel = formatUserIdentity(
+                        event.actor_id,
+                        event.actor_username?.trim() || fallbackActorName
+                      )
+                    }
                     let detailLabel = ''
-                    if (event.detail) {
+                    const isAssignmentEvent =
+                      event.action === 'assign' || event.action === 'transfer'
+                    if (isAssignmentEvent && detail.can_manage) {
+                      if (
+                        event.from_assignee_id !== undefined ||
+                        event.to_assignee_id !== undefined
+                      ) {
+                        detailLabel = `${formatEventAssignee(
+                          event.from_assignee_id ?? 0,
+                          event.from_assignee_username
+                        )} → ${formatEventAssignee(
+                          event.to_assignee_id ?? 0,
+                          event.to_assignee_username
+                        )}`
+                      } else if (event.detail) {
+                        const arrowMatch =
+                          /^\s*(\d+)\s*(?:→|->)\s*(\d+)\s*$/.exec(event.detail)
+                        const singleIdMatch = /^\s*(\d+)\s*$/.exec(event.detail)
+                        if (arrowMatch) {
+                          detailLabel = `${formatEventAssignee(
+                            Number(arrowMatch[1]),
+                            event.from_assignee_username
+                          )} → ${formatEventAssignee(
+                            Number(arrowMatch[2]),
+                            event.to_assignee_username
+                          )}`
+                        } else if (singleIdMatch) {
+                          detailLabel = formatEventAssignee(
+                            Number(singleIdMatch[1]),
+                            event.to_assignee_username
+                          )
+                        } else {
+                          detailLabel = event.detail
+                        }
+                      }
+                    } else if (event.detail) {
                       detailLabel = event.detail
                       if (
                         TICKET_STATUS_LABELS[
@@ -762,6 +856,7 @@ export function TicketDetailView(props: {
                       >
                         <span>
                           {t(TICKET_EVENT_LABELS[event.action] ?? event.action)}
+                          {actorLabel ? ` · ${actorLabel}` : ''}
                           {detailLabel ? ` · ${detailLabel}` : ''}
                         </span>
                         {event.created_at ? (

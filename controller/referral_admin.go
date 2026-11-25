@@ -78,6 +78,7 @@ type referralWithdrawalAdminItem struct {
 	model.ReferralWithdrawal
 	Username           string `json:"username"`
 	ReviewedByUsername string `json:"reviewed_by_username,omitempty"`
+	PaidByUsername     string `json:"paid_by_username,omitempty"`
 	RejectedByUsername string `json:"rejected_by_username,omitempty"`
 	CanceledByUsername string `json:"canceled_by_username,omitempty"`
 }
@@ -256,8 +257,14 @@ func GetReferralAffiliates(c *gin.Context) {
 	}
 	query := service.ScopeAdtyReferralUsersQuery(model.DB.Model(&model.ReferralAffiliate{}), "user_id", siteID)
 	if keyword := strings.TrimSpace(c.Query("keyword")); keyword != "" {
-		query = query.Where("invite_code = ? OR user_id IN (?)", strings.ToUpper(keyword),
-			model.DB.Model(&model.User{}).Select("id").Where("username LIKE ?", "%"+keyword+"%"))
+		like := "%" + strings.ToLower(keyword) + "%"
+		userSub := model.DB.Model(&model.User{}).Select("id").Where("LOWER(username) LIKE ?", like)
+		idQuery := strings.TrimPrefix(keyword, "#")
+		if uid, err := strconv.Atoi(idQuery); err == nil && uid > 0 {
+			query = query.Where("user_id = ? OR invite_code = ? OR user_id IN (?)", uid, strings.ToUpper(keyword), userSub)
+		} else {
+			query = query.Where("invite_code = ? OR user_id IN (?)", strings.ToUpper(keyword), userSub)
+		}
 	}
 	var rows []model.ReferralAffiliate
 	pageInfo, ok := referralPageRows(c, query, &rows)
@@ -692,9 +699,9 @@ func GetAdminReferralWithdrawals(c *gin.Context) {
 		return
 	}
 	resignWithdrawalAssets(rows)
-	ids := make([]int, 0, len(rows)*4)
+	ids := make([]int, 0, len(rows)*5)
 	for _, row := range rows {
-		ids = append(ids, row.UserId, row.ReviewedBy, row.RejectedBy, row.CanceledBy)
+		ids = append(ids, row.UserId, row.ReviewedBy, row.PaidBy, row.RejectedBy, row.CanceledBy)
 	}
 	names := model.LookupUsernamesByIDs(model.DB, ids)
 	items := make([]referralWithdrawalAdminItem, len(rows))
@@ -703,6 +710,7 @@ func GetAdminReferralWithdrawals(c *gin.Context) {
 			ReferralWithdrawal: row,
 			Username:           names[row.UserId],
 			ReviewedByUsername: names[row.ReviewedBy],
+			PaidByUsername:     names[row.PaidBy],
 			RejectedByUsername: names[row.RejectedBy],
 			CanceledByUsername: names[row.CanceledBy],
 		}

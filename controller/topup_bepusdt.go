@@ -78,7 +78,7 @@ func RequestBEpusdtPay(c *gin.Context) {
 		AmountUSD:   quote.PayAmount,
 		TradeType:   req.Chain,
 		NotifyURL:   callback + "/api/user/bepusdt/notify",
-		RedirectURL: service.AdtyPayResultURL(topUp.TradeNo),
+		RedirectURL: service.AdtyPayResultURLForHost(topUp.TradeNo, quote.Business == model.AdtyBusinessOwnerMarginTopup && service.AdtyRequestSiteID(c) == 0),
 		Name:        common.GetSystemName(),
 		Timeout:     minutes * 60,
 	})

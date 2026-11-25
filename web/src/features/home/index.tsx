@@ -24,7 +24,9 @@ import { RichContent } from '@/components/rich-content'
 import { useTheme } from '@/context/theme-provider'
 import { AdtyLanding } from '@/features/adty-home'
 import { useRemovePrerenderOnMount } from '@/features/adty-seo/prerender-cleanup'
-import { isLikelyHtml } from '@/lib/content-format'
+import { useStatus } from '@/hooks/use-status'
+import { isHttpUrl, isLikelyHtml } from '@/lib/content-format'
+import { subsiteDocument } from '@/lib/subsite-document'
 
 import { useHomePageContent } from './hooks'
 
@@ -35,7 +37,11 @@ export function Home() {
   const { i18n, t } = useTranslation()
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const { resolvedTheme } = useTheme()
+  const { status } = useStatus()
   const { content, isLoaded, isUrl } = useHomePageContent()
+  const isSubsite = Boolean(
+    subsiteDocument() || status?.adty_site || status?.data?.adty_site
+  )
 
   const syncIframePreferences = useCallback(() => {
     try {
@@ -61,23 +67,23 @@ export function Home() {
   // ADTY task 8.3: while the custom home content loads, show the landing page
   // instead of a loading text; without custom content it simply stays.
   if (isLoaded && content) {
-    if (isUrl) {
+    if (isUrl && isHttpUrl(content)) {
+      const iframeSandbox = isSubsite
+        ? 'allow-forms allow-popups allow-scripts'
+        : 'allow-forms allow-popups allow-scripts allow-top-navigation-by-user-activation'
       return (
         <PublicLayout showMainContainer={false}>
           {/*
-            allow-top-navigation-by-user-activation: the custom home page URL is
-            admin-configured (trusted); this lets its target="_top" nav/menu links
-            navigate the top-level window on user click. The default sandbox blocks
-            this on desktop, while some mobile browsers allow it via allow-popups,
-            causing inconsistent behavior. This token only permits user-activated
-            top-level navigation and does NOT grant same-origin access.
+            Subsite custom homepage URLs stay strictly sandboxed without top
+            navigation or popup sandbox escape; main-site admin URLs keep
+            user-activated top navigation only, without popup sandbox escape.
           */}
           <iframe
             ref={iframeRef}
             src={content}
             className='h-screen w-full border-none'
             title={t('Custom Home Page')}
-            sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts allow-top-navigation-by-user-activation'
+            sandbox={iframeSandbox}
             onLoad={syncIframePreferences}
           />
         </PublicLayout>
@@ -91,7 +97,7 @@ export function Home() {
         <PublicLayout showMainContainer={false}>
           <RichContent
             mode='html'
-            htmlVariant='isolated'
+            htmlVariant={isSubsite ? 'subsite-isolated' : 'isolated'}
             content={content}
             className='custom-home-content'
           />

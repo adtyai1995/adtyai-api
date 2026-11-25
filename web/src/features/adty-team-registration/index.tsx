@@ -22,9 +22,6 @@ import { useTranslation } from 'react-i18next'
 import { AuthLayout } from '@/features/auth/auth-layout'
 
 import { TeamRegistrationCompleteForm } from './components/team-registration-complete-form'
-import { TeamRegistrationLinksPanel } from './components/team-registration-links-panel'
-
-export { TeamRegistrationLinksPanel }
 
 export function TeamRegistrationCompletePage(props: {
   code: string

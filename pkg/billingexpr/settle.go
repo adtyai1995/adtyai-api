@@ -59,6 +59,14 @@ func ComputeTieredQuotaWithRequest(snap *BillingSnapshot, params TokenParams, re
 	if snap != nil && snap.BusinessTimezone != "" {
 		request.BusinessTimezone = snap.BusinessTimezone
 	}
+	if snap != nil {
+		if len(request.Headers) == 0 && len(snap.FrozenHeaders) > 0 {
+			request.Headers = snap.FrozenHeaders
+		}
+		if len(request.Body) == 0 && len(request.FrozenParams) == 0 && len(snap.FrozenParams) > 0 {
+			request.FrozenParams = snap.FrozenParams
+		}
+	}
 	_, trace, err := RunExprByHashWithRequest(snap.ExprString, snap.ExprHash, params, request)
 	if err != nil {
 		return TieredResult{}, err

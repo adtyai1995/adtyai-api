@@ -177,6 +177,49 @@ func validateAdtySiteOwnedAsset(siteID int, urlPath string, invalidErr error) er
 	return nil
 }
 
+func validateAdtySiteHomePageContent(rawHome string) error {
+	if rawHome == "" {
+		return nil
+	}
+	if len(rawHome) > 200*1024 {
+		return common.NewMessage("Home page content is too long")
+	}
+	lower := strings.ToLower(rawHome)
+	for _, blocked := range []string{"javascript:", "vbscript:", "data:", "file:"} {
+		if strings.HasPrefix(lower, blocked) {
+			return common.NewMessage("Home page URL must start with http:// or https://")
+		}
+	}
+	if strings.HasPrefix(rawHome, "//") {
+		return common.NewMessage("Home page URL must start with http:// or https://")
+	}
+	if !strings.HasPrefix(rawHome, "<") && !strings.ContainsAny(rawHome, " \t\r\n") {
+		if colon := strings.IndexByte(rawHome, ':'); colon > 0 {
+			scheme := rawHome[:colon]
+			validScheme := true
+			for i := 0; i < len(scheme); i++ {
+				ch := scheme[i]
+				if i == 0 {
+					if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) {
+						validScheme = false
+						break
+					}
+				} else if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '+' || ch == '-' || ch == '.') {
+					validScheme = false
+					break
+				}
+			}
+			if validScheme {
+				parsed, err := url.Parse(rawHome)
+				if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || strings.TrimSpace(parsed.Host) == "" {
+					return common.NewMessage("Home page URL must start with http:// or https://")
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // SaveAdtyBrandPatch checks only edited fields while holding the site's row lock.
 func SaveAdtyBrandPatch(siteID, ownerID int, fields, expected map[string]string, seo *bool, homePageContent ...*string) error {
 	return model.DB.Transaction(func(tx *gorm.DB) error {
@@ -193,8 +236,8 @@ func SaveAdtyBrandPatch(siteID, ownerID int, fields, expected map[string]string,
 		}
 		if len(homePageContent) > 0 && homePageContent[0] != nil {
 			rawHome := strings.TrimSpace(*homePageContent[0])
-			if len(rawHome) > 200*1024 {
-				return common.NewMessage("Home page content is too long")
+			if err := validateAdtySiteHomePageContent(rawHome); err != nil {
+				return err
 			}
 			updates["home_page_content"] = rawHome
 		}
@@ -265,8 +308,8 @@ func AdtyBrandFor(site *model.AdtySite) AdtySiteBrand {
 		name = site.Subdomain
 	}
 	return AdtySiteBrand{
-		Name: name, LogoURL: strings.TrimSpace(brand.LogoURL), Tagline: brand.Tagline, Notice: brand.Notice,
-		Title: brand.Title, FaviconURL: strings.TrimSpace(brand.FaviconURL), ThemeColor: strings.TrimSpace(brand.ThemeColor),
+		Name: name, LogoURL: strings.TrimSpace(brand.LogoURL), Notice: brand.Notice,
+		Title: brand.Title, FaviconURL: strings.TrimSpace(brand.FaviconURL),
 		SupportContact: brand.SupportContact, TawkPropertyID: strings.TrimSpace(brand.TawkPropertyID),
 		TawkWidgetID: strings.TrimSpace(brand.TawkWidgetID), WalletNotice: brand.WalletNotice,
 		VoucherPurchaseURL: strings.TrimSpace(brand.VoucherPurchaseURL), BaseURL: AdtySiteBaseURL(site),
@@ -1630,6 +1673,16 @@ func AdtyPayResultURL(tradeNo string) string {
 	return AdtySiteBaseURL(nil) + adtyPayResultPath + tradeNo + "." + adtyPayResultSignature(tradeNo)
 }
 
+// AdtyPayResultURLForHost returns a signed pay-result return URL that preserves
+// the main-host session when a site owner starts margin top-up on the main host.
+func AdtyPayResultURLForHost(tradeNo string, preferMainHost bool) string {
+	if !preferMainHost {
+		return AdtyPayResultURL(tradeNo)
+	}
+	payload := tradeNo + ".main"
+	return AdtySiteBaseURL(nil) + adtyPayResultPath + payload + "." + adtyPayResultSignature(payload)
+}
+
 // AdtyPayResultTarget 是 /pay/result/<订单号>.<签名> 要跳到的地址：签名对、订单存在时，跳订单所属用户的站点的
 // 钱包并带上订单号；其余一律跳主站钱包，不带订单号。
 func AdtyPayResultTarget(token string) string {
@@ -1639,9 +1692,15 @@ func AdtyPayResultTarget(token string) string {
 	if dot <= 0 {
 		return fallback
 	}
-	tradeNo, signature := token[:dot], token[dot+1:]
-	if subtle.ConstantTimeCompare([]byte(signature), []byte(adtyPayResultSignature(tradeNo))) != 1 {
+	payload, signature := token[:dot], token[dot+1:]
+	if subtle.ConstantTimeCompare([]byte(signature), []byte(adtyPayResultSignature(payload))) != 1 {
 		return fallback
+	}
+	tradeNo := payload
+	preferMainHost := false
+	if trimmed, ok := strings.CutSuffix(payload, ".main"); ok && trimmed != "" {
+		tradeNo = trimmed
+		preferMainHost = true
 	}
 	topUp := model.GetTopUpByTradeNo(tradeNo)
 	if topUp == nil {
@@ -1656,7 +1715,11 @@ func AdtyPayResultTarget(token string) string {
 		if site == nil || site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting {
 			return fallback
 		}
-		target := AdtySitePublicBaseURL(site) + "/site-owner/earnings?trade_no=" + url.QueryEscape(tradeNo)
+		baseURL := AdtySitePublicBaseURL(site)
+		if preferMainHost {
+			baseURL = AdtySiteBaseURL(nil)
+		}
+		target := baseURL + "/site-owner/wallets?trade_no=" + url.QueryEscape(tradeNo)
 		if ext.IsOwnerMargin() {
 			target += "&business=owner_margin_topup#margin"
 		}

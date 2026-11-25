@@ -241,24 +241,6 @@ For commercial licensing, please contact support@quantumnous.com
   --info-soft: color-mix(in oklch, var(--info) 12%, var(--background));
 }
 
-/* ADTY task 9.2: on Japanese pages, Japanese fonts come before the Chinese
- * ones so kanji use Japanese glyph forms. <html lang> follows the interface
- * language (i18n/adty-document-lang.ts). The explicit Sans choice
- * (theme-presets.css) keeps its own font. */
-:root:lang(ja):not([data-theme-font='sans']) {
-  --font-ui-sans:
-    'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', Meiryo,
-    'Noto Sans JP', system-ui, sans-serif;
-}
-
-/* Korean pages use a Hangul stack. Chinese faces in the default stack have
- * no Hangul, so the page would fall through to a generic face. */
-:root:lang(ko):not([data-theme-font='sans']) {
-  --font-ui-sans:
-    'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', system-ui,
-    sans-serif;
-}
-
 .dark {
   /* Native controls follow the theme; Dark Reader also reads this to detect
      the built-in dark theme. */

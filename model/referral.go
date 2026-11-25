@@ -146,6 +146,7 @@ type ReferralWithdrawal struct {
 	AdminNote          string  `json:"admin_note" gorm:"type:text"`
 	PaymentProofURL    string  `json:"payment_proof_url" gorm:"type:text"`
 	PaymentTxnNo       string  `json:"payment_txn_no" gorm:"type:varchar(128)"`
+	ReceiptKey         *string `json:"-" gorm:"type:varchar(64);uniqueIndex:idx_referral_withdrawal_receipt"`
 	RejectProofURL     string  `json:"reject_proof_url" gorm:"type:text"`
 	Status             string  `json:"status" gorm:"type:varchar(32);index"`
 	IdempotencyKey     *string `json:"-" gorm:"type:varchar(128);uniqueIndex:idx_referral_withdrawal_idempotency"`
@@ -156,6 +157,7 @@ type ReferralWithdrawal struct {
 	RejectedAt         int64   `json:"rejected_at" gorm:"default:0"`
 	CanceledAt         int64   `json:"canceled_at" gorm:"default:0"`
 	ReviewedBy         int     `json:"reviewed_by" gorm:"index"`
+	PaidBy             int     `json:"paid_by" gorm:"index"`
 	RejectedBy         int     `json:"rejected_by" gorm:"index"`
 	CanceledBy         int     `json:"canceled_by" gorm:"index"`
 	RejectReason       string  `json:"reject_reason" gorm:"type:text"`
@@ -164,12 +166,13 @@ type ReferralWithdrawal struct {
 }
 
 type ReferralWithdrawalItem struct {
-	Id              int     `json:"id"`
-	WithdrawalId    int     `json:"withdrawal_id" gorm:"index"`
-	CommissionId    int     `json:"commission_id" gorm:"index"`
-	AllocatedAmount float64 `json:"allocated_amount" gorm:"type:decimal(20,8);not null;default:0"`
-	Status          string  `json:"status" gorm:"type:varchar(32);index"`
-	CreatedAt       int64   `json:"created_at" gorm:"autoCreateTime"`
+	Id                    int     `json:"id"`
+	WithdrawalId          int     `json:"withdrawal_id" gorm:"index"`
+	CommissionId          int     `json:"commission_id" gorm:"index"`
+	AllocatedAmount       float64 `json:"allocated_amount" gorm:"type:decimal(20,8);not null;default:0"`
+	PendingClawbackAmount float64 `json:"pending_clawback_amount" gorm:"type:decimal(20,8);not null;default:0"`
+	Status                string  `json:"status" gorm:"type:varchar(32);index"`
+	CreatedAt             int64   `json:"created_at" gorm:"autoCreateTime"`
 }
 
 type ReferralSettlementBatch struct {

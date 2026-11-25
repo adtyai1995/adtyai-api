@@ -380,7 +380,10 @@ func ReviewClosedAdtySiteInviteWithdrawalWithAudit(ownerID int, withdrawalID int
 	return ReviewClosedAdtySiteInviteWithdrawalWithAuditForActor(ownerID, 0, false, withdrawalID, approve, reason)
 }
 func ReviewClosedAdtySiteInviteWithdrawalWithAuditForActor(ownerID, actorRole int, denyAdminTarget bool, withdrawalID int64, approve bool, reason string) (string, bool, error) {
-	return reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole, denyAdminTarget, withdrawalID, approve, reason, true, model.AdtySiteInviteWithdrawPending, "", "")
+	return ReviewClosedAdtySiteInviteWithdrawalWithAuditForActorMeta(ownerID, actorRole, denyAdminTarget, withdrawalID, approve, reason, "", "")
+}
+func ReviewClosedAdtySiteInviteWithdrawalWithAuditForActorMeta(ownerID, actorRole int, denyAdminTarget bool, withdrawalID int64, approve bool, reason, ip, ua string) (string, bool, error) {
+	return reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole, denyAdminTarget, withdrawalID, approve, reason, true, model.AdtySiteInviteWithdrawPending, ip, ua)
 }
 func ConfirmClosedSiteInvitePayoutFailure(actor int, id int64, approve bool, reason string) error {
 	_, _, err := ConfirmClosedSiteInvitePayoutFailureWithAudit(actor, id, approve, reason)
@@ -390,10 +393,13 @@ func ConfirmClosedSiteInvitePayoutFailureWithAudit(actor int, id int64, approve 
 	return ConfirmClosedSiteInvitePayoutFailureWithAuditForActor(actor, 0, false, id, approve, reason)
 }
 func ConfirmClosedSiteInvitePayoutFailureWithAuditForActor(actor, actorRole int, denyAdminTarget bool, id int64, approve bool, reason string) (string, bool, error) {
+	return ConfirmClosedSiteInvitePayoutFailureWithAuditForActorMeta(actor, actorRole, denyAdminTarget, id, approve, reason, "", "")
+}
+func ConfirmClosedSiteInvitePayoutFailureWithAuditForActorMeta(actor, actorRole int, denyAdminTarget bool, id int64, approve bool, reason, ip, ua string) (string, bool, error) {
 	if approve {
 		return "", false, common.NewMessage("Invalid parameters")
 	}
-	return reviewSiteInviteWithdrawalWithAudit(actor, actorRole, denyAdminTarget, id, false, reason, true, model.AdtySiteInviteWithdrawApproved, "", "")
+	return reviewSiteInviteWithdrawalWithAudit(actor, actorRole, denyAdminTarget, id, false, reason, true, model.AdtySiteInviteWithdrawApproved, ip, ua)
 }
 // lockSiteInviteWithdrawalCanonicalTx acquires locks in canonical global order
 // (AdtySite -> User -> AdtySiteInviteCommission(id ASC) -> AdtySiteInviteWithdrawal)
@@ -511,16 +517,18 @@ func reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget
 			if !platform {
 				return recordSiteReferralAuditTx(tx, row.SiteId, "withdrawal_approve", row.UserId, ownerID, strings.TrimSpace(reason), ip, ua, beforeSnap, map[string]any{"id": row.Id, "status": model.AdtySiteInviteWithdrawApproved})
 			}
-			return nil
+			return recordReferralAuditTx(tx, "site_invite_withdrawal_approve", row.UserId, 0, ownerID, strings.TrimSpace(reason), ip, ua, beforeSnap, map[string]any{"id": row.Id, "site_id": row.SiteId, "status": model.AdtySiteInviteWithdrawApproved})
 		}
 		if err := releaseSiteInviteWithdrawalTx(tx, &row); err != nil {
 			return err
 		}
 		changes := map[string]any{"status": model.AdtySiteInviteWithdrawRejected, "reject_reason": strings.TrimSpace(reason)}
 		action := "adty.site_invite_withdrawal.reject"
+		referralAuditAction := "site_invite_withdrawal_reject"
 		if row.Status == model.AdtySiteInviteWithdrawApproved {
 			changes["failure_by"], changes["failure_at"] = ownerID, time.Now().Unix()
 			action = "adty.site_invite_withdrawal.failed"
+			referralAuditAction = "site_invite_withdrawal_fail"
 		} else {
 			changes["reviewed_by"], changes["reviewed_at"] = ownerID, time.Now().Unix()
 		}
@@ -536,7 +544,7 @@ func reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget
 		if !platform {
 			return recordSiteReferralAuditTx(tx, row.SiteId, "withdrawal_reject", row.UserId, ownerID, strings.TrimSpace(reason), ip, ua, beforeSnap, map[string]any{"id": row.Id, "status": model.AdtySiteInviteWithdrawRejected})
 		}
-		return nil
+		return recordReferralAuditTx(tx, referralAuditAction, row.UserId, 0, ownerID, strings.TrimSpace(reason), ip, ua, beforeSnap, map[string]any{"id": row.Id, "site_id": row.SiteId, "status": model.AdtySiteInviteWithdrawRejected})
 	})
 	if err != nil {
 		return "", false, err
@@ -566,7 +574,10 @@ func MarkClosedAdtySiteInviteWithdrawalPaidWithAudit(ownerID int, withdrawalID i
 	return MarkClosedAdtySiteInviteWithdrawalPaidWithAuditForActor(ownerID, 0, false, withdrawalID, txID, proof)
 }
 func MarkClosedAdtySiteInviteWithdrawalPaidWithAuditForActor(ownerID, actorRole int, denyAdminTarget bool, withdrawalID int64, txID, proof string) (string, bool, error) {
-	return paySiteInviteWithdrawalWithAudit(ownerID, actorRole, denyAdminTarget, withdrawalID, txID, proof, true, "", "")
+	return MarkClosedAdtySiteInviteWithdrawalPaidWithAuditForActorMeta(ownerID, actorRole, denyAdminTarget, withdrawalID, txID, proof, "", "")
+}
+func MarkClosedAdtySiteInviteWithdrawalPaidWithAuditForActorMeta(ownerID, actorRole int, denyAdminTarget bool, withdrawalID int64, txID, proof, ip, ua string) (string, bool, error) {
+	return paySiteInviteWithdrawalWithAudit(ownerID, actorRole, denyAdminTarget, withdrawalID, txID, proof, true, ip, ua)
 }
 func paySiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bool, withdrawalID int64, txID, proof string, platform bool, ip, ua string) (string, bool, error) {
 	txID = strings.TrimSpace(txID)
@@ -623,7 +634,7 @@ func paySiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bo
 			if err := model.AdtyLockForUpdate(tx).First(&commission, item.CommissionId).Error; err != nil {
 				return err
 			}
-			if err := consumeSiteCommissionHoldTx(tx, &commission, item.AmountUSD, !platform, "paid:"+strconv.FormatInt(row.Id, 10)+":"+strconv.FormatInt(item.Id, 10)); err != nil {
+			if err := consumeSiteCommissionHoldWithTypeTx(tx, &commission, item.AmountUSD, !platform, "commission_closed_payout_deduct", "paid:"+strconv.FormatInt(row.Id, 10)+":"+strconv.FormatInt(item.Id, 10)); err != nil {
 				return err
 			}
 			if item.RefundUSD.IsPositive() {
@@ -665,7 +676,9 @@ func paySiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bo
 				map[string]any{"id": row.Id, "status": row.Status, "amount_usd": row.AmountUSD.String()},
 				map[string]any{"id": row.Id, "status": model.AdtySiteInviteWithdrawPaid, "tx_id": txID})
 		}
-		return nil
+		return recordReferralAuditTx(tx, "site_invite_withdrawal_pay", row.UserId, 0, ownerID, cleanProof, ip, ua,
+			map[string]any{"id": row.Id, "site_id": row.SiteId, "status": row.Status, "amount_usd": row.AmountUSD.String()},
+			map[string]any{"id": row.Id, "site_id": row.SiteId, "status": model.AdtySiteInviteWithdrawPaid, "tx_id": txID})
 	})
 	if err != nil {
 		return "", false, err

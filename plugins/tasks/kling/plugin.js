@@ -335,6 +335,24 @@ function checkKling4Body(body) {
   if (settings.duration !== undefined && settings.duration !== null) kling4Duration(settings.duration);
 }
 
+function checkPre4VendorBody(vendorBody, model) {
+  if (!vendorBody || typeof vendorBody !== "object" || Array.isArray(vendorBody)) {
+    throw new Error("request body must be an object");
+  }
+  for (const name of UNSUPPORTED_FIELDS) {
+    const value = vendorBody[name];
+    if (value !== undefined && value !== null && value !== "") {
+      throw new Error(name + " is not supported; query the task instead");
+    }
+  }
+  if (vendorBody.duration !== undefined && vendorBody.duration !== null) {
+    validateKlingDuration(vendorBody.duration);
+  }
+  if (vendorBody.mode !== undefined && vendorBody.mode !== null && trimmed(vendorBody.mode) !== "") {
+    resolveKlingMode(model, vendorBody.mode);
+  }
+}
+
 // The Kling 4.0 request: a native body as the client wrote it, for the
 // endpoint it called. The host protocols send text-to-video, or image-to-video
 // with the first frame and an optional last frame; metadata adds Kling's own
@@ -342,6 +360,12 @@ function checkKling4Body(body) {
 function kling4Submission(ctx) {
   const req = ctx.requestBody || {};
   if (req.vendorBody) {
+    if (typeof req.endpoint !== "string" || !Object.prototype.hasOwnProperty.call(KLING4_ACTIONS, req.endpoint)) {
+      throw new Error("unsupported kling 4.0 endpoint");
+    }
+    if (typeof req.vendorBody !== "object" || Array.isArray(req.vendorBody)) {
+      throw new Error("request body must be an object");
+    }
     checkKling4Body(req.vendorBody);
     return { endpoint: req.endpoint, body: req.vendorBody };
   }
@@ -578,8 +602,10 @@ export function buildSubmitRequest(ctx) {
   const model = submitModel(ctx, req);
   if (!model) throw new Error("model_name is required");
   let body;
-  if (req.vendorBody) body = Object.assign({}, req.vendorBody, { model_name: model });
-  else {
+  if (req.vendorBody) {
+    checkPre4VendorBody(req.vendorBody, model);
+    body = Object.assign({}, req.vendorBody, { model_name: model });
+  } else {
     body = {};
     if (req.prompt) body.prompt = req.prompt;
     if (req.image) body.image = req.image;
@@ -628,8 +654,9 @@ export function extractUsage(ctx) {
   const req = ctx.requestBody || {};
   if (usesKling4(ctx, req)) return { units: kling4ReservedUnits(kling4Submission(ctx).body) };
   // A native body reads like the metadata of a host-protocol request.
-  const source = req.vendorBody ? { metadata: req.vendorBody } : req;
   const model = submitModel(ctx, req);
+  if (req.vendorBody) checkPre4VendorBody(req.vendorBody, model);
+  const source = req.vendorBody ? { metadata: req.vendorBody } : req;
   return { units: unitsPerSecond(model, outboundMode(source, model), source.metadata || {}) * outboundDuration(source) };
 }
 
@@ -826,8 +853,9 @@ export const protocols = {
       const model = ctx.upstreamModel || ctx.model || req.model || "kling-v1";
       req.mode = resolveKlingMode(model, req.mode || metadata.mode);
       const hasImage = hasKlingImage(req, hasInputReferenceFile);
-      // vendorBody carries a native request's own body; clients of this protocol cannot set it.
+      // vendorBody/endpoint carry a native request's own body/path; clients of this protocol cannot set them.
       delete req.vendorBody;
+      delete req.endpoint;
       return {
         kind: "submit",
         model: ctx.model,

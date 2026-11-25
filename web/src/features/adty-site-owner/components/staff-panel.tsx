@@ -297,14 +297,22 @@ function StaffActivity() {
               {
                 id: 'staff',
                 header: t('Staff'),
-                cell: (audit) =>
-                  audit.staff_id > 0 ? (
+                cell: (audit) => {
+                  const staffIdentityId =
+                    audit.staff_user_id && audit.staff_user_id > 0
+                      ? audit.staff_user_id
+                      : audit.staff_id
+                  return staffIdentityId > 0 ? (
                     <span className='tabular-nums'>
-                      {formatUserIdentity(audit.staff_id, audit.staff_username)}
+                      {formatUserIdentity(
+                        staffIdentityId,
+                        audit.staff_username
+                      )}
                     </span>
                   ) : (
                     '—'
-                  ),
+                  )
+                },
               },
               {
                 id: 'customer',

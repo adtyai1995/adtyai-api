@@ -35,8 +35,6 @@ export type SiteBrand = {
   logo_url: string
   title?: string
   favicon_url?: string
-  theme_color?: string
-  tagline: string
   notice: string
   support_contact: string
   tawk_property_id?: string

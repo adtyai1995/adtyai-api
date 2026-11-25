@@ -101,7 +101,7 @@ export function PausedSiteRepairPanel() {
         </h2>
         <p className='text-dim max-w-[80ch] text-[12.5px] leading-relaxed'>
           {t(
-            'These leftover paused sites are not an operating mode. Review each one and either repair it to active or enter close/handover. Nothing is changed automatically.'
+            'These leftover paused sites are not an operating mode. Review each one and either repair it to active or enter site closing. Nothing is changed automatically.'
           )}
         </p>
       </div>
@@ -140,7 +140,7 @@ export function PausedSiteRepairPanel() {
                   setClosing(site)
                 }}
               >
-                {t('Enter close/handover')}
+                {t('Enter site closing')}
               </Button>
             </div>
           </li>
@@ -178,7 +178,7 @@ export function PausedSiteRepairPanel() {
         onOpenChange={(open) => {
           if (!open) setClosing(null)
         }}
-        title={t('Enter close/handover')}
+        title={t('Enter site closing')}
         description={t(
           'All customers of this site will be inherited by the main site.'
         )}
@@ -200,7 +200,7 @@ export function PausedSiteRepairPanel() {
                 })
               }}
             >
-              {t('Enter close/handover')}
+              {t('Enter site closing')}
             </Button>
           </>
         }

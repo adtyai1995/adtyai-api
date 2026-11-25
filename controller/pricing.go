@@ -26,30 +26,15 @@ func pricingPreferredLangs(c *gin.Context, userID int) []string {
 	var langs []string
 	add := func(raw string) {
 		raw = strings.TrimSpace(raw)
-		if raw == "" {
+		if raw == "" || raw == "*" {
 			return
 		}
-		lower := strings.ToLower(raw)
-		var mapped string
-		switch {
-		case strings.HasPrefix(lower, "zh-tw"), strings.HasPrefix(lower, "zh-hk"), strings.HasPrefix(lower, "zh-hant"):
-			mapped = "zh-TW"
-		case strings.HasPrefix(lower, "zh"):
+		lower := strings.ToLower(strings.ReplaceAll(raw, "_", "-"))
+		mapped := "en"
+		if strings.HasPrefix(lower, "zh") {
 			mapped = "zh-CN"
-		case strings.HasPrefix(lower, "en"):
-			mapped = "en"
-		case strings.HasPrefix(lower, "ja"):
-			mapped = "ja"
-		case strings.HasPrefix(lower, "ko"):
-			mapped = "ko"
-		case strings.HasPrefix(lower, "fr"):
-			mapped = "fr"
-		case strings.HasPrefix(lower, "ru"):
-			mapped = "ru"
-		case strings.HasPrefix(lower, "vi"):
-			mapped = "vi"
 		}
-		if mapped != "" && !slices.Contains(langs, mapped) {
+		if !slices.Contains(langs, mapped) {
 			langs = append(langs, mapped)
 		}
 	}
@@ -57,9 +42,9 @@ func pricingPreferredLangs(c *gin.Context, userID int) []string {
 		add(model.GetUserLanguage(userID))
 	}
 	if c != nil {
-		for _, part := range strings.Split(c.GetHeader("Accept-Language"), ",") {
-			if semi := strings.IndexByte(part, ';'); semi >= 0 {
-				part = part[:semi]
+		for part := range strings.SplitSeq(c.GetHeader("Accept-Language"), ",") {
+			if before, _, ok := strings.Cut(part, ";"); ok {
+				part = before
 			}
 			add(part)
 		}

@@ -23,10 +23,38 @@ import { useTranslation } from 'react-i18next'
 import { TruncatedCell } from '@/components/data-table'
 import { StatusBadge } from '@/components/status-badge'
 import dayjs from '@/lib/dayjs'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 
 import type { AuditLog } from '../api'
 import { buildAuditDetails } from '../lib/audit-details'
 import { AuditLogDetailsDialog } from './audit-log-details-dialog'
+
+type AuditLogEntry = AuditLog & {
+  object_username?: string | null
+}
+
+const USER_AUDIT_OBJECT_TYPES = new Set([
+  'user',
+  'customer',
+  'site_customer',
+  'staff',
+  'site_staff',
+  'site.staff',
+])
+
+function formatAuditObject(entry: AuditLogEntry): string {
+  const objectType = entry.object_type?.trim() ?? ''
+  const objectId = entry.object_id?.trim() ?? ''
+  const objectUsername = entry.object_username?.trim() ?? ''
+  if (
+    objectType &&
+    USER_AUDIT_OBJECT_TYPES.has(objectType.toLowerCase()) &&
+    objectUsername
+  ) {
+    return `${objectType} · ${formatUserIdentity(objectId, objectUsername)}`
+  }
+  return [objectType, objectId].filter(Boolean).join(' / ')
+}
 
 export function useAuditLogColumns(
   accessOnly?: boolean
@@ -49,9 +77,19 @@ export function useAuditLogColumns(
     if (!accessOnly) {
       columns.push(
         {
-          accessorKey: 'username',
+          id: 'username',
+          accessorFn: (entry) =>
+            formatUserIdentity(entry.user_id, entry.username),
           header: t('Username'),
-          size: 100,
+          size: 140,
+          cell: ({ row }) => (
+            <TruncatedCell className='max-w-40'>
+              {formatUserIdentity(
+                row.original.user_id,
+                row.original.username
+              )}
+            </TruncatedCell>
+          ),
           meta: { label: t('Username') },
         },
         {
@@ -121,13 +159,12 @@ export function useAuditLogColumns(
       {
         id: 'object',
         header: t('Object'),
-        size: 160,
-        accessorFn: (entry) =>
-          [entry.object_type, entry.object_id].filter(Boolean).join(' / '),
+        size: 180,
+        accessorFn: (entry) => formatAuditObject(entry as AuditLogEntry),
         cell: ({ getValue }) => (
-          <span className='font-mono'>
+          <TruncatedCell className='max-w-48 font-mono'>
             {getValue<string>() || '—'}
-          </span>
+          </TruncatedCell>
         ),
         meta: { label: t('Object'), mobileHidden: true },
       },

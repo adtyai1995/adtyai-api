@@ -199,26 +199,49 @@ func GetReferralCommissions(c *gin.Context) {
 	common.ApiSuccess(c, pageInfo)
 }
 
+type referralWithdrawalUserItem struct {
+	model.ReferralWithdrawal
+	CanCancel      bool   `json:"can_cancel"`
+	CancelDeadline int64  `json:"cancel_deadline,omitempty"`
+	CancelReason   string `json:"cancel_reason,omitempty"`
+}
+
 // GetReferralWithdrawals 分页列出本人的提现；收款码和凭证链接重新签名。
 func GetReferralWithdrawals(c *gin.Context) {
 	if rejectAdminUserReferral(c) {
 		return
 	}
 	pageInfo := common.GetPageQuery(c)
-	var items []model.ReferralWithdrawal
+	var rows []model.ReferralWithdrawal
 	var total int64
 	query := model.DB.Model(&model.ReferralWithdrawal{}).Where("user_id = ?", c.GetInt("id"))
 	if err := query.Count(&total).Error; err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if err := query.Order("id DESC").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Find(&items).Error; err != nil {
+	if err := query.Order("id DESC").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Find(&rows).Error; err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	resignWithdrawalAssets(items)
-	for i := range items {
-		redactReferralWithdrawalForUser(&items[i])
+	resignWithdrawalAssets(rows)
+	now := time.Now().Unix()
+	window := int64(max(adty_setting.GetReferralSetting().CancelWindowMinutes, 0)) * 60
+	items := make([]referralWithdrawalUserItem, len(rows))
+	for i := range rows {
+		redactReferralWithdrawalForUser(&rows[i])
+		item := referralWithdrawalUserItem{ReferralWithdrawal: rows[i]}
+		if rows[i].Status == model.ReferralWithdrawalStatusPending {
+			deadline := rows[i].SubmittedAt + window
+			item.CancelDeadline = deadline
+			if now <= deadline {
+				item.CanCancel = true
+			} else {
+				item.CancelReason = "window_expired"
+			}
+		} else {
+			item.CancelReason = "not_pending"
+		}
+		items[i] = item
 	}
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(items)
@@ -242,6 +265,7 @@ func redactReferralWithdrawalForUser(w *model.ReferralWithdrawal) {
 	}
 	w.AdminNote = ""
 	w.ReviewedBy = 0
+	w.PaidBy = 0
 	w.RejectedBy = 0
 	w.CanceledBy = 0
 }

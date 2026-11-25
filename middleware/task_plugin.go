@@ -869,6 +869,9 @@ func buildTaskPluginRouteRequest(c *gin.Context) (pluginruntime.RouteRequestCont
 		if !utf8.Valid(raw) {
 			return requestContext, fmt.Errorf("JSON body must be valid UTF-8")
 		}
+		if err = common.ValidateJSONNoDuplicateOrFoldedKeys(raw, taskPluginBillingSensitiveJSONPaths); err != nil {
+			return requestContext, err
+		}
 		var value any
 		if err = common.Unmarshal(raw, &value); err != nil {
 			return requestContext, err
@@ -992,6 +995,16 @@ func buildTaskPluginRouteRequest(c *gin.Context) (pluginruntime.RouteRequestCont
 		if err = validateTaskPluginFields(form.Value); err != nil {
 			return requestContext, err
 		}
+		allMultipartKeys := make([]string, 0, len(form.Value)+len(form.File))
+		for field := range form.Value {
+			allMultipartKeys = append(allMultipartKeys, field)
+		}
+		for field := range form.File {
+			allMultipartKeys = append(allMultipartKeys, field)
+		}
+		if err = common.ValidateFormFieldKeys(allMultipartKeys); err != nil {
+			return requestContext, err
+		}
 		partCount = 0
 		fileCount = 0
 		for _, values := range form.Value {
@@ -1042,12 +1055,34 @@ func buildTaskPluginRouteRequest(c *gin.Context) (pluginruntime.RouteRequestCont
 	return requestContext, nil
 }
 
+var taskPluginBillingSensitiveJSONPaths = append(
+	append([]string(nil), billingSensitiveJSONPaths...),
+	"model_name",
+	"mode",
+	"seconds",
+	"endpoint",
+	"vendorBody",
+	"settings",
+	"settings.duration",
+	"settings.resolution",
+	"options",
+	"options.callback_url",
+	"options.external_task_id",
+	"metadata",
+	"metadata.duration",
+	"metadata.mode",
+	"metadata.resolution",
+	"metadata.action",
+)
+
 func validateTaskPluginFields(fields url.Values) error {
+	keys := make([]string, 0, len(fields))
 	fieldCount := 0
 	for name, values := range fields {
 		if !utf8.ValidString(name) || len(name) == 0 || len(name) > maxTaskPluginFieldNameBytes {
 			return fmt.Errorf("invalid request field name")
 		}
+		keys = append(keys, name)
 		for _, value := range values {
 			fieldCount++
 			if fieldCount > maxTaskPluginFormFields {
@@ -1058,7 +1093,7 @@ func validateTaskPluginFields(fields url.Values) error {
 			}
 		}
 	}
-	return nil
+	return common.ValidateFormFieldKeys(keys)
 }
 
 const (
@@ -1488,10 +1523,38 @@ func PrepareTaskPluginSubmit() gin.HandlerFunc {
 			plugin.Meta.Key,
 			plugin.Meta.Version,
 		)
+		storage, err := common.GetBodyStorage(c)
+		if err != nil {
+			c.AbortWithStatusJSON(invalidRequestStatus(err), gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
+			return
+		}
+		rawBody, err := storage.Bytes()
+		if err != nil {
+			c.AbortWithStatusJSON(invalidRequestStatus(err), gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
+			return
+		}
+		if !utf8.Valid(rawBody) {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "JSON body must be valid UTF-8", "type": "invalid_request_error"}})
+			return
+		}
+		if err := common.ValidateJSONNoDuplicateOrFoldedKeys(rawBody, taskPluginBillingSensitiveJSONPaths); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
+			return
+		}
 		var requestBody map[string]any
 		if err := common.UnmarshalBodyReusable(c, &requestBody); err != nil {
 			c.AbortWithStatusJSON(invalidRequestStatus(err), gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
 			return
+		}
+		if _, hasVendorBody := requestBody["vendorBody"]; hasVendorBody {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "vendorBody is not supported on this endpoint", "type": "invalid_request_error"}})
+			return
+		}
+		if pluginKey == "kling" {
+			if _, hasEndpoint := requestBody["endpoint"]; hasEndpoint {
+				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "endpoint is not supported on this endpoint", "type": "invalid_request_error"}})
+				return
+			}
 		}
 		modelName, _ := requestBody["model"].(string)
 		if strings.TrimSpace(modelName) == "" {

@@ -223,7 +223,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					}()
 					if err != nil {
 						logger.LogError(c, common.LogText("ping data error: %s", err.Error()))
-						info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonPingFail, err)
+						info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+						stop()
 						return
 					}
 					logger.LogDebug(c, "ping data sent")

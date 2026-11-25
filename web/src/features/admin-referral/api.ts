@@ -131,6 +131,14 @@ export type AdminReferralAffiliate = ReferralAffiliate & {
 
 export type AdminReferralWithdrawal = ReferralWithdrawal & {
   username?: string
+  reviewed_by?: number
+  reviewed_by_username?: string
+  rejected_by?: number
+  rejected_by_username?: string
+  canceled_by?: number
+  canceled_by_username?: string
+  paid_by?: number
+  paid_by_username?: string
 }
 
 export type AdminReferralCommission = ReferralCommission & {
@@ -178,9 +186,6 @@ export const fetchAdminReferralCommissions = (
     q: params.q?.trim() || undefined,
   })
 
-export const getAdminCommissions = (params: AdminReferralCommissionsParams) =>
-  fetchAdminReferralCommissions(params)
-
 export const updateAffiliate = (
   userId: number,
   body: {
@@ -204,45 +209,6 @@ export const payWithdrawal = (
 
 export const runSettlement = () => post('/settlements/run', {})
 
-/** One commission job (model.ReferralCommissionJob): turns a paid top-up into a commission. */
-export type ReferralCommissionJob = {
-  id: number
-  source_type: string
-  source_trade_no: string
-  affiliate_id: number
-  status: string
-  attempt_count: number
-  last_error: string
-  locked_at: number
-  succeeded_at: number
-  failed_at: number
-  created_at: number
-  updated_at: number
-}
-
-/** One commission account movement (model.ReferralCommissionLedger). Deltas are USD. */
-export type ReferralLedgerEntry = {
-  id: number
-  affiliate_id: number
-  user_id: number
-  username?: string
-  commission_id: number
-  withdrawal_id: number
-  type: string
-  ref_type: string
-  ref_id: string
-  settlement_currency: string
-  delta_pending: number
-  delta_available: number
-  delta_frozen: number
-  delta_withdrawn: number
-  remark: string
-  operator: string
-  created_at: number
-}
-
-export type AdminReferralLedgerItem = ReferralLedgerEntry
-
 /** One referral admin action (model.ReferralAdminAuditLog). */
 export type ReferralAuditLog = {
   id: number
@@ -259,20 +225,6 @@ export type ReferralAuditLog = {
   new_value: string
   created_at: number
 }
-
-export type AdminReferralAuditItem = ReferralAuditLog
-
-export const getCommissionJobs = (params: { p: number; status?: string }) =>
-  getPage<ReferralCommissionJob>('/commission-jobs', params)
-
-/** Runs one job again now; succeeded or skipped jobs are left as they are. */
-export const retryCommissionJob = (tradeNo: string) =>
-  post('/commission-jobs/retry', { trade_no: tradeNo })
-
-export const getReferralLedgers = (params: {
-  p: number
-  affiliate_id?: number
-}) => getPage<ReferralLedgerEntry>('/ledgers', params)
 
 export const getReferralAuditLogs = (params: { p: number }) =>
   getPage<ReferralAuditLog>('/audit-logs', params)

@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink } from 'lucide-react'
+import { ExternalLink, X } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -59,15 +59,15 @@ import {
 } from '../api'
 import { payoutText } from '../lib/payout'
 
-type QrPreviewInfo = {
+type ImagePreviewInfo = {
   url: string
-  name?: string
-  accountNo?: string
+  title: string
+  subtitle?: string
 }
 
 function PayeeCell(props: {
   row: AdminReferralWithdrawal
-  onPreviewQr: (info: QrPreviewInfo) => void
+  onPreviewImage: (info: ImagePreviewInfo) => void
 }) {
   const { t } = useTranslation()
   const row = props.row
@@ -99,10 +99,12 @@ function PayeeCell(props: {
           className='shrink-0 cursor-zoom-in rounded-md border bg-white p-0.5 transition hover:opacity-80'
           aria-label={t('Preview payment QR code')}
           onClick={() =>
-            props.onPreviewQr({
+            props.onPreviewImage({
               url: row.qr_image_url,
-              name: row.account_name,
-              accountNo: row.account_no,
+              title: t('Payment QR code'),
+              subtitle: [row.account_name, row.account_no]
+                .filter(Boolean)
+                .join(' · '),
             })
           }
         >
@@ -151,7 +153,9 @@ export function WithdrawalPanel(props: {
     null
   )
   const [paying, setPaying] = useState<AdminReferralWithdrawal | null>(null)
-  const [previewQr, setPreviewQr] = useState<QrPreviewInfo | null>(null)
+  const [previewImage, setPreviewImage] = useState<ImagePreviewInfo | null>(
+    null
+  )
   const [reason, setReason] = useState('')
   const [txnNo, setTxnNo] = useState('')
   const [proofUrl, setProofUrl] = useState('')
@@ -219,10 +223,18 @@ export function WithdrawalPanel(props: {
     onSuccess: (url, input) => {
       if (activePayingIdRef.current === input.withdrawalId) {
         setProofUrl(url)
+        toast.success(t('Payment proof uploaded'))
       }
     },
     onError: (err) => handleServerError(err),
   })
+
+  let payMissingEvidence = false
+  if (paying?.account_type === 'usdt') {
+    payMissingEvidence = txnNo.trim() === ''
+  } else if (paying?.account_type === 'alipay') {
+    payMissingEvidence = txnNo.trim() === '' && proofUrl.trim() === ''
+  }
 
   if (query.isError && !query.data) {
     return <ErrorState onRetry={() => void query.refetch()} />
@@ -280,7 +292,9 @@ export function WithdrawalPanel(props: {
           {
             id: 'payee',
             header: t('Pay to'),
-            cell: (row) => <PayeeCell row={row} onPreviewQr={setPreviewQr} />,
+            cell: (row) => (
+              <PayeeCell row={row} onPreviewImage={setPreviewImage} />
+            ),
           },
           {
             id: 'payout',
@@ -307,7 +321,7 @@ export function WithdrawalPanel(props: {
             id: 'status',
             header: t('Status'),
             cell: (row) => (
-              <div className='flex flex-col gap-1'>
+              <div className='flex flex-col items-start gap-1'>
                 <StatusBadge
                   label={t(WITHDRAWAL_STATUS_LABELS[row.status])}
                   variant={WITHDRAWAL_STATUS_VARIANTS[row.status]}
@@ -317,6 +331,42 @@ export function WithdrawalPanel(props: {
                     {row.payment_txn_no}
                   </span>
                 )}
+                {row.payment_proof_url && (
+                  <button
+                    type='button'
+                    className='inline-flex cursor-zoom-in items-center gap-1.5 rounded-md border bg-white p-1 text-xs transition hover:opacity-80'
+                    aria-label={t('Preview payment proof')}
+                    onClick={() =>
+                      setPreviewImage({
+                        url: row.payment_proof_url,
+                        title: t('Payment proof'),
+                        subtitle: formatUserIdentity(row.user_id, row.username),
+                      })
+                    }
+                  >
+                    <img
+                      src={row.payment_proof_url}
+                      alt={t('Payment proof')}
+                      className='h-10 w-10 rounded object-contain'
+                    />
+                    <span className='text-foreground pr-1'>
+                      {t('Payment proof')}
+                    </span>
+                  </button>
+                )}
+                {row.status === 'paid' &&
+                  (Boolean(row.paid_by) || Boolean(row.paid_by_username)) && (
+                    <span className='text-muted-foreground text-[11px] tabular-nums'>
+                      {t('Payment recorded by')}{' '}
+                      {formatUserIdentity(
+                        row.paid_by ?? 0,
+                        row.paid_by_username
+                      )}
+                      {row.paid_at > 0
+                        ? ` · ${formatTimestamp(row.paid_at)}`
+                        : ''}
+                    </span>
+                  )}
               </div>
             ),
           },
@@ -425,9 +475,10 @@ export function WithdrawalPanel(props: {
           <Button
             variant='brand'
             disabled={
+              !paying ||
               pay.isPending ||
               upload.isPending ||
-              (paying?.account_type === 'usdt' && txnNo.trim() === '')
+              payMissingEvidence
             }
             onClick={() => paying && pay.mutate(paying)}
           >
@@ -464,10 +515,12 @@ export function WithdrawalPanel(props: {
                   className='shrink-0 cursor-zoom-in rounded-md border bg-white p-1 transition hover:opacity-80'
                   aria-label={t('Preview payment QR code')}
                   onClick={() =>
-                    setPreviewQr({
+                    setPreviewImage({
                       url: paying.qr_image_url,
-                      name: paying.account_name,
-                      accountNo: paying.account_no,
+                      title: t('Payment QR code'),
+                      subtitle: [paying.account_name, paying.account_no]
+                        .filter(Boolean)
+                        .join(' · '),
                     })
                   }
                 >
@@ -480,11 +533,17 @@ export function WithdrawalPanel(props: {
               )}
             </div>
           )}
-          {paying?.account_type === 'usdt' && (
+          {(paying?.account_type === 'usdt' ||
+            paying?.account_type === 'alipay') && (
             <div className='space-y-2'>
-              <Label htmlFor='pay-txn'>{t('Transaction hash')}</Label>
+              <Label htmlFor='pay-txn'>
+                {paying.account_type === 'usdt'
+                  ? t('Transaction hash')
+                  : t('Transfer reference')}
+              </Label>
               <Input
                 id='pay-txn'
+                autoComplete='off'
                 value={txnNo}
                 onChange={(event) => setTxnNo(event.target.value)}
               />
@@ -497,6 +556,7 @@ export function WithdrawalPanel(props: {
               id='pay-proof'
               type='file'
               accept='image/png,image/jpeg,image/webp'
+              disabled={upload.isPending}
               onChange={(event) => {
                 const file = event.target.files?.[0]
                 if (file && paying) {
@@ -504,27 +564,61 @@ export function WithdrawalPanel(props: {
                 }
               }}
             />
+            {proofUrl && (
+              <div className='flex items-start gap-2 pt-1'>
+                <button
+                  type='button'
+                  className='cursor-zoom-in rounded-md border bg-white p-1 transition hover:opacity-80'
+                  aria-label={t('Preview payment proof')}
+                  onClick={() =>
+                    setPreviewImage({
+                      url: proofUrl,
+                      title: t('Payment proof'),
+                    })
+                  }
+                >
+                  <img
+                    src={proofUrl}
+                    alt={t('Payment proof')}
+                    className='h-20 w-20 rounded object-contain'
+                  />
+                </button>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  onClick={() => {
+                    setProofUrl('')
+                    if (proofFileRef.current) proofFileRef.current.value = ''
+                  }}
+                >
+                  <X className='size-3.5' aria-hidden='true' />
+                  {t('Clear')}
+                </Button>
+              </div>
+            )}
+            {paying?.account_type === 'alipay' && (
+              <p className='text-muted-foreground text-xs'>
+                {t('Enter a transfer reference or upload a payment proof image.')}
+              </p>
+            )}
           </div>
         </div>
       </Dialog>
 
       <Dialog
-        open={previewQr !== null}
+        open={previewImage !== null}
         onOpenChange={(open) => {
-          if (!open) setPreviewQr(null)
+          if (!open) setPreviewImage(null)
         }}
-        title={t('Payment QR code')}
-        description={
-          previewQr
-            ? [previewQr.name, previewQr.accountNo].filter(Boolean).join(' · ')
-            : ''
-        }
+        title={previewImage?.title ?? t('Payment proof')}
+        description={previewImage?.subtitle ?? ''}
         contentClassName='sm:max-w-md'
         footer={
-          previewQr ? (
+          previewImage ? (
             <div className='flex w-full items-center justify-between gap-2'>
               <a
-                href={previewQr.url}
+                href={previewImage.url}
                 target='_blank'
                 rel='noopener noreferrer'
                 className='text-primary inline-flex items-center gap-1 text-sm underline'
@@ -532,18 +626,18 @@ export function WithdrawalPanel(props: {
                 <ExternalLink className='size-3.5' aria-hidden='true' />
                 {t('Open in new tab')}
               </a>
-              <Button variant='outline' onClick={() => setPreviewQr(null)}>
+              <Button variant='outline' onClick={() => setPreviewImage(null)}>
                 {t('Close')}
               </Button>
             </div>
           ) : undefined
         }
       >
-        {previewQr && (
+        {previewImage && (
           <div className='flex flex-col items-center gap-3'>
             <img
-              src={previewQr.url}
-              alt={t('Payment QR code')}
+              src={previewImage.url}
+              alt={previewImage.title}
               className='max-h-[70vh] w-full max-w-sm rounded-lg border object-contain'
             />
           </div>

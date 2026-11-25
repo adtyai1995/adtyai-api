@@ -6,13 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,9 +34,6 @@ const (
 	adtyImageProbeMinTimeout          = 45 * time.Second
 	adtyImageProbeMaxTimeout          = 90 * time.Second
 	adtyImageProbeMaxBodyBytes        = 16 << 20
-	adtyCacheHitRateWindowSeconds     = 24 * 3600
-	adtyCacheHitRateCacheTTL          = 2 * time.Minute
-	adtyCacheHitRateMaxRows           = 50000
 )
 
 var (
@@ -49,10 +44,6 @@ var (
 	adtyModelProbeGroupLastRunMu     sync.Mutex
 	adtyModelProbeGroupLastRun       = make(map[string]int64)
 	adtyModelProbeGroupLastRunSeeded bool
-
-	adtyCacheHitRateMu        sync.Mutex
-	adtyCacheHitRateExpiresAt time.Time
-	adtyCacheHitRateData      map[string]float64
 
 	adtyMarkdownImageURLRegex = regexp.MustCompile(`(?i)!\[[^\]]*\]\(https?://[^)\s]+`)
 
@@ -197,13 +188,18 @@ func deriveAdtyGeminiEndpoint(endpoint, upstreamModel, action string) (string, b
 	if err != nil || parsed.Host == "" {
 		return "", false
 	}
+	modelID := strings.TrimPrefix(strings.TrimSpace(upstreamModel), "models/")
+	if modelID == "" {
+		return "", false
+	}
 	basePath := strings.TrimSuffix(parsed.Path, "/")
 	basePath = strings.TrimSuffix(basePath, "/chat/completions")
 	basePath = strings.TrimSuffix(basePath, "/messages")
 	basePath = strings.TrimSuffix(basePath, "/images/generations")
+	basePath = strings.TrimSuffix(basePath, "/openai")
 	basePath = strings.TrimSuffix(basePath, "/v1")
 	basePath = strings.TrimSuffix(basePath, "/v1beta")
-	parsed.Path = basePath + "/v1beta/models/" + url.PathEscape(upstreamModel) + action
+	parsed.Path = basePath + "/v1beta/models/" + url.PathEscape(modelID) + action
 	parsed.RawQuery = ""
 	return parsed.String(), true
 }
@@ -276,7 +272,7 @@ func deriveAdtyOpenAIChatEndpoint(endpoint string) string {
 func deriveAdtyModelProbeTarget(channel *model.Channel, upstreamModel, protocol, endpoint string) (probeProtocol, probeEndpoint string, payload map[string]any) {
 	embedding := isAdtyEmbeddingModel(upstreamModel)
 
-	if channel != nil && channel.Type == constant.ChannelTypeGemini {
+	if (channel != nil && channel.Type == constant.ChannelTypeGemini) || protocol == adtyProbeProtocolGemini {
 		action := ":generateContent"
 		if embedding {
 			action = ":embedContent"
@@ -299,7 +295,7 @@ func deriveAdtyModelProbeTarget(channel *model.Channel, upstreamModel, protocol,
 			}
 		}
 		if geminiURL, ok := deriveAdtyGeminiEndpoint(endpoint, upstreamModel, action); ok {
-			return "gemini", geminiURL, payload
+			return adtyProbeProtocolGemini, geminiURL, payload
 		}
 	}
 
@@ -771,9 +767,10 @@ func dispatchAdtyImageProbeCtx(ctx context.Context, channel *model.Channel, upst
 	defer cancel()
 
 	lowerModel := strings.ToLower(strings.TrimSpace(upstreamModel))
+	isGemini := (channel != nil && channel.Type == constant.ChannelTypeGemini) || protocol == adtyProbeProtocolGemini
 
 	// 1. Gemini Imagen (:predict)
-	if channel != nil && channel.Type == constant.ChannelTypeGemini && strings.Contains(lowerModel, "imagen") {
+	if isGemini && strings.Contains(lowerModel, "imagen") {
 		targetURL, ok := deriveAdtyGeminiEndpoint(endpoint, upstreamModel, ":predict")
 		if !ok {
 			return model.AdtyModelProbeStatusDown, 0, "invalid gemini endpoint"
@@ -786,7 +783,7 @@ func dispatchAdtyImageProbeCtx(ctx context.Context, channel *model.Channel, upst
 				"sampleCount": 1,
 			},
 		}
-		statusCode, raw, elapsedMs, errMsg := doAdtyImageProbeHTTP(reqCtx, "gemini", targetURL, key, payload, imgTimeout)
+		statusCode, raw, elapsedMs, errMsg := doAdtyImageProbeHTTP(reqCtx, adtyProbeProtocolGemini, targetURL, key, payload, imgTimeout)
 		if errMsg != "" {
 			return model.AdtyModelProbeStatusDown, elapsedMs, errMsg
 		}
@@ -800,7 +797,7 @@ func dispatchAdtyImageProbeCtx(ctx context.Context, channel *model.Channel, upst
 	}
 
 	// 2. Gemini Native Image (:generateContent with IMAGE modality)
-	if channel != nil && channel.Type == constant.ChannelTypeGemini {
+	if isGemini {
 		targetURL, ok := deriveAdtyGeminiEndpoint(endpoint, upstreamModel, ":generateContent")
 		if !ok {
 			return model.AdtyModelProbeStatusDown, 0, "invalid gemini endpoint"
@@ -816,7 +813,7 @@ func dispatchAdtyImageProbeCtx(ctx context.Context, channel *model.Channel, upst
 				"responseModalities": []string{"IMAGE", "TEXT"},
 			},
 		}
-		statusCode, raw, elapsedMs, errMsg := doAdtyImageProbeHTTP(reqCtx, "gemini", targetURL, key, payload, imgTimeout)
+		statusCode, raw, elapsedMs, errMsg := doAdtyImageProbeHTTP(reqCtx, adtyProbeProtocolGemini, targetURL, key, payload, imgTimeout)
 		if errMsg != "" {
 			return model.AdtyModelProbeStatusDown, elapsedMs, errMsg
 		}
@@ -1198,161 +1195,6 @@ func StartAdtyModelProbes() {
 			}
 		}()
 	})
-}
-
-func parseAdtyPositiveInt64(v any) int64 {
-	switch n := v.(type) {
-	case int64:
-		if n > 0 {
-			return n
-		}
-	case int:
-		if n > 0 {
-			return int64(n)
-		}
-	case int32:
-		if n > 0 {
-			return int64(n)
-		}
-	case uint64:
-		if n > 0 && n <= math.MaxInt64 {
-			return int64(n)
-		}
-	case float64:
-		if n > 0 && !math.IsNaN(n) && !math.IsInf(n, 0) {
-			return int64(n)
-		}
-	case string:
-		trimmed := strings.TrimSpace(n)
-		if trimmed == "" {
-			return 0
-		}
-		if iv, err := strconv.ParseInt(trimmed, 10, 64); err == nil && iv > 0 {
-			return iv
-		}
-		if fv, err := strconv.ParseFloat(trimmed, 64); err == nil && fv > 0 && !math.IsNaN(fv) && !math.IsInf(fv, 0) {
-			return int64(fv)
-		}
-	}
-	return 0
-}
-
-func parseAdtyCacheTokensFromOther(other string) int64 {
-	if !strings.Contains(other, "cache_tokens") && !strings.Contains(other, "cached_tokens") {
-		return 0
-	}
-	var parsed map[string]any
-	if err := common.UnmarshalJsonStr(other, &parsed); err != nil || len(parsed) == 0 {
-		return 0
-	}
-	if v := parseAdtyPositiveInt64(parsed["cache_tokens"]); v > 0 {
-		return v
-	}
-	if v := parseAdtyPositiveInt64(parsed["cached_tokens"]); v > 0 {
-		return v
-	}
-	if pub, ok := parsed["public"].(map[string]any); ok && len(pub) > 0 {
-		if v := parseAdtyPositiveInt64(pub["cache_tokens"]); v > 0 {
-			return v
-		}
-		if v := parseAdtyPositiveInt64(pub["cached_tokens"]); v > 0 {
-			return v
-		}
-	}
-	return 0
-}
-
-// GetAdtyGroupCacheHitRates24h computes each group's real 24-hour (1440m) prompt cache
-// hit percentage (0.00..100.00) from consume logs with a 2-minute in-memory TTL cache.
-// Privacy invariant: returns ONLY group -> percentage (never counts, token totals, or channels).
-func GetAdtyGroupCacheHitRates24h() map[string]float64 {
-	now := time.Now()
-	adtyCacheHitRateMu.Lock()
-	if adtyCacheHitRateData != nil && now.Before(adtyCacheHitRateExpiresAt) {
-		cloned := maps.Clone(adtyCacheHitRateData)
-		adtyCacheHitRateMu.Unlock()
-		return cloned
-	}
-	adtyCacheHitRateMu.Unlock()
-
-	rates := computeAdtyGroupCacheHitRates24h(now.Unix())
-
-	adtyCacheHitRateMu.Lock()
-	adtyCacheHitRateData = rates
-	adtyCacheHitRateExpiresAt = time.Now().Add(adtyCacheHitRateCacheTTL)
-	cloned := maps.Clone(rates)
-	adtyCacheHitRateMu.Unlock()
-	return cloned
-}
-
-func computeAdtyGroupCacheHitRates24h(nowUnix int64) map[string]float64 {
-	rates := make(map[string]float64)
-	if model.LOG_DB == nil || !model.LOG_DB.Migrator().HasTable(&model.Log{}) {
-		return rates
-	}
-	groupCol := model.AdtyGroupColumn()
-	if groupCol == "" {
-		groupCol = `"group"`
-	}
-
-	type logCacheRow struct {
-		GroupName    string `gorm:"column:group_name"`
-		PromptTokens int64  `gorm:"column:prompt_tokens"`
-		Other        string `gorm:"column:other"`
-	}
-	since := nowUnix - adtyCacheHitRateWindowSeconds
-	var rows []logCacheRow
-	if err := model.LOG_DB.Table("logs").
-		Select(groupCol+" AS group_name, prompt_tokens, other").
-		Where("type = ? AND created_at >= ? AND "+groupCol+" <> ''", model.LogTypeConsume, since).
-		Order("created_at DESC").
-		Limit(adtyCacheHitRateMaxRows).
-		Find(&rows).Error; err != nil {
-		common.SysError(common.LogText("adty group cache hit rate query: %s", err.Error()))
-		return rates
-	}
-
-	sumCache := make(map[string]int64)
-	sumInput := make(map[string]int64)
-	for _, row := range rows {
-		group := strings.TrimSpace(row.GroupName)
-		if group == "" {
-			continue
-		}
-		promptTokens := row.PromptTokens
-		if promptTokens < 0 {
-			promptTokens = 0
-		}
-		cacheTokens := parseAdtyCacheTokensFromOther(row.Other)
-		var inputTokens int64
-		if cacheTokens > promptTokens {
-			inputTokens = promptTokens + cacheTokens
-		} else {
-			inputTokens = promptTokens
-		}
-		if cacheTokens > 0 {
-			sumCache[group] += cacheTokens
-		}
-		if inputTokens > 0 {
-			sumInput[group] += inputTokens
-		}
-	}
-
-	for group, totalInput := range sumInput {
-		totalCache := sumCache[group]
-		if totalInput <= 0 || totalCache <= 0 {
-			continue
-		}
-		pct := math.Round((float64(totalCache)/float64(totalInput))*10000) / 100
-		if pct > 100 {
-			pct = 100
-		}
-		if pct < 0 {
-			pct = 0
-		}
-		rates[group] = pct
-	}
-	return rates
 }
 
 func isOpenAIReasoningModelName(lower string) bool {

@@ -28,30 +28,26 @@ const (
 
 // 站长敏感操作的种类。
 const (
-	AdtySiteOwnerActionPricing            = "pricing"       // target：0 是全站定价，否则是客户 id
-	AdtySiteOwnerActionBonus              = "bonus"         // target：站点 id
-	AdtySiteOwnerActionDomain             = "domain.delete" // target：自定义域名 id
-	AdtySiteOwnerActionSender             = "sender.delete" // target：站点 id
-	AdtySiteOwnerActionMailConfig         = "mail.config"   // target：站点 id
-	AdtySiteOwnerActionStaffCreate        = "staff.create"  // target: site ID
-	AdtySiteOwnerActionStaffUpdate        = "staff.update"  // target: membership ID
-	AdtySiteOwnerActionStaffPassword      = "staff.password"
-	AdtySiteOwnerActionStaffDelete        = "staff.delete"
-	AdtySiteOwnerActionStaffBalanceReview = "staff.balance_review" // target: balance request ID
-	AdtySiteOwnerActionVoucherIssue       = "voucher.issue"        // target: site ID
-	AdtySiteOwnerActionVoucherFreeze      = "voucher.freeze"       // target: voucher ID
-	AdtySiteOwnerActionVoucherCancel      = "voucher.cancel"       // target: voucher ID
-	AdtySiteOwnerActionCustomerBalance    = "customer.balance"     // target: customer user ID
-	AdtySiteOwnerActionCustomerPassword   = "customer.password"    // target: customer user ID
-	AdtySiteOwnerActionTeamBalance        = "team.balance"         // target: team ID
-	AdtySiteOwnerActionWithdrawalCreate   = "withdrawal.create"    // target: site ID
+	AdtySiteOwnerActionPricing          = "pricing"       // target：0 是全站定价，否则是客户 id
+	AdtySiteOwnerActionBonus            = "bonus"         // target：站点 id
+	AdtySiteOwnerActionDomain           = "domain.delete" // target：自定义域名 id
+	AdtySiteOwnerActionSender           = "sender.delete" // target：站点 id
+	AdtySiteOwnerActionMailConfig       = "mail.config"   // target：站点 id
+	AdtySiteOwnerActionStaffCreate      = "staff.create"  // target: site ID
+	AdtySiteOwnerActionStaffUpdate      = "staff.update"  // target: membership ID
+	AdtySiteOwnerActionStaffPassword    = "staff.password"
+	AdtySiteOwnerActionStaffDelete      = "staff.delete"
+	AdtySiteOwnerActionVoucherIssue     = "voucher.issue"     // target: site ID
+	AdtySiteOwnerActionVoucherFreeze    = "voucher.freeze"    // target: voucher ID
+	AdtySiteOwnerActionVoucherCancel    = "voucher.cancel"    // target: voucher ID
+	AdtySiteOwnerActionCustomerPassword = "customer.password" // target: customer user ID
+	AdtySiteOwnerActionWithdrawalCreate = "withdrawal.create" // target: site ID
 )
 
 var adtySiteOwnerActions = []string{AdtySiteOwnerActionPricing, AdtySiteOwnerActionBonus, AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender, AdtySiteOwnerActionMailConfig,
 	AdtySiteOwnerActionStaffCreate, AdtySiteOwnerActionStaffUpdate, AdtySiteOwnerActionStaffPassword, AdtySiteOwnerActionStaffDelete,
-	AdtySiteOwnerActionStaffBalanceReview,
 	AdtySiteOwnerActionVoucherIssue, AdtySiteOwnerActionVoucherFreeze, AdtySiteOwnerActionVoucherCancel,
-	AdtySiteOwnerActionCustomerBalance, AdtySiteOwnerActionCustomerPassword, AdtySiteOwnerActionTeamBalance, AdtySiteOwnerActionWithdrawalCreate}
+	AdtySiteOwnerActionCustomerPassword, AdtySiteOwnerActionWithdrawalCreate}
 
 // AdtySiteOwnerContext 是 proof 绑定的操作：哪种操作、对哪个目标，员工写操作及资金操作还会绑定请求体摘要。
 type AdtySiteOwnerContext struct {
@@ -60,19 +56,15 @@ type AdtySiteOwnerContext struct {
 	Digest string `json:"digest,omitempty"`
 }
 
-// AdtyOwnerBalanceCreditDigestInput is the canonical digest payload for
-// customer.balance and team.balance step-up verification (R1-018).
-type AdtyOwnerBalanceCreditDigestInput struct {
-	AmountUSD      string `json:"amount_usd"`
-	Reason         string `json:"reason"`
-	IdempotencyKey string `json:"idempotency_key"`
-}
-
-// AdtyOwnerBalanceReviewDigestInput is the canonical digest payload for
-// staff.balance_review step-up verification (R1-018).
-type AdtyOwnerBalanceReviewDigestInput struct {
-	Approve bool   `json:"approve"`
-	Reason  string `json:"reason,omitempty"`
+// AdtyOwnerVoucherIssueDigestInput is the canonical digest payload for
+// voucher.issue step-up verification (R1-44).
+type AdtyOwnerVoucherIssueDigestInput struct {
+	Purpose   string `json:"purpose"`
+	AmountUSD string `json:"amount_usd"`
+	Count     int    `json:"count"`
+	Source    string `json:"source,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	IntentKey string `json:"intent_key"`
 }
 
 // AdtyOwnerWithdrawalDigestInput is the canonical digest payload for
@@ -102,7 +94,7 @@ func adtyIsSiteOwnerDigestRequiredAction(action string) bool {
 		return true
 	}
 	switch action {
-	case AdtySiteOwnerActionCustomerBalance, AdtySiteOwnerActionTeamBalance, AdtySiteOwnerActionStaffBalanceReview, AdtySiteOwnerActionWithdrawalCreate:
+	case AdtySiteOwnerActionVoucherIssue, AdtySiteOwnerActionWithdrawalCreate:
 		return true
 	default:
 		return false
@@ -133,22 +125,22 @@ func normalizeAdtyStaffInputForDigest(input AdtyStaffInput) AdtyStaffInput {
 	return input
 }
 
-func normalizeAdtyOwnerBalanceCreditDigestInput(in AdtyOwnerBalanceCreditDigestInput) AdtyOwnerBalanceCreditDigestInput {
+func normalizeAdtyOwnerVoucherIssueDigestInput(in AdtyOwnerVoucherIssueDigestInput) AdtyOwnerVoucherIssueDigestInput {
 	amt := strings.TrimSpace(in.AmountUSD)
 	if d, err := common.ParseBoundedDecimalString(amt, 12, 8); err == nil {
 		amt = d.String()
 	}
-	return AdtyOwnerBalanceCreditDigestInput{
-		AmountUSD:      amt,
-		Reason:         strings.TrimSpace(in.Reason),
-		IdempotencyKey: strings.TrimSpace(in.IdempotencyKey),
+	count := in.Count
+	if count <= 0 {
+		count = 1
 	}
-}
-
-func normalizeAdtyOwnerBalanceReviewDigestInput(in AdtyOwnerBalanceReviewDigestInput) AdtyOwnerBalanceReviewDigestInput {
-	return AdtyOwnerBalanceReviewDigestInput{
-		Approve: in.Approve,
-		Reason:  strings.TrimSpace(in.Reason),
+	return AdtyOwnerVoucherIssueDigestInput{
+		Purpose:   strings.TrimSpace(in.Purpose),
+		AmountUSD: amt,
+		Count:     count,
+		Source:    strings.TrimSpace(in.Source),
+		Reason:    strings.TrimSpace(in.Reason),
+		IntentKey: strings.TrimSpace(in.IntentKey),
 	}
 }
 
@@ -219,26 +211,13 @@ func AdtyOwnerActionRequestDigest(action string, v any) string {
 		return ""
 	}
 	switch action {
-	case AdtySiteOwnerActionCustomerBalance, AdtySiteOwnerActionTeamBalance:
-		var in AdtyOwnerBalanceCreditDigestInput
+	case AdtySiteOwnerActionVoucherIssue:
+		var in AdtyOwnerVoucherIssueDigestInput
 		if common.Unmarshal(rawBytes, &in) != nil {
 			sum := sha256.Sum256(rawBytes)
 			return hex.EncodeToString(sum[:])
 		}
-		in = normalizeAdtyOwnerBalanceCreditDigestInput(in)
-		canonical, err := common.Marshal(in)
-		if err != nil {
-			return ""
-		}
-		sum := sha256.Sum256(canonical)
-		return hex.EncodeToString(sum[:])
-	case AdtySiteOwnerActionStaffBalanceReview:
-		var in AdtyOwnerBalanceReviewDigestInput
-		if common.Unmarshal(rawBytes, &in) != nil {
-			sum := sha256.Sum256(rawBytes)
-			return hex.EncodeToString(sum[:])
-		}
-		in = normalizeAdtyOwnerBalanceReviewDigestInput(in)
+		in = normalizeAdtyOwnerVoucherIssueDigestInput(in)
 		canonical, err := common.Marshal(in)
 		if err != nil {
 			return ""
@@ -406,7 +385,7 @@ func AdtyStaffCustomerOperation(action string, target int) VerificationOperation
 
 func adtySiteOwnerActionAccessTokenScope(ctx AdtySiteOwnerContext) string {
 	switch ctx.Action {
-	case AdtySiteOwnerActionCustomerBalance, AdtySiteOwnerActionCustomerPassword:
+	case AdtySiteOwnerActionCustomerPassword:
 		return AccessTokenResourceSiteOwnerCustomer + ":write"
 	case AdtySiteOwnerActionPricing:
 		if ctx.Target > 0 {
@@ -415,10 +394,10 @@ func adtySiteOwnerActionAccessTokenScope(ctx AdtySiteOwnerContext) string {
 		return AccessTokenResourceSiteOwnerSetting + ":write"
 	case AdtySiteOwnerActionBonus, AdtySiteOwnerActionVoucherIssue, AdtySiteOwnerActionVoucherFreeze, AdtySiteOwnerActionVoucherCancel, AdtySiteOwnerActionWithdrawalCreate:
 		return AccessTokenResourceSiteOwnerOrder + ":write"
-	case AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender, AdtySiteOwnerActionMailConfig, AdtySiteOwnerActionTeamBalance:
+	case AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender, AdtySiteOwnerActionMailConfig:
 		return AccessTokenResourceSiteOwnerSetting + ":write"
 	default:
-		// staff.* and staff.balance_review require a browser session, never a PAT (R2-004).
+		// staff.* actions require a browser session, never a PAT (R2-004).
 		return ""
 	}
 }

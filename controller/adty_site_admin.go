@@ -960,7 +960,11 @@ func adtyClearedSecretWarnings() []string {
 		return nil
 	}
 	warnings := make([]string, 0, len(cleared))
+	resellerPrefix := adty_setting.ResellerSettingModule + "."
 	for _, key := range cleared {
+		if !strings.HasPrefix(key, resellerPrefix) {
+			continue
+		}
 		// R2-060: Map raw DB option keys to structured warning codes so raw DB
 		// keys never leak into admin UI banners.
 		warnings = append(warnings, "cleared_secret:"+adtyFriendlySecretCode(key))

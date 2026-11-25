@@ -142,8 +142,13 @@ function normalizeResolution(value, model) {
 }
 
 function outboundDuration(req, model) {
-  const n = Number(req && req.duration);
-  if (Number.isFinite(n) && n > 0) return n;
+  if (req && req.duration !== undefined && req.duration !== null && req.duration !== "") {
+    const n = Number(req.duration);
+    if (!Number.isInteger(n) || n <= 0 || n > 3600) {
+      throw new Error("seconds must be between 1 and 3600");
+    }
+    return n;
+  }
   return defaultDuration(model);
 }
 
@@ -317,12 +322,20 @@ export function buildSubmitRequest(ctx) {
   let model = ctx.upstreamModel || "viduq1";
   if (action === "reference_to_video" && model.includes("viduq2")) model = "viduq2";
   const images = Array.isArray(req.images) ? req.images.map(filePlaceholder) : null;
+  const duration = outboundDuration(req, model);
+  const resolution = outboundResolution(req, model);
+  validateViduCombo(
+    model,
+    req && req.duration !== undefined && req.duration !== null && req.duration !== "" ? duration : undefined,
+    resolution,
+    hasViduImages(req, false)
+  );
   // metadata carries the other Vidu fields and cannot replace the billed
   // model, duration and resolution.
   const body = Object.assign({ images: images, prompt: req.prompt || null, movement_amplitude: "auto" }, metadata, {
     model: model,
-    duration: outboundDuration(req, model),
-    resolution: outboundResolution(req, model),
+    duration: duration,
+    resolution: resolution,
   });
   delete body.action;
   if (!body.prompt) delete body.prompt;
@@ -347,7 +360,15 @@ export function extractUsage(ctx) {
   if (ctx.usagePurpose === "billing_ratios") return null;
   const req = ctx.requestBody || {};
   const model = ctx.upstreamModel || req.model;
-  return { duration: outboundDuration(req, model), resolution: outboundResolution(req, model) };
+  const duration = outboundDuration(req, model);
+  const resolution = outboundResolution(req, model);
+  validateViduCombo(
+    model,
+    req.duration !== undefined && req.duration !== null && req.duration !== "" ? duration : undefined,
+    resolution,
+    hasViduImages(req, false)
+  );
+  return { duration: duration, resolution: resolution };
 }
 
 export function buildQueryRequest(ctx) {

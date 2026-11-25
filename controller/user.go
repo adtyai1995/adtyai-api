@@ -511,6 +511,30 @@ func sanitizeAdminUserSetting(raw string) string {
 	return string(encoded)
 }
 
+func sanitizeSelfUserSetting(raw string) (string, bool, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false, false
+	}
+	var parsed map[string]any
+	if err := common.UnmarshalJsonStr(trimmed, &parsed); err != nil || parsed == nil {
+		return "", false, false
+	}
+	webhookSecret, _ := parsed["webhook_secret"].(string)
+	gotifyToken, _ := parsed["gotify_token"].(string)
+	hasWebhookSecret := strings.TrimSpace(webhookSecret) != ""
+	hasGotifyToken := strings.TrimSpace(gotifyToken) != ""
+	delete(parsed, "webhook_secret")
+	delete(parsed, "gotify_token")
+	parsed["has_webhook_secret"] = hasWebhookSecret
+	parsed["has_gotify_token"] = hasGotifyToken
+	encoded, err := common.Marshal(parsed)
+	if err != nil {
+		return "", hasWebhookSecret, hasGotifyToken
+	}
+	return string(encoded), hasWebhookSecret, hasGotifyToken
+}
+
 func buildAdminUserResponses(users []*model.User) ([]adminUserResponse, error) {
 	siteIDs := make([]int, len(users))
 	userIDs := make([]int, len(users))
@@ -594,7 +618,17 @@ func userSiteFilter(c *gin.Context) (*int, error) {
 }
 
 func GetUserSites(c *gin.Context) {
-	siteIDs, err := model.GetUserSiteIDs(visibleUserRoleCeiling(c.GetInt("role")))
+	belowRole := visibleUserRoleCeiling(c.GetInt("role"))
+	openOnly := c.Query("open_only") == "1" || strings.EqualFold(c.Query("open_only"), "true")
+	var (
+		siteIDs []int
+		err     error
+	)
+	if openOnly {
+		siteIDs, err = model.GetOpenUserSiteIDs(belowRole)
+	} else {
+		siteIDs, err = model.GetUserSiteIDs(belowRole)
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -756,6 +790,7 @@ func GetSelf(c *gin.Context) {
 // administrator-only remarks.
 func buildSelfUserData(user *model.User) map[string]any {
 	userSetting := user.GetSetting()
+	sanitizedSetting, hasWebhookSecret, hasGotifyToken := sanitizeSelfUserSetting(user.Setting)
 	permissions := calculateUserPermissions(user.Role)
 	permissions["admin_permissions"] = authz.Capabilities(user.Id, user.Role)
 	required, version := service.AdtySiteTermsStatus(user.Id)
@@ -780,7 +815,9 @@ func buildSelfUserData(user *model.User) map[string]any {
 		"used_quota":               user.UsedQuota,
 		"request_count":            user.RequestCount,
 		"linux_do_id":              user.LinuxDOId,
-		"setting":                  user.Setting,
+		"setting":                  sanitizedSetting,
+		"has_webhook_secret":       hasWebhookSecret,
+		"has_gotify_token":         hasGotifyToken,
 		"stripe_customer":          user.StripeCustomer,
 		"sidebar_modules":          userSetting.SidebarModules, // 正确提取sidebar_modules字段
 		"permissions":              permissions,
@@ -2005,10 +2042,12 @@ type UpdateUserSettingRequest struct {
 	QuotaWarningEnabled              *bool   `json:"quota_warning_enabled,omitempty"`
 	WebhookUrl                       string  `json:"webhook_url,omitempty"`
 	WebhookSecret                    string  `json:"webhook_secret,omitempty"`
+	ClearWebhookSecret               bool    `json:"clear_webhook_secret,omitempty"`
 	NotificationEmail                string  `json:"notification_email,omitempty"`
 	BarkUrl                          string  `json:"bark_url,omitempty"`
 	GotifyUrl                        string  `json:"gotify_url,omitempty"`
 	GotifyToken                      string  `json:"gotify_token,omitempty"`
+	ClearGotifyToken                 bool    `json:"clear_gotify_token,omitempty"`
 	GotifyPriority                   int     `json:"gotify_priority,omitempty"`
 	UpstreamModelUpdateNotifyEnabled *bool   `json:"upstream_model_update_notify_enabled,omitempty"`
 	ChannelNotifyEnabled             *bool   `json:"channel_notify_enabled,omitempty"`
@@ -2085,14 +2124,10 @@ func UpdateUserSetting(c *gin.Context) {
 		}
 	}
 
-	// 如果是Gotify类型，验证Gotify URL和Token
+	// 如果是Gotify类型，验证Gotify URL格式（Token 留空时允许沿用已保存密文）
 	if req.QuotaWarningType == dto.NotifyTypeGotify {
 		if req.GotifyUrl == "" {
 			common.ApiErrorT(c, "Gotify server URL cannot be empty")
-			return
-		}
-		if req.GotifyToken == "" {
-			common.ApiErrorT(c, "Gotify token cannot be empty")
 			return
 		}
 		// 验证URL格式
@@ -2117,6 +2152,8 @@ func UpdateUserSetting(c *gin.Context) {
 	// 从已保存的设置出发，语言、侧边栏、扣费策略等不由此表单管理的字段保持不变；
 	// 请求未携带的开关也保持原值
 	settings := user.GetSetting()
+	prevWebhookSecret := settings.WebhookSecret
+	prevGotifyToken := settings.GotifyToken
 	settings.NotifyType = req.QuotaWarningType
 	settings.QuotaWarningThreshold = req.QuotaWarningThreshold
 	settings.AcceptUnsetRatioModel = req.AcceptUnsetModelRatioModel
@@ -2141,14 +2178,43 @@ func UpdateUserSetting(c *gin.Context) {
 	switch req.QuotaWarningType {
 	case dto.NotifyTypeWebhook:
 		settings.WebhookUrl = req.WebhookUrl
-		settings.WebhookSecret = req.WebhookSecret
+		trimmedSecret := strings.TrimSpace(req.WebhookSecret)
+		if req.ClearWebhookSecret {
+			settings.WebhookSecret = ""
+		} else if trimmedSecret != "" {
+			sealed, sealErr := model.SealAdtyPurposeSecret(fmt.Sprintf("user_notify:%d:webhook_secret", user.Id), trimmedSecret)
+			if sealErr != nil {
+				common.ApiError(c, sealErr)
+				return
+			}
+			settings.WebhookSecret = sealed
+		} else {
+			settings.WebhookSecret = prevWebhookSecret
+		}
 	case dto.NotifyTypeEmail:
 		settings.NotificationEmail = req.NotificationEmail
 	case dto.NotifyTypeBark:
 		settings.BarkUrl = req.BarkUrl
 	case dto.NotifyTypeGotify:
 		settings.GotifyUrl = req.GotifyUrl
-		settings.GotifyToken = req.GotifyToken
+		trimmedToken := strings.TrimSpace(req.GotifyToken)
+		if req.ClearGotifyToken {
+			common.ApiErrorT(c, "Gotify token cannot be empty")
+			return
+		}
+		if trimmedToken != "" {
+			sealed, sealErr := model.SealAdtyPurposeSecret(fmt.Sprintf("user_notify:%d:gotify_token", user.Id), trimmedToken)
+			if sealErr != nil {
+				common.ApiError(c, sealErr)
+				return
+			}
+			settings.GotifyToken = sealed
+		} else if strings.TrimSpace(prevGotifyToken) != "" {
+			settings.GotifyToken = prevGotifyToken
+		} else {
+			common.ApiErrorT(c, "Gotify token cannot be empty")
+			return
+		}
 		// Gotify优先级范围0-10，超出范围则使用默认值5
 		if req.GotifyPriority < 0 || req.GotifyPriority > 10 {
 			settings.GotifyPriority = 5

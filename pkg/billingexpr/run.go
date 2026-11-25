@@ -2,6 +2,7 @@ package billingexpr
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -73,6 +74,7 @@ func runProgram(entry *cachedEntry, params TokenParams, request RequestInput) (f
 		trace:           &trace,
 		headers:         normalizeHeaders(request.Headers),
 		body:            request.Body,
+		frozenParams:    request.FrozenParams,
 		usage:           request.Usage,
 		now:             resolveEvalInstant(request),
 		defaultTimezone: strings.TrimSpace(request.BusinessTimezone),
@@ -80,8 +82,12 @@ func runProgram(entry *cachedEntry, params TokenParams, request RequestInput) (f
 	if err != nil {
 		return 0, trace, err
 	}
+	f := cost.InexactFloat64()
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, trace, errNonFiniteExpr
+	}
 	trace.CostDec = cost
-	trace.Cost = cost.InexactFloat64()
+	trace.Cost = f
 	return trace.Cost, trace, nil
 }
 

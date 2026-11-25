@@ -155,7 +155,7 @@ func RequestAdtyEpayPay(c *gin.Context) {
 			Device:    req.Device,
 			MoneyCNY:  quote.PayAmount,
 			NotifyURL: callback + "/api/user/epay/notify/" + strconv.Itoa(channel.Id),
-			ReturnURL: service.AdtyPayResultURL(topUp.TradeNo), // 主站的支付结果页，按订单所属站点跳回（任务 11.3）
+			ReturnURL: service.AdtyPayResultURLForHost(topUp.TradeNo, quote.Business == model.AdtyBusinessOwnerMarginTopup && service.AdtyRequestSiteID(c) == 0), // 主站的支付结果页，按订单所属站点与发起域跳回（任务 11.3）
 		})
 		cancel()
 		if err != nil {

@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useQueryClient } from '@tanstack/react-query'
 import { Megaphone } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -40,6 +41,7 @@ interface WalletProps {
 
 export function Wallet(props: WalletProps) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const siteQuery = useAdtySite()
   const walletNotice = siteQuery.data?.wallet_notice?.trim() ?? ''
   const [user, setUser] = useState<UserWalletData | null>(null)
@@ -116,7 +118,14 @@ export function Wallet(props: WalletProps) {
           <AdtyOnlineTopup
             onSettled={fetchUser}
             afterRechargeSlot={
-              <VoucherRedeemCard onRedeemed={() => void fetchUser()} />
+              <VoucherRedeemCard
+                onRedeemed={() => {
+                  void fetchUser()
+                  void queryClient.invalidateQueries({
+                    queryKey: ['adty-topup'],
+                  })
+                }}
+              />
             }
           />
         </div>

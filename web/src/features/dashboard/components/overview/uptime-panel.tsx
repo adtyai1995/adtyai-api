@@ -300,7 +300,7 @@ export function UptimePanel() {
               <div key={group.groupId || group.categoryName}>
                 <div className='bg-canvas border-b px-3 py-2 sm:px-5'>
                   <div className='flex items-center gap-2'>
-                    <h4 className='text-faint text-[11px] font-semibold tracking-[0.08em] uppercase'>
+                    <h4 className='text-faint text-[11px] font-semibold'>
                       {heading}
                     </h4>
                     <span className='text-muted-foreground/40 font-mono text-xs tabular-nums'>

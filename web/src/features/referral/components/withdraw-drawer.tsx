@@ -73,6 +73,59 @@ type WithdrawDrawerProps = {
   onDone: () => void
 }
 
+function normalizeUnsignedDecimal(raw: string): string | null {
+  const trimmed = raw.trim()
+  if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(trimmed)) return null
+  return trimmed.startsWith('.') ? `0${trimmed}` : trimmed
+}
+
+function hasAtMostDecimalPlaces(raw: string, maxDecimals: number): boolean {
+  const normalized = normalizeUnsignedDecimal(raw)
+  if (!normalized) return false
+  const dot = normalized.indexOf('.')
+  return dot < 0 || normalized.length - dot - 1 <= maxDecimals
+}
+
+function formatFixedTwoDecimals(raw: string): string {
+  const normalized = normalizeUnsignedDecimal(raw)
+  if (!normalized) return ''
+  const [whole = '0', frac = ''] = normalized.split('.')
+  const cleanWhole = whole.replace(/^0+(?=\d)/, '') || '0'
+  return `${cleanWhole}.${frac.padEnd(2, '0').slice(0, 2)}`
+}
+
+function parseScaledDecimal(
+  raw: string
+): { digits: bigint; scale: number } | null {
+  const normalized = normalizeUnsignedDecimal(raw)
+  if (!normalized) return null
+  const dot = normalized.indexOf('.')
+  if (dot < 0) return { digits: BigInt(normalized), scale: 0 }
+  const whole = normalized.slice(0, dot)
+  const frac = normalized.slice(dot + 1)
+  return { digits: BigInt(`${whole}${frac}`), scale: frac.length }
+}
+
+/** Exact scaled-integer CNY calculation (half-up to 2 decimals) without float drift. */
+function computeCnyPreview(usdRaw: string, rateRaw: string): string {
+  const usd = parseScaledDecimal(usdRaw)
+  const rate = parseScaledDecimal(rateRaw)
+  if (!usd || !rate || usd.digits <= 0n || rate.digits <= 0n) return ''
+  const product = usd.digits * rate.digits
+  const totalScale = usd.scale + rate.scale
+  let cents: bigint
+  if (totalScale <= 2) {
+    cents = product * 10n ** BigInt(2 - totalScale)
+  } else {
+    const divisor = 10n ** BigInt(totalScale - 2)
+    const half = divisor / 2n
+    cents = (product + half) / divisor
+  }
+  const whole = cents / 100n
+  const frac = (cents % 100n).toString().padStart(2, '0')
+  return `${whole.toString()}.${frac}`
+}
+
 export function WithdrawDrawer(props: WithdrawDrawerProps) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
@@ -93,6 +146,7 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
   const [qrUrl, setQrUrl] = useState('')
   const [cnyRate, setCnyRate] = useState(profile.cny_rate)
   const [confirmingUsdt, setConfirmingUsdt] = useState(false)
+  const [confirmingAlipay, setConfirmingAlipay] = useState(false)
   const [rateChange, setRateChange] = useState<RateChange | null>(null)
   const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey)
   const qrFileRef = useRef<HTMLInputElement | null>(null)
@@ -121,16 +175,28 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
   }, [enabledNetworks, network])
 
   const available = profile.account.available_amount
-  const value = Number(amount)
+  const trimmedAmount = amount.trim()
+  const value = Number(trimmedAmount)
   const fee = profile.usdt_withdraw_fee ?? 0
   const minimum = profile.min_withdraw_usd ?? 0
   const isAlipay = target === 'alipay'
   const cnyAmount =
-    isAlipay && value > 0 ? (value * Number(cnyRate)).toFixed(2) : ''
+    isAlipay && hasAtMostDecimalPlaces(trimmedAmount, 2) && value > 0
+      ? computeCnyPreview(trimmedAmount, cnyRate)
+      : ''
   const net = usdtNetAmount(value, fee)
 
   const validate = (): string => {
-    if (!(value > 0)) return t('Enter a withdrawal amount')
+    if (!(value > 0) || !Number.isFinite(value)) {
+      return t('Enter a withdrawal amount')
+    }
+    if (target === 'usdt') {
+      if (!hasAtMostDecimalPlaces(trimmedAmount, 6)) {
+        return t('Amount can have at most 6 decimal places')
+      }
+    } else if (!hasAtMostDecimalPlaces(trimmedAmount, 2)) {
+      return t('Amount can have at most 2 decimal places')
+    }
     if (value > available) return t('Not enough withdrawable commission')
     if (target !== 'balance' && value < minimum) {
       return t('The minimum withdrawal is ${{amount}}', { amount: minimum })
@@ -174,7 +240,9 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
       }
       return createReferralWithdrawal({
         amount:
-          target === 'usdt' ? formatUsdtAmount(value) : value.toFixed(2),
+          target === 'usdt'
+            ? formatUsdtAmount(trimmedAmount)
+            : formatFixedTwoDecimals(trimmedAmount),
         account_type: target,
         account_network: target === 'usdt' ? network : undefined,
         account_no: accountNo,
@@ -213,6 +281,10 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
       setConfirmingUsdt(true)
       return
     }
+    if (isAlipay) {
+      setConfirmingAlipay(true)
+      return
+    }
     submit.mutate(cnyRate)
   }
 
@@ -228,6 +300,7 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
           </SheetDescription>
         </SheetHeader>
         <form
+          noValidate
           className={sideDrawerFormClassName()}
           onSubmit={(event) => {
             event.preventDefault()
@@ -438,6 +511,36 @@ export function WithdrawDrawer(props: WithdrawDrawerProps) {
         handleConfirm={() => {
           setConfirmingUsdt(false)
           submit.mutate('')
+        }}
+      />
+      <ConfirmDialog
+        open={confirmingAlipay}
+        onOpenChange={setConfirmingAlipay}
+        title={t('Confirm the Alipay withdrawal')}
+        desc={
+          <div className='space-y-2 text-sm'>
+            <p className='tabular-nums'>
+              {formatUsd(value, locale)} ·{' '}
+              {t('1 USD = {{rate}} CNY', { rate: cnyRate })}
+            </p>
+            <p data-testid='alipay-cny' className='font-medium tabular-nums'>
+              {t('You receive ¥{{cny}}', { cny: cnyAmount || '0.00' })}
+            </p>
+            <p className='break-all'>
+              {[payee.trim(), alipayAccount.trim()].filter(Boolean).join(' · ')}
+            </p>
+            <p className='text-destructive'>
+              {t(
+                'Double-check the payee name and Alipay account before submitting.'
+              )}
+            </p>
+          </div>
+        }
+        confirmText={t('Confirm')}
+        isLoading={submit.isPending}
+        handleConfirm={() => {
+          setConfirmingAlipay(false)
+          submit.mutate(cnyRate)
         }}
       />
       <ConfirmDialog

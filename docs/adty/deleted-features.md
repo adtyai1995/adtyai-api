@@ -302,7 +302,7 @@ P6 移植旧项目前端时，不要把 `?aff=` 和 `features/auth/lib/storage.t
 
 ## 上游充值折扣编辑器（任务 4.3）
 
-后台「支付设置」里的「充值折扣」换成「充值加赠」，`amount-discount-dialog.tsx`、`amount-discount-visual-editor.tsx` 没有引用了，删掉。上游配置项 `payment_setting.amount_discount` 保留（后端上游代码还读它，我们的报价不用它）。
+后台「支付设置」里的「充值折扣」换成「充值赠送」（原称充值加赠），`amount-discount-dialog.tsx`、`amount-discount-visual-editor.tsx` 没有引用了，删掉。上游配置项 `payment_setting.amount_discount` 保留（后端上游代码还读它，我们的报价不用它）。
 
 ## 上游默认首页（任务 8.3）
 
@@ -546,7 +546,7 @@ P6 移植旧项目前端时，不要把 `?aff=` 和 `features/auth/lib/storage.t
 - `users.stripe_customer` 列：上游表结构，启动迁移照旧，不写删列。
 - 下单链路里的优惠码字段和拒绝逻辑（`AdtyPromoInput`、`ErrAdtyPromoRetired`、`PromoCodeUserRateLimit`）以及 `adty_promo_codes`、`adty_promo_redemptions` 表：随后在「下单流程里的优惠码」一节删除。
 - 上游单通道易支付的设置（`PayAddress`、`EpayId`、`EpayKey`、`PayMethods`）和 `MigrateLegacyAdtyEpayChannel`：随后在下一节删除。
-- `/api/uptime/status` 和 Uptime Kuma 设置：后台仪表盘还在用。
+- `/api/uptime/status` 和探活配置：后台仪表盘与渠道状态页还在用（后续 R-33 改由内置轻量模型/图片探活引擎驱动，不再轮询外部 Uptime Kuma）。
 - 两份语言包里的旧文案：按约定 B 只增不删。
 
 ## 上游单通道易支付的旧设置和「支付方式」编辑器（2026-11-16）
@@ -623,3 +623,32 @@ P6 移植旧项目前端时，不要把 `?aff=` 和 `features/auth/lib/storage.t
 - 删除 `GET`/`POST /api/adty/admin/reseller/invite-codes`、`PUT`/`DELETE /api/adty/admin/reseller/invite-codes/:id` 和对应的处理函数、访问令牌规则；`router/adty_deleted_routes_test.go` 盯着它们不许回来。
 - 删除只给它们用的权限动作 `adty_site:settings_create`、`adty_site:settings_delete`；旧的 `adty_site:settings` 迁移时只展开成 `settings_read`。`settings_read`、`settings` 的说明不再提邀请码。
 - 保留：`adty_site_invite_codes` 表和历史行、`ApplyAdtySite` 与生成邀请码的服务函数（自助开站退役记录要求保留历史数据，测试用它们造历史数据）。
+
+## R-32 至 R-37 产品迭代退役与精简摘要（2026-11-24 – 2026-11-25）
+
+R-32 至 R-37 在统一全平台、分站经营、定价、监控、客服与认证链路过程中集中退役了一批旧入口与冗余模块（完整删除文件路径见 [deleted-paths.txt](deleted-paths.txt)）：
+
+- **R-32**：
+  - 退役分组健康监控与 `/group-health*` 路由（`/api/adty/groups/health`、`GET`/`PUT /api/adty/admin/group-health`、`POST /api/adty/admin/group-health/probe` 返 410 Gone）；
+  - 退役前端 Passkey 登录/注册/设置 UI（后端兼容路由默认保持关闭）、性能指标监控（`perf-metrics`）、对话预设（`chat`）、绘图页（`drawing`）、系统更新/版本角标、内容设置 API 信息面板（`console_setting.api_info*`）；
+  - 退役平台级分站客户条款（`site_customer_terms`，`POST /api/adty/site/terms/accept` 返 410 Gone）与分站开站协议；
+  - 退役站长自用消费与 API 能力（`owner_self_use_topup`、站长自用 Key、收益转自用余额、站长本人消费码，写入口返 410 Gone）以及从主站已有用户挑选 `user_id` 开站的候选查询/建站入口（返 410 Gone），改为由 Root 创建全新独立纯管理端站长账号；
+  - 退役 API Key 的 `auto` / 空分组选择，强制绑定具体分组。
+- **R-33**：
+  - 退役外部 Uptime Kuma 轮询，切换为内置轻量模型/图片探活引擎（`console_setting.uptime_kuma_base_url` 仅留历史兼容字段，不再对外发起轮询）；
+  - 模型广场 `/pricing` 移除连通性展示（连通性集中展示于渠道状态页 `/model-status` 与控制台概览）。
+- **R-34**：
+  - 退役推广合作伙伴申请与审批入口（`POST /api/user/referral/apply`、`POST /api/user/admin/referral/affiliates/:user_id/partner` 返 410 Gone）；
+  - 退役站长收益支付宝提现及支付宝收款码上传（`POST /api/adty/site/withdrawals/qr` 返 410 Gone），站长收益提现统一仅支持 USDT。
+- **R-35**：
+  - 退役 Root 对分站支付方式加赠的逐站授权接口（`PUT /api/adty/admin/sites/:id/bonus-methods` / `site_method_auth` 返 410 Gone），分站直接按主站已启用支付方式配置本站充值赠送比例；
+  - 退役站长手动给客户/团队增加余额接口（`POST /api/adty/site/customers/:id/balance`、`POST /api/adty/site/teams/:id/balance` 返 410 Gone）与分站员工调额申请（`customers.balance_request` 返 410 Gone），统一通过站点兑换码（`site_customer`）发放额度；
+  - 退役推广管理 `/admin-referral` 的「计佣任务」「佣金流水」前端页签（收敛为提现审核、推广员、佣金明细、后台操作记录、设置五页签）及旧侧滑站点详情抽屉（`site-detail-sheet`）。
+- **R-36**：
+  - 退役主站推广微信提现入口（仅保留转入余额、USDT、支付宝，且受 `withdraw_methods` / `withdraw_usdt_networks` 配置控制）；
+  - 统一前台与后台文案为「充值赠送」（原称充值加赠），保证金用途兑换码 `site_margin` 统一称「保证金充值码」。
+- **R-37**：
+  - 退役平台托管 Resend 发件域名创建入口（`POST /api/adty/site/sender-domain` 返 410 Gone），分站发件改用平台默认发件、自有 Resend API Key 或自定义 SMTP（旧表及只读/删除清理接口保留历史兼容）；
+  - 退役分站 `theme_color` 与 `tagline` 品牌覆写（服务端剥离并不在 `/api/status` 返回 `theme_color`）；
+  - 退役系统设置运营页中的余额不足提醒前端表单状态（`QuotaRemindEnabled`/`QuotaRemindThreshold`）。
+- **保留兼容**：历史订单、流水、日结单、已签发兑换码、历史自用/调额/托管发件域名记录与后端兼容只读查询仍保留，不改写或删除历史资金与审计数据；前端语言包旧键按约定 B 只增不删。

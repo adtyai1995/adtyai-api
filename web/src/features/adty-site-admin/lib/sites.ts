@@ -44,8 +44,6 @@ const BRAND_KEYS: ReadonlyArray<keyof AdminSiteBrand> = [
   'title',
   'logo_url',
   'favicon_url',
-  'theme_color',
-  'tagline',
   'notice',
   'support_contact',
   'tawk_property_id',

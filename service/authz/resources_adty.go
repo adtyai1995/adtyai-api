@@ -82,7 +82,7 @@ var adtyResources = []ResourceDefinition{
 		Actions: []ActionDefinition{
 			{Action: ActionRead, LabelKey: "View users", DescriptionKey: "View user lists, details and balance history."},
 			{Action: ActionCreate, LabelKey: "Create users", DescriptionKey: "Create user accounts. Administrator appointments remain Root-only."},
-			{Action: ActionWrite, LabelKey: "Edit users", DescriptionKey: "Edit profiles, enable or disable, reset 2FA and Passkeys, unbind sign-in methods and change passwords."},
+			{Action: ActionWrite, LabelKey: "Edit users", DescriptionKey: "Edit profiles, enable or disable, reset 2FA, unbind sign-in methods and change passwords."},
 			{Action: ActionGroup, LabelKey: "Change user groups", DescriptionKey: "Move users to another group. The group decides the price."},
 			{Action: ActionQuota, LabelKey: "Adjust balances", DescriptionKey: "Add to or deduct from user balances."},
 			{Action: ActionDelete, LabelKey: "Delete users", DescriptionKey: "Delete user accounts."},

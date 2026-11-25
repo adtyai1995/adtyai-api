@@ -386,7 +386,33 @@ func GetAuditLogs(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	page.SetItems(logs)
+	type auditLogView struct {
+		*model.AuditLog
+		ObjectUsername string `json:"object_username,omitempty"`
+	}
+	lookupIDs := make([]int, 0, len(logs))
+	objectUserIDs := make([]int, len(logs))
+	for i, entry := range logs {
+		if entry == nil {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(entry.ObjectType)) {
+		case "user", "customer", "site_customer", "staff", "site_staff", "site.staff":
+			if uid, parseErr := strconv.Atoi(strings.TrimSpace(entry.ObjectId)); parseErr == nil && uid > 0 {
+				objectUserIDs[i] = uid
+				lookupIDs = append(lookupIDs, uid)
+			}
+		}
+	}
+	usernames := model.LookupUsernamesByIDs(model.DB, lookupIDs)
+	views := make([]auditLogView, len(logs))
+	for i, entry := range logs {
+		views[i] = auditLogView{AuditLog: entry}
+		if uid := objectUserIDs[i]; uid > 0 {
+			views[i].ObjectUsername = usernames[uid]
+		}
+	}
+	page.SetItems(views)
 	page.SetTotal(int(total))
 	common.ApiSuccess(c, page)
 }

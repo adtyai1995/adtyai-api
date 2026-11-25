@@ -195,7 +195,7 @@ export function CapabilityBento() {
           >
             <p className='mt-5 text-[15px] leading-[1.7] text-white/85'>
               {t(
-                'Open a ticket from the console, attach screenshots, and follow the replies in the Ticket Center.'
+                'Open a ticket from the console, attach screenshots, and follow the replies in the Support Center.'
               )}
             </p>
             <p className='mt-auto pt-10 text-[clamp(3rem,5vw,4.25rem)] leading-none font-extrabold tracking-[-0.04em]'>

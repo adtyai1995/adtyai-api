@@ -76,7 +76,7 @@ var accessTokenStaticResources = []AccessTokenResource{
 		accessTokenEdit("Top up."),
 	}},
 	{Resource: "account_security", LabelKey: "Account security", group: AccessTokenGroupPersonal, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
-		accessTokenView("View Passkey, two-factor, and sign-in binding status."),
+		accessTokenView("View two-factor and sign-in binding status."),
 		accessTokenEdit("Includes changes that require security verification, such as password, two-factor settings, and account deletion."),
 	}},
 	{Resource: AccessTokenResourceSiteOwnerCustomer, LabelKey: "Site customers", group: AccessTokenGroupOwner, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
@@ -146,7 +146,7 @@ func AccessTokenOwnerRouteScope(method, fullPath string) string {
 	case "/api/adty/site", "/api/adty/site/apply", "/api/adty/site/terms/accept":
 		return ""
 	}
-	if strings.HasPrefix(fullPath, "/api/adty/site/staff") || strings.HasPrefix(fullPath, "/api/adty/site/balance-requests") {
+	if strings.HasPrefix(fullPath, "/api/adty/site/staff") {
 		return ""
 	}
 	var rest string

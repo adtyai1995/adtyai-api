@@ -24,15 +24,9 @@ import { useTranslation } from 'react-i18next'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
@@ -118,7 +112,7 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
   }
 
   return (
-    <Card
+    <div
       id={
         props.business === 'owner_margin_topup'
           ? 'margin-topup-history'
@@ -126,13 +120,10 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
       }
       className='scroll-mt-4'
     >
-      <CardHeader>
-        <CardTitle>{historyTitle}</CardTitle>
-        <CardDescription>
-          {t('Orders paid after they expire are still credited.')}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className='flex flex-col gap-3'>
+      <ContentSection
+        title={historyTitle}
+        description={t('Orders paid after they expire are still credited.')}
+      >
         <div className='flex flex-wrap items-end gap-2'>
           <div className='flex flex-col gap-1'>
             <Label htmlFor={`${fieldId}-status`}>{t('Status')}</Label>
@@ -379,7 +370,7 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
             </Button>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </ContentSection>
+    </div>
   )
 }

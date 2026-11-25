@@ -1454,10 +1454,16 @@ func cancelAdtyVoucherTx(tx *gorm.DB, voucher *model.AdtyVoucher) error {
 }
 
 func SetAdtyVoucherIssuanceLimit(actorId int, limit decimal.Decimal) error {
+	_, err := SetAdtyVoucherIssuanceLimitWithAudit(actorId, limit)
+	return err
+}
+
+func SetAdtyVoucherIssuanceLimitWithAudit(actorId int, limit decimal.Decimal) (string, error) {
 	if !limit.IsPositive() {
-		return common.NewMessage("Invalid parameters")
+		return "", common.NewMessage("Invalid parameters")
 	}
-	return model.DB.Transaction(func(tx *gorm.DB) error {
+	var auditEvent *model.AuditLog
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		actor, err := lockAdtyVoucherUser(tx, actorId)
 		if err != nil {
 			return err
@@ -1472,8 +1478,23 @@ func SetAdtyVoucherIssuanceLimit(actorId int, limit decimal.Decimal) error {
 		if limit.LessThan(row.FrozenUSD.Add(row.SpentUSD)) {
 			return ErrAdtyVoucherLimit
 		}
-		return tx.Model(row).Update("limit_usd", limit).Error
+		before := map[string]any{"limit_usd": row.LimitUSD.String()}
+		after := map[string]any{"limit_usd": limit.String()}
+		if err := tx.Model(row).Update("limit_usd", limit).Error; err != nil {
+			return err
+		}
+		var auditErr error
+		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, actorId, 0, "voucher_limit", "global", "adty.voucher.limit.update", "", "", before, after, model.AuditResultSuccess)
+		return auditErr
 	})
+	if err != nil {
+		return "", err
+	}
+	if auditEvent != nil {
+		deliverAdtyCommittedAudit(*auditEvent)
+		return auditEvent.EventId, nil
+	}
+	return "", nil
 }
 
 func adtyVoucherQuota(amount decimal.Decimal) (int64, error) {

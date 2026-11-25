@@ -33,9 +33,16 @@ type loginFailure struct {
 	until time.Time
 }
 
+const (
+	loginFailureSweepThreshold = 10000
+	loginFailureSweepInterval  = 30 * time.Second
+	maxLoginFailureEntries     = 50000
+)
+
 var (
-	loginFailuresMu sync.Mutex
-	loginFailures   = map[string]loginFailure{}
+	loginFailuresMu        sync.Mutex
+	loginFailures          = map[string]loginFailure{}
+	loginFailuresLastSweep time.Time
 )
 
 // LoginLockUserKey returns the canonical per-account lockout identifier.
@@ -118,17 +125,32 @@ func recordLoginFailureScoped(key string) error {
 	}
 	loginFailuresMu.Lock()
 	defer loginFailuresMu.Unlock()
+	now := time.Now()
 	entry := loginFailures[key]
-	if time.Now().After(entry.until) {
+	if now.After(entry.until) {
 		entry = loginFailure{}
 	}
 	entry.count++
-	entry.until = time.Now().Add(LoginLockWindow)
+	entry.until = now.Add(LoginLockWindow)
 	loginFailures[key] = entry
-	if len(loginFailures) > 10000 {
+	if len(loginFailures) > loginFailureSweepThreshold && (now.Sub(loginFailuresLastSweep) >= loginFailureSweepInterval || len(loginFailures) > maxLoginFailureEntries) {
+		loginFailuresLastSweep = now
 		for name, stored := range loginFailures {
-			if time.Now().After(stored.until) {
+			if now.After(stored.until) {
 				delete(loginFailures, name)
+			}
+		}
+		if len(loginFailures) > maxLoginFailureEntries {
+			excess := len(loginFailures) - maxLoginFailureEntries
+			for name := range loginFailures {
+				if name == key {
+					continue
+				}
+				delete(loginFailures, name)
+				excess--
+				if excess <= 0 {
+					break
+				}
 			}
 		}
 	}
@@ -183,4 +205,5 @@ func ResetLoginFailuresForTest() {
 	loginFailuresMu.Lock()
 	defer loginFailuresMu.Unlock()
 	loginFailures = map[string]loginFailure{}
+	loginFailuresLastSweep = time.Time{}
 }

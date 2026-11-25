@@ -32,18 +32,11 @@ import { StaticDataTable } from '@/components/data-table/static/static-data-tabl
 import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { StatusBadge, type StatusVariant } from '@/components/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import {
   Collapsible,
   CollapsibleContent,
@@ -98,9 +91,11 @@ const COMMISSION_STATUS_OPTIONS = [
   'clawed_back',
 ] as const
 
-function formatSiteRate(raw: string): string {
-  const value = Number(raw)
-  if (!Number.isFinite(value)) return raw || '-'
+function formatSiteRate(raw: string | undefined): string {
+  const trimmed = (raw ?? '').trim()
+  if (trimmed === '') return '-'
+  const value = Number(trimmed)
+  if (!Number.isFinite(value)) return trimmed
   const pct = value <= 1 ? value * 100 : value
   return `${Number(pct.toFixed(4))}%`
 }
@@ -311,134 +306,130 @@ function SiteManualBindingsCard() {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <Card size='sm'>
-        <CardHeader>
-          <CardTitle>{t('Manual invite binding')}</CardTitle>
-          <CardDescription>
-            {t(
-              'Manually bind an inviter and invitee on this site, or review existing one-level invite bindings.'
+      <ContentSection
+        className='border-border border-t pt-6'
+        title={t('Manual invite binding')}
+        description={t(
+          'Manually bind an inviter and invitee on this site, or review existing one-level invite bindings.'
+        )}
+        actions={
+          <CollapsibleTrigger
+            render={<Button type='button' size='sm' variant='outline' />}
+          >
+            {open ? t('Collapse') : t('Expand')}
+            {open ? (
+              <ChevronUp className='size-4' aria-hidden='true' />
+            ) : (
+              <ChevronDown className='size-4' aria-hidden='true' />
             )}
-          </CardDescription>
-          <CardAction>
-            <CollapsibleTrigger
-              render={<Button type='button' size='sm' variant='outline' />}
-            >
-              {open ? t('Collapse') : t('Expand')}
-              {open ? (
-                <ChevronUp className='size-4' aria-hidden='true' />
-              ) : (
-                <ChevronDown className='size-4' aria-hidden='true' />
-              )}
-            </CollapsibleTrigger>
-          </CardAction>
-        </CardHeader>
-        <CollapsibleContent>
-          <CardContent className='flex flex-col gap-4 border-t pt-4'>
-            <form
-              className='flex flex-wrap items-end gap-3'
-              onSubmit={(event) => {
-                event.preventDefault()
-                if (
-                  bind.isPending ||
-                  !rules.data?.rate_configured ||
-                  inviterId.trim() === '' ||
-                  inviteeId.trim() === ''
-                ) {
-                  return
-                }
-                bind.mutate()
-              }}
-            >
-              <div className='flex min-w-40 flex-1 flex-col gap-1'>
-                <Label htmlFor='site-inviter'>{t('Inviter')}</Label>
-                <Input
-                  id='site-inviter'
-                  value={inviterId}
-                  inputMode='numeric'
-                  placeholder={t('User ID')}
-                  onChange={(event) => setInviterId(event.target.value)}
-                />
-              </div>
-              <div className='flex min-w-40 flex-1 flex-col gap-1'>
-                <Label htmlFor='site-invitee'>{t('Invitee')}</Label>
-                <Input
-                  id='site-invitee'
-                  value={inviteeId}
-                  inputMode='numeric'
-                  placeholder={t('User ID')}
-                  onChange={(event) => setInviteeId(event.target.value)}
-                />
-              </div>
-              <Button
-                type='submit'
-                variant='outline'
-                disabled={
-                  bind.isPending ||
-                  !rules.data?.rate_configured ||
-                  inviterId.trim() === '' ||
-                  inviteeId.trim() === ''
-                }
-              >
-                {t('Bind invite')}
-              </Button>
-            </form>
-            {rules.isSuccess && !rules.data.rate_configured && (
-              <p className='text-muted-foreground text-xs'>
-                {t('Set the invite rate first before enabling.')}
-              </p>
-            )}
-
-            {invites.isPending && <LoadingState />}
-            {invites.isError && (
-              <ErrorState onRetry={() => void invites.refetch()} />
-            )}
-            {invites.isSuccess && (
-              <StaticDataTable
-                data={invites.data}
-                getRowKey={(row) => String(row.id)}
-                tableProps={{ 'aria-label': t('One-level invites') }}
-                emptyContent={
-                  <EmptyState
-                    className='min-h-24'
-                    title={t('No invites yet')}
-                  />
-                }
-                columns={[
-                  {
-                    id: 'inviter',
-                    header: t('Inviter'),
-                    cellClassName: 'tabular-nums',
-                    cell: (row) =>
-                      formatUserIdentity(row.inviter_id, row.inviter_username),
-                  },
-                  {
-                    id: 'invitee',
-                    header: t('Invitee'),
-                    cellClassName: 'tabular-nums',
-                    cell: (row) =>
-                      formatUserIdentity(row.invitee_id, row.invitee_username),
-                  },
-                  {
-                    id: 'rate',
-                    header: t('Rate at binding'),
-                    className: 'text-right',
-                    cellClassName: 'text-right tabular-nums',
-                    cell: (row) => formatSiteRate(row.rate),
-                  },
-                  {
-                    id: 'created_at',
-                    header: t('Created at'),
-                    cell: (row) =>
-                      row.created_at > 0
-                        ? formatTimestamp(row.created_at)
-                        : '-',
-                  },
-                ]}
+          </CollapsibleTrigger>
+        }
+      >
+        <CollapsibleContent className='flex flex-col gap-4 pt-2'>
+          <form
+            className='flex flex-wrap items-end gap-3'
+            onSubmit={(event) => {
+              event.preventDefault()
+              if (
+                bind.isPending ||
+                !rules.data?.rate_configured ||
+                inviterId.trim() === '' ||
+                inviteeId.trim() === ''
+              ) {
+                return
+              }
+              bind.mutate()
+            }}
+          >
+            <div className='flex min-w-40 flex-1 flex-col gap-1'>
+              <Label htmlFor='site-inviter'>{t('Inviter')}</Label>
+              <Input
+                id='site-inviter'
+                value={inviterId}
+                inputMode='numeric'
+                placeholder={t('User ID')}
+                onChange={(event) => setInviterId(event.target.value)}
               />
-            )}
-          </CardContent>
+            </div>
+            <div className='flex min-w-40 flex-1 flex-col gap-1'>
+              <Label htmlFor='site-invitee'>{t('Invitee')}</Label>
+              <Input
+                id='site-invitee'
+                value={inviteeId}
+                inputMode='numeric'
+                placeholder={t('User ID')}
+                onChange={(event) => setInviteeId(event.target.value)}
+              />
+            </div>
+            <Button
+              type='submit'
+              variant='outline'
+              disabled={
+                bind.isPending ||
+                !rules.data?.rate_configured ||
+                inviterId.trim() === '' ||
+                inviteeId.trim() === ''
+              }
+            >
+              {t('Bind invite')}
+            </Button>
+          </form>
+          {rules.isSuccess && !rules.data.rate_configured && (
+            <p className='text-muted-foreground text-xs'>
+              {t('Set the invite rate first before enabling.')}
+            </p>
+          )}
+
+          {invites.isPending && <LoadingState />}
+          {invites.isError && (
+            <ErrorState onRetry={() => void invites.refetch()} />
+          )}
+          {invites.isSuccess && (
+            <StaticDataTable
+              data={invites.data}
+              getRowKey={(row) => String(row.id)}
+              tableProps={{ 'aria-label': t('One-level invites') }}
+              emptyContent={
+                <EmptyState
+                  className='min-h-24'
+                  title={t('No invites yet')}
+                />
+              }
+              columns={[
+                {
+                  id: 'inviter',
+                  header: t('Inviter'),
+                  cellClassName: 'tabular-nums',
+                  cell: (row) =>
+                    formatUserIdentity(row.inviter_id, row.inviter_username),
+                },
+                {
+                  id: 'invitee',
+                  header: t('Invitee'),
+                  cellClassName: 'tabular-nums',
+                  cell: (row) =>
+                    formatUserIdentity(row.invitee_id, row.invitee_username),
+                },
+                {
+                  id: 'rate',
+                  header: t('Rate at binding'),
+                  className: 'text-right',
+                  cellClassName: 'text-right tabular-nums',
+                  cell: (row) => formatSiteRate(row.rate),
+                },
+                {
+                  id: 'created_at',
+                  header: t('Created at'),
+                  cell: (row) =>
+                    row.created_at > 0
+                      ? formatTimestamp(row.created_at)
+                      : '-',
+                },
+              ]}
+            />
+          )}
         </CollapsibleContent>
-      </Card>
+      </ContentSection>
     </Collapsible>
   )
 }

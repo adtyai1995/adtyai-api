@@ -30,9 +30,11 @@ type adtyMethodBonusBody struct {
 // 合并基准在事务内用行锁从库里读（merge 收到的 current），不取本进程的内存
 // 快照：整串 JSON 覆盖写时，取内存当基准会让另一个副本刚写入的规则被静默抹掉
 // （ISS-R4-0099）。
-func saveAdtyBonusMethodOption(c *gin.Context, key, action string, params map[string]any, after any, merge func(current string) (string, error), authorize ...func(*gorm.DB) error) bool {
-	event := prepareManageAuditChange(c, 0, action, params, nil, after, "", "")
-	var value string
+func saveAdtyBonusMethodOption(c *gin.Context, siteID int, key, action string, params map[string]any, snapshotBefore func(current string) any, after any, merge func(current string) (string, error), authorize ...func(*gorm.DB) error) bool {
+	var (
+		event model.AuditLog
+		value string
+	)
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		for _, check := range authorize {
 			if err := check(tx); err != nil {
@@ -43,6 +45,10 @@ func saveAdtyBonusMethodOption(c *gin.Context, key, action string, params map[st
 		if err != nil {
 			return err
 		}
+		var before any
+		if snapshotBefore != nil {
+			before = snapshotBefore(current)
+		}
 		merged, err := merge(current)
 		if err != nil {
 			return err
@@ -51,6 +57,7 @@ func saveAdtyBonusMethodOption(c *gin.Context, key, action string, params map[st
 			return err
 		}
 		value = merged
+		event = prepareManageAuditChange(c, siteID, action, params, before, after, "", "")
 		return model.AppendAuditIntentTx(tx, event)
 	})
 	if err != nil {
@@ -103,9 +110,16 @@ func PutAdtyMainMethodBonus(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if !saveAdtyBonusMethodOption(c, adty_setting.TopupSettingKeyMethodBonus, "adty.topup.method_bonus.update",
+	beforeFn := func(current string) any {
+		var rules map[string]adty_setting.MethodBonusRule
+		_ = common.UnmarshalJsonStr(current, &rules)
+		prev := rules[body.Method]
+		return map[string]any{"method": body.Method, "enabled": prev.Enabled, "rate": prev.Rate}
+	}
+	if !saveAdtyBonusMethodOption(c, 0, adty_setting.TopupSettingKeyMethodBonus, "adty.topup.method_bonus.update",
 		map[string]any{"method": body.Method, "enabled": body.Enabled, "rate": body.Rate},
-		map[string]any{"method": body.Method, "enabled": body.Enabled}, merge) {
+		beforeFn,
+		map[string]any{"method": body.Method, "enabled": body.Enabled, "rate": body.Rate}, merge) {
 		return
 	}
 	common.ApiSuccess(c, adty_setting.MainMethodBonusMap())
@@ -151,8 +165,14 @@ func PutAdtySiteBonusMarginFill(c *gin.Context) {
 		}
 		return adty_setting.MergeSiteBonusMarginFill(current, siteID, *body.Enabled)
 	}
-	if !saveAdtyBonusMethodOption(c, adty_setting.TopupSettingKeySiteBonusMarginFill, "adty.topup.site_bonus_margin_fill.update",
+	beforeFn := func(current string) any {
+		var flags map[string]bool
+		_ = common.UnmarshalJsonStr(current, &flags)
+		return map[string]any{"site_id": siteID, "enabled": flags[strconv.Itoa(siteID)]}
+	}
+	if !saveAdtyBonusMethodOption(c, siteID, adty_setting.TopupSettingKeySiteBonusMarginFill, "adty.topup.site_bonus_margin_fill.update",
 		map[string]any{"site_id": siteID, "enabled": *body.Enabled},
+		beforeFn,
 		map[string]any{"site_id": siteID, "enabled": *body.Enabled}, merge, func(tx *gorm.DB) error {
 			txRef = tx
 			return nil
@@ -211,9 +231,19 @@ func PutAdtySiteMethodBonus(c *gin.Context) {
 		}
 		return adty_setting.MergeSiteMethodBonus(current, site.Id, body.Method, body.Enabled, body.Rate)
 	}
-	if !saveAdtyBonusMethodOption(c, adty_setting.TopupSettingKeySiteMethodBonus, "adty.topup.site_method_bonus.update",
+	beforeFn := func(current string) any {
+		var bySite map[string]map[string]adty_setting.MethodBonusRule
+		_ = common.UnmarshalJsonStr(current, &bySite)
+		var prev adty_setting.MethodBonusRule
+		if siteRules := bySite[strconv.Itoa(site.Id)]; siteRules != nil {
+			prev = siteRules[body.Method]
+		}
+		return map[string]any{"site_id": site.Id, "method": body.Method, "enabled": prev.Enabled, "rate": prev.Rate}
+	}
+	if !saveAdtyBonusMethodOption(c, site.Id, adty_setting.TopupSettingKeySiteMethodBonus, "adty.topup.site_method_bonus.update",
 		map[string]any{"method": body.Method, "enabled": body.Enabled, "rate": body.Rate, "site_id": site.Id},
-		map[string]any{"method": body.Method, "enabled": body.Enabled}, merge, func(tx *gorm.DB) error {
+		beforeFn,
+		map[string]any{"site_id": site.Id, "method": body.Method, "enabled": body.Enabled, "rate": body.Rate}, merge, func(tx *gorm.DB) error {
 			txRef = tx
 			return nil
 		}) {

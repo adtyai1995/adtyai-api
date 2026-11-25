@@ -137,6 +137,7 @@ export function PricingPanel(props: { site: OwnerSite }) {
       >
         <div className='grid gap-8 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]'>
           <form
+            noValidate
             className='flex flex-col gap-3'
             onSubmit={(event) => {
               event.preventDefault()
@@ -154,7 +155,7 @@ export function PricingPanel(props: { site: OwnerSite }) {
                 type='number'
                 min={MIN_RETAIL_MULTIPLIER}
                 max={MAX_RETAIL_MULTIPLIER}
-                step='0.01'
+                step='any'
                 inputMode='decimal'
                 value={retailMultiplier}
                 disabled={closing}

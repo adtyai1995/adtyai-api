@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -43,9 +43,24 @@ export function TicketImagePolicySettings(props: {
   embedded?: boolean
 }) {
   const { t } = useTranslation()
-  const [draft, setDraft] = useState(props.policy)
+  const { max_bytes, max_count, max_total, max_side, max_pixels } = props.policy
+  const [draft, setDraft] = useState<TicketPolicy>(() => ({
+    max_bytes,
+    max_count,
+    max_total,
+    max_side,
+    max_pixels,
+  }))
+  const [dirty, setDirty] = useState(false)
   const [pending, setPending] = useState(false)
   const [feedback, setFeedback] = useState('')
+
+  useEffect(() => {
+    if (!dirty) {
+      setDraft({ max_bytes, max_count, max_total, max_side, max_pixels })
+    }
+  }, [dirty, max_bytes, max_count, max_total, max_side, max_pixels])
+
   async function save() {
     setPending(true)
     setFeedback('')
@@ -55,6 +70,7 @@ export function TicketImagePolicySettings(props: {
         draft
       )
       requireServerSuccess(response.data)
+      setDirty(false)
       await props.onSaved()
       setFeedback(t('Saved'))
     } catch (cause) {
@@ -79,9 +95,10 @@ export function TicketImagePolicySettings(props: {
             required
             min={1}
             value={draft[key]}
-            onChange={(e) =>
+            onChange={(e) => {
+              setDirty(true)
               setDraft({ ...draft, [key]: Number(e.target.value) })
-            }
+            }}
           />
         </Label>
       ))}

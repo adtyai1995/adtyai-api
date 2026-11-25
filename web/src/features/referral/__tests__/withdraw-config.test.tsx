@@ -277,6 +277,7 @@ describe('referral withdraw config helpers (R-36 #1)', () => {
     }) as HTMLButtonElement
     expect(submitBtn.disabled).toBe(false)
     fireEvent.click(submitBtn)
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }))
 
     await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(1))
     expect(postSpy.mock.calls[0][0]).toBe('/api/user/referral/withdrawals')

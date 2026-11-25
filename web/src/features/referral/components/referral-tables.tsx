@@ -17,11 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { ExternalLink } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
+import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { StatusBadge } from '@/components/status-badge'
@@ -135,15 +137,74 @@ function withdrawalTarget(row: ReferralWithdrawal): string {
   return [row.account_name, row.account_no].filter(Boolean).join(' · ')
 }
 
+type ReferralWithdrawalRow = ReferralWithdrawal & {
+  can_cancel?: boolean
+  cancel_deadline?: number
+  cancel_reason?: string
+}
+
+function resolveCancelDeadline(
+  row: ReferralWithdrawalRow,
+  cancelWindowMinutes: number
+): number {
+  if (typeof row.cancel_deadline === 'number' && row.cancel_deadline > 0) {
+    return row.cancel_deadline
+  }
+  if (row.status === 'pending' && cancelWindowMinutes > 0) {
+    return row.submitted_at + cancelWindowMinutes * 60
+  }
+  return 0
+}
+
+function canCancelWithdrawalRow(
+  row: ReferralWithdrawalRow,
+  cancelWindowMinutes: number,
+  nowSeconds: number
+): boolean {
+  if (row.status !== 'pending') return false
+  if (typeof row.can_cancel === 'boolean') {
+    if (!row.can_cancel) return false
+    const deadline = row.cancel_deadline ?? 0
+    return deadline <= 0 || nowSeconds < deadline
+  }
+  const deadline = resolveCancelDeadline(row, cancelWindowMinutes)
+  return deadline > 0 && nowSeconds < deadline
+}
+
 export function WithdrawalTable(props: { cancelWindowMinutes: number }) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
+  const [previewProofUrl, setPreviewProofUrl] = useState<string | null>(null)
+  const [nowSeconds, setNowSeconds] = useState(() =>
+    Math.floor(Date.now() / 1000)
+  )
   const query = useQuery({
     queryKey: referralQueryKeys.withdrawals(page),
     queryFn: () => getReferralWithdrawals(page),
   })
+  const rows: ReferralWithdrawalRow[] = query.data?.items ?? []
+  const hasActiveCancelDeadline = rows.some((row) => {
+    if (row.status !== 'pending' || row.can_cancel === false) return false
+    const deadline = resolveCancelDeadline(row, props.cancelWindowMinutes)
+    return deadline > nowSeconds
+  })
+
+  useEffect(() => {
+    if (query.dataUpdatedAt > 0) {
+      setNowSeconds(Math.floor(Date.now() / 1000))
+    }
+  }, [query.dataUpdatedAt])
+
+  useEffect(() => {
+    if (!hasActiveCancelDeadline) return
+    const timer = window.setInterval(() => {
+      setNowSeconds(Math.floor(Date.now() / 1000))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [hasActiveCancelDeadline])
+
   const cancel = useMutation({
     mutationFn: cancelReferralWithdrawal,
     onSuccess: () => {
@@ -155,14 +216,13 @@ export function WithdrawalTable(props: { cancelWindowMinutes: number }) {
   if (query.isError && !query.data) {
     return <ErrorState onRetry={() => void query.refetch()} />
   }
-  const now = Date.now() / 1000
   return (
     <div className='flex flex-col gap-3'>
       {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
       <StaticDataTable
         tableClassName='min-w-[860px]'
         tableProps={{ 'aria-label': t('Withdrawal records') }}
-        data={query.data?.items ?? []}
+        data={rows}
         getRowKey={(row) => String(row.id)}
         emptyContent={
           <EmptyState className='min-h-32' title={t('No withdrawals yet')} />
@@ -223,11 +283,37 @@ export function WithdrawalTable(props: { cancelWindowMinutes: number }) {
           {
             id: 'txn',
             header: t('Transaction hash'),
-            cell: (row) => (
-              <span className='font-mono text-xs break-all'>
-                {row.payment_txn_no || '-'}
-              </span>
-            ),
+            cell: (row) => {
+              const hasTxn = Boolean(row.payment_txn_no)
+              const hasProof = Boolean(row.payment_proof_url)
+              if (!hasTxn && !hasProof) return '-'
+              return (
+                <div className='flex flex-col items-start gap-1.5'>
+                  {hasTxn && (
+                    <span className='font-mono text-xs break-all'>
+                      {row.payment_txn_no}
+                    </span>
+                  )}
+                  {hasProof && (
+                    <button
+                      type='button'
+                      className='inline-flex cursor-zoom-in items-center gap-1.5 rounded-md border bg-white p-1 text-xs transition hover:opacity-80'
+                      aria-label={t('Preview payment proof')}
+                      onClick={() => setPreviewProofUrl(row.payment_proof_url)}
+                    >
+                      <img
+                        src={row.payment_proof_url}
+                        alt={t('Payment proof')}
+                        className='h-10 w-10 rounded object-contain'
+                      />
+                      <span className='text-foreground pr-1'>
+                        {t('Payment proof')}
+                      </span>
+                    </button>
+                  )}
+                </div>
+              )
+            },
           },
           {
             id: 'actions',
@@ -235,8 +321,11 @@ export function WithdrawalTable(props: { cancelWindowMinutes: number }) {
             className: 'text-right',
             cellClassName: 'text-right',
             cell: (row) =>
-              row.status === 'pending' &&
-              now - row.submitted_at < props.cancelWindowMinutes * 60 ? (
+              canCancelWithdrawalRow(
+                row,
+                props.cancelWindowMinutes,
+                nowSeconds
+              ) ? (
                 <Button
                   size='sm'
                   variant='outline'
@@ -255,6 +344,45 @@ export function WithdrawalTable(props: { cancelWindowMinutes: number }) {
         pageSize={REFERRAL_PAGE_SIZE}
         onPageChange={setPage}
       />
+      <Dialog
+        open={previewProofUrl !== null}
+        onOpenChange={(open) => {
+          if (!open) setPreviewProofUrl(null)
+        }}
+        title={t('Payment proof')}
+        contentClassName='sm:max-w-md'
+        footer={
+          previewProofUrl ? (
+            <div className='flex w-full items-center justify-between gap-2'>
+              <a
+                href={previewProofUrl}
+                target='_blank'
+                rel='noopener noreferrer'
+                className='text-primary inline-flex items-center gap-1 text-sm underline'
+              >
+                <ExternalLink className='size-3.5' aria-hidden='true' />
+                {t('Open in new tab')}
+              </a>
+              <Button
+                variant='outline'
+                onClick={() => setPreviewProofUrl(null)}
+              >
+                {t('Close')}
+              </Button>
+            </div>
+          ) : undefined
+        }
+      >
+        {previewProofUrl && (
+          <div className='flex flex-col items-center gap-3'>
+            <img
+              src={previewProofUrl}
+              alt={t('Payment proof')}
+              className='max-h-[70vh] w-full max-w-sm rounded-lg border object-contain'
+            />
+          </div>
+        )}
+      </Dialog>
     </div>
   )
 }

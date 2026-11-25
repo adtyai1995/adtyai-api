@@ -27,7 +27,7 @@ import {
   filterVisibleLines,
   isOwnerSelfUseAllZero,
   isZeroAmount,
-} from '../components/settlement-sheet-panel'
+} from '../lib/settlement-sheet'
 
 vi.mock('lucide-react', () => ({}))
 vi.mock('@/components/ui/native-select', () => ({}))

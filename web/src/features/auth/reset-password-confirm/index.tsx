@@ -28,10 +28,27 @@ import { Label } from '@/components/ui/label'
 import { useCountdown } from '@/hooks/use-countdown'
 import { api } from '@/lib/api'
 import { handleServerError } from '@/lib/handle-server-error'
+import {
+  ACCOUNT_PASSWORD_MAX_LENGTH,
+  ACCOUNT_PASSWORD_MIN_LENGTH,
+  countPasswordCharacters,
+} from '@/lib/password-policy'
 import { AuthOperationError } from '@/lib/secure-verification'
 import { createServerError } from '@/lib/server-error-message'
 
 import { AuthLayout } from '../auth-layout'
+
+function isRateLimitedError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  if ('response' in error) {
+    const response = (error as { response?: { status?: number } }).response
+    if (response?.status === 429) return true
+  }
+  if ('status' in error && (error as { status?: unknown }).status === 429) {
+    return true
+  }
+  return false
+}
 
 export type ResetPasswordSearchParams = {
   email?: string
@@ -58,6 +75,10 @@ export function ResetPasswordConfirm({
   } = useCountdown({ initialSeconds: 30 })
 
   const isValidResetLink = Boolean(email && token)
+  const passwordLength = countPasswordCharacters(password)
+  const isPasswordLengthValid =
+    passwordLength >= ACCOUNT_PASSWORD_MIN_LENGTH &&
+    passwordLength <= ACCOUNT_PASSWORD_MAX_LENGTH
 
   async function handleSubmit() {
     if (!isValidResetLink || !email || !token) {
@@ -65,11 +86,10 @@ export function ResetPasswordConfirm({
       return
     }
 
-    if (password.length < 8 || password.length > 128) {
-      toast.error(t('Password must be at least 8 characters'))
+    if (!isPasswordLengthValid) {
+      toast.error(t('Password must contain between 8 and 128 characters.'))
       return
     }
-    startCountdown()
     setLoading(true)
     try {
       const res = await api.post(
@@ -82,11 +102,18 @@ export function ResetPasswordConfirm({
 
       if (res?.data?.success) {
         setDone(true)
+        startCountdown()
         toast.success(t('Saved successfully'))
       } else {
+        if (res?.status === 429) {
+          startCountdown()
+        }
         handleServerError(createServerError(res.data, t('Request failed')))
       }
     } catch (error) {
+      if (isRateLimitedError(error)) {
+        startCountdown()
+      }
       handleServerError(AuthOperationError.from(error))
     } finally {
       setLoading(false)
@@ -134,6 +161,8 @@ export function ResetPasswordConfirm({
                 id='password'
                 type='password'
                 autoComplete='new-password'
+                maxLength={ACCOUNT_PASSWORD_MAX_LENGTH}
+                placeholder={t('Enter password (8–128 characters)')}
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 disabled={!isValidResetLink || loading}
@@ -154,7 +183,7 @@ export function ResetPasswordConfirm({
                 : loading ||
                   isActive ||
                   !isValidResetLink ||
-                  password.length < 8
+                  !isPasswordLengthValid
             }
           >
             {done && t('auth.resetPasswordConfirm.backToLogin')}

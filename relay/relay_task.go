@@ -27,6 +27,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -363,7 +364,18 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		} else {
 			facts = provider.ExtractUsageFacts(c, info)
 		}
-		input := billingexpr.RequestInput{Usage: facts}
+		input, inputErr := helper.ResolveIncomingBillingExprRequestInput(c, info)
+		if inputErr != nil {
+			return nil, service.TaskErrorWrapperLocal(inputErr, "model_price_error", http.StatusBadRequest)
+		}
+		if len(input.Body) == 0 && c != nil {
+			if rawReq, ok := c.Get("task_request"); ok && rawReq != nil {
+				if encoded, encErr := common.Marshal(rawReq); encErr == nil {
+					input.Body = encoded
+				}
+			}
+		}
+		input.Usage = facts
 		localTime, err := service.FreezeAdtyBillingClock(&input, prevSnapshot, info.StartTime)
 		if err != nil {
 			return nil, service.TaskErrorWrapperLocal(err, "model_price_error", http.StatusBadRequest)
@@ -371,26 +383,29 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		if canReusePrevExpr {
 			exprStr = prevSnapshot.ExprString
 		}
-		cost, trace, runErr := billingexpr.RunExprWithRequest(exprStr, billingexpr.TokenParams{}, input)
+		exprHash := billingexpr.ExprHashString(exprStr)
+		cost, trace, runErr := billingexpr.RunExprByHashWithRequest(exprStr, exprHash, billingexpr.TokenParams{}, input)
 		if runErr != nil || cost < 0 {
 			if runErr == nil {
 				runErr = fmt.Errorf("negative task expression result")
 			}
 			return nil, service.TaskErrorWrapper(runErr, "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
 		}
+		frozenHeaders, frozenParams := billingexpr.FreezeRequestInputs(exprStr, exprHash, input)
 		groupRatioInfo := helper.HandleGroupRatio(c, info)
 		beforeGroupDec := trace.CostDec.Mul(common.QuotaPerUnitDecimal())
 		groupRatioDec := groupRatioInfo.BilledGroupRatio()
 		quota, clamp := common.QuotaFromDecimalChecked(beforeGroupDec.Mul(groupRatioDec))
 		noteTaskQuotaClamp(info, clamp)
-		priceData = types.PriceData{Quota: quota, QuotaToPreConsume: quota, GroupRatioInfo: groupRatioInfo}
+		freeModel := quota == 0 && !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume
+		priceData = types.PriceData{Quota: quota, QuotaToPreConsume: quota, FreeModel: freeModel, GroupRatioInfo: groupRatioInfo}
 		info.TieredBillingSnapshot = &billingexpr.BillingSnapshot{
 			BillingMode:                      billing_setting.BillingModeTieredExpr,
 			ModelName:                        modelName,
 			PluginKey:                        pluginKey,
 			UpstreamModelName:                info.UpstreamModelName,
 			ExprString:                       exprStr,
-			ExprHash:                         billingexpr.ExprHashString(exprStr),
+			ExprHash:                         exprHash,
 			GroupRatio:                       groupRatioInfo.GroupRatio,
 			GroupRatioDecimal:                groupRatioDec.String(),
 			EstimatedQuotaBeforeGroup:        beforeGroupDec.InexactFloat64(),
@@ -401,6 +416,8 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			ExprVersion:                      billingexpr.ExprVersion(exprStr),
 			TaskUsageBilling:                 true,
 			UsageFacts:                       facts,
+			FrozenHeaders:                    frozenHeaders,
+			FrozenParams:                     frozenParams,
 			AcceptedAt:                       input.AcceptedUnix,
 			BusinessTimezone:                 input.BusinessTimezone,
 			AcceptedLocal:                    localTime,
@@ -463,6 +480,10 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if info.Billing != nil || !info.PriceData.FreeModel {
 		info.ForcePreConsume = true
 		if apiErr := service.PreConsumeBilling(c, info.PriceData.Quota, info); apiErr != nil {
+			return nil, service.TaskErrorFromAPIError(apiErr)
+		}
+	} else {
+		if apiErr := service.FreezeRequestBillingPayer(c, info); apiErr != nil {
 			return nil, service.TaskErrorFromAPIError(apiErr)
 		}
 	}

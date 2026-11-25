@@ -99,7 +99,7 @@ func enrichAdtyTeamMine(mine *service.AdtyTeamMine) *adtyTeamMineResponse {
 		return nil
 	}
 	var discount *decimal.Decimal
-	if mine.SiteId == 0 && mine.SourceSiteId == 0 {
+	if mine.SiteId == 0 {
 		d := mine.Discount
 		discount = &d
 	}

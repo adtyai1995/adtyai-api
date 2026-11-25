@@ -23,6 +23,7 @@ import type { TopNavLink } from '@/components/layout/types'
 import { useStatus } from '@/hooks/use-status'
 import { parseHeaderNavModulesFromStatus } from '@/lib/nav-modules'
 import { ROLE } from '@/lib/roles'
+import { readReferralEnabledFromStatus } from '@/lib/status-query'
 import { useAuthStore } from '@/stores/auth-store'
 
 export type { TopNavLink } from '@/components/layout/types'
@@ -138,8 +139,17 @@ export function useTopNavLinks(): TopNavLink[] {
   // is needed; HeaderNavModules {"affiliate": false} hides it.
   // R4-045: Hide the main-site affiliate program entry on subsites.
   // R-32 #21: Hide affiliate entry for signed-in admins and site owners.
+  // R1-53: Gate /affiliate visibility on site-scoped adty_referral_enabled.
   const isSubsite = Boolean(status?.adty_site)
-  if (!isSubsite && !isAdmin && !isSiteOwner && modules?.affiliate !== false) {
+  const referralEnabled =
+    readReferralEnabledFromStatus(status) ?? user?.adty_referral_enabled
+  if (
+    !isSubsite &&
+    !isAdmin &&
+    !isSiteOwner &&
+    referralEnabled === true &&
+    modules?.affiliate !== false
+  ) {
     links.push({
       id: 'affiliate',
       title: t('Affiliate Program'),

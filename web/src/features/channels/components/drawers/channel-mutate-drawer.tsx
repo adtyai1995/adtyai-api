@@ -420,7 +420,7 @@ function SubHeading(props: {
           {props.icon}
         </IconBadge>
       )}
-      <h4 className='text-muted-foreground text-xs font-medium tracking-wide uppercase'>
+      <h4 className='text-muted-foreground text-xs font-medium'>
         {props.title}
       </h4>
       {props.status && (

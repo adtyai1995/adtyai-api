@@ -54,8 +54,6 @@ export type AdminSiteBrand = {
   title?: string
   logo_url?: string
   favicon_url?: string
-  theme_color?: string
-  tagline?: string
   notice?: string
   support_contact?: string
   tawk_property_id?: string
@@ -86,7 +84,7 @@ export type AdminSite = {
   tier_mode?: string
   visibility: string
   allowed_groups?: string
-  /** Brand JSON written by the owner or Root (name, title, tagline, notice, wallet_notice, voucher_purchase_url, etc.). */
+  /** Brand JSON written by the owner or Root (name, title, notice, wallet_notice, voucher_purchase_url, etc.). */
   brand: string
   home_page_content?: string
   seo_index?: boolean

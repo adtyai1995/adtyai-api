@@ -47,7 +47,7 @@
 
 - [ ] 货币显示 USD。
 - [ ] 新用户额度 0。
-- [ ] 余额不足提醒打开。
+- [ ] 余额不足提醒：后台系统设置表单已退役，默认沿用服务端全局开关，无需在运营设置页另行配置。
 - [ ] 渠道亲和打开。
 - [ ] **不要关数据导出**（DataExportEnabled），概览的数据依赖它。
 - [ ] 流式保活：「系统设置 → 模型 → Global Model Configuration」打开「Keep-alive Ping」，间隔设 30 秒（初始是关、60 秒）。不开的话，推理模型等首字超过 125 秒会被 Cloudflare 以 524 断开。
@@ -60,7 +60,7 @@
 
 ### 支付
 
-- [ ] 充值加赠：没有内置值。在独立入口「充值加赠」（`/recharge-bonus`，旧路径 `/system-settings/billing/recharge-bonus` 重定向至此）按支付方式设主站比例（`adty_topup_setting.method_bonus`，`rate` 是 0–1 的小数，如 0.025 = 2.5%）。分站加赠直接按主站已启用的支付方式放行，由站长在站长中心配置本站比例（原逐站授权 `PUT /api/adty/admin/sites/:id/bonus-methods` / `site_method_auth` 已退役返 410）；金额档位已退役，不要再填 `bonus_rates`。
+- [ ] 充值赠送：没有内置值。在独立入口「充值赠送」（`/recharge-bonus`，旧路径 `/system-settings/billing/recharge-bonus` 重定向至此）按支付方式设主站比例（`adty_topup_setting.method_bonus`，`rate` 是 0–1 的小数，如 0.025 = 2.5%）。分站充值赠送直接按主站已启用的支付方式放行，由站长在站长中心配置本站比例（原逐站授权 `PUT /api/adty/admin/sites/:id/bonus-methods` / `site_method_auth` 已退役返 410）；金额档位已退役，不要再填 `bonus_rates`。
 - [ ] 易支付单通道下单超时（`channel_timeout_seconds`）在「支付宝和微信支付」分区里设；所选通道不可用时直接提示切换，不做静默自动切换。
 - [ ] 易支付通道：每个通道的支付宝、微信填好显示名称（如「支付宝1」「微信2」），钱包里按通道平铺成按钮；测试下单通过后再启用通道。
 
@@ -72,13 +72,13 @@
 
 ### 兑换码
 
-- [ ] 分站后台「兑换码」分区先设主站发行额度；没设额度时发不出主站用户码和分站保证金码。
+- [ ] 分站后台「兑换码」分区先设主站发行额度；没设额度时发不出主站用户码和分站保证金充值码（`site_margin`）。
 
 ### 运营
 
 - [ ] Telegram：在「系统设置 → 运营 → Telegram bots」保存两个机器人的 Token 并启用，确保已配置 `ADTY_TELEGRAM_ALLOW_NETWORK=1`，再于个人页（`/profile`）绑定用户机器人；Root 仅在「系统设置 → 运营 → Telegram bots」下方绑定管理机器人，非 Root 且具有工单权限的主站管理员在个人页（`/profile`）绑定管理机器人（站长在站长中心 → 公告页绑定管理机器人），最后点「发送测试」确认收到测试通知。
 - [ ] 系统翻译：在「系统设置 → 运营 → System translation」选平台模型或独立接口并保存，点「测试连接」通过；按需设每日调用上限。
-- [ ] 模型探活：在「系统设置 → 内容 → 服务监控 / 模型探活」确认内置模型探活间隔（`console_setting.model_probe_interval_minutes`、`image_probe_interval_minutes`）与超时（`model_probe_timeout_seconds`），并执行一次手动探活确认结果正常。原「系统设置 → 运营 → 分组健康」已退役，不再配置。
+- [ ] 模型探活：在「系统设置 → 内容 → 服务监控 / 模型探活」确认内置轻量模型/图片探活引擎的探活间隔（`console_setting.model_probe_interval_minutes`、`image_probe_interval_minutes`）与超时（`model_probe_timeout_seconds`），并执行一次手动探活确认渠道状态页（`/model-status`）与控制台概览展示正常（模型广场 `/pricing` 不展示连通性，不再轮询外部 Uptime Kuma）。原「系统设置 → 运营 → 分组健康」已退役，不再配置。
 
 ## 5. 邮件
 
@@ -95,7 +95,7 @@
 ## 7. 推广和后台权限实测
 
 - [ ] 用两个账号走完 点击 → 注册 → 充值 → 冻结 → 结算 → 三种提现（转入余额 `balance`、USDT `usdt`、支付宝 `alipay`，受 `withdraw_methods` / `withdraw_usdt_networks` 控制；支付宝收款码为选填，微信提现已移除） → 退款扣回。
-- [ ] 推广管理的「计佣任务」页没有失败的任务；「佣金流水」能对上这几步的每一笔变动。
+- [ ] 推广管理（`/admin-referral`）的「佣金明细」与「后台操作记录」页签能对上这几步的每一笔佣金变动与审核记录（原「计佣任务」「佣金流水」前端页签已移除）。
 - [ ] 建一个管理员，分别套用客服、运营、财务预设，确认菜单和接口都按权限放行。
 
 ## 8. 浏览器和客户端回归

@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/controller"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
@@ -88,7 +89,7 @@ func productionPluginRouteHandlers(generation *jsplugin.RoutingGeneration, bindi
 		if !service.AdtyHostAllowsRelay(c.Request.Host) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 				"error": gin.H{
-					"message": "Model API requests are not allowed on the website domain; use the API domain instead",
+					"message": i18n.T(c, i18n.MsgAdtyRelayHostDisallowed),
 					"type":    "invalid_request_error",
 					"code":    "api_domain_required",
 				},

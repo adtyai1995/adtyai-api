@@ -432,7 +432,11 @@ type adtyTicketMessageResponse struct {
 
 type adtyTicketEventResponse struct {
 	model.AdtyTicketEvent
-	ActorUsername string `json:"actor_username,omitempty"`
+	ActorUsername        string `json:"actor_username,omitempty"`
+	FromAssigneeId       int    `json:"from_assignee_id,omitempty"`
+	FromAssigneeUsername string `json:"from_assignee_username,omitempty"`
+	ToAssigneeId         int    `json:"to_assignee_id,omitempty"`
+	ToAssigneeUsername   string `json:"to_assignee_username,omitempty"`
 }
 
 type adtyTicketDetailResponse struct {
@@ -513,9 +517,37 @@ func GetAdtyTicket(c *gin.Context) {
 			ids = append(ids, msg.AuthorId)
 		}
 	}
-	for _, ev := range detail.Events {
+	type parsedAssigneeChange struct {
+		fromID int
+		toID   int
+		ok     bool
+	}
+	var assigneeChanges []parsedAssigneeChange
+	if detail.CanManage && len(detail.Events) > 0 {
+		assigneeChanges = make([]parsedAssigneeChange, len(detail.Events))
+	}
+	for i, ev := range detail.Events {
 		if ev.ActorId > 0 {
 			ids = append(ids, ev.ActorId)
+		}
+		if detail.CanManage && (ev.Action == "assign" || ev.Action == "transfer") {
+			left, right, ok := strings.Cut(ev.Detail, "→")
+			if !ok {
+				left, right, ok = strings.Cut(ev.Detail, "->")
+			}
+			if ok {
+				fromID, err1 := strconv.Atoi(strings.TrimSpace(left))
+				toID, err2 := strconv.Atoi(strings.TrimSpace(right))
+				if err1 == nil && err2 == nil && fromID >= 0 && toID >= 0 {
+					assigneeChanges[i] = parsedAssigneeChange{fromID: fromID, toID: toID, ok: true}
+					if fromID > 0 {
+						ids = append(ids, fromID)
+					}
+					if toID > 0 {
+						ids = append(ids, toID)
+					}
+				}
+			}
 		}
 	}
 	names := model.LookupUsernamesByIDs(model.DB, ids)
@@ -540,6 +572,17 @@ func GetAdtyTicket(c *gin.Context) {
 		item := adtyTicketEventResponse{AdtyTicketEvent: ev}
 		if ev.ActorId > 0 {
 			item.ActorUsername = names[ev.ActorId]
+		}
+		if detail.CanManage && i < len(assigneeChanges) && assigneeChanges[i].ok {
+			change := assigneeChanges[i]
+			if change.fromID > 0 {
+				item.FromAssigneeId = change.fromID
+				item.FromAssigneeUsername = names[change.fromID]
+			}
+			if change.toID > 0 {
+				item.ToAssigneeId = change.toID
+				item.ToAssigneeUsername = names[change.toID]
+			}
 		}
 		events[i] = item
 	}

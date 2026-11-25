@@ -86,6 +86,7 @@ func GetAdtyOwnerStaffAudits(c *gin.Context) {
 	type staffAuditView struct {
 		model.AdtySiteAudit
 		StaffId          int    `json:"staff_id"`
+		StaffUserId      int    `json:"staff_user_id,omitempty"`
 		CustomerId       int    `json:"customer_id"`
 		OperatorUsername string `json:"operator_username,omitempty"`
 		StaffUsername    string `json:"staff_username,omitempty"`
@@ -158,7 +159,9 @@ func GetAdtyOwnerStaffAudits(c *gin.Context) {
 			views[i].OperatorUsername = usernames[views[i].OperatorId]
 		}
 		if views[i].StaffId > 0 {
-			if uid := staffUserByStaffID[views[i].StaffId]; uid > 0 && usernames[uid] != "" {
+			uid := staffUserByStaffID[views[i].StaffId]
+			views[i].StaffUserId = uid
+			if uid > 0 && usernames[uid] != "" {
 				views[i].StaffUsername = usernames[uid]
 			} else {
 				views[i].StaffUsername = staffNameByStaffID[views[i].StaffId]

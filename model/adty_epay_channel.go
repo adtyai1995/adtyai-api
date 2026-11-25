@@ -31,6 +31,9 @@ const (
 
 	AdtyEpaySignTypeMD5 = "MD5"
 	AdtyEpaySignTypeRSA = "RSA"
+
+	adtyEpayMerchantKeyPurpose        = "adty_epay_channel:merchant_key"
+	adtyEpayMerchantPrivateKeyPurpose = "adty_epay_channel:merchant_private_key"
 )
 
 var ErrAdtyEpayChannelNotFound = errors.New("adty epay channel not found")
@@ -41,7 +44,7 @@ type AdtyEpayChannel struct {
 	Name               string                  `json:"name" gorm:"type:varchar(128)"`
 	GatewayURL         string                  `json:"gateway_url" gorm:"column:gateway_url;type:varchar(512)"`
 	MerchantId         string                  `json:"merchant_id" gorm:"type:varchar(128)"`
-	MerchantKey        string                  `json:"-" gorm:"column:merchant_key;type:varchar(512)"`
+	MerchantKey        string                  `json:"-" gorm:"column:merchant_key;type:text"`
 	SignType           string                  `json:"sign_type" gorm:"column:sign_type;type:varchar(16);not null;default:'MD5'"`
 	MerchantPrivateKey string                  `json:"-" gorm:"column:merchant_private_key;type:text"`
 	PlatformPublicKey  string                  `json:"platform_public_key" gorm:"column:platform_public_key;type:text"`
@@ -89,6 +92,50 @@ func (channel *AdtyEpayChannel) HasCredentials() bool {
 
 func (AdtyEpayChannel) TableName() string {
 	return "adty_epay_channels"
+}
+
+// AfterFind transparently decrypts sealed payment credentials while remaining
+// backward-compatible with legacy plaintext rows until they are next saved.
+func (channel *AdtyEpayChannel) AfterFind(_ *gorm.DB) error {
+	if channel == nil {
+		return nil
+	}
+	if strings.HasPrefix(channel.MerchantKey, adtySecretPrefix) {
+		plain, err := OpenAdtyPurposeSecret(adtyEpayMerchantKeyPurpose, channel.MerchantKey)
+		if err != nil {
+			return err
+		}
+		channel.MerchantKey = plain
+	}
+	if strings.HasPrefix(channel.MerchantPrivateKey, adtySecretPrefix) {
+		plain, err := OpenAdtyPurposeSecret(adtyEpayMerchantPrivateKeyPurpose, channel.MerchantPrivateKey)
+		if err != nil {
+			return err
+		}
+		channel.MerchantPrivateKey = plain
+	}
+	return nil
+}
+
+func sealAdtyEpayChannelCredentials(channel *AdtyEpayChannel) error {
+	if channel == nil {
+		return nil
+	}
+	if channel.MerchantKey != "" && !strings.HasPrefix(channel.MerchantKey, adtySecretPrefix) {
+		sealed, err := SealAdtyPurposeSecret(adtyEpayMerchantKeyPurpose, channel.MerchantKey)
+		if err != nil {
+			return err
+		}
+		channel.MerchantKey = sealed
+	}
+	if channel.MerchantPrivateKey != "" && !strings.HasPrefix(channel.MerchantPrivateKey, adtySecretPrefix) {
+		sealed, err := SealAdtyPurposeSecret(adtyEpayMerchantPrivateKeyPurpose, channel.MerchantPrivateKey)
+		if err != nil {
+			return err
+		}
+		channel.MerchantPrivateKey = sealed
+	}
+	return nil
 }
 
 // AdtyEpayChannelMethod 是一个通道上的一种支付方式和它的限额。限额 0 表示不限。
@@ -192,7 +239,6 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 		channel.SignType = channel.EffectiveSignType()
 		methods := channel.Methods
 		defer func() { channel.Methods = methods }()
-		keepPrivateKey := false
 		keepPublicKey := false
 		if channel.Id != 0 {
 			var existing AdtyEpayChannel
@@ -209,7 +255,6 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 				channel.MerchantKey = existing.MerchantKey
 			}
 			if channel.MerchantPrivateKey == "" {
-				keepPrivateKey = true
 				channel.MerchantPrivateKey = existing.MerchantPrivateKey
 			}
 			if channel.PlatformPublicKey == "" {
@@ -230,28 +275,30 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 			channel.Status, channel.StatusReason = existing.Status, existing.StatusReason
 		}
 		channel.Methods = nil
+		toSave := *channel
+		if err := sealAdtyEpayChannelCredentials(&toSave); err != nil {
+			return err
+		}
 		if channel.Id == 0 {
-			if err := tx.Create(channel).Error; err != nil {
+			if err := tx.Create(&toSave).Error; err != nil {
 				return err
 			}
+			channel.Id = toSave.Id
+			channel.CreatedAt = toSave.CreatedAt
+			channel.UpdatedAt = toSave.UpdatedAt
 		} else {
 			omit := []string{"created_at", "unpaid_streak", "probe_fail_count", "probe_ok_count", "last_probe_at"}
-			if keepKey {
-				omit = append(omit, "merchant_key")
-			}
-			if keepPrivateKey {
-				omit = append(omit, "merchant_private_key")
-			}
 			if keepPublicKey {
 				omit = append(omit, "platform_public_key")
 			}
-			result := tx.Model(&AdtyEpayChannel{}).Where("id = ?", channel.Id).Omit(omit...).Select("*").Updates(channel)
+			result := tx.Model(&AdtyEpayChannel{}).Where("id = ?", channel.Id).Omit(omit...).Select("*").Updates(&toSave)
 			if result.Error != nil {
 				return result.Error
 			}
 			if result.RowsAffected == 0 {
 				return ErrAdtyEpayChannelNotFound
 			}
+			channel.UpdatedAt = toSave.UpdatedAt
 		}
 		if err := tx.Where("channel_id = ?", channel.Id).Delete(&AdtyEpayChannelMethod{}).Error; err != nil {
 			return err

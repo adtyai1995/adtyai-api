@@ -53,10 +53,7 @@ import type { OwnerSite, SiteBrand, SiteDomain, SiteDomainRole } from '../types'
 import { SiteLegalCard } from './site-legal-card'
 
 const BRAND_LIMITS: Record<
-  Exclude<
-    keyof SiteBrand,
-    'logo_url' | 'favicon_url' | 'tagline' | 'theme_color'
-  >,
+  Exclude<keyof SiteBrand, 'logo_url' | 'favicon_url'>,
   number
 > = {
   name: 40,
@@ -316,8 +313,6 @@ function BrandCard(props: { site: OwnerSite }) {
   const brandFieldLabels: Record<keyof SiteBrand, string> = {
     name: t('Site name'),
     title: t('Website title'),
-    theme_color: t('Theme color'),
-    tagline: t('Tagline'),
     notice: t('Notice'),
     support_contact: t('Support contact'),
     tawk_property_id: t('Tawk.to property ID'),

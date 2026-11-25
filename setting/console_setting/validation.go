@@ -220,33 +220,6 @@ func GetModelProbeTimeoutSeconds() int {
 	return val
 }
 
-func ValidateUptimeKumaBaseURL(rawURL string) error {
-	trimmed := strings.TrimSpace(rawURL)
-	if trimmed == "" {
-		return nil
-	}
-	if exceedsMaxCharacters(trimmed, 500) {
-		return common.NewMessage("Uptime Kuma URL cannot exceed 500 characters")
-	}
-	if !urlRegex.MatchString(trimmed) {
-		return common.NewMessage("Uptime Kuma URL has an invalid format")
-	}
-	parsed, err := url.Parse(trimmed)
-	if err != nil {
-		return common.NewMessage("Uptime Kuma URL cannot be parsed: {{error}}", map[string]any{"error": err.Error()})
-	}
-	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return common.NewMessage("Uptime Kuma URL has an invalid format")
-	}
-	lower := strings.ToLower(trimmed)
-	for _, d := range dangerousChars {
-		if strings.Contains(lower, d) {
-			return common.NewMessage("Uptime Kuma URL contains disallowed content")
-		}
-	}
-	return nil
-}
-
 func ValidateUptimeKumaSlug(slug string) error {
 	trimmed := strings.TrimSpace(slug)
 	if trimmed == "" {
@@ -284,8 +257,6 @@ func ValidateConsoleSettings(settingsStr string, settingType string) error {
 		return validateFAQ(settingsStr)
 	case "UptimeKumaGroups":
 		return validateUptimeKumaGroups(settingsStr)
-	case "UptimeKumaBaseURL", "console_setting.uptime_kuma_base_url":
-		return ValidateUptimeKumaBaseURL(settingsStr)
 	default:
 		return common.NewMessage("Unknown setting type: {{type}}", map[string]any{"type": settingType})
 	}
@@ -448,13 +419,13 @@ func GetFAQ() []map[string]any {
 }
 
 func validateUptimeKumaGroups(groupsStr string) error {
-	groups, err := parseJSONArray(groupsStr, "Invalid Uptime Kuma group settings format: {{error}}")
+	groups, err := parseJSONArray(groupsStr, "Invalid model probe group settings format: {{error}}")
 	if err != nil {
 		return err
 	}
 
 	if len(groups) > maxUptimeKumaGroups {
-		return common.NewMessage("Uptime Kuma groups cannot exceed 50 entries")
+		return common.NewMessage("Model probe groups cannot exceed 50 entries")
 	}
 
 	groupIDSet := make(map[string]bool)
@@ -764,10 +735,6 @@ func ParseUptimeKumaGroups(groupsStr string) []UptimeKumaGroup {
 		result = append(result, g)
 	}
 	return result
-}
-
-func GetUptimeKumaBaseURL() string {
-	return strings.TrimRight(strings.TrimSpace(GetConsoleSetting().UptimeKumaBaseURL), "/")
 }
 
 func GetUptimeKumaGroupConfigs() []UptimeKumaGroup {

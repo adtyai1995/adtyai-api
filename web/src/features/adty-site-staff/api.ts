@@ -62,6 +62,7 @@ export type StaffAudit = {
   old_value: string
   new_value: string
   staff_id: number
+  staff_user_id?: number
   staff_username?: string
   customer_id: number
   customer_username?: string

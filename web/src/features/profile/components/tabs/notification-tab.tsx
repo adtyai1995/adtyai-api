@@ -22,7 +22,9 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { PasswordInput } from '@/components/password-input'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
@@ -44,7 +46,50 @@ import { ROLE } from '@/lib/roles'
 import { updateUserSettings } from '../../api'
 import { NOTIFICATION_METHODS } from '../../constants'
 import { normalizeUserSettings } from '../../lib/user-settings'
-import type { UserProfile, NotifyType } from '../../types'
+import type {
+  NotifyType,
+  UpdateUserSettingsRequest,
+  UserProfile,
+} from '../../types'
+
+type UserSettingSecretMeta = {
+  has_webhook_secret?: boolean
+  has_gotify_token?: boolean
+  webhook_secret?: string
+  gotify_token?: string
+}
+
+function readSecretConfiguredFlags(profile: UserProfile | null): {
+  hasWebhookSecret: boolean
+  hasGotifyToken: boolean
+} {
+  const topLevel = profile as (UserProfile & UserSettingSecretMeta) | null
+  let parsed: UserSettingSecretMeta = {}
+  if (profile?.setting) {
+    try {
+      const raw: unknown = JSON.parse(profile.setting)
+      if (raw && typeof raw === 'object') {
+        parsed = raw as UserSettingSecretMeta
+      }
+    } catch {
+      parsed = {}
+    }
+  }
+  return {
+    hasWebhookSecret: Boolean(
+      topLevel?.has_webhook_secret ||
+        parsed.has_webhook_secret ||
+        (typeof parsed.webhook_secret === 'string' &&
+          parsed.webhook_secret.trim() !== '')
+    ),
+    hasGotifyToken: Boolean(
+      topLevel?.has_gotify_token ||
+        parsed.has_gotify_token ||
+        (typeof parsed.gotify_token === 'string' &&
+          parsed.gotify_token.trim() !== '')
+    ),
+  }
+}
 
 const NOTIFICATION_ICONS: Record<NotifyType, typeof Mail> = {
   email: Mail,
@@ -78,6 +123,10 @@ export function NotificationTab({
   const [loading, setLoading] = useState(false)
   const [settings, setSettings] = useState(() => normalizeUserSettings())
   const [thresholdInput, setThresholdInput] = useState('')
+  const [hasWebhookSecret, setHasWebhookSecret] = useState(false)
+  const [hasGotifyToken, setHasGotifyToken] = useState(false)
+  const [clearWebhookSecret, setClearWebhookSecret] = useState(false)
+  const [clearGotifyToken, setClearGotifyToken] = useState(false)
 
   // Update form field helper
   const updateField = useCallback(
@@ -91,9 +140,18 @@ export function NotificationTab({
   )
 
   useEffect(() => {
+    const flags = readSecretConfiguredFlags(profile)
+    setHasWebhookSecret(flags.hasWebhookSecret)
+    setHasGotifyToken(flags.hasGotifyToken)
+    setClearWebhookSecret(false)
+    setClearGotifyToken(false)
     if (profile?.setting) {
       const next = normalizeUserSettings(profile.setting)
-      setSettings(next)
+      setSettings({
+        ...next,
+        webhook_secret: '',
+        gotify_token: '',
+      })
       // 0 means the site default and shows as an empty input.
       setThresholdInput(
         next.quota_warning_threshold
@@ -107,7 +165,27 @@ export function NotificationTab({
     try {
       setLoading(true)
       const { record_ip_log: _recordIpLog, ...notificationSettings } = settings
-      const response = await updateUserSettings(notificationSettings)
+      const payload: UpdateUserSettingsRequest & {
+        clear_webhook_secret?: boolean
+        clear_gotify_token?: boolean
+      } = {
+        ...notificationSettings,
+        webhook_secret:
+          notificationSettings.notify_type === 'webhook' && clearWebhookSecret
+            ? ''
+            : notificationSettings.webhook_secret,
+        gotify_token:
+          notificationSettings.notify_type === 'gotify' && clearGotifyToken
+            ? ''
+            : notificationSettings.gotify_token,
+        ...(notificationSettings.notify_type === 'webhook' && clearWebhookSecret
+          ? { clear_webhook_secret: true }
+          : {}),
+        ...(notificationSettings.notify_type === 'gotify' && clearGotifyToken
+          ? { clear_gotify_token: true }
+          : {}),
+      }
+      const response = await updateUserSettings(payload)
 
       if (response.success) {
         toast.success(t('Settings updated successfully'))
@@ -207,15 +285,53 @@ export function NotificationTab({
                 />
               </div>
               <div className='space-y-1.5'>
-                <Label htmlFor='webhookSecret'>{t('Webhook Secret')}</Label>
+                <div className='flex items-center gap-2'>
+                  <Label htmlFor='webhookSecret'>{t('Webhook Secret')}</Label>
+                  {hasWebhookSecret && !clearWebhookSecret && (
+                    <Badge variant='secondary'>{t('Configured')}</Badge>
+                  )}
+                </div>
                 <PasswordInput
                   id='webhookSecret'
+                  autoComplete='new-password'
                   value={settings.webhook_secret}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    setClearWebhookSecret(false)
                     updateField('webhook_secret', e.target.value)
+                  }}
+                  placeholder={
+                    hasWebhookSecret && !clearWebhookSecret
+                      ? t('Leave empty to keep the current key')
+                      : t('Enter secret key')
                   }
-                  placeholder={t('Enter secret key')}
                 />
+                {hasWebhookSecret && (
+                  <>
+                    <p className='text-muted-foreground text-xs'>
+                      {t('Leave blank to keep the existing credential')}
+                    </p>
+                    <div className='flex items-center gap-2 pt-1'>
+                      <Checkbox
+                        id='clearWebhookSecret'
+                        disabled={loading}
+                        checked={clearWebhookSecret}
+                        onCheckedChange={(checked) => {
+                          const shouldClear = checked === true
+                          setClearWebhookSecret(shouldClear)
+                          if (shouldClear) {
+                            updateField('webhook_secret', '')
+                          }
+                        }}
+                      />
+                      <Label
+                        htmlFor='clearWebhookSecret'
+                        className='cursor-pointer text-xs font-normal'
+                      >
+                        {t('Clear saved credential')}
+                      </Label>
+                    </div>
+                  </>
+                )}
               </div>
             </>
           )}
@@ -258,18 +374,55 @@ export function NotificationTab({
                 </p>
               </div>
               <div className='space-y-1.5'>
-                <Label htmlFor='gotifyToken'>
-                  {t('Gotify Application Token')}
-                </Label>
+                <div className='flex items-center gap-2'>
+                  <Label htmlFor='gotifyToken'>
+                    {t('Gotify Application Token')}
+                  </Label>
+                  {hasGotifyToken && !clearGotifyToken && (
+                    <Badge variant='secondary'>{t('Configured')}</Badge>
+                  )}
+                </div>
                 <PasswordInput
                   id='gotifyToken'
+                  autoComplete='new-password'
                   value={settings.gotify_token}
-                  onChange={(e) => updateField('gotify_token', e.target.value)}
-                  placeholder={t('Enter application token')}
+                  onChange={(e) => {
+                    setClearGotifyToken(false)
+                    updateField('gotify_token', e.target.value)
+                  }}
+                  placeholder={
+                    hasGotifyToken && !clearGotifyToken
+                      ? t('Leave empty to keep the current token')
+                      : t('Enter application token')
+                  }
                 />
                 <p className='text-muted-foreground text-xs'>
-                  {t('Token obtained from your Gotify application')}
+                  {hasGotifyToken
+                    ? t('Leave blank to keep the existing credential')
+                    : t('Token obtained from your Gotify application')}
                 </p>
+                {hasGotifyToken && (
+                  <div className='flex items-center gap-2 pt-1'>
+                    <Checkbox
+                      id='clearGotifyToken'
+                      disabled={loading}
+                      checked={clearGotifyToken}
+                      onCheckedChange={(checked) => {
+                        const shouldClear = checked === true
+                        setClearGotifyToken(shouldClear)
+                        if (shouldClear) {
+                          updateField('gotify_token', '')
+                        }
+                      }}
+                    />
+                    <Label
+                      htmlFor='clearGotifyToken'
+                      className='cursor-pointer text-xs font-normal'
+                    >
+                      {t('Clear saved credential')}
+                    </Label>
+                  </div>
+                )}
               </div>
               <div className='space-y-1.5'>
                 <Label htmlFor='gotifyPriority'>{t('Message Priority')}</Label>

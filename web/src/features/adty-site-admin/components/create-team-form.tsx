@@ -178,7 +178,7 @@ export function CreateTeamForm() {
           </div>
           <div className='flex flex-col gap-1.5'>
             <Label htmlFor='new-team-discount'>
-              {t('Team supply discount')}
+              {t('Team Discount Ratio')}
             </Label>
             <Input
               id='new-team-discount'

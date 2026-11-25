@@ -111,6 +111,9 @@ export type ReferralWithdrawal = {
   reject_reason: string
   submitted_at: number
   paid_at: number
+  can_cancel?: boolean
+  cancel_deadline?: number
+  cancel_reason?: string
 }
 
 export type WithdrawalRequest = {

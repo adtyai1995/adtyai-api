@@ -28,6 +28,7 @@ import {
   getReferralPublicSettings,
   referralQueryKeys,
 } from '@/features/referral/api'
+import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { AffiliateDetails } from './components/affiliate-details'
@@ -35,7 +36,11 @@ import { AffiliateDetails } from './components/affiliate-details'
 /** Public affiliate program page (adty task 8.6). Numbers come from the referral settings. */
 export function AffiliateProgram() {
   const { t } = useTranslation()
-  const signedIn = useAuthStore((state) => Boolean(state.auth.user))
+  const user = useAuthStore((state) => state.auth.user)
+  const signedIn = Boolean(user)
+  const isAdmin = Boolean(user && user.role >= ROLE.ADMIN)
+  const isSiteOwner = user?.adty_site_owner === true
+  const isStaff = (user?.staff_site_id ?? 0) > 0
   const settings = useQuery({
     queryKey: referralQueryKeys.publicSettings,
     queryFn: getReferralPublicSettings,
@@ -47,15 +52,20 @@ export function AffiliateProgram() {
   const rate = data?.enabled ? data.default_rate : null
   const open = data !== undefined && rate !== null
 
-  const cta = signedIn ? (
-    <Button size='lg' render={<Link to='/referral' />}>
-      {t('Get my referral link')}
-    </Button>
-  ) : (
-    <Button size='lg' render={<Link to='/sign-up' />}>
-      {t('Sign up to start earning')}
-    </Button>
-  )
+  let cta = null
+  if (!signedIn) {
+    cta = (
+      <Button size='lg' render={<Link to='/sign-up' />}>
+        {t('Sign up to start earning')}
+      </Button>
+    )
+  } else if (!isAdmin && !isSiteOwner && !isStaff) {
+    cta = (
+      <Button size='lg' render={<Link to='/referral' />}>
+        {t('Get my referral link')}
+      </Button>
+    )
+  }
 
   return (
     <PublicLayout>
@@ -83,7 +93,7 @@ export function AffiliateProgram() {
               {t('The affiliate program is not open yet. Check back soon.')}
             </p>
           )}
-          {!settings.isError && open && (
+          {!settings.isError && open && cta && (
             <div className='flex justify-center'>{cta}</div>
           )}
         </section>

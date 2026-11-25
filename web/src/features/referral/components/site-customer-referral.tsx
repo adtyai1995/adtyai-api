@@ -26,6 +26,7 @@ import { CopyButton } from '@/components/copy-button'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -54,6 +55,8 @@ export type SiteCustomerReferralProfile = {
   site_name: string
   site_status: string
   enabled: boolean
+  affiliate_disabled?: boolean
+  affiliate_status?: string
   rate_configured: boolean
   rate?: string
   rate_percent?: string
@@ -162,7 +165,12 @@ export function SiteCustomerReferral() {
             </div>
             {!profile.enabled && (
               <p className='text-warning text-sm'>
-                {t('Site referral is currently disabled by the site owner.')}
+                {profile.affiliate_disabled === true ||
+                profile.affiliate_status === 'disabled'
+                  ? t(
+                      'Your affiliate account has been disabled by the site owner.'
+                    )
+                  : t('Site referral is currently disabled by the site owner.')}
               </p>
             )}
             <dl className='grid grid-cols-2 gap-4 text-sm sm:grid-cols-3'>
@@ -260,44 +268,42 @@ export function SiteCustomerReferral() {
             </CardContent>
           </Card>
         </TabsContent>
-        <TabsContent value='invitees'>
-          <Card>
-            <CardContent className='pt-6'>
-              {invites.length === 0 ? (
-                <EmptyState title={t('No invited users yet')} />
-              ) : (
-                <StaticDataTable
-                  data={invites}
-                  getRowKey={(row) => String(row.invitee_id)}
-                  columns={[
-                    {
-                      id: 'invitee',
-                      header: t('User'),
-                      cell: (row) =>
-                        formatUserIdentity(
-                          row.invitee_id,
-                          row.invitee_username
-                        ),
-                    },
-                    {
-                      id: 'rate',
-                      header: t('Commission rate'),
-                      cell: (row) =>
-                        `${row.rate_percent ?? Number((Number(row.rate) * 100).toFixed(4))}%`,
-                    },
-                    {
-                      id: 'created_at',
-                      header: t('Joined at'),
-                      cell: (row) =>
-                        row.created_at > 0
-                          ? formatTimestamp(row.created_at)
-                          : '-',
-                    },
-                  ]}
-                />
-              )}
-            </CardContent>
-          </Card>
+        <TabsContent value='invitees' className='pt-3'>
+          <ContentSection title={t('Invited users')}>
+            {invites.length === 0 ? (
+              <EmptyState title={t('No invited users yet')} />
+            ) : (
+              <StaticDataTable
+                data={invites}
+                getRowKey={(row) => String(row.invitee_id)}
+                columns={[
+                  {
+                    id: 'invitee',
+                    header: t('User'),
+                    cell: (row) =>
+                      formatUserIdentity(
+                        row.invitee_id,
+                        row.invitee_username
+                      ),
+                  },
+                  {
+                    id: 'rate',
+                    header: t('Commission rate'),
+                    cell: (row) =>
+                      `${row.rate_percent ?? Number((Number(row.rate) * 100).toFixed(4))}%`,
+                  },
+                  {
+                    id: 'created_at',
+                    header: t('Joined at'),
+                    cell: (row) =>
+                      row.created_at > 0
+                        ? formatTimestamp(row.created_at)
+                        : '-',
+                  },
+                ]}
+              />
+            )}
+          </ContentSection>
         </TabsContent>
         <TabsContent value='rules'>
           <Card>

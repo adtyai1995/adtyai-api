@@ -240,27 +240,6 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 				usage.OutputTokenDetails.TextTokens, usage.OutputTokenDetails.AudioTokens,
 			)
 		}
-		groupRatio := ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
-		modelRatioDec, _, _ := ratio_setting.GetModelRatioDecimal(modelName)
-		if relayInfo.PriceData.HasBilledModelRatio() {
-			modelRatioDec = relayInfo.PriceData.BilledModelRatio()
-		}
-		modelRatio := modelRatioDec.InexactFloat64()
-
-		autoGroup, exists := common.GetContextKey(ctx, constant.ContextKeyAutoGroup)
-		if exists {
-			groupRatio = ratio_setting.GetGroupRatio(autoGroup.(string))
-			logger.LogDebug(ctx, "final group ratio: %f", groupRatio)
-			relayInfo.UsingGroup = autoGroup.(string)
-		}
-
-		actualGroupRatioDec := ratio_setting.GetGroupRatioDecimal(relayInfo.UsingGroup)
-		if exists {
-			actualGroupRatioDec = ratio_setting.GetGroupRatioDecimal(autoGroup.(string))
-		}
-		actualGroupRatioDec, _ = AdtyApplySiteMarkupDecimal(ctx, relayInfo.UserId, relayInfo.UsingGroup, actualGroupRatioDec, modelName) // 二开：任务 11.4
-		actualGroupRatio := actualGroupRatioDec.InexactFloat64()
-
 		quotaInfo := QuotaInfo{
 			InputDetails: TokenDetails{
 				TextTokens:  textInputTokens,
@@ -272,14 +251,29 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 			},
 			ModelName:  modelName,
 			UsePrice:   relayInfo.PriceData.UsePrice,
-			ModelRatio: modelRatio,
-			GroupRatio: actualGroupRatio,
+			ModelPrice: relayInfo.PriceData.ModelPrice,
+			ModelRatio: relayInfo.PriceData.ModelRatio,
+			GroupRatio: relayInfo.PriceData.GroupRatioInfo.GroupRatio,
 		}
-		quotaInfo = withBilledGroupRatio(quotaInfo, actualGroupRatioDec)
-		quotaInfo.ModelRatioDecimal = modelRatioDec
-		quotaInfo.hasModelRatioDecimal = true
+		quotaInfo = quotaInfoFromPriceData(quotaInfo, relayInfo)
 		if snap := AdtyFrozenPriceSnapshot(ctx); snap != nil {
 			quotaInfo = applySnapshotToQuotaInfo(quotaInfo, snap)
+		} else {
+			if !quotaInfo.hasModelRatioDecimal {
+				modelRatioDec, _, _ := ratio_setting.GetModelRatioDecimal(modelName)
+				quotaInfo.ModelRatioDecimal = modelRatioDec
+				quotaInfo.hasModelRatioDecimal = true
+				quotaInfo.ModelRatio = modelRatioDec.InexactFloat64()
+			}
+			if !quotaInfo.hasGroupRatioDecimal || quotaInfo.GroupRatioDecimal.IsZero() && !relayInfo.PriceData.GroupRatioInfo.HasBilledGroupRatio() {
+				autoGroup, exists := common.GetContextKey(ctx, constant.ContextKeyAutoGroup)
+				if exists {
+					relayInfo.UsingGroup = autoGroup.(string)
+				}
+				actualGroupRatioDec := ratio_setting.GetGroupRatioDecimal(relayInfo.UsingGroup)
+				actualGroupRatioDec, _ = AdtyApplySiteMarkupDecimal(ctx, relayInfo.UserId, relayInfo.UsingGroup, actualGroupRatioDec, modelName) // 二开：任务 11.4
+				quotaInfo = withBilledGroupRatio(quotaInfo, actualGroupRatioDec)
+			}
 		}
 
 		var clamp *common.QuotaClamp
@@ -349,8 +343,9 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 		return fmt.Errorf("user quota is not enough, user quota: %s, need quota: %s", logger.FormatQuota(int(min(availableQuota, int64(math.MaxInt)))), logger.FormatQuota(quota))
 	}
 
-	if !token.UnlimitedQuota && token.RemainQuota < quota {
-		return fmt.Errorf("token quota is not enough, token remain quota: %s, need quota: %s", logger.FormatQuota(token.RemainQuota), logger.FormatQuota(quota))
+	tokenRemainQuota, _ := model.TokenQuotaForBilling(token)
+	if !token.UnlimitedQuota && tokenRemainQuota < quota {
+		return fmt.Errorf("token quota is not enough, token remain quota: %s, need quota: %s", logger.FormatQuota(tokenRemainQuota), logger.FormatQuota(quota))
 	}
 
 	shortfallBefore := relayInfo.BillingShortfall
@@ -399,9 +394,6 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	// 结算与预扣必须用同一个计价身份。modelName 是渠道映射后的上游名，用它查倍率会让同一次
 	// 结算横跨两张价目表（ISS-R4-0096）；与 PostAudioConsumeQuota 一样统一取 billing 身份。
 	billingModelName := relayInfo.GetBillingModelName()
-	completionRatio := ratio_setting.GetCompletionRatioDecimal(billingModelName)
-	audioRatio := ratio_setting.GetAudioRatioDecimal(billingModelName)
-	audioCompletionRatio := ratio_setting.GetAudioCompletionRatioDecimal(billingModelName)
 
 	modelRatio := relayInfo.PriceData.ModelRatio
 	groupRatio := relayInfo.PriceData.GroupRatioInfo.GroupRatio
@@ -427,6 +419,22 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	if snap := AdtyFrozenPriceSnapshot(ctx); snap != nil {
 		quotaInfo = applySnapshotToQuotaInfo(quotaInfo, snap)
 	}
+	completionRatio := quotaInfo.CompletionRatioDecimal
+	if !quotaInfo.hasCompletionRatioDecimal {
+		completionRatio = ratio_setting.GetCompletionRatioDecimal(billingModelName)
+	}
+	audioRatio := quotaInfo.AudioRatioDecimal
+	if !quotaInfo.hasAudioRatioDecimal {
+		audioRatio = ratio_setting.GetAudioRatioDecimal(billingModelName)
+	}
+	audioCompletionRatio := quotaInfo.AudioCompletionRatioDecimal
+	if !quotaInfo.hasAudioCompletionRatioDecimal {
+		audioCompletionRatio = ratio_setting.GetAudioCompletionRatioDecimal(billingModelName)
+	}
+	modelRatio = quotaInfo.ModelRatio
+	groupRatio = quotaInfoGroupRatio(quotaInfo).InexactFloat64()
+	modelPrice = quotaInfo.ModelPrice
+	usePrice = quotaInfo.UsePrice
 
 	quota, clamp := calculateAudioQuota(quotaInfo)
 	noteQuotaClamp(relayInfo, clamp)
@@ -614,20 +622,11 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 
 	tokenName := ctx.GetString("token_name")
 	billingModelName := relayInfo.GetBillingModelName()
-	completionRatio := ratio_setting.GetCompletionRatioDecimal(billingModelName)
-	audioRatio := ratio_setting.GetAudioRatioDecimal(billingModelName)
-	audioCompletionRatio := ratio_setting.GetAudioCompletionRatioDecimal(billingModelName)
 
 	modelRatio := relayInfo.PriceData.ModelRatio
 	groupRatio := relayInfo.PriceData.GroupRatioInfo.GroupRatio
 	modelPrice := relayInfo.PriceData.ModelPrice
 	usePrice := relayInfo.PriceData.UsePrice
-
-	toolSummary := textQuotaSummary{
-		ModelName:  billingModelName,
-		GroupRatio: groupRatio,
-	}
-	toolSummary.ToolCallSurchargeQuota = calculateTextToolCallSurcharge(ctx, relayInfo, &toolSummary)
 
 	quotaInfo := QuotaInfo{
 		InputDetails: TokenDetails{
@@ -648,6 +647,28 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	if snap := AdtyFrozenPriceSnapshot(ctx); snap != nil {
 		quotaInfo = applySnapshotToQuotaInfo(quotaInfo, snap)
 	}
+	completionRatio := quotaInfo.CompletionRatioDecimal
+	if !quotaInfo.hasCompletionRatioDecimal {
+		completionRatio = ratio_setting.GetCompletionRatioDecimal(billingModelName)
+	}
+	audioRatio := quotaInfo.AudioRatioDecimal
+	if !quotaInfo.hasAudioRatioDecimal {
+		audioRatio = ratio_setting.GetAudioRatioDecimal(billingModelName)
+	}
+	audioCompletionRatio := quotaInfo.AudioCompletionRatioDecimal
+	if !quotaInfo.hasAudioCompletionRatioDecimal {
+		audioCompletionRatio = ratio_setting.GetAudioCompletionRatioDecimal(billingModelName)
+	}
+	modelRatio = quotaInfo.ModelRatio
+	groupRatio = quotaInfoGroupRatio(quotaInfo).InexactFloat64()
+	modelPrice = quotaInfo.ModelPrice
+	usePrice = quotaInfo.UsePrice
+
+	toolSummary := textQuotaSummary{
+		ModelName:  billingModelName,
+		GroupRatio: groupRatio,
+	}
+	toolSummary.ToolCallSurchargeQuota = calculateTextToolCallSurcharge(ctx, relayInfo, &toolSummary)
 
 	var quota int
 	if tieredOk {

@@ -42,7 +42,18 @@ type GroupTextDialogProps = {
   onOpenChange: (open: boolean) => void
 }
 
-/** Edits a group's display name and description in the 7 content languages. */
+function pickFormalGroupTexts(texts?: GroupTexts): GroupTexts {
+  const next: GroupTexts = {}
+  for (const lang of CONTENT_LANGS) {
+    const value = texts?.[lang]
+    if (value !== undefined) {
+      next[lang] = value
+    }
+  }
+  return next
+}
+
+/** Edits a group's display name and description in the formal content languages. */
 export function GroupTextDialog(props: GroupTextDialogProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
@@ -50,12 +61,16 @@ export function GroupTextDialog(props: GroupTextDialogProps) {
   const [descs, setDescs] = useState<GroupTexts>({})
 
   useEffect(() => {
-    setNames({ ...props.group?.names })
-    setDescs({ ...props.group?.descs })
+    setNames(pickFormalGroupTexts(props.group?.names))
+    setDescs(pickFormalGroupTexts(props.group?.descs))
   }, [props.group])
 
   const mutation = useMutation({
-    mutationFn: () => updateAdminGroup(props.group?.id ?? '', { names, descs }),
+    mutationFn: () =>
+      updateAdminGroup(props.group?.id ?? '', {
+        names: pickFormalGroupTexts(names),
+        descs: pickFormalGroupTexts(descs),
+      }),
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: adminGroupsQueryKey }),

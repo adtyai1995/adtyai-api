@@ -555,7 +555,7 @@
 | `service/http_client.go` | 原请求带 `mj-api-secret` 时，跨源重定向直接拒绝 | Go 会转发非标准密钥头；307/308 不能把渠道密钥送到另一个源 | OBS-ROOT-018 |
 | `AGENTS.md`、`web/AGENTS.md`、根目录各语言 `README*.md` | 站长不可更换；正式语言改为简体中文和英文；补上兑换码、团队、通知机器人、工单、翻译和分组健康的开发边界 | 旧交接和八种正式语言句子与已确认规则冲突；保留原标题、上游署名和模块路径 | A.20 / DEC-011 |
 | `AGENTS.md`、`web/AGENTS.md`、根目录各语言 `README*.md`、`docs/adty/README.md` | 版本说明补齐其他分支和拉取请求的生成规则，并写明仓库内 `VERSION` 保持为空 | 与 `adty-ghcr.yml` 的实际写法一致；不改 `package.json` 包版本 | 版本约定 |
-| `pkg/perf_metrics/metrics.go` | `RecordRelayResult` 在分类后调用 `GroupHealthObserver` | 分组健康按最终用户请求统计一次，观察者不能改路由 | A.23 |
+| `service/adty_group_health.go` | 分组健康由主动探活维护，独立于已下线的 `perf_metrics` 链路 | 分组健康观测不修改路由，旧 `perf_metrics` 代码已整体移除 | A.23 |
 | `service/security_verification.go` | 二次验证增加 `adty.notice.configure`，只允许 Root | Bot Token 和翻译凭据变更要重新验证，证明绑定目标和动作 | A.24.10 |
 | `controller/misc.go` | `GetStatus` 里 `announcements` 字段的数据源从 `console_setting.GetAnnouncements()` 换成 `service.AdtyPublicAnnouncementsForRequest(c)`，返回形状不变 | 公告并入新表后，`/api/status` 仍要服务未登录访客（这条路由没有认证中间件），所以数据源换、形状不换；按 Host 决定站点可见性，分站不会看到主站公告 | 公告并入 |
 | `web/src/features/system-settings/content/announcements-section.tsx` | 删掉直接编辑 `console_setting.announcements` 的旧表格和它的新增/编辑/删除对话框，只留公开面板开关和 `NotificationManager` | 新旧两套都能发公告、读者只有一份：同一件事两个来源。公告统一由发布记录承载，旧 option 保留为回滚源 | 公告并入 |

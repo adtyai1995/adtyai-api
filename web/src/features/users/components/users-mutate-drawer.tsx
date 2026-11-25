@@ -116,6 +116,7 @@ export function UsersMutateDrawer({
   const targetUserId = currentRow?.id
   const { triggerRefresh, requestVerification } = useUsers()
   const currentUser = useAuthStore((s) => s.auth.user)
+  const canEditAdminPermissions = currentUser?.role === ROLE.SUPER_ADMIN
   const canSubmit = canAdmin(
     currentUser,
     isUpdate ? ADTY_PERMISSIONS.USER_WRITE : ADTY_PERMISSIONS.USER_CREATE
@@ -141,7 +142,8 @@ export function UsersMutateDrawer({
   // Permission catalog is owned by the backend; fetched once and reused.
   const { data: permissionCatalog = EMPTY_PERMISSION_CATALOG } = useQuery({
     queryKey: ['admin-permission-catalog'],
-    queryFn: async () => requireServerSuccess(await getPermissionCatalog()),
+    queryFn: getPermissionCatalog,
+    enabled: open && canEditAdminPermissions,
     staleTime: 5 * 60 * 1000,
   })
 
@@ -191,7 +193,6 @@ export function UsersMutateDrawer({
   const tokensOnly = currencyMeta.kind === 'tokens'
 
   const selectedRole = form.watch('role')
-  const canEditAdminPermissions = currentUser?.role === ROLE.SUPER_ADMIN
   const targetIsAdmin =
     (selectedRole ?? (isTargetLoaded ? loadedUser?.role : 0) ?? 0) >= ROLE.ADMIN
   const targetForReset = loadedUser ?? currentRow
@@ -406,40 +407,53 @@ export function UsersMutateDrawer({
                   <FormField
                     control={form.control}
                     name='role'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('Role')}</FormLabel>
-                        <Select
-                          items={[
+                    render={({ field }) => {
+                      const roleOptions = canEditAdminPermissions
+                        ? [
                             { value: '1', label: t('Common User') },
                             { value: '10', label: t('Admin') },
-                          ]}
-                          onValueChange={(value) =>
-                            value !== null &&
-                            field.onChange(Number.parseInt(value))
-                          }
-                          value={String(field.value)}
-                        >
-                          <FormControl>
-                            <SelectTrigger>
-                              <SelectValue placeholder={t('Select a role')} />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent alignItemWithTrigger={false}>
-                            <SelectGroup>
-                              <SelectItem value='1'>
-                                {t('Common User')}
-                              </SelectItem>
-                              <SelectItem value='10'>{t('Admin')}</SelectItem>
-                            </SelectGroup>
-                          </SelectContent>
-                        </Select>
-                        <FormDescription>
-                          {t("Set the user's role (cannot be Root)")}
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
+                          ]
+                        : [{ value: '1', label: t('Common User') }]
+                      return (
+                        <FormItem>
+                          <FormLabel>{t('Role')}</FormLabel>
+                          <Select
+                            items={roleOptions}
+                            onValueChange={(value) =>
+                              value !== null &&
+                              field.onChange(Number.parseInt(value))
+                            }
+                            value={String(field.value)}
+                          >
+                            <FormControl>
+                              <SelectTrigger>
+                                <SelectValue placeholder={t('Select a role')} />
+                              </SelectTrigger>
+                            </FormControl>
+                            <SelectContent alignItemWithTrigger={false}>
+                              <SelectGroup>
+                                <SelectItem value='1'>
+                                  {t('Common User')}
+                                </SelectItem>
+                                {canEditAdminPermissions && (
+                                  <SelectItem value='10'>
+                                    {t('Admin')}
+                                  </SelectItem>
+                                )}
+                              </SelectGroup>
+                            </SelectContent>
+                          </Select>
+                          <FormDescription>
+                            {canEditAdminPermissions
+                              ? t("Set the user's role (cannot be Root)")
+                              : t(
+                                  'Only Root can create administrator accounts.'
+                                )}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )
+                    }}
                   />
                 )}
 

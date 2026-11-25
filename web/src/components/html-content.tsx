@@ -21,16 +21,16 @@ import { useEffect, useMemo, useRef } from 'react'
 
 import { cn } from '@/lib/utils'
 
-export type HtmlContentVariant = 'inline' | 'isolated'
+export type HtmlContentVariant = 'inline' | 'isolated' | 'subsite-isolated'
 
 interface HtmlContentProps {
   content: string
   className?: string
   variant?: HtmlContentVariant
+  allowEmbeds?: boolean
 }
 
-const isolatedContentSandbox =
-  'allow-forms allow-popups allow-popups-to-escape-sandbox allow-presentation'
+const isolatedContentSandbox = 'allow-forms allow-popups allow-presentation'
 
 const isolatedContentBaseStyles = `
 <style>
@@ -87,7 +87,22 @@ const isolatedSanitizeOptions = {
   FORCE_BODY: true,
 } satisfies Config
 
-function hardenIsolatedHtml(html: string): string {
+const subsiteIsolatedSanitizeOptions = {
+  ...isolatedSanitizeOptions,
+  ADD_TAGS: ['audio', 'picture', 'source', 'style', 'track', 'video'],
+  FORBID_TAGS: [
+    'base',
+    'embed',
+    'form',
+    'iframe',
+    'link',
+    'meta',
+    'object',
+    'script',
+  ],
+} satisfies Config
+
+function hardenIsolatedHtml(html: string, allowEmbeds: boolean): string {
   if (typeof document === 'undefined') {
     return html
   }
@@ -105,27 +120,44 @@ function hardenIsolatedHtml(html: string): string {
     link.setAttribute('rel', [...rel].join(' '))
   })
 
-  template.content.querySelectorAll('iframe').forEach((frame) => {
-    frame.removeAttribute('srcdoc')
-    frame.setAttribute('sandbox', isolatedContentSandbox)
-    frame.setAttribute('referrerpolicy', 'no-referrer')
+  if (!allowEmbeds) {
+    template.content.querySelectorAll('iframe, form').forEach((node) => {
+      node.remove()
+    })
+  } else {
+    template.content.querySelectorAll('iframe').forEach((frame) => {
+      frame.removeAttribute('srcdoc')
+      frame.setAttribute('sandbox', isolatedContentSandbox)
+      frame.setAttribute('referrerpolicy', 'no-referrer')
 
-    if (!frame.hasAttribute('loading')) {
-      frame.setAttribute('loading', 'lazy')
-    }
-  })
+      if (!frame.hasAttribute('loading')) {
+        frame.setAttribute('loading', 'lazy')
+      }
+    })
+  }
 
   return template.innerHTML
 }
 
 function sanitizeHtmlContent(
   content: string,
-  variant: HtmlContentVariant
+  variant: HtmlContentVariant,
+  allowEmbeds?: boolean
 ): string {
-  if (variant === 'isolated') {
-    const html = DOMPurify.sanitize(content, isolatedSanitizeOptions)
+  const embedsAllowed = variant !== 'subsite-isolated' && allowEmbeds !== false
+  if (variant === 'isolated' || variant === 'subsite-isolated') {
+    const html = DOMPurify.sanitize(
+      content,
+      embedsAllowed ? isolatedSanitizeOptions : subsiteIsolatedSanitizeOptions
+    )
 
-    return hardenIsolatedHtml(html)
+    return hardenIsolatedHtml(html, embedsAllowed)
+  }
+
+  if (!embedsAllowed) {
+    return DOMPurify.sanitize(content, {
+      FORBID_TAGS: ['form', 'iframe'],
+    })
   }
 
   return DOMPurify.sanitize(content)
@@ -185,12 +217,13 @@ function IsolatedHtmlContent(props: {
 
 export function HtmlContent(props: HtmlContentProps) {
   const variant = props.variant ?? 'inline'
+  const allowEmbeds = props.allowEmbeds
   const html = useMemo(
-    () => sanitizeHtmlContent(props.content, variant),
-    [props.content, variant]
+    () => sanitizeHtmlContent(props.content, variant, allowEmbeds),
+    [props.content, variant, allowEmbeds]
   )
 
-  if (variant === 'isolated') {
+  if (variant === 'isolated' || variant === 'subsite-isolated') {
     return <IsolatedHtmlContent className={props.className} html={html} />
   }
 

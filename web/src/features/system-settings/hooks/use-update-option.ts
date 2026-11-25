@@ -114,8 +114,6 @@ const STATUS_RELATED_KEYS = new Set([
   'adty_bepusdt.base_url',
   'adty_bepusdt.secret',
   'adty_bepusdt.trade_types',
-  'QuotaRemindEnabled',
-  'QuotaRemindThreshold',
 ])
 
 export function useUpdateOption() {

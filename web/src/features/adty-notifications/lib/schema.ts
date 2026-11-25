@@ -54,6 +54,15 @@ export const LEGACY_NOTIFICATION_AUDIENCES = [
 export type LegacyNotificationAudience =
   (typeof LEGACY_NOTIFICATION_AUDIENCES)[number]
 
+export const PRESERVED_LEGACY_AUDIENCES = [
+  'user',
+  'team',
+  'all_users',
+] as const
+
+export type PreservedLegacyAudience =
+  (typeof PRESERVED_LEGACY_AUDIENCES)[number]
+
 export const NOTIFICATION_AUDIENCES = [
   ...LEGACY_NOTIFICATION_AUDIENCES,
   ...ALL_TARGET_AUDIENCES,
@@ -88,7 +97,11 @@ const baseNotificationObject = z.object({
 function refineNotificationInput(
   value: z.infer<typeof baseNotificationObject>,
   ctx: z.RefinementCtx,
-  options: { mode?: 'root' | 'owner'; draft: boolean }
+  options: {
+    mode?: 'root' | 'owner'
+    draft: boolean
+    preserveLegacyAudience?: boolean
+  }
 ) {
   const plainLength = getNotificationPlainLength(value.content)
   if (!options.draft && plainLength === 0) {
@@ -106,7 +119,14 @@ function refineNotificationInput(
     })
   }
 
-  if (value.target_audiences.length === 0) {
+  const isPreservedLegacy =
+    options.preserveLegacyAudience === true &&
+    value.target_audiences.length === 0 &&
+    (value.audience === 'user' ||
+      value.audience === 'team' ||
+      value.audience === 'all_users')
+
+  if (!isPreservedLegacy && value.target_audiences.length === 0) {
     ctx.addIssue({
       code: 'custom',
       path: ['target_audiences'],
@@ -115,6 +135,7 @@ function refineNotificationInput(
   }
 
   if (
+    !isPreservedLegacy &&
     options.mode === 'root' &&
     value.target_audiences.includes('site_users') &&
     value.target_site_ids.length === 0
@@ -146,7 +167,8 @@ function refineNotificationInput(
 
 export function createNotificationSchema(
   mode: 'root' | 'owner',
-  draft = false
+  draft = false,
+  preserveLegacyAudience = false
 ) {
   const base = draft
     ? baseNotificationObject
@@ -158,7 +180,7 @@ export function createNotificationSchema(
           .max(120, 'Invalid parameters'),
       })
   return base.superRefine((value, ctx) =>
-    refineNotificationInput(value, ctx, { mode, draft })
+    refineNotificationInput(value, ctx, { mode, draft, preserveLegacyAudience })
   )
 }
 
@@ -254,6 +276,56 @@ function parseTargetStringList(value: unknown): string[] {
   return []
 }
 
+export function isPreservedLegacyNotification(
+  row: {
+    audience?: string
+    target_audiences?: string[] | string
+  } | null
+): boolean {
+  if (!row) return false
+  if (parseTargetStringList(row.target_audiences).length > 0) return false
+  return (
+    row.audience === 'user' ||
+    row.audience === 'team' ||
+    row.audience === 'all_users'
+  )
+}
+
+export function resolveLegacyTargetIds(
+  row: {
+    audience?: string
+    target_site_id?: number
+    target_site_name?: string
+    target_team_id?: number
+    target_user_id?: number
+  } | null
+): {
+  target_site_id: number
+  target_team_id: number
+  target_user_id: number
+} {
+  if (!row) {
+    return { target_site_id: 0, target_team_id: 0, target_user_id: 0 }
+  }
+  const targetSiteId = Math.max(0, row.target_site_id ?? 0)
+  let targetTeamId = Math.max(0, row.target_team_id ?? 0)
+  let targetUserId = Math.max(0, row.target_user_id ?? 0)
+  const siteName = (row.target_site_name ?? '').trim()
+  if (row.audience === 'team' && targetTeamId === 0) {
+    const match = /^team:(\d+)$/.exec(siteName)
+    if (match) targetTeamId = Number(match[1])
+  }
+  if (row.audience === 'user' && targetUserId === 0) {
+    const match = /^user:(\d+)$/.exec(siteName)
+    if (match) targetUserId = Number(match[1])
+  }
+  return {
+    target_site_id: targetSiteId,
+    target_team_id: targetTeamId,
+    target_user_id: targetUserId,
+  }
+}
+
 function parseTargetSiteIdList(value: unknown): number[] {
   let raw: unknown[] = []
   if (Array.isArray(value)) {
@@ -319,6 +391,13 @@ export function resolveInitialTargets(
   if (!row) {
     return {
       target_audiences: [mode === 'root' ? 'main_users' : 'site_users'],
+      target_site_ids: [],
+    }
+  }
+
+  if (isPreservedLegacyNotification(row)) {
+    return {
+      target_audiences: [],
       target_site_ids: [],
     }
   }

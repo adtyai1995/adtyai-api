@@ -30,16 +30,10 @@ import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import { SecureVerificationDialog } from '@/features/auth/secure-verification/components/secure-verification-dialog'
 import { useSecureVerification } from '@/features/auth/secure-verification/hooks/use-secure-verification'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
@@ -51,6 +45,12 @@ import {
   getPaymentOrphans,
   type PaymentOrphanEvent,
 } from '../api'
+import {
+  orphanReasonLabel,
+  orphanStatusLabel,
+  orphanStatusVariant,
+  paymentProviderLabel,
+} from '../trace-labels'
 import { PaymentOrphanReviewDialog } from './payment-orphan-review-dialog'
 
 type PaymentOrphanPanelProps = {
@@ -105,16 +105,12 @@ export function PaymentOrphanPanel(props: PaymentOrphanPanelProps) {
   return (
     <>
       <SecureVerificationDialog {...verification.dialogProps} />
-      <Card>
-        <CardHeader className='flex flex-row flex-wrap items-start justify-between gap-3'>
-          <div>
-            <CardTitle>{t('Payments needing review')}</CardTitle>
-            <CardDescription>
-              {t(
-                'Callbacks that could not credit an order. Amount mismatches must be completed manually.'
-              )}
-            </CardDescription>
-          </div>
+      <ContentSection
+        title={t('Payments needing review')}
+        description={t(
+          'Callbacks that could not credit an order. Amount mismatches must be completed manually.'
+        )}
+        actions={
           <div className='flex gap-1'>
             {['pending_review', 'all'].map((value) => (
               <Button
@@ -130,15 +126,15 @@ export function PaymentOrphanPanel(props: PaymentOrphanPanelProps) {
               </Button>
             ))}
           </div>
-        </CardHeader>
-        <CardContent className='flex flex-col gap-4'>
-          {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
-          {query.isPending ? (
-            <LoadingState />
-          ) : (
-            query.data && (
-              <>
-                <StaticDataTable
+        }
+      >
+        {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
+        {query.isPending ? (
+          <LoadingState />
+        ) : (
+          query.data && (
+            <>
+              <StaticDataTable
                 tableClassName='min-w-[760px]'
                 tableProps={{ 'aria-label': t('Payments needing review') }}
                 data={query.data?.items ?? []}
@@ -158,7 +154,7 @@ export function PaymentOrphanPanel(props: PaymentOrphanPanelProps) {
                   {
                     id: 'provider',
                     header: t('Provider'),
-                    cell: (row) => row.provider,
+                    cell: (row) => paymentProviderLabel(t, row.provider),
                   },
                   {
                     id: 'order',
@@ -174,7 +170,7 @@ export function PaymentOrphanPanel(props: PaymentOrphanPanelProps) {
                     header: t('Reason'),
                     cell: (row) => (
                       <span className='text-muted-foreground text-xs'>
-                        {row.error || row.reason}
+                        {orphanReasonLabel(t, row.error || row.reason)}
                       </span>
                     ),
                   },
@@ -183,8 +179,8 @@ export function PaymentOrphanPanel(props: PaymentOrphanPanelProps) {
                     header: t('Status'),
                     cell: (row) => (
                       <StatusBadge
-                        label={row.status}
-                        variant='neutral'
+                        label={orphanStatusLabel(t, row.status)}
+                        variant={orphanStatusVariant(row.status)}
                         copyable={false}
                       />
                     ),
@@ -230,11 +226,10 @@ export function PaymentOrphanPanel(props: PaymentOrphanPanelProps) {
                 pageSize={pageSize}
                 onPageChange={setPage}
               />
-              </>
-            )
-          )}
-        </CardContent>
-      </Card>
+            </>
+          )
+        )}
+      </ContentSection>
       {reviewEvent && (
         <PaymentOrphanReviewDialog
           key={reviewEvent.id}

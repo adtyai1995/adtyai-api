@@ -25,15 +25,9 @@ import { StaticDataTable } from '@/components/data-table/static/static-data-tabl
 import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
@@ -72,23 +66,19 @@ export function SiteEarningReviewPanel(props: { canResolve: boolean }) {
   const rows = Array.isArray(query.data?.items) ? query.data.items : []
   return (
     <>
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('Site earnings needing review')}</CardTitle>
-          <CardDescription>
-            {t(
-              'Historical task adjustments whose original charge was not recorded. Until finance decides whether the original charge counts toward site earnings, that site keeps its positive earnings on hold.'
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className='flex flex-col gap-3'>
-          {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
-          {query.isPending ? (
-            <LoadingState />
-          ) : (
-            query.data && (
-              <>
-                <StaticDataTable
+      <ContentSection
+        title={t('Site earnings needing review')}
+        description={t(
+          'Historical task adjustments whose original charge was not recorded. Until finance decides whether the original charge counts toward site earnings, that site keeps its positive earnings on hold.'
+        )}
+      >
+        {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
+        {query.isPending ? (
+          <LoadingState />
+        ) : (
+          query.data && (
+            <>
+              <StaticDataTable
                   tableClassName='min-w-[760px]'
                   tableProps={{
                     'aria-label': t('Site earnings needing review'),
@@ -164,8 +154,7 @@ export function SiteEarningReviewPanel(props: { canResolve: boolean }) {
               </>
             )
           )}
-        </CardContent>
-      </Card>
+      </ContentSection>
       {reviewing && (
         <SiteEarningReviewDialog
           key={reviewing.operation_key}

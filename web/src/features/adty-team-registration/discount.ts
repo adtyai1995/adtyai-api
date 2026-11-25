@@ -19,8 +19,8 @@ For commercial licensing, please contact support@quantumnous.com
 export const TEAM_DISCOUNT_MAX = 10
 export const SUBSITE_TEAM_MULTIPLIER_MIN = 1
 
-const MAIN_TEAM_DECIMAL_PATTERN = /^(?:\d{1,2}(?:\.\d{1,4}0*)?|\.\d{1,4}0*)$/
-const SUBSITE_TEAM_DECIMAL_PATTERN = /^\d{1,2}(?:\.\d{1,4}0*)?$/
+const MAIN_TEAM_DECIMAL_PATTERN = /^(?:\d{1,2}(?:\.\d{1,4})?|\.\d{1,4})$/
+const SUBSITE_TEAM_DECIMAL_PATTERN = /^\d{1,2}(?:\.\d{1,4})?$/
 
 /** Main-site team discount ratio: 0 < value <= 10 with up to 4 fractional digits. */
 export function validMainTeamDiscount(input: string): boolean {

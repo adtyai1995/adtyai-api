@@ -42,6 +42,12 @@ var adtySecretOptionKeys = []string{
 	adty_setting.ResellerSettingModule + ".aliyun_access_key_id",
 	adty_setting.ResellerSettingModule + "." + adty_setting.ResellerKeyCloudflareTok,
 	adty_setting.ResellerSettingModule + "." + adty_setting.ResellerKeyWidgetSecret,
+	"adty_bepusdt.secret",
+	"SMTPToken",
+	"ResendApiKey",
+	"TurnstileSecretKey",
+	"TelegramBotToken",
+	"WorkerValidKey",
 }
 
 func isAdtySecretOption(key string) bool {
@@ -187,6 +193,12 @@ var adtySecretClearedValues = map[string]string{
 	adty_setting.ResellerSettingModule + ".aliyun_access_key_id":                     "",
 	adty_setting.ResellerSettingModule + "." + adty_setting.ResellerKeyCloudflareTok: "",
 	adty_setting.ResellerSettingModule + "." + adty_setting.ResellerKeyWidgetSecret:  "{}",
+	"adty_bepusdt.secret":                                                            "",
+	"SMTPToken":                                                                      "",
+	"ResendApiKey":                                                                   "",
+	"TurnstileSecretKey":                                                             "",
+	"TelegramBotToken":                                                               "",
+	"WorkerValidKey":                                                                 "",
 }
 
 var adtyClearedSecretKeys struct {

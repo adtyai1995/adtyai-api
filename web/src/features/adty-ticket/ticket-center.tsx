@@ -31,6 +31,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
@@ -363,6 +364,7 @@ function TicketWorkspace(props: { workspace: TicketScope; userId?: number }) {
       setPage(1)
       setScope(targetScope)
       setCreateOpen(false)
+      setCreateFiles([])
       selectTicket(createdTicket.id)
 
       const firstMessageId = createdTicket.initial_message_id ?? 0
@@ -388,19 +390,17 @@ function TicketWorkspace(props: { workspace: TicketScope; userId?: number }) {
           }
         }
       }
-      if (submittedVersion === createVersion.current) {
-        setCreateFiles(failedItems)
-      }
       if (failedItems.length > 0) {
-        setError(
-          failedItems.length === 1 && pendingItems.length === 1
-            ? firstErr
-            : t('{{failed}} of {{total}} images failed to upload: {{reason}}', {
-                failed: failedItems.length,
-                total: pendingItems.length,
-                reason: firstErr,
-              })
+        const failedNames = failedItems.map((item) => item.file.name).join(', ')
+        const failureMessage = t(
+          'Ticket created, but some images failed to upload ({{files}}): {{reason}}. Please re-upload them in the ticket details.',
+          {
+            files: failedNames,
+            reason: firstErr,
+          }
         )
+        setError(failureMessage)
+        toast.error(failureMessage)
       }
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Failed to save')))
@@ -1110,14 +1110,16 @@ function TicketWorkspace(props: { workspace: TicketScope; userId?: number }) {
           title={t('Ticket image limits')}
           contentClassName='sm:max-w-md'
         >
-          <TicketImagePolicySettings
-            embedded
-            policy={list.data.imagePolicy}
-            onSaved={async () => {
-              await refresh()
-              setPolicyOpen(false)
-            }}
-          />
+          {policyOpen && (
+            <TicketImagePolicySettings
+              embedded
+              policy={list.data.imagePolicy}
+              onSaved={async () => {
+                await refresh()
+                setPolicyOpen(false)
+              }}
+            />
+          )}
         </Dialog>
       )}
     </div>

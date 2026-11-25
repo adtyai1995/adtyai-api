@@ -275,10 +275,12 @@ export function TranslationAdminPanel() {
   const numbersValid = NUMBER_FIELDS.every((key) =>
     /^\d+$/.test(draft[key].trim())
   )
+  const hasIndependentToken =
+    Boolean(config.data?.token_mask?.trim()) || draft.token.trim() !== ''
   const ready =
     draft.model_name.trim() !== '' &&
     numbersValid &&
-    (!independent || draft.base_url.trim() !== '')
+    (!independent || (draft.base_url.trim() !== '' && hasIndependentToken))
 
   const refresh = () =>
     queryClient.invalidateQueries({ queryKey: ['adty-translation'] })
@@ -432,7 +434,9 @@ export function TranslationAdminPanel() {
       setResult(data.english || `${data.source || source}\n${noticeText}`)
       await refresh()
     } catch (cause) {
-      setError(getServerErrorMessage(cause, t('Failed to save')))
+      const message = getServerErrorMessage(cause, t('Failed to save'))
+      setError(message)
+      toast.error(message)
     } finally {
       setPending(false)
     }
@@ -454,7 +458,9 @@ export function TranslationAdminPanel() {
       setEditingEnglish('')
       await refresh()
     } catch (cause) {
-      setError(getServerErrorMessage(cause, t('Failed to save')))
+      const message = getServerErrorMessage(cause, t('Failed to save'))
+      setError(message)
+      toast.error(message)
     } finally {
       setPending(false)
     }
@@ -489,7 +495,9 @@ export function TranslationAdminPanel() {
       setGlossaryDraft({ id: 0, source: '', locale: 'en', target: '' })
       await refresh()
     } catch (cause) {
-      setError(getServerErrorMessage(cause, t('Failed to save')))
+      const message = getServerErrorMessage(cause, t('Failed to save'))
+      setError(message)
+      toast.error(message)
     } finally {
       setPending(false)
     }
@@ -508,7 +516,9 @@ export function TranslationAdminPanel() {
       }
       await refresh()
     } catch (cause) {
-      setError(getServerErrorMessage(cause, t('Failed to delete')))
+      const message = getServerErrorMessage(cause, t('Failed to delete'))
+      setError(message)
+      toast.error(message)
     } finally {
       setPending(false)
     }

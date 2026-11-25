@@ -47,6 +47,7 @@ func adtyStaffDashboardAllowed(c *gin.Context, user *model.UserBase, identity se
 	case "GET /api/adty/badges", "POST /api/adty/badges/seen", "GET /api/adty/staff/self", "GET /api/adty/staff/customers", "GET /api/adty/staff/customers/:id", "GET /api/adty/staff/customers/:id/topups", "GET /api/adty/staff/customers/:id/logs",
 		"GET /api/adty/staff/customers/:id/orders", "GET /api/adty/staff/customers/:id/orders/:trade_no",
 		"POST /api/adty/staff/customers/:id/password-reset", "POST /api/adty/staff/customers/:id/disable",
+		"GET /api/adty/staff/balance-requests", "POST /api/adty/staff/balance-requests",
 		"GET /api/user/self", "GET /api/verify/methods", "POST /api/verify", "GET /api/user/sessions", "DELETE /api/user/sessions/:sid", "POST /api/user/sessions/revoke-others",
 		"GET /api/adty/notifications", "POST /api/adty/notifications/read", "GET /api/adty/notifications/announcements/:key", "POST /api/adty/notifications/hide",
 		"GET /api/adty/notifications/todos", "POST /api/adty/notifications/todo/complete", "POST /api/adty/notifications/todo/in-progress":

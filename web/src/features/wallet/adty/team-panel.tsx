@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
 import { Loader2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -37,7 +38,7 @@ import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { teamRegistrationUrl } from '@/features/adty-team-registration/api'
 import { toIntlLocale } from '@/i18n/languages'
-import { api } from '@/lib/api'
+import { api, getSelf } from '@/lib/api'
 import { formatQuota, formatTimestampToDate } from '@/lib/format'
 import { formatUserIdentity } from '@/lib/format-user-identity'
 import {
@@ -45,7 +46,7 @@ import {
   requireServerSuccess,
 } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
-import { useAuthStore } from '@/stores/auth-store'
+import { useAuthStore, type AuthUser } from '@/stores/auth-store'
 
 import { adtyTopupQueryKeys, getAdtyTopupInfo, quoteAdtyTopup } from './api'
 import { EpayPayDialog } from './components/epay-pay-dialog'
@@ -136,6 +137,7 @@ export function TeamPanel() {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const mine = useQuery({
     queryKey: ['adty-team', 'mine'],
     queryFn: async () => {
@@ -1247,6 +1249,20 @@ export function TeamPanel() {
               throw new Error(response.data?.message || 'Failed to save')
             }
             setConfirmLeave(false)
+            try {
+              const selfRes = await getSelf()
+              if (selfRes?.success && selfRes.data) {
+                useAuthStore.getState().auth.setUser(selfRes.data as AuthUser)
+              }
+            } catch {
+              // Independent employee sessions may already be revoked on leave.
+            }
+            void queryClient.invalidateQueries({ queryKey: ['user', 'self'] })
+            void navigate({
+              to: '/dashboard/$section',
+              params: { section: 'overview' },
+              replace: true,
+            })
           })
         }}
       >

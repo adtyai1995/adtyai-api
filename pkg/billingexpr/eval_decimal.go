@@ -23,6 +23,8 @@ const (
 	maxExprAbsExp             = 64
 	maxExprRegexLen           = 1024
 	maxExprRegexCacheSize     = 256
+	maxExprStringParseLen     = 64
+	maxExprStringConcatBytes  = 64 * 1024
 )
 
 var (
@@ -99,6 +101,7 @@ type decimalEvalEnv struct {
 	trace           *TraceResult
 	headers         map[string]string
 	body            []byte
+	frozenParams    map[string]any
 	usage           map[string]any
 	now             time.Time
 	defaultTimezone string
@@ -119,6 +122,10 @@ func evalBillingExpr(node ast.Node, src string, env *decimalEvalEnv) (decimal.De
 	}
 	if !decimalFiniteNonNegative(cost) {
 		return decimal.Zero, errNonFiniteExpr
+	}
+	cost, err = checkExprDecimalBounds(cost)
+	if err != nil {
+		return decimal.Zero, err
 	}
 	return cost, nil
 }
@@ -141,7 +148,7 @@ func evalNode(node ast.Node, env *decimalEvalEnv) (any, error) {
 	case *ast.IntegerNode:
 		return decimal.NewFromInt(int64(n.Value)), nil
 	case *ast.FloatNode:
-		return decimalFromFloatNode(env.src, n), nil
+		return decimalFromFloatNode(env.src, n)
 	case *ast.IdentifierNode:
 		return evalIdentifier(n.Value, env)
 	case *ast.UnaryNode:
@@ -921,6 +928,9 @@ func evalArithmetic(op string, left, right any) (any, error) {
 	if op == "+" {
 		if ls, lOK := left.(string); lOK {
 			if rs, rOK := right.(string); rOK {
+				if len(ls)+len(rs) > maxExprStringConcatBytes {
+					return nil, fmt.Errorf("expr run error: string length exceeds maximum %d bytes", maxExprStringConcatBytes)
+				}
 				return ls + rs, nil
 			}
 		}
@@ -932,9 +942,9 @@ func evalArithmetic(op string, left, right any) (any, error) {
 	}
 	switch op {
 	case "+":
-		return ld.Add(rd), nil
+		return checkExprDecimalBounds(ld.Add(rd))
 	case "-":
-		return ld.Sub(rd), nil
+		return checkExprDecimalBounds(ld.Sub(rd))
 	case "*":
 		return checkExprDecimalBounds(ld.Mul(rd))
 	case "/":
@@ -946,7 +956,7 @@ func evalArithmetic(op string, left, right any) (any, error) {
 		if rd.IsZero() {
 			return nil, errNonFiniteExpr
 		}
-		return ld.Mod(rd), nil
+		return checkExprDecimalBounds(ld.Mod(rd))
 	case "**", "^":
 		if !rd.Equal(rd.Truncate(0)) || rd.Abs().GreaterThan(decimal.NewFromInt(maxExprExponent)) {
 			return nil, fmt.Errorf("expr run error: exponent must be an integer within [-%d, %d]", maxExprExponent, maxExprExponent)
@@ -1034,12 +1044,22 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("expr run error: fixed amount must be a number, got %T", args[0])
 		}
+		if !decimalFiniteNonNegative(amount) {
+			return nil, errNonFiniteExpr
+		}
+		scaled, err := checkExprDecimalBounds(amount.Mul(decimal.NewFromInt(1_000_000)))
+		if err != nil {
+			return nil, err
+		}
+		view := amount.InexactFloat64()
+		if math.IsNaN(view) || math.IsInf(view, 0) {
+			return nil, errNonFiniteExpr
+		}
 		if env != nil && env.trace != nil {
 			env.trace.BillingUnit = BillingUnitRequest
-			view := amount.InexactFloat64()
 			env.trace.FixedPrice = &view
 		}
-		return amount.Mul(decimal.NewFromInt(1_000_000)), nil
+		return scaled, nil
 	case requestRuleTraceFunction, requestRuleTraceIntFunction:
 		if len(args) != 3 {
 			return nil, fmt.Errorf("expr run error: internal trace expects 3 arguments")
@@ -1084,14 +1104,22 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 			return nil, fmt.Errorf("expr run error: param path must be a string, got %T", args[0])
 		}
 		path = strings.TrimSpace(path)
-		if path == "" || env == nil || len(env.body) == 0 {
+		if path == "" || env == nil {
 			return nil, nil
 		}
-		result := gjson.GetBytes(env.body, path)
-		if !result.Exists() {
-			return nil, nil
+		if len(env.body) > 0 {
+			result := gjson.GetBytes(env.body, path)
+			if !result.Exists() {
+				return nil, nil
+			}
+			return normalizeMemberValue(result.Value()), nil
 		}
-		return normalizeMemberValue(result.Value()), nil
+		if env.frozenParams != nil {
+			if val, exists := env.frozenParams[path]; exists {
+				return normalizeMemberValue(val), nil
+			}
+		}
+		return nil, nil
 	case "u":
 		if len(args) != 1 {
 			return nil, fmt.Errorf("expr run error: u expects 1 argument")
@@ -1179,7 +1207,11 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 			return d.Truncate(0), nil
 		}
 		if s, ok := args[0].(string); ok {
-			d, err := decimal.NewFromString(strings.TrimSpace(s))
+			trimmed := strings.TrimSpace(s)
+			if len(trimmed) > maxExprStringParseLen {
+				return nil, fmt.Errorf("expr run error: int input exceeds maximum length %d", maxExprStringParseLen)
+			}
+			d, err := decimal.NewFromString(trimmed)
 			if err != nil {
 				return nil, fmt.Errorf("expr run error: int cannot parse %q", s)
 			}
@@ -1203,7 +1235,11 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 			return checkExprDecimalBounds(d)
 		}
 		if s, ok := args[0].(string); ok {
-			d, err := decimal.NewFromString(strings.TrimSpace(s))
+			trimmed := strings.TrimSpace(s)
+			if len(trimmed) > maxExprStringParseLen {
+				return nil, fmt.Errorf("expr run error: float input exceeds maximum length %d", maxExprStringParseLen)
+			}
+			d, err := decimal.NewFromString(trimmed)
 			if err != nil {
 				return nil, fmt.Errorf("expr run error: float cannot parse %q", s)
 			}
@@ -1316,13 +1352,16 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("expr run error: %s requires a number, got %T", name, args[0])
 		}
+		if _, err := checkExprDecimalBounds(d); err != nil {
+			return nil, err
+		}
 		switch name {
 		case "abs":
-			return d.Abs(), nil
+			return checkExprDecimalBounds(d.Abs())
 		case "ceil":
-			return d.Ceil(), nil
+			return checkExprDecimalBounds(d.Ceil())
 		default:
-			return d.Floor(), nil
+			return checkExprDecimalBounds(d.Floor())
 		}
 	case "round":
 		if len(args) != 1 && len(args) != 2 {
@@ -1332,14 +1371,17 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("expr run error: round requires a number, got %T", args[0])
 		}
+		if _, err := checkExprDecimalBounds(d); err != nil {
+			return nil, err
+		}
 		if len(args) == 1 {
-			return d.Round(0), nil
+			return checkExprDecimalBounds(d.Round(0))
 		}
 		places, ok := decimalAsInt(args[1])
 		if !ok || places < -16 || places > 16 {
 			return nil, fmt.Errorf("expr run error: round precision must be an integer within [-16, 16]")
 		}
-		return d.Round(int32(places)), nil
+		return checkExprDecimalBounds(d.Round(int32(places)))
 	default:
 		return nil, fmt.Errorf("expr run error: unknown function %q", name)
 	}
@@ -1359,11 +1401,14 @@ func timezoneArg(args []any) (string, error) {
 	return tz, nil
 }
 
-func decimalFromFloatNode(src string, node *ast.FloatNode) decimal.Decimal {
+func decimalFromFloatNode(src string, node *ast.FloatNode) (decimal.Decimal, error) {
 	if d, ok := decimalFromLocation(src, node.Location()); ok {
-		return d
+		return checkExprDecimalBounds(d)
 	}
-	return decimal.NewFromFloat(node.Value)
+	if math.IsNaN(node.Value) || math.IsInf(node.Value, 0) {
+		return decimal.Zero, errNonFiniteExpr
+	}
+	return checkExprDecimalBounds(decimal.NewFromFloat(node.Value))
 }
 
 func decimalFromLocation(src string, loc file.Location) (decimal.Decimal, bool) {
@@ -1371,11 +1416,14 @@ func decimalFromLocation(src string, loc file.Location) (decimal.Decimal, bool) 
 		return decimal.Zero, false
 	}
 	lit := strings.ReplaceAll(src[loc.From:loc.To], "_", "")
-	if lit == "" {
+	if lit == "" || len(lit) > maxExprStringParseLen {
 		return decimal.Zero, false
 	}
 	d, err := decimal.NewFromString(lit)
 	if err != nil {
+		return decimal.Zero, false
+	}
+	if _, err := checkExprDecimalBounds(d); err != nil {
 		return decimal.Zero, false
 	}
 	return d, true

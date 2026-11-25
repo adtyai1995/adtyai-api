@@ -416,10 +416,10 @@ func collectAdtyTicketBadgesInto(counts map[string]int64, actor adtyTicketActor,
 		return badges
 	}
 
-	// 1. Customer-side waiting-user badge (personal + shared team tickets for team leaders).
+	// 1. Customer-side waiting-user badge (personal + shared team tickets for active team members; all team tickets for team leaders).
 	if actor.Staff == nil && actor.User.StaffSiteId == 0 {
 		customerScope := "personal"
-		if actor.TeamId > 0 && actor.TeamRole == model.AdtyTeamRoleLeader {
+		if actor.TeamId > 0 {
 			customerScope = "participant"
 		}
 		if resolved := resolveScope(customerScope); resolved != "denied" {
@@ -451,9 +451,16 @@ func collectAdtyTicketBadgesInto(counts map[string]int64, actor adtyTicketActor,
 	// 4. Site-staff handler badges.
 	if actor.StaffTickets {
 		if resolved := resolveScope("staff"); resolved != "denied" {
-			badges := countForScope(AdtyBadgeTicketsPending, resolved, seenMap[AdtyBadgeTicketsPending])
-			counts[AdtyBadgeTicketsPending] = badges.Pending
-			counts[AdtyBadgeTicketsWaitingUser] = badges.WaitingUser
+			pendingSeen := seenMap[AdtyBadgeTicketsPending]
+			waitingSeen := seenMap[AdtyBadgeTicketsWaitingUser]
+			pendingBadges := countForScope(AdtyBadgeTicketsPending, resolved, pendingSeen)
+			counts[AdtyBadgeTicketsPending] = pendingBadges.Pending
+			if waitingSeen == pendingSeen {
+				counts[AdtyBadgeTicketsWaitingUser] = pendingBadges.WaitingUser
+			} else {
+				waitingBadges := countForScope(AdtyBadgeTicketsWaitingUser, resolved, waitingSeen)
+				counts[AdtyBadgeTicketsWaitingUser] = waitingBadges.WaitingUser
+			}
 		}
 	}
 }

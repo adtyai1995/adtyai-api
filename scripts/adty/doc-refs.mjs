@@ -14,8 +14,8 @@
 //   二、docs/openapi/api.json 的 paths 必须都能在 router/*.go 里找到注册。
 //      只读静态分析：先按函数调用关系求出每个 Group 的前缀，再拼出路由；:id 和 {id}
 //       统一成 {}，结尾斜杠不区分。上游保留但本 fork 关闭的路由写在豁免清单里。
-//   三、docs/adty/deleted-paths.txt 必须覆盖最近删掉的文件。历史遗留漏项很多，
-//      所以默认只警告，加 --strict 才失败（CI 用默认模式）。
+//   三、docs/adty/deleted-paths.txt 必须覆盖最近删掉且当前已不在工作区的文件（默认只警告，
+//       加 --strict 才失败）；同时反向守卫：清单中登记的任意路径若仍存在于工作区则直接报错。
 //
 // 有错时退出码 1。豁免清单是 scripts/adty/doc-refs-allow.txt，修完以后要清空。
 import { execFileSync } from 'node:child_process'
@@ -190,9 +190,9 @@ function referenceExists(reference, docFile, fileSuffixes) {
   return fileSuffixes.has(reference)
 }
 
-function checkDocReferences(deleted, allow) {
+function checkDocReferences(repoFiles, deleted, allow) {
   const fileSuffixes = new Set()
-  addSuffixes(fileSuffixes, listRepoFiles())
+  addSuffixes(fileSuffixes, repoFiles)
   let referenceCount = 0
   let absoluteCount = 0
   let urlCount = 0
@@ -508,9 +508,9 @@ function checkOpenapiRoutes(routes, allow) {
   }
 }
 
-// ---------- 检查三：删除清单必须覆盖已删文件 ----------
+// ---------- 检查三：删除清单必须覆盖已删文件，且不得包含实存路径 ----------
 
-function checkDeletedPaths() {
+function checkDeletedPaths(repoFiles) {
   if (!existsSync(deletedListPath)) {
     problem('docs/adty/deleted-paths.txt', 1, '文件不存在')
     return
@@ -528,18 +528,38 @@ function checkDeletedPaths() {
     problem('docs/adty/deleted-paths.txt', 1, `git log 跑不起来：${error.message}`)
     return
   }
-  const deletedFiles = [...new Set(output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean))]
+  const deletedFiles = [
+    ...new Set(
+      output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((file) => file !== '' && !existsSync(path.join(repoRoot, file)))
+    ),
+  ]
   const listed = new Set()
   const listedDirs = []
-  for (const line of readText(deletedListPath).split(/\r?\n/)) {
+  let liveConflicts = 0
+  for (const [index, line] of readText(deletedListPath).split(/\r?\n/).entries()) {
     const entry = line.trim()
     if (entry === '' || entry.startsWith('#')) {
       continue
     }
     if (entry.endsWith('/')) {
       listedDirs.push(entry)
+      const dirPath = path.join(repoRoot, entry.slice(0, -1))
+      const hasLiveFiles =
+        repoFiles.some((file) => file.startsWith(entry)) ||
+        (existsSync(dirPath) && readdirSync(dirPath).length > 0)
+      if (hasLiveFiles) {
+        liveConflicts += 1
+        problem('docs/adty/deleted-paths.txt', index + 1, `已删清单中的目录仍存在于工作区：${entry}`)
+      }
     } else {
       listed.add(entry)
+      if (existsSync(path.join(repoRoot, entry))) {
+        liveConflicts += 1
+        problem('docs/adty/deleted-paths.txt', index + 1, `已删清单中的路径仍存在于工作区：${entry}`)
+      }
     }
   }
   const missing = deletedFiles.filter(
@@ -547,7 +567,10 @@ function checkDeletedPaths() {
   )
   const range = since ? `${since}..HEAD` : `最近 ${DEFAULT_DEPTH} 个提交`
   if (verbose) {
-    console.log(`删除清单：${range} 删了 ${deletedFiles.length} 个文件，清单覆盖 ${deletedFiles.length - missing.length} 个`)
+    console.log(
+      `删除清单：${range} 删了 ${deletedFiles.length} 个文件，清单覆盖 ${deletedFiles.length - missing.length} 个，` +
+        `实存冲突 ${liveConflicts} 条`
+    )
   }
   if (missing.length === 0) {
     return
@@ -592,10 +615,11 @@ if (since === '' && process.env.DOC_REFS_SINCE) {
 
 const allow = readAllowList()
 const deleted = readDeletedPathList()
-checkDocReferences(deleted, allow)
+const repoFiles = listRepoFiles()
+checkDocReferences(repoFiles, deleted, allow)
 const routes = collectRegisteredRoutes()
 checkOpenapiRoutes(routes, allow)
-checkDeletedPaths()
+checkDeletedPaths(repoFiles)
 
 for (const item of warnings) {
   console.error(`WARN ${item.file}:${item.line} - ${item.message}`)

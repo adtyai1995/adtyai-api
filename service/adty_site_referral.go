@@ -543,6 +543,7 @@ type AdtySiteCustomerReferralProfile struct {
 	SiteName           string                            `json:"site_name"`
 	SiteStatus         string                            `json:"site_status"`
 	Enabled            bool                              `json:"enabled"`
+	AffiliateDisabled  bool                              `json:"affiliate_disabled,omitempty"`
 	RateConfigured     bool                              `json:"rate_configured"`
 	Rate               string                            `json:"rate,omitempty"`
 	RatePercent        string                            `json:"rate_percent,omitempty"`
@@ -750,6 +751,7 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 		SiteName:           siteName,
 		SiteStatus:         site.Status,
 		Enabled:            enabled,
+		AffiliateDisabled:  affiliateDisabled,
 		RateConfigured:     rateConfigured,
 		ObservationDays:    site.MarketingPolicy.ObservationDays,
 		PendingCoverageCap: site.MarketingPolicy.PendingCoverageCap,
@@ -1167,6 +1169,18 @@ func LoadAdtyOwnerSiteReferralOverview(siteID int, now time.Time) (AdtyOwnerSite
 	affiliatesSet := make(map[int]struct{}, len(inviteInviters))
 	for _, uid := range inviteInviters {
 		affiliatesSet[uid] = struct{}{}
+	}
+	if model.DB.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
+		var controlledAffiliates []int
+		if err := model.DB.Model(&model.AdtySiteReferralAffiliate{}).
+			Where("site_id = ? AND user_id > 0", siteID).
+			Distinct("user_id").
+			Pluck("user_id", &controlledAffiliates).Error; err != nil {
+			return out, err
+		}
+		for _, uid := range controlledAffiliates {
+			affiliatesSet[uid] = struct{}{}
+		}
 	}
 
 	pendingTotal := decimal.Zero
@@ -1807,7 +1821,7 @@ func UpdateAdtyOwnerSiteReferralAffiliate(siteID, ownerID, targetUserID int, inp
 				updates["rate_override"] = nil
 			} else {
 				if math.IsNaN(*input.Rate) || math.IsInf(*input.Rate, 0) || *input.Rate < 0 {
-					return common.NewMessage("Enter an invite rate between 0 and 0.3 with up to six decimal places")
+					return common.NewMessage("Commission rate must be between 0% and 30%")
 				}
 				if *input.Rate > 30 {
 					return ErrAdtySiteReferralRateLimit

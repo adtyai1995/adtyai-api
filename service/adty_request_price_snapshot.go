@@ -253,16 +253,16 @@ func buildRequestPriceSnapshot(c *gin.Context, info *relaycommon.RelayInfo) *mod
 	} else if basePrice != "" && (price.HasBilledModelRatio() || price.ModelRatio != 0 || unit == model.BillingUnitPerToken) {
 		snap.ModelRatio = basePrice
 	}
-	if completion := price.BilledCompletionRatio(); (price.HasBilledCompletionRatio() && !completion.IsZero()) || price.CompletionRatio != 0 {
+	if completion := price.BilledCompletionRatio(); price.HasBilledCompletionRatio() || price.CompletionRatio != 0 {
 		snap.CompletionRatio = completion.String()
 	}
 	if price.CacheRatio != 0 {
 		snap.CacheRatio = decimal.NewFromFloat(price.CacheRatio).String()
 	}
-	if audio := price.BilledAudioRatio(); (price.HasBilledAudioRatio() && !audio.IsZero()) || price.AudioRatio != 0 {
+	if audio := price.BilledAudioRatio(); price.HasBilledAudioRatio() || price.AudioRatio != 0 {
 		snap.AudioRatio = audio.String()
 	}
-	if audioCompletion := price.BilledAudioCompletionRatio(); (price.HasBilledAudioCompletionRatio() && !audioCompletion.IsZero()) || price.AudioCompletionRatio != 0 {
+	if audioCompletion := price.BilledAudioCompletionRatio(); price.HasBilledAudioCompletionRatio() || price.AudioCompletionRatio != 0 {
 		snap.AudioCompletionRatio = audioCompletion.String()
 	}
 	// A model/base, supply or team change can also affect the effective price.

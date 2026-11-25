@@ -82,8 +82,13 @@ export type TicketEvent = {
   id: number
   ticket_id?: number
   actor_id?: number
+  actor_username?: string
   action: string
   detail?: string
+  from_assignee_id?: number
+  from_assignee_username?: string
+  to_assignee_id?: number
+  to_assignee_username?: string
   created_at?: number
 }
 

@@ -497,6 +497,7 @@ model/pancake_refund_test.go
 model/password_crypto_test.go
 model/payment_method_guard_test.go
 model/payment_orphan_resolution_test.go
+model/perf_metric.go
 model/postgres_dsn_test.go
 model/prefill_group_migration_test.go
 model/prefill_group_update_test.go
@@ -553,7 +554,6 @@ pkg/adtylimit/limit_test.go
 pkg/billingexpr/accepted_time_test.go
 pkg/billingexpr/billingexpr_test.go
 pkg/billingexpr/compile_usage_test.go
-pkg/billingexpr/eval_decimal_test.go
 pkg/billingexpr/run_validation_test.go
 pkg/billingexpr/settle_clamp_test.go
 pkg/billingexpr/settle_decimal_test.go
@@ -573,7 +573,11 @@ pkg/jsplugin/registry_disabled_factory_test.go
 pkg/jsplugin/registry_master_enabled_test.go
 pkg/jsplugin/registry_test.go
 pkg/jsplugin/routing_test.go
+pkg/perf_metrics/flush.go
+pkg/perf_metrics/metrics.go
 pkg/perf_metrics/metrics_test.go
+pkg/perf_metrics/outcome.go
+pkg/perf_metrics/types.go
 pkg/wsmanager/wsmanager_test.go
 plugins/alibaba_responses_test.go
 plugins/alibaba_wan3_test.go
@@ -1048,6 +1052,7 @@ setting/payment_creem.go
 setting/payment_stripe.go
 setting/payment_waffo.go
 setting/payment_waffo_pancake.go
+setting/perf_metrics_setting/config.go
 setting/ratio_setting/decimal_test.go
 setting/ratio_setting/image_ratio_guard_test.go
 setting/ratio_setting/matching_test.go
@@ -1354,10 +1359,10 @@ web/src/features/adty-status/
 web/src/features/adty-support/__tests__/tawk-widget.test.tsx
 web/src/features/adty-team-registration/__tests__/complete-form.test.tsx
 web/src/features/adty-team-registration/__tests__/links-panel.test.tsx
+web/src/features/adty-team-registration/components/team-registration-links-panel.tsx
 web/src/features/adty-telegram/__tests__/admin-panel.test.tsx
 web/src/features/adty-telegram/__tests__/bind-card.test.tsx
 web/src/features/adty-ticket/__tests__/draft.test.ts
-web/src/features/adty-ticket/__tests__/ticket-center.test.tsx
 web/src/features/adty-ticket/__tests__/workspace.test.tsx
 web/src/features/adty-ticket/ticket-status.test.ts
 web/src/features/adty-translation/__tests__/admin-panel.test.tsx
@@ -1388,9 +1393,12 @@ web/src/features/auth/lib/telegram-login.ts
 web/src/features/auth/lib/validation.ts
 web/src/features/auth/otp/__tests__/login-verification.test.tsx
 web/src/features/auth/passkey/__tests__/domain-verification.test.tsx
+web/src/features/auth/passkey/api.ts
+web/src/features/auth/passkey/assertion.ts
 web/src/features/auth/passkey/components/passkey-domain-selector.tsx
 web/src/features/auth/passkey/hooks/use-passkey-management.ts
 web/src/features/auth/passkey/index.ts
+web/src/features/auth/passkey/types.ts
 web/src/features/auth/secure-verification/__tests__/verification-api.test.ts
 web/src/features/auth/secure-verification/__tests__/verification-flow.test.tsx
 web/src/features/auth/sign-up/__tests__/username-rules.test.tsx
@@ -1777,6 +1785,7 @@ web/src/lib/__tests__/theme-color.test.tsx
 web/src/lib/auth-session.test.ts
 web/src/lib/legacy-route.test.ts
 web/src/lib/oauth.ts
+web/src/lib/passkey.ts
 web/src/lib/server-error-message.test.ts
 web/src/lib/show-submitted-data.tsx
 web/src/lib/use-controllable-state.ts
@@ -1792,4 +1801,3 @@ web/src/routes/status.tsx
 web/src/stores/__tests__/system-config-store.test.ts
 web/src/styles/__tests__/theme.test.ts
 web/src/test-setup.ts
-web/vitest.config.ts

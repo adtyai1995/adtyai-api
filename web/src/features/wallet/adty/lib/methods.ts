@@ -28,6 +28,15 @@ export const METHOD_LABELS: Record<string, string> = {
   wxpay: 'WeChat Pay',
 }
 
+/** Display names for voucher redemption method enums stored on top-up orders. */
+export const VOUCHER_METHOD_LABELS: Record<string, string> = {
+  voucher: 'Voucher redemption',
+  main_user: 'Main-site voucher',
+  site_customer: 'Site customer voucher',
+  site_margin: 'Site margin voucher',
+  site_owner: 'Site owner voucher',
+}
+
 export const CHAIN_NAMES: Record<string, string> = {
   'usdt.trc20': 'TRC20',
   'usdt.bep20': 'BEP20',
@@ -36,6 +45,17 @@ export const CHAIN_NAMES: Record<string, string> = {
 }
 
 export function methodLabel(method: string): string {
+  const normalized = method.trim().toLowerCase()
+  if (normalized in METHOD_LABELS) {
+    return METHOD_LABELS[normalized]
+  }
+  if (normalized in VOUCHER_METHOD_LABELS) {
+    return VOUCHER_METHOD_LABELS[normalized]
+  }
+  if (normalized.startsWith('voucher:')) {
+    const sub = normalized.slice('voucher:'.length)
+    return VOUCHER_METHOD_LABELS[sub] ?? 'Voucher redemption'
+  }
   return METHOD_LABELS[method] ?? method
 }
 

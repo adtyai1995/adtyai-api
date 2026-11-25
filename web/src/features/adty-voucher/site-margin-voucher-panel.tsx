@@ -67,6 +67,31 @@ import { VoucherBatchResultDialog } from './voucher-batch-result-dialog'
 import { VoucherListTable } from './voucher-list-table'
 
 const PAGE_SIZE = 20
+const SITES_PAGE_SIZE = 100
+const MAX_SITES_PAGES = 50
+
+async function fetchAllSitesForMarginVouchers(): Promise<AdminSite[]> {
+  const collected: AdminSite[] = []
+  const seen = new Set<number>()
+  for (let currentPage = 1; currentPage <= MAX_SITES_PAGES; currentPage += 1) {
+    const res = await getSites({ p: currentPage, page_size: SITES_PAGE_SIZE })
+    const batch = Array.isArray(res?.items) ? res.items : []
+    for (const site of batch) {
+      if (!seen.has(site.id)) {
+        seen.add(site.id)
+        collected.push(site)
+      }
+    }
+    const total = Number(res?.total) || 0
+    if (
+      batch.length < SITES_PAGE_SIZE ||
+      (total > 0 && collected.length >= total)
+    ) {
+      break
+    }
+  }
+  return collected
+}
 
 function formatSiteOptionLabel(site: AdminSite): string {
   const brand = parseSiteBrand(site.brand)
@@ -107,14 +132,14 @@ export function SiteMarginVoucherPanel() {
 
   const sitesQuery = useQuery({
     queryKey: siteAdminKeys.list('sites-for-margin-vouchers', {
-      page_size: 200,
+      page_size: SITES_PAGE_SIZE,
     }),
-    queryFn: () => getSites({ p: 1, page_size: 200 }),
+    queryFn: fetchAllSitesForMarginVouchers,
   })
 
   const allSites = useMemo(
-    () => (Array.isArray(sitesQuery.data?.items) ? sitesQuery.data.items : []),
-    [sitesQuery.data?.items]
+    () => (Array.isArray(sitesQuery.data) ? sitesQuery.data : []),
+    [sitesQuery.data]
   )
   const activeSites = useMemo(
     () => allSites.filter((site) => site.status === 'active'),

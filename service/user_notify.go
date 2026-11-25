@@ -857,8 +857,12 @@ func NotifyUser(userId int, userEmail string, userSetting dto.UserSetting, data 
 			return nil
 		}
 
-		// 获取 webhook secret
-		webhookSecret := userSetting.WebhookSecret
+		// 获取并解密 webhook secret（兼容历史明文）
+		webhookSecret, secErr := openUserNotifySecret(userId, "webhook_secret", userSetting.WebhookSecret)
+		if secErr != nil {
+			common.SysError(common.LogText("failed to decrypt webhook secret for user %d: %s", userId, secErr.Error()))
+			return secErr
+		}
 		return SendWebhookNotify(webhookURLStr, webhookSecret, data)
 	case dto.NotifyTypeBark:
 		barkURL := userSetting.BarkUrl
@@ -869,7 +873,11 @@ func NotifyUser(userId int, userEmail string, userSetting dto.UserSetting, data 
 		return sendBarkNotify(barkURL, data)
 	case dto.NotifyTypeGotify:
 		gotifyUrl := userSetting.GotifyUrl
-		gotifyToken := userSetting.GotifyToken
+		gotifyToken, secErr := openUserNotifySecret(userId, "gotify_token", userSetting.GotifyToken)
+		if secErr != nil {
+			common.SysError(common.LogText("failed to decrypt gotify token for user %d: %s", userId, secErr.Error()))
+			return secErr
+		}
 		if gotifyUrl == "" || gotifyToken == "" {
 			common.SysLog(common.LogText("user %d has no gotify url or token, skip sending gotify", userId))
 			return nil
@@ -877,6 +885,13 @@ func NotifyUser(userId int, userEmail string, userSetting dto.UserSetting, data 
 		return sendGotifyNotify(gotifyUrl, gotifyToken, userSetting.GotifyPriority, data)
 	}
 	return nil
+}
+
+func openUserNotifySecret(userId int, field, stored string) (string, error) {
+	if !strings.HasPrefix(stored, "adty:secret:v1:") {
+		return stored, nil
+	}
+	return model.OpenAdtyPurposeSecret(fmt.Sprintf("user_notify:%d:%s", userId, field), stored)
 }
 
 // sendEmailNotify 二开：发件人和站名按用户所属站点（任务 11.3）。通知正文里的 {{SystemName}} 由调用方填好；

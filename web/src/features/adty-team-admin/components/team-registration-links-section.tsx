@@ -20,6 +20,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { CopyButton } from '@/components/copy-button'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
@@ -85,7 +86,6 @@ export function TeamRegistrationLinksSection(props: {
   })
   const [ttlHours, setTtlHours] = useState('24')
   const [issuedUrl, setIssuedUrl] = useState('')
-  const [copied, setCopied] = useState(false)
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
 
@@ -99,7 +99,6 @@ export function TeamRegistrationLinksSection(props: {
     }
     setPending(true)
     setError('')
-    setCopied(false)
     try {
       const issued = await issueTeamRegistration(props.actor, ttlSeconds)
       setIssuedUrl(teamRegistrationUrl(issued.code))
@@ -121,20 +120,6 @@ export function TeamRegistrationLinksSection(props: {
       setError(t(getServerErrorMessage(cause, t('Failed to save'))))
     } finally {
       setPending(false)
-    }
-  }
-
-  const copyIssued = async () => {
-    if (!issuedUrl || !navigator.clipboard?.writeText) {
-      setError(t('Failed to copy'))
-      return
-    }
-    try {
-      await navigator.clipboard.writeText(issuedUrl)
-      setCopied(true)
-    } catch {
-      setCopied(false)
-      setError(t('Failed to copy'))
     }
   }
 
@@ -259,14 +244,15 @@ export function TeamRegistrationLinksSection(props: {
                 {t('Registration link')}: {issuedUrl}
               </p>
               <div className='flex flex-wrap items-center gap-3'>
-                <Button
-                  type='button'
+                <CopyButton
+                  value={issuedUrl}
                   variant='outline'
                   size='sm'
-                  onClick={() => void copyIssued()}
+                  tooltip={t('Copy link')}
+                  aria-label={t('Copy link')}
                 >
-                  {copied ? t('Copied to clipboard') : t('Copy link')}
-                </Button>
+                  {t('Copy link')}
+                </CopyButton>
                 <span className='text-dim text-xs'>
                   {t('The registration link is shown once')}
                 </span>

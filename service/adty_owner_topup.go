@@ -67,7 +67,7 @@ func adtyPaymentScopeIdentity(db *gorm.DB, user *model.User, scopes []AdtyPaymen
 		}
 		return user.SiteId, model.AdtyBusinessWalletTopup, nil
 	}
-	if !isOwnerTopupBusiness(scope.Business) || scope.SiteID <= 0 || user.StaffSiteId != 0 || user.Status != common.UserStatusEnabled {
+	if !isOwnerTopupBusiness(scope.Business) || user.StaffSiteId != 0 || user.Status != common.UserStatusEnabled {
 		return 0, "", common.NewMessage("This payment method is not available")
 	}
 	var site model.AdtySite
@@ -75,13 +75,44 @@ func adtyPaymentScopeIdentity(db *gorm.DB, user *model.User, scopes []AdtyPaymen
 	if lock {
 		q = model.AdtyLockForUpdate(q)
 	}
-	if err := q.First(&site, scope.SiteID).Error; err != nil {
-		return 0, "", err
+	if scope.SiteID > 0 {
+		if err := q.First(&site, scope.SiteID).Error; err != nil {
+			return 0, "", err
+		}
+		if site.OwnerUserId != user.Id || site.Status != model.AdtySiteStatusActive {
+			return 0, "", common.NewMessage("This payment method is not available")
+		}
+		return site.Id, scope.Business, nil
 	}
-	if site.OwnerUserId != user.Id || site.Status != model.AdtySiteStatusActive {
+	if scope.Business != model.AdtyBusinessOwnerMarginTopup {
+		return 0, "", common.NewMessage("This payment method is not available")
+	}
+	res := q.Where("owner_user_id = ? AND status = ?", user.Id, model.AdtySiteStatusActive).Order("id ASC").Limit(1).Find(&site)
+	if res.Error != nil {
+		return 0, "", res.Error
+	}
+	if res.RowsAffected == 0 || site.Id <= 0 {
 		return 0, "", common.NewMessage("This payment method is not available")
 	}
 	return site.Id, scope.Business, nil
+}
+
+// ResolveAdtyOwnerTopupSiteID resolves the active owned site ID for owner
+// margin top-up flows when the owner accesses the console from the main host
+// (where requestSiteID == 0).
+func ResolveAdtyOwnerTopupSiteID(userID, requestSiteID int) int {
+	if requestSiteID > 0 {
+		return requestSiteID
+	}
+	if userID <= 0 || model.DB == nil {
+		return 0
+	}
+	var site model.AdtySite
+	res := model.DB.Select("id").Where("owner_user_id = ? AND status = ?", userID, model.AdtySiteStatusActive).Order("id ASC").Limit(1).Find(&site)
+	if res.Error != nil || res.RowsAffected == 0 {
+		return 0
+	}
+	return site.Id
 }
 
 func AdtyQuoteForPayment(userID, requestSiteID int, group, business string, face int64, method string) (*AdtyQuote, error) {

@@ -28,7 +28,11 @@ import {
 
 import { WithdrawalCancellation } from '@/features/wallet/adty/withdrawal-cancellation'
 import type { OrderTrace } from '../api'
-import { ORDER_TRACE_LABELS, UNIFIED_ORDER_LABELS } from '../trace-labels'
+import {
+  ORDER_TRACE_LABELS,
+  paymentProviderLabel,
+  UNIFIED_ORDER_LABELS,
+} from '../trace-labels'
 
 export function OrderDetailSummary(props: { detail: OrderTrace }) {
   const { t, i18n } = useTranslation()
@@ -53,7 +57,7 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
             `${order.site_name || t('Unknown site')} · ${order.site_id ?? '-'}`,
           ],
           [t('Status'), t(ORDER_TRACE_LABELS[order.status] ?? order.status)],
-          [t('Provider'), order.payment_provider],
+          [t('Provider'), paymentProviderLabel(t, order.payment_provider)],
           [t('Business'), businessLabel],
           [t('Original order'), order.original_trade_no || '-'],
           [

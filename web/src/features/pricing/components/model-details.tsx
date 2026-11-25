@@ -105,7 +105,7 @@ import { ModelDetailsApi } from './model-details-api'
 
 function SectionTitle(props: { children: React.ReactNode }) {
   return (
-    <h2 className='text-muted-foreground mb-3 text-xs font-semibold tracking-wider uppercase'>
+    <h2 className='text-muted-foreground mb-3 text-xs font-semibold'>
       {props.children}
     </h2>
   )
@@ -210,7 +210,7 @@ function CatalogTextValue(props: { children: React.ReactNode }) {
 function CatalogInfoCell(props: { label: string; children: React.ReactNode }) {
   return (
     <div className='bg-card flex min-w-0 flex-col gap-1 px-3 py-2.5'>
-      <span className='text-muted-foreground text-[10px] font-medium tracking-wider uppercase'>
+      <span className='text-muted-foreground text-[10px] font-medium'>
         {props.label}
       </span>
       {props.children}
@@ -440,7 +440,7 @@ function PriceSection(props: {
               )}
             </p>
             <div className='mt-3'>
-              <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider uppercase'>
+              <div className='text-muted-foreground mb-1 text-[10px] font-medium'>
                 {t('Raw expression')}
               </div>
               <code className='text-muted-foreground bg-background/80 block max-h-28 overflow-auto rounded-md border px-2 py-1.5 font-mono text-xs break-all'>
@@ -786,10 +786,8 @@ function ProviderGroupPricingSection(
     )
   }
 
-  const thClass = cn(
-    'text-muted-foreground py-2 text-xs font-medium whitespace-normal break-words',
-    !props.model.billing_usage_schema && 'tracking-wider uppercase'
-  )
+  const thClass =
+    'text-muted-foreground py-2 text-xs font-medium whitespace-normal break-words'
 
   if (isDynamicPricingModel(props.model)) {
     const dynamicTiers = getDynamicPricingTiers(props.model)
@@ -823,7 +821,7 @@ function ProviderGroupPricingSection(
             </p>
             {!props.hideRawExpression && (
               <div className='mt-3'>
-                <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider uppercase'>
+                <div className='text-muted-foreground mb-1 text-[10px] font-medium'>
                   {t('Raw expression')}
                 </div>
                 <code className='text-muted-foreground bg-background/80 block max-h-28 overflow-auto rounded-md border px-2 py-1.5 font-mono text-xs break-all'>
@@ -978,7 +976,7 @@ function ProviderGroupPricingSection(
                 />
                 {usageExampleRows.length > 0 ? (
                   <div className='border-t'>
-                    <div className='text-muted-foreground px-3 pt-2 text-[10px] font-medium tracking-wider uppercase'>
+                    <div className='text-muted-foreground px-3 pt-2 text-[10px] font-medium'>
                       {t('Price examples')}
                     </div>
                     <StaticDataTable

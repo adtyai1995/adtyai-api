@@ -123,8 +123,8 @@ type AdtySiteReferralAffiliate struct {
 	UserId            int              `json:"user_id" gorm:"uniqueIndex:ux_adty_site_referral_aff,priority:2;index"`
 	RateOverride      *decimal.Decimal `json:"rate_override" gorm:"type:decimal(10,6)"`
 	Status            string           `json:"status" gorm:"type:varchar(24);not null;default:approved;index"`
-	SettlementEnabled bool             `json:"settlement_enabled" gorm:"not null;default:true"`
-	WithdrawalEnabled bool             `json:"withdrawal_enabled" gorm:"not null;default:true"`
+	SettlementEnabled bool             `json:"settlement_enabled" gorm:"not null"`
+	WithdrawalEnabled bool             `json:"withdrawal_enabled" gorm:"not null"`
 	RiskReason        string           `json:"risk_reason" gorm:"type:varchar(64)"`
 	RiskNote          string           `json:"risk_note" gorm:"type:text"`
 	DisabledBy        int              `json:"disabled_by"`

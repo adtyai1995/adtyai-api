@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -437,6 +438,31 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		}
 	} else if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models/") || strings.HasPrefix(c.Request.URL.Path, "/v1/models/") {
 		// Gemini API 路径处理: /v1beta/models/gemini-2.0-flash:generateContent
+		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
+			mediaType := common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))
+			if mediaType == "" || mediaType == "application/json" || strings.HasSuffix(mediaType, "+json") {
+				storage, storageErr := common.GetBodyStorage(c)
+				if storageErr != nil {
+					return nil, false, storageErr
+				}
+				requestBody, bytesErr := storage.Bytes()
+				if bytesErr != nil {
+					return nil, false, bytesErr
+				}
+				if len(bytes.TrimSpace(requestBody)) > 0 {
+					if !gjson.ValidBytes(requestBody) {
+						return nil, false, errors.New("invalid JSON request body")
+					}
+					if err := common.ValidateJSONNoDuplicateOrFoldedKeys(requestBody, billingSensitiveJSONPaths); err != nil {
+						return nil, false, err
+					}
+				}
+				if _, seekErr := storage.Seek(0, io.SeekStart); seekErr != nil {
+					return nil, false, seekErr
+				}
+				c.Request.Body = io.NopCloser(storage)
+			}
+		}
 		relayMode := relayconstant.RelayModeGemini
 		modelName := extractModelNameFromGeminiPath(c.Request.URL.Path)
 		if modelName != "" {

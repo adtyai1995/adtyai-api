@@ -89,6 +89,7 @@ export function UserLedgerDialog(props: {
     gift_fulfillment: t('Pending bonus fulfilled'),
     site_trial: t('Site trial credit'),
     owner_customer_balance: t('Owner balance credit'),
+    owner_self_use_transfer: t('Transfer to personal balance'),
     staff_balance: t('Staff balance adjustment'),
   }
 

@@ -61,7 +61,14 @@ func PostAdtySiteVoucher(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
 		return
 	}
-	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionVoucherIssue, site.Id) {
+	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionVoucherIssue, site.Id, service.AdtyOwnerVoucherIssueDigestInput{
+		Purpose:   body.Purpose,
+		AmountUSD: amount.String(),
+		Count:     body.Count,
+		Source:    body.Source,
+		Reason:    body.Reason,
+		IntentKey: intentKey,
+	}) {
 		return
 	}
 	issued, err := service.IssueAdtyVoucherBatch(service.AdtyVoucherIssueInput{
@@ -79,6 +86,12 @@ func PostAdtySiteVoucher(c *gin.Context) {
 		}
 		common.ApiError(c, err)
 		return
+	}
+	if issued.Replayed {
+		markIdempotentReplayNoAudit(c)
+	} else if issued.AuditEventID != "" {
+		rememberPreparedAuditEvent(c, issued.AuditEventID)
+		markAuditLogged(c)
 	}
 	common.ApiSuccess(c, issued)
 }
@@ -275,9 +288,14 @@ func PutAdtyVoucherIssuanceLimit(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := service.SetAdtyVoucherIssuanceLimit(c.GetInt("id"), limit); err != nil {
+	eventID, err := service.SetAdtyVoucherIssuanceLimitWithAudit(c.GetInt("id"), limit)
+	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
 	}
 	common.ApiSuccess(c, gin.H{"limit_usd": limit.String()})
 }

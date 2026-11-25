@@ -66,6 +66,7 @@ export function ReferralStats(props: {
   const account = props.profile.account
   const canWithdraw =
     props.profile.enabled &&
+    props.profile.affiliate.status !== 'disabled' &&
     props.profile.affiliate.withdrawal_enabled &&
     account.available_amount > 0
 

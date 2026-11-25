@@ -126,12 +126,7 @@ const (
 	responsesWSMaxConsecutiveInvalidFrame = 10
 )
 
-var responsesWSBillingSensitiveJSONPaths = []string{
-	"type",
-	"event_id",
-	"stream_id",
-	"generate",
-	"request",
+var responsesWSInnerBillingSensitiveJSONPaths = []string{
 	"model",
 	"group",
 	"max_output_tokens",
@@ -152,28 +147,58 @@ var responsesWSBillingSensitiveJSONPaths = []string{
 	"background",
 	"stream",
 	"stream_options",
-	"request.model",
-	"request.group",
-	"request.max_output_tokens",
-	"request.service_tier",
-	"request.reasoning",
-	"request.reasoning.effort",
-	"request.reasoning.summary",
-	"request.reasoning_effort",
-	"request.thinking",
-	"request.thinking.type",
-	"request.thinking.budget_tokens",
-	"request.tools",
-	"request.web_search_options",
-	"request.web_search_options.search_context_size",
-	"request.speed",
-	"request.verbosity",
-	"request.store",
-	"request.background",
-	"request.stream",
-	"request.stream_options",
-	"request.generate",
-	"request.stream_id",
+	"generate",
+	"stream_id",
+}
+
+var responsesWSBillingSensitiveJSONPaths = []string{
+	"type",
+	"event_id",
+	"stream_id",
+	"generate",
+	"response",
+	"model",
+	"group",
+	"max_output_tokens",
+	"service_tier",
+	"reasoning",
+	"reasoning.effort",
+	"reasoning.summary",
+	"reasoning_effort",
+	"thinking",
+	"thinking.type",
+	"thinking.budget_tokens",
+	"tools",
+	"web_search_options",
+	"web_search_options.search_context_size",
+	"speed",
+	"verbosity",
+	"store",
+	"background",
+	"stream",
+	"stream_options",
+	"response.model",
+	"response.group",
+	"response.max_output_tokens",
+	"response.service_tier",
+	"response.reasoning",
+	"response.reasoning.effort",
+	"response.reasoning.summary",
+	"response.reasoning_effort",
+	"response.thinking",
+	"response.thinking.type",
+	"response.thinking.budget_tokens",
+	"response.tools",
+	"response.web_search_options",
+	"response.web_search_options.search_context_size",
+	"response.speed",
+	"response.verbosity",
+	"response.store",
+	"response.background",
+	"response.stream",
+	"response.stream_options",
+	"response.generate",
+	"response.stream_id",
 }
 
 func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn, runner ResponsesWSRequestRunner) *types.NewAPIError {
@@ -959,6 +984,9 @@ func normalizeResponsesWSCreateEvent(message []byte, event responsesWSCreateEven
 	// Decode the wrapped request on its own so outer fields cannot enter the HTTP body.
 	source := message
 	if len(event.Request) > 0 {
+		if err := common.ValidateJSONNoDuplicateOrFoldedKeys(event.Request, responsesWSInnerBillingSensitiveJSONPaths); err != nil {
+			return create, err
+		}
 		source = event.Request
 	}
 	var raw map[string]common.RawMessage

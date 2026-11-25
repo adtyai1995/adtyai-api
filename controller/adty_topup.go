@@ -56,7 +56,7 @@ func GetAdtyTopUpInfo(c *gin.Context) {
 	var pending *model.AdtyTopUpView
 	ownerSiteID := 0
 	if isOwnerBiz {
-		ownerSiteID = service.AdtyRequestSiteID(c)
+		ownerSiteID = service.ResolveAdtyOwnerTopupSiteID(c.GetInt("id"), service.AdtyRequestSiteID(c))
 	}
 	if business != model.AdtyBusinessTeamTopup {
 		if view, err := model.GetUserPendingAdtyTopUpForBusiness(c.GetInt("id"), time.Now().Unix(), ownerSiteID, business); err == nil {
@@ -194,7 +194,7 @@ func GetAdtyTopUpPending(c *gin.Context) {
 	business := c.Query("business")
 	ownerSiteID := 0
 	if business == model.AdtyBusinessOwnerSelfUseTopup || business == model.AdtyBusinessOwnerMarginTopup {
-		ownerSiteID = service.AdtyRequestSiteID(c)
+		ownerSiteID = service.ResolveAdtyOwnerTopupSiteID(c.GetInt("id"), service.AdtyRequestSiteID(c))
 		if ownerSiteID <= 0 {
 			common.ApiSuccess(c, nil)
 			return
@@ -473,7 +473,7 @@ func GetAdtyTopUpSelf(c *gin.Context) {
 		return
 	}
 	if filter.Business == model.AdtyBusinessOwnerSelfUseTopup || filter.Business == model.AdtyBusinessOwnerMarginTopup {
-		filter.OwnerSiteID = service.AdtyRequestSiteID(c)
+		filter.OwnerSiteID = service.ResolveAdtyOwnerTopupSiteID(userID, service.AdtyRequestSiteID(c))
 		if filter.OwnerSiteID <= 0 {
 			filter.OwnerSiteID = -1
 		}

@@ -1,7 +1,9 @@
 package service
 
 import (
+	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -17,6 +19,8 @@ const (
 	AdtyGroupProbeUserID = 0
 	// AdtyGroupProbeHeader 标记由平台独立探针发起的上游探测请求。
 	AdtyGroupProbeHeader = "X-Adty-Probe-Identity"
+
+	adtyProbeProtocolGemini = "gemini"
 )
 
 // R-32 (#5) / R-33 (#2) / R6-29: Legacy full-model group-health background probes,
@@ -85,11 +89,118 @@ func ClassifyAdtyGroupProbeOutcome(res AdtyGroupProbeResult) (string, bool) {
 	return model.AdtyGroupHealthUpstream, true
 }
 
+// adtyProbeChannelProtocol 返回内置探活引擎支持的上游协议，与系统翻译的
+// adtyChannelProtocol 解耦，放行探活侧已适配的 Gemini / VolcEngine / ZhipuV4 /
+// Ali / Perplexity 及全部 OpenAI / Anthropic 兼容渠道。
+func adtyProbeChannelProtocol(channelType int) (string, error) {
+	switch channelType {
+	case constant.ChannelTypeGemini:
+		return adtyProbeProtocolGemini, nil
+	case constant.ChannelTypeVolcEngine,
+		constant.ChannelTypeZhipu_v4,
+		constant.ChannelTypeAli,
+		constant.ChannelTypePerplexity:
+		return adtyTranslationProtocolOpenAI, nil
+	default:
+		return adtyChannelProtocol(channelType)
+	}
+}
+
+func normalizeAdtyProbeBaseURL(channelType int, baseURL, protocol string) string {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(constant.GetChannelBaseURL(channelType))
+	}
+	if special, ok := constant.ChannelSpecialBases[baseURL]; ok {
+		if protocol == adtyTranslationProtocolAnthropic && special.ClaudeBaseURL != "" {
+			baseURL = special.ClaudeBaseURL
+		} else if special.OpenAIBaseURL != "" {
+			baseURL = special.OpenAIBaseURL
+		}
+	}
+	if channelType == constant.ChannelTypeOpenRouter && strings.TrimSuffix(baseURL, "/") == "https://openrouter.ai/api" {
+		return "https://openrouter.ai/api/v1"
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Host == "" {
+		return baseURL
+	}
+	path := strings.TrimSuffix(parsed.Path, "/")
+	switch channelType {
+	case constant.ChannelTypeVolcEngine:
+		if !strings.HasSuffix(path, "/api/v3") &&
+			!strings.HasSuffix(path, "/v3") &&
+			!strings.HasSuffix(path, "/v1") &&
+			!strings.HasSuffix(path, "/chat/completions") &&
+			!strings.HasSuffix(path, "/images/generations") {
+			parsed.Path = path + "/api/v3"
+			return parsed.String()
+		}
+	case constant.ChannelTypeZhipu_v4:
+		if !strings.HasSuffix(path, "/api/paas/v4") &&
+			!strings.HasSuffix(path, "/paas/v4") &&
+			!strings.HasSuffix(path, "/v4") &&
+			!strings.HasSuffix(path, "/v1") &&
+			!strings.HasSuffix(path, "/chat/completions") &&
+			!strings.HasSuffix(path, "/images/generations") {
+			parsed.Path = path + "/api/paas/v4"
+			return parsed.String()
+		}
+	case constant.ChannelTypeAli:
+		if !strings.HasSuffix(path, "/compatible-mode/v1") &&
+			!strings.HasSuffix(path, "/v1") &&
+			!strings.HasSuffix(path, "/chat/completions") &&
+			!strings.HasSuffix(path, "/images/generations") {
+			parsed.Path = path + "/compatible-mode/v1"
+			return parsed.String()
+		}
+	case constant.ChannelTypePerplexity:
+		if path == "" {
+			parsed.Path = "/chat/completions"
+			return parsed.String()
+		}
+	}
+	return baseURL
+}
+
+func resolveAdtyProbeCandidate(ch *model.Channel, modelName string) (upstreamModel, protocol, endpoint, key string, err error) {
+	if ch == nil || ch.Status != common.ChannelStatusEnabled {
+		return "", "", "", "", ErrAdtyTranslationInvalid
+	}
+	protocol, err = adtyProbeChannelProtocol(ch.Type)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	upstreamModel, _ = adtyChannelSupportsModel(ch, modelName)
+	if upstreamModel == "" {
+		upstreamModel = modelName
+	}
+	baseURL := normalizeAdtyProbeBaseURL(ch.Type, ch.GetBaseURL(), protocol)
+	endpoint, err = adtyTranslationEndpoint(baseURL, protocol)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	rawKey, _, keyErr := ch.GetNextEnabledKey()
+	if keyErr != nil {
+		return "", "", "", "", ErrAdtyTranslationInvalid
+	}
+	key = strings.TrimSpace(rawKey)
+	if key == "" {
+		return "", "", "", "", ErrAdtyTranslationInvalid
+	}
+	if err := rejectAdtyCustomerToken(key); err != nil {
+		return "", "", "", "", err
+	}
+	return upstreamModel, protocol, endpoint, key, nil
+}
+
 func resolveAdtyGroupProbeChannel(group, modelName string) (*model.Channel, string, string, string, string, error) {
 	if model.DB == nil || !model.DB.Migrator().HasTable(&model.Channel{}) {
 		return nil, "", "", "", "", ErrAdtyTranslationInvalid
 	}
-	var selected *model.Channel
+	tried := make(map[int]struct{})
+	sawBlocked := false
+
 	if model.DB.Migrator().HasTable(&model.Ability{}) {
 		var channelIDs []int
 		err := model.DB.Table("abilities").
@@ -101,57 +212,54 @@ func resolveAdtyGroupProbeChannel(group, modelName string) (*model.Channel, stri
 			Pluck("abilities.channel_id", &channelIDs).Error
 		if err == nil {
 			for _, id := range channelIDs {
+				if _, seen := tried[id]; seen {
+					continue
+				}
+				tried[id] = struct{}{}
 				var ch model.Channel
-				if err := model.DB.First(&ch, id).Error; err == nil && ch.Status == common.ChannelStatusEnabled {
-					selected = &ch
-					break
+				if err := model.DB.First(&ch, id).Error; err != nil || ch.Status != common.ChannelStatusEnabled {
+					continue
+				}
+				upstreamModel, protocol, endpoint, key, candErr := resolveAdtyProbeCandidate(&ch, modelName)
+				if candErr == nil {
+					return &ch, upstreamModel, protocol, endpoint, key, nil
+				}
+				if errors.Is(candErr, ErrAdtyTranslationSelf) {
+					sawBlocked = true
 				}
 			}
 		}
 	}
-	if selected == nil {
-		var channels []model.Channel
-		if err := model.DB.Where("status = ?", common.ChannelStatusEnabled).
-			Order("COALESCE(priority, 0) DESC, COALESCE(weight, 0) DESC, id DESC").
-			Find(&channels).Error; err != nil {
-			return nil, "", "", "", "", err
+
+	var channels []model.Channel
+	if err := model.DB.Where("status = ?", common.ChannelStatusEnabled).
+		Order("COALESCE(priority, 0) DESC, COALESCE(weight, 0) DESC, id DESC").
+		Find(&channels).Error; err != nil {
+		return nil, "", "", "", "", err
+	}
+	for i := range channels {
+		ch := &channels[i]
+		if _, seen := tried[ch.Id]; seen {
+			continue
 		}
-		for i := range channels {
-			if !slices.Contains(channels[i].GetGroups(), group) {
-				continue
-			}
-			if _, ok := adtyChannelSupportsModel(&channels[i], modelName); ok {
-				selected = &channels[i]
-				break
-			}
+		tried[ch.Id] = struct{}{}
+		if !slices.Contains(ch.GetGroups(), group) {
+			continue
+		}
+		if _, ok := adtyChannelSupportsModel(ch, modelName); !ok {
+			continue
+		}
+		upstreamModel, protocol, endpoint, key, candErr := resolveAdtyProbeCandidate(ch, modelName)
+		if candErr == nil {
+			return ch, upstreamModel, protocol, endpoint, key, nil
+		}
+		if errors.Is(candErr, ErrAdtyTranslationSelf) {
+			sawBlocked = true
 		}
 	}
-	if selected == nil {
-		return nil, "", "", "", "", ErrAdtyTranslationInvalid
+
+	if sawBlocked {
+		return nil, "", "", "", "", ErrAdtyTranslationSelf
 	}
-	upstreamModel, _ := adtyChannelSupportsModel(selected, modelName)
-	if upstreamModel == "" {
-		upstreamModel = modelName
-	}
-	protocol, err := adtyChannelProtocol(selected.Type)
-	if err != nil {
-		return nil, "", "", "", "", err
-	}
-	baseURL := strings.TrimSpace(selected.GetBaseURL())
-	if baseURL == "" {
-		baseURL = strings.TrimSpace(constant.GetChannelBaseURL(selected.Type))
-	}
-	endpoint, err := adtyTranslationEndpoint(baseURL, protocol)
-	if err != nil {
-		return nil, "", "", "", "", err
-	}
-	key, _, keyErr := selected.GetNextEnabledKey()
-	if keyErr != nil {
-		return nil, "", "", "", "", ErrAdtyTranslationInvalid
-	}
-	key = strings.TrimSpace(key)
-	if err := rejectAdtyCustomerToken(key); err != nil {
-		return nil, "", "", "", "", err
-	}
-	return selected, upstreamModel, protocol, endpoint, key, nil
+	return nil, "", "", "", "", ErrAdtyTranslationInvalid
 }

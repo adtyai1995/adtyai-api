@@ -471,6 +471,31 @@ func GetUserSiteIDs(belowRole int) ([]int, error) {
 	return result, nil
 }
 
+// GetOpenUserSiteIDs returns main site (0) plus currently open subsites
+// (active/paused/closing, not archived/closed/deleting) for broadcast targeting.
+func GetOpenUserSiteIDs(_ int) ([]int, error) {
+	result := []int{0}
+	if !DB.Migrator().HasTable(&AdtySite{}) {
+		return result, nil
+	}
+	var openSiteIDs []int
+	siteQuery := DB.Model(&AdtySite{}).Where("status NOT IN ?", []string{AdtySiteStatusClosed, AdtySiteStatusDeleting})
+	if DB.Migrator().HasColumn(&AdtySite{}, "archived_hidden_at") {
+		siteQuery = siteQuery.Where("archived_hidden_at = 0")
+	}
+	if err := siteQuery.Order("id ASC").Pluck("id", &openSiteIDs).Error; err != nil {
+		return nil, err
+	}
+	seen := map[int]bool{0: true}
+	for _, id := range openSiteIDs {
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			result = append(result, id)
+		}
+	}
+	return result, nil
+}
+
 func SearchUsers(keyword string, group string, role *int, status *int, startIdx int, num int, belowRole int, siteID *int, sortOptions ...UserSortOptions) ([]*User, int64, error) {
 	var users []*User
 	var total int64
@@ -1562,8 +1587,10 @@ func disableDeletedUserAffiliatesTx(tx *gorm.DB, userId int) error {
 		if err := tx.Model(&AdtySiteReferralAffiliate{}).
 			Where("user_id = ?", userId).
 			Updates(map[string]any{
-				"status":      AdtySiteAffiliateStatusDisabled,
-				"disabled_at": now,
+				"status":             AdtySiteAffiliateStatusDisabled,
+				"settlement_enabled": false,
+				"withdrawal_enabled": false,
+				"disabled_at":        now,
 			}).Error; err != nil {
 			return err
 		}
@@ -1584,8 +1611,10 @@ func disableDeletedUserAffiliatesTx(tx *gorm.DB, userId int) error {
 			if err := tx.Clauses(clause.OnConflict{
 				Columns: []clause.Column{{Name: "site_id"}, {Name: "user_id"}},
 				DoUpdates: clause.Assignments(map[string]any{
-					"status":      AdtySiteAffiliateStatusDisabled,
-					"disabled_at": now,
+					"status":             AdtySiteAffiliateStatusDisabled,
+					"settlement_enabled": false,
+					"withdrawal_enabled": false,
+					"disabled_at":        now,
 				}),
 			}).Create(&disabledRow).Error; err != nil {
 				return err

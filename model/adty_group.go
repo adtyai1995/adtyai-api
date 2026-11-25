@@ -117,20 +117,30 @@ func lockAdtyGroupConfig(keys ...string) func() {
 	return func() {}
 }
 
-// AdtyContentLangs 是分组显示名和说明要写全的语言。
+// AdtyContentLangs 保留历史内容语言列表供旧数据读取回退；写入链路仅使用正式语言 adtyOfficialContentLangs。
 var AdtyContentLangs = []string{"zh-CN", "zh-TW", "en", "fr", "ja", "ko", "ru", "vi"}
+
+// adtyOfficialContentLangs 是正式产品语言（简体中文与英文），创建和重命名分组时仅保留并写入这两项。
+var adtyOfficialContentLangs = []string{"zh-CN", "en"}
 
 var (
 	ErrAdtyGroupNotFound     = errors.New("adty group not found")
 	ErrAdtyGroupTextRequired = errors.New("adty group text required")
 	errAdtyGroupIDExhausted  = errors.New("adty group id exhausted")
 	adtyGroupCreateAttempts  = 5
-	adtySkippedSeedGroupIDs  = map[string]struct{}{"auto": {}, "edit_this": {}}
-	// adtyReservedGroupIDs 永远不会被生成：auto 是自动分组的关键字，default 是列默认值。
-	adtyReservedGroupIDs = map[string]struct{}{"auto": {}, AdtyDefaultGroupID: {}}
+	adtySkippedSeedGroupIDs  = map[string]struct{}{"auto": {}, "all": {}, "edit_this": {}}
+	// adtyReservedGroupIDs 永远不会被生成：auto/all 是保留关键字，default 是列默认值。
+	adtyReservedGroupIDs = map[string]struct{}{"auto": {}, "all": {}, AdtyDefaultGroupID: {}}
 	// adtyGroupIDTaken 由设置里出现过的分组键组成；生成 ID 时一起避开。测试可以替换。
 	adtyGroupIDTaken = adtyGroupSeedSources
 )
+
+// IsReservedAdtyGroupID reports whether id is a reserved pseudo-group ("auto" or "all")
+// that must never be assigned to channels, users, or tokens.
+func IsReservedAdtyGroupID(id string) bool {
+	trimmed := strings.TrimSpace(id)
+	return strings.EqualFold(trimmed, "auto") || strings.EqualFold(trimmed, "all")
+}
 
 // AdtyLangText 按语言存文本。Value 返回字符串，PostgreSQL 简单协议才能写入 json 列。
 type AdtyLangText map[string]string
@@ -620,29 +630,45 @@ func lockLiveAdtyGroupsTx(tx *gorm.DB, ids ...string) error {
 }
 
 // lockAssignableAdtyGroupsTx 在把分组写到用户、密钥或渠道上时调用。
-// 没有对应分组行的旧名字放行。已经软删除的分组拒绝，避免删掉以后又被挂上。
+// 显式拒绝保留分组 "auto" 与 "all"；当 adty_groups 表存在且已有活跃分组时，
+// 查不到活跃记录的分组 ID 返回 ErrAdtyGroupNotFound。已经软删除的分组同样拒绝。
 func lockAssignableAdtyGroupsTx(tx *gorm.DB, ids []string) error {
-	// 还没建分组表的库没有可锁定的行，旧名字照旧放行。
-	if tx == nil || !tx.Migrator().HasTable(&AdtyGroup{}) {
-		return nil
-	}
 	sorted := append([]string(nil), ids...)
 	slices.Sort(sorted)
 	seen := map[string]struct{}{}
+	unique := make([]string, 0, len(sorted))
 	for _, id := range sorted {
 		id = strings.TrimSpace(id)
 		if id == "" {
 			continue
 		}
+		if IsReservedAdtyGroupID(id) {
+			return common.NewMessage("Group {{group}} is reserved and cannot be used", map[string]any{"group": strings.ToLower(id)})
+		}
 		if _, ok := seen[id]; ok {
 			continue
 		}
 		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	// 还没建分组表的库没有可锁定的行，旧名字照旧放行。
+	if len(unique) == 0 || tx == nil || !tx.Migrator().HasTable(&AdtyGroup{}) {
+		return nil
+	}
+	var activeCount int64
+	if err := tx.Model(&AdtyGroup{}).Count(&activeCount).Error; err != nil {
+		return err
+	}
+	hasActiveGroups := activeCount > 0
+	for _, id := range unique {
 		var rows []AdtyGroup
 		if err := lockForUpdate(tx.Unscoped()).Where("id = ?", id).Limit(1).Find(&rows).Error; err != nil {
 			return err
 		}
 		if len(rows) == 0 {
+			if hasActiveGroups {
+				return ErrAdtyGroupNotFound
+			}
 			continue
 		}
 		if rows[0].DeletedAt.Valid {
@@ -711,8 +737,8 @@ func LockActiveAdtyGroupsTx(tx *gorm.DB, ids []string) (string, error) {
 }
 
 func adtyFillLangs(text string) AdtyLangText {
-	out := make(AdtyLangText, len(AdtyContentLangs))
-	for _, lang := range AdtyContentLangs {
+	out := make(AdtyLangText, len(adtyOfficialContentLangs))
+	for _, lang := range adtyOfficialContentLangs {
 		out[lang] = text
 	}
 	return out
@@ -724,11 +750,11 @@ func ValidateAdtyGroupTexts(names, descs AdtyLangText) error {
 	return err
 }
 
-// normalizeAdtyGroupTexts 去掉首尾空白，只保留 8 种内容语言；英文名必须有。
+// normalizeAdtyGroupTexts 去掉首尾空白，仅保留正式语言（zh-CN 与 en）；英文名必须有。
 func normalizeAdtyGroupTexts(names, descs AdtyLangText) (AdtyLangText, AdtyLangText, error) {
-	outNames := make(AdtyLangText, len(AdtyContentLangs))
-	outDescs := make(AdtyLangText, len(AdtyContentLangs))
-	for _, lang := range AdtyContentLangs {
+	outNames := make(AdtyLangText, len(adtyOfficialContentLangs))
+	outDescs := make(AdtyLangText, len(adtyOfficialContentLangs))
+	for _, lang := range adtyOfficialContentLangs {
 		outNames[lang] = strings.TrimSpace(names[lang])
 		outDescs[lang] = strings.TrimSpace(descs[lang])
 	}

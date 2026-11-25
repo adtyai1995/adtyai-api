@@ -564,6 +564,37 @@ func GetChannelKey(c *gin.Context) {
 // extended with; it comfortably covers every built-in and installed plugin.
 const maxTaskExtendPluginKeys = 32
 
+func validateChannelGroups(groups []string) error {
+	for _, group := range groups {
+		if model.IsReservedAdtyGroupID(group) {
+			return common.NewMessage("Group {{group}} is reserved and cannot be used", map[string]any{"group": strings.ToLower(strings.TrimSpace(group))})
+		}
+	}
+	return nil
+}
+
+func writeChannelMutationError(c *gin.Context, err error) {
+	if errors.Is(err, model.ErrAdtyGroupNotFound) {
+		common.ApiErrorT(c, "Group not found")
+		return
+	}
+	common.ApiError(c, err)
+}
+
+func channelGroupsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) == 0 {
+		return true
+	}
+	sa := slices.Clone(a)
+	sb := slices.Clone(b)
+	slices.Sort(sa)
+	slices.Sort(sb)
+	return slices.Equal(sa, sb)
+}
+
 // validateChannel 通用的渠道校验函数
 func validateChannel(channel *model.Channel, isAdd bool) error {
 	if channel == nil {
@@ -572,11 +603,15 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 
 	rawGroup := channel.Group
 	channel.NormalizeGroup()
-	if isAdd && len(channel.GetGroups()) == 0 {
+	groups := channel.GetGroups()
+	if isAdd && len(groups) == 0 {
 		return model.ErrChannelNoGroup
 	}
-	if !isAdd && rawGroup != "" && len(channel.GetGroups()) == 0 {
+	if !isAdd && rawGroup != "" && len(groups) == 0 {
 		return model.ErrChannelNoGroup
+	}
+	if err := validateChannelGroups(groups); err != nil {
+		return err
 	}
 
 	// 校验 channel settings
@@ -883,7 +918,7 @@ func AddChannel(c *gin.Context) {
 	}
 	err = model.BatchInsertChannels(channels)
 	if err != nil {
-		common.ApiError(c, err)
+		writeChannelMutationError(c, err)
 		return
 	}
 	_ = model.RefreshChannelCache()
@@ -1113,9 +1148,17 @@ func EditTagChannels(c *gin.Context) {
 		}
 		channelTag.ModelMapping = common.GetPointer[string](trimmed)
 	}
+	if channelTag.Groups != nil {
+		tmp := model.Channel{Group: *channelTag.Groups}
+		tmp.NormalizeGroup()
+		if err := validateChannelGroups(tmp.GetGroups()); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	}
 	err = model.EditChannelByTag(channelTag.Tag, channelTag.NewTag, channelTag.ModelMapping, channelTag.Models, channelTag.Groups, channelTag.Priority, channelTag.Weight, channelTag.ParamOverride, channelTag.HeaderOverride)
 	if err != nil {
-		common.ApiError(c, err)
+		writeChannelMutationError(c, err)
 		return
 	}
 	_ = model.RefreshChannelCache()
@@ -1219,8 +1262,13 @@ func UpdateChannel(c *gin.Context) {
 	_, groupProvided := requestData["group"]
 	if groupProvided || channel.Group != "" {
 		channel.NormalizeGroup()
-		if len(channel.GetGroups()) == 0 {
+		groups := channel.GetGroups()
+		if len(groups) == 0 {
 			common.ApiError(c, model.ErrChannelNoGroup)
+			return
+		}
+		if err := validateChannelGroups(groups); err != nil {
+			common.ApiError(c, err)
 			return
 		}
 	}
@@ -1419,9 +1467,14 @@ func UpdateChannel(c *gin.Context) {
 			}
 		}
 	}
+	if (groupProvided || channel.Group != "") && channelGroupsEqual(channel.GetGroups(), originChannel.GetGroups()) {
+		// Preserve unchanged legacy groups when editing non-group channel fields;
+		// channel.Update reloads the stored group column and skips re-validating it.
+		channel.Group = ""
+	}
 	err = channel.Update()
 	if err != nil {
-		common.ApiError(c, err)
+		writeChannelMutationError(c, err)
 		return
 	}
 	_ = model.RefreshChannelCache()
@@ -1919,7 +1972,20 @@ type KeyStatus struct {
 	Status       int    `json:"status"` // 1: enabled, 2: disabled
 	DisabledTime int64  `json:"disabled_time,omitempty"`
 	Reason       string `json:"reason,omitempty"`
-	KeyPreview   string `json:"key_preview"` // first 10 chars of key for identification
+	KeyPreview   string `json:"key_preview"` // masked preview of key for identification
+}
+
+func maskChannelKeyPreview(key string) string {
+	runes := []rune(strings.TrimSpace(key))
+	n := len(runes)
+	switch {
+	case n <= 8:
+		return "***"
+	case n <= 16:
+		return string(runes[:2]) + "***" + string(runes[n-2:])
+	default:
+		return string(runes[:4]) + "..." + string(runes[n-4:])
+	}
 }
 
 // ManageMultiKeys handles multi-key management operations
@@ -2014,11 +2080,7 @@ func ManageMultiKeys(c *gin.Context) {
 				}
 			}
 
-			// Create key preview (first 10 chars)
-			keyPreview := key
-			if len(key) > 10 {
-				keyPreview = key[:10] + "..."
-			}
+			keyPreview := maskChannelKeyPreview(key)
 
 			allKeyStatusList = append(allKeyStatusList, KeyStatus{
 				Index:        i,

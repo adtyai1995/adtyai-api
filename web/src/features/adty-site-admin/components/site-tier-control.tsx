@@ -216,7 +216,7 @@ export function SiteTierControl(props: { site: AdminSite }) {
       <SettingsSection
         title={t('Tier cumulative customer recharge')}
         description={t(
-          'Excludes all site-owner recharges (margin top-ups, owner self-use API top-ups, and manual balance credits). Root can adjust this figure for offline large transfers without modifying any wallet balance.'
+          'Excludes all site-owner recharges (margin top-ups). Root can adjust this figure for offline large transfers without modifying any wallet balance.'
         )}
       >
         <div className='flex flex-col gap-5'>

@@ -21,6 +21,7 @@ import type { TFunction } from 'i18next'
 import { loginMethodLabel } from '@/features/security/components/login-session-utils'
 import type { PermissionResourceDef } from '@/lib/admin-permissions'
 import dayjs from '@/lib/dayjs'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { ROLE } from '@/lib/roles'
 
 import { renderAuditContent } from '../../lib/format'
@@ -463,10 +464,15 @@ export function buildAuditDetails(
     typeof admin.admin_id === 'number' || typeof admin.admin_id === 'string'
       ? admin.admin_id
       : entry.user_id
-  let actor = actorName
-  if (actorId) {
-    actor = actorName ? `${actorName} (ID: ${actorId})` : `ID: ${actorId}`
-  }
+  const hasActorId =
+    actorId !== undefined &&
+    actorId !== null &&
+    String(actorId).trim() !== '' &&
+    Number(actorId) !== 0
+  const actor =
+    hasActorId || actorName?.trim()
+      ? formatUserIdentity(actorId, actorName)
+      : ''
   let actorRole = ''
   if ([1, 10, 100].includes(entry.actor_role)) {
     actorRole = AUDIT_ROLE_NAMES[entry.actor_role]
@@ -486,14 +492,39 @@ export function buildAuditDetails(
     typeof params.id === 'number' || typeof params.id === 'string'
       ? params.id
       : undefined
-  let target = targetName
-  if (targetId !== undefined) {
-    target = targetName ? `${targetName} (ID: ${targetId})` : `ID: ${targetId}`
-  }
+  const hasTargetId =
+    targetId !== undefined &&
+    String(targetId).trim() !== '' &&
+    Number(targetId) !== 0
+  let target =
+    hasTargetId || targetName.trim()
+      ? formatUserIdentity(targetId, targetName)
+      : ''
   if (target) {
     delete params.id
     delete params.name
     delete params.username
+  } else {
+    const objectType = entry.object_type?.trim().toLowerCase() ?? ''
+    const objectUsername =
+      (
+        entry as AuditLog & {
+          object_username?: string | null
+        }
+      ).object_username?.trim() ?? ''
+    if (
+      objectUsername &&
+      [
+        'user',
+        'customer',
+        'site_customer',
+        'staff',
+        'site_staff',
+        'site.staff',
+      ].includes(objectType)
+    ) {
+      target = formatUserIdentity(entry.object_id, objectUsername)
+    }
   }
 
   const fields: AuditDetailField[] = []

@@ -27,7 +27,6 @@ import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { AuthOperationError } from '@/lib/secure-verification'
 
-import type { PasskeyDomains } from '../../passkey/assertion'
 import { requestSecurityEmailCode } from '../api'
 import type {
   SecureVerificationState,
@@ -37,7 +36,6 @@ import type {
 
 interface SecureVerificationDialogProps {
   state: SecureVerificationState
-  passkeyDomains?: PasskeyDomains | null
   onVerify: (input?: VerificationInput) => void | Promise<void>
   onCancel: () => void
   onRetry: () => void
@@ -46,7 +44,6 @@ interface SecureVerificationDialogProps {
 
 const methodLabels: Record<VerificationMethod, string> = {
   '2fa': 'Authenticator code',
-  passkey: 'Passkey',
   password: 'Password',
   email_code: 'Email verification code',
   session: 'Login session',
@@ -91,8 +88,8 @@ export function SecureVerificationDialog(props: SecureVerificationDialogProps) {
   }
 
   const visibleMethods =
-    ready?.requirements.methods.filter(
-      (option) => option.method !== 'passkey'
+    ready?.requirements.methods.filter((option) =>
+      Object.hasOwn(methodLabels, option.method)
     ) ?? []
 
   return (

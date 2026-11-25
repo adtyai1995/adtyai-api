@@ -12,9 +12,21 @@ import (
 // ValidateRequestURL prevents plugins from directing a channel credential to
 // hosts other than the configured base URL or an administrator-approved host.
 func ValidateRequestURL(requestURL, baseURL string, allowedHosts []string) error {
+	if strings.Contains(requestURL, "#") {
+		return fmt.Errorf("plugin request URL must not contain a fragment")
+	}
 	request, err := url.Parse(requestURL)
 	if err != nil || request.Scheme == "" || request.Host == "" {
 		return fmt.Errorf("plugin request URL must be absolute")
+	}
+	if request.Fragment != "" {
+		return fmt.Errorf("plugin request URL must not contain a fragment")
+	}
+	if request.User != nil {
+		return fmt.Errorf("plugin request URL must not contain userinfo")
+	}
+	if hasUnsafePluginRequestPath(request) {
+		return fmt.Errorf("plugin request URL contains an unsafe path")
 	}
 	base, err := url.Parse(baseURL)
 	if err != nil || base.Host == "" {
@@ -39,6 +51,31 @@ func ValidateRequestURL(requestURL, baseURL string, allowedHosts []string) error
 		}
 	}
 	return fmt.Errorf("plugin request host %q is not allowed", request.Host)
+}
+
+func hasUnsafePluginRequestPath(u *url.URL) bool {
+	if u == nil {
+		return true
+	}
+	for _, rawPath := range []string{u.Path, u.RawPath, u.EscapedPath()} {
+		if rawPath == "" {
+			continue
+		}
+		if strings.Contains(rawPath, "\\") || strings.Contains(strings.ToLower(rawPath), "%5c") {
+			return true
+		}
+		for _, segment := range strings.Split(rawPath, "/") {
+			if segment == ".." {
+				return true
+			}
+			if decoded, err := url.PathUnescape(segment); err == nil {
+				if decoded == ".." || strings.Contains(decoded, "\\") || strings.Contains(decoded, "/") {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // ValidateRequestHeaders rejects plugin-chosen headers that the host

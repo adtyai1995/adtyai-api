@@ -25,16 +25,10 @@ import { StaticDataTable } from '@/components/data-table/static/static-data-tabl
 import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
@@ -106,16 +100,12 @@ export function GiftFulfillmentsPanel() {
 
   return (
     <>
-      <Card>
-        <CardHeader className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
-          <div>
-            <CardTitle>{t('Site gift fulfillment review')}</CardTitle>
-            <CardDescription>
-              {t(
-                'Site-funded top-up bonuses held for Root review after late payment or manual completion.'
-              )}
-            </CardDescription>
-          </div>
+      <ContentSection
+        title={t('Site gift fulfillment review')}
+        description={t(
+          'Site-funded top-up bonuses held for Root review after late payment or manual completion.'
+        )}
+        actions={
           <NativeSelect
             aria-label={t('Status')}
             value={statusFilter}
@@ -140,15 +130,15 @@ export function GiftFulfillmentsPanel() {
               {t('All statuses')}
             </NativeSelectOption>
           </NativeSelect>
-        </CardHeader>
-        <CardContent className='flex flex-col gap-3'>
-          {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
-          {query.isPending ? (
-            <LoadingState />
-          ) : (
-            query.data && (
-              <>
-                <StaticDataTable
+        }
+      >
+        {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
+        {query.isPending ? (
+          <LoadingState />
+        ) : (
+          query.data && (
+            <>
+              <StaticDataTable
                   tableClassName='min-w-[820px]'
                   tableProps={{
                     'aria-label': t('Site gift fulfillment review'),
@@ -241,8 +231,7 @@ export function GiftFulfillmentsPanel() {
               </>
             )
           )}
-        </CardContent>
-      </Card>
+      </ContentSection>
       {reviewing && (
         <GiftFulfillmentReviewDialog
           key={reviewing.id}

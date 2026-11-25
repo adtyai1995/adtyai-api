@@ -119,6 +119,18 @@ func recordDurableAdtySiteEarningLineTx(tx *gorm.DB, event *model.AdtySiteEarnin
 		sum := sha256.Sum256([]byte(event.OperationKey))
 		requestID = fmt.Sprintf("op:%x", sum[:24])
 	}
+	// Idempotency guard: never insert a duplicate line for the same projected operation.
+	if requestID != "" {
+		var existing model.AdtySiteEarningLine
+		res := tx.Where("site_id = ? AND site_owner_user_id = ? AND user_id = ? AND request_id = ?",
+			event.SiteId, event.SiteOwnerUserId, event.UserId, requestID).Limit(1).Find(&existing)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected > 0 {
+			return nil
+		}
+	}
 	// The caller holds this event's row lock and commits Projected atomically.
 	// Request IDs alone are not unique across independent billing operations.
 	return tx.Create(&model.AdtySiteEarningLine{SiteId: event.SiteId, SiteOwnerUserId: event.SiteOwnerUserId, UserId: event.UserId,

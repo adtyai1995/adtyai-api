@@ -213,7 +213,7 @@ A white-and-ink palette with a single saturated blue; every neutral is tinted fa
 ## Typography
 
 **Display Font:** Public Sans Variable (self-hosted via `@fontsource-variable/public-sans`), falling through to the system UI stack for CJK (PingFang SC, Microsoft YaHei).
-**Body Font:** the system UI stack (`ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica Neue, Arial, PingFang SC, Microsoft YaHei`); Japanese and Korean pages switch to their own stacks.
+**Body Font:** the system UI stack (`ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica Neue, Arial, PingFang SC, Microsoft YaHei`).
 **Mono Font:** the system mono stack (`ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas`).
 
 **Character:** a heavy, tightly tracked geometric grotesque for statements over a native system body, so headlines feel built and Chinese body text renders in the reader's own OS face.

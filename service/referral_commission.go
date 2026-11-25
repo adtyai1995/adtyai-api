@@ -598,18 +598,28 @@ func clawBackSettledCommissionTx(tx *gorm.DB, account *model.ReferralCommissionA
 			return err
 		}
 	}
-	deductFrozen := clawbackLimitedToBalance(account.FrozenAmount, parts[2])
+	actualFrozenDeduct := decimal.Zero
+	if parts[2].IsPositive() {
+		var shrinkErr error
+		actualFrozenDeduct, shrinkErr = shrinkFrozenWithdrawalOccupancyTx(tx, commission.Id, parts[2])
+		if shrinkErr != nil {
+			return shrinkErr
+		}
+	}
+	// Re-lock account after pending withdrawal cancellation/releases so frozen_amount
+	// and available_amount are clamped against fresh post-release balances (R1-11).
+	freshAccount, lockErr := lockReferralAccountTx(tx, account.AffiliateId)
+	if lockErr != nil {
+		return lockErr
+	}
+	account = freshAccount
+	deductFrozen := clawbackLimitedToBalance(account.FrozenAmount, actualFrozenDeduct)
 	deductAvailable := clawbackLimitedToBalance(account.AvailableAmount, parts[3])
-	// Keep paid allocations in the book value; remove only cash already clawed back.
-	// Withdrawal allocation uses CommissionAmount minus the original paid and frozen items.
+	// Keep paid allocations and approved-withdrawal pending clawbacks in the book value;
+	// remove only cash already clawed back from pending withdrawals or available balance.
 	booked := remaining.Add(recovered).Sub(deductFrozen).Sub(deductAvailable)
 	if err := tx.Model(&model.ReferralCommission{}).Where("id = ?", commission.Id).Update("commission_amount", moneyF(booked)).Error; err != nil {
 		return err
-	}
-	if deductFrozen.IsPositive() {
-		if err := shrinkFrozenWithdrawalOccupancyTx(tx, commission.Id, deductFrozen); err != nil {
-			return err
-		}
 	}
 	if !deductFrozen.IsPositive() && !deductAvailable.IsPositive() {
 		return addReferralLedgerTx(tx, &entry)

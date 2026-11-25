@@ -1092,8 +1092,15 @@ func adtySiteIsClosedTx(tx *gorm.DB, siteID int) (bool, error) {
 // consumeSiteCommissionHoldTx settles a frozen hold. release returns it to the
 // original wallet. A deduction removes it from that wallet.
 func consumeSiteCommissionHoldTx(tx *gorm.DB, row *model.AdtySiteInviteCommission, amount decimal.Decimal, release bool, idemBase string) error {
+	return consumeSiteCommissionHoldWithTypeTx(tx, row, amount, release, "commission_deduct", idemBase)
+}
+
+func consumeSiteCommissionHoldWithTypeTx(tx *gorm.DB, row *model.AdtySiteInviteCommission, amount decimal.Decimal, release bool, deductType, idemBase string) error {
 	if !amount.IsPositive() {
 		return nil
+	}
+	if strings.TrimSpace(deductType) == "" {
+		deductType = "commission_deduct"
 	}
 	holds := []decimal.Decimal{row.EarningsHoldUSD, row.MarginHoldUSD}
 	parts := splitDecimalByWeights(amount, holds)
@@ -1137,7 +1144,7 @@ func consumeSiteCommissionHoldTx(tx *gorm.DB, row *model.AdtySiteInviteCommissio
 		}
 		delta := decimal.Zero
 		if !release {
-			change.Type = "commission_deduct"
+			change.Type = deductType
 			delta = part.Neg()
 		}
 		if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, kinds[i], delta, change); err != nil {

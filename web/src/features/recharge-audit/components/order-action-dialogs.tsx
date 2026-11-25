@@ -52,6 +52,11 @@ import {
   type RechargeAuditOrder,
   type TopupRefundResult,
 } from '../api'
+import {
+  manualRefundPayoutStatusLabel,
+  manualRefundStatusLabel,
+  orderTraceSourceLabel,
+} from '../trace-labels'
 
 function isExternalReversalTraceEntry(entry: OrderTraceEntry): boolean {
   const eventId = (entry.reference ?? '').trim().toLowerCase()
@@ -790,7 +795,9 @@ export function RefundDialog(
             </NativeSelectOption>
             {pendingReversalOrphans.map((entry) => (
               <NativeSelectOption key={entry.id} value={String(entry.id)}>
-                #{entry.id} · {entry.source || entry.kind} · {entry.reference}
+                #{entry.id} ·{' '}
+                {orderTraceSourceLabel(t, entry.source || entry.kind)} ·{' '}
+                {entry.reference}
               </NativeSelectOption>
             ))}
           </NativeSelect>
@@ -825,7 +832,8 @@ export function RefundDialog(
           >
             {refunds.map((row) => (
               <option key={row.refund_id} value={row.refund_id}>
-                {row.refund_id} · {row.request_usd} USD · {row.status}
+                {row.refund_id} · {row.request_usd} USD ·{' '}
+                {manualRefundStatusLabel(t, row.status)}
                 {row.reconcile_orphan_id && row.reconcile_orphan_id > 0
                   ? ` · ${t('Reconcile orphan #{{id}}', { id: row.reconcile_orphan_id })}`
                   : ''}
@@ -839,7 +847,8 @@ export function RefundDialog(
             <p className='text-muted-foreground text-sm'>
               {t('Internal reclaim')}:{' '}
               {selected.reclaimed_at ? t('recorded') : t('pending')}.{' '}
-              {t('Offline payout')}: {selected.payout_status || t('pending')}.{' '}
+              {t('Offline payout')}:{' '}
+              {manualRefundPayoutStatusLabel(t, selected.payout_status)}.{' '}
               {selectedHasReconcileOrphan && (
                 <>
                   {t(

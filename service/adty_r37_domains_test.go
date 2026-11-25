@@ -11,6 +11,8 @@ import (
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
 
@@ -253,49 +255,54 @@ func TestR37DomainSingleRoleLimitIndependentOfTotalCap(t *testing.T) {
 	db := setupR37DomainTest(t, func(rs *adty_setting.ResellerSetting) {
 		rs.MaxCustomDomainsPerSite = 5
 	})
-	createR37TestSite(t, db, 401, "delta")
+	site := createR37TestSite(t, db, 401, "delta")
 	ctx := context.Background()
 
-	firstSite, err := AddAdtySiteDomainWithRole(ctx, 401, "web1.delta.org", model.AdtySiteDomainRoleSite)
-	if err != nil {
-		t.Fatalf("first site domain: %v", err)
-	}
-	// Second site domain must be blocked even though MaxCustomDomainsPerSite=5.
-	if _, err := AddAdtySiteDomainWithRole(ctx, 401, "web2.delta.org", model.AdtySiteDomainRoleSite); !errors.Is(err, ErrAdtyCustomDomainRoleLimit) {
-		t.Fatalf("second site domain: want ErrAdtyCustomDomainRoleLimit, got %v", err)
-	}
-	// First base_url domain is still allowed.
-	if _, err := AddAdtySiteDomainWithRole(ctx, 401, "api1.delta.org", model.AdtySiteDomainRoleBaseURL); err != nil {
-		t.Fatalf("first base_url domain: %v", err)
-	}
-	// Second base_url domain must be blocked.
-	if _, err := AddAdtySiteDomainWithRole(ctx, 401, "api2.delta.org", model.AdtySiteDomainRoleBaseURL); !errors.Is(err, ErrAdtyCustomDomainRoleLimit) {
-		t.Fatalf("second base_url domain: want ErrAdtyCustomDomainRoleLimit, got %v", err)
-	}
+	// An empty site with no custom domains must reject single-domain binding for either role.
+	_, err := AddAdtySiteDomainWithRole(ctx, 401, "web1.delta.org", model.AdtySiteDomainRoleSite)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "configure both website and API custom domains together first")
+	_, err = AddAdtySiteDomainWithRole(ctx, 401, "api1.delta.org", model.AdtySiteDomainRoleBaseURL)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "configure both website and API custom domains together first")
+	var initialCount int64
+	require.NoError(t, db.Model(&model.AdtySiteDomain{}).Where("site_id = ?", site.Id).Count(&initialCount).Error)
+	assert.Zero(t, initialCount)
+
+	// Bind the initial site + base_url pair together first.
+	pair, err := AddAdtySiteDomainPair(ctx, 401, "web1.delta.org", "api1.delta.org")
+	require.NoError(t, err)
+	require.Len(t, pair, 2)
+	firstSite := pair[0]
+	assert.Equal(t, "web1.delta.org", firstSite.Hostname)
+	assert.Equal(t, model.AdtySiteDomainRoleSite, firstSite.Role)
+	assert.Equal(t, "api1.delta.org", pair[1].Hostname)
+	assert.Equal(t, model.AdtySiteDomainRoleBaseURL, pair[1].Role)
+
+	// Second site domain and second base_url domain must both be blocked by per-role slot caps
+	// even though MaxCustomDomainsPerSite=5.
+	_, err = AddAdtySiteDomainWithRole(ctx, 401, "web2.delta.org", model.AdtySiteDomainRoleSite)
+	require.ErrorIs(t, err, ErrAdtyCustomDomainRoleLimit)
+	_, err = AddAdtySiteDomainWithRole(ctx, 401, "api2.delta.org", model.AdtySiteDomainRoleBaseURL)
+	require.ErrorIs(t, err, ErrAdtyCustomDomainRoleLimit)
 
 	// After marking the existing site domain failed, retrying the SAME hostname reuses it.
-	if err := db.Model(&model.AdtySiteDomain{}).Where("id = ?", firstSite.Id).Update("status", model.AdtySiteDomainFailed).Error; err != nil {
-		t.Fatalf("mark failed: %v", err)
-	}
+	require.NoError(t, db.Model(&model.AdtySiteDomain{}).Where("id = ?", firstSite.Id).Update("status", model.AdtySiteDomainFailed).Error)
 	retried, err := AddAdtySiteDomainWithRole(ctx, 401, "web1.delta.org", model.AdtySiteDomainRoleSite)
-	if err != nil {
-		t.Fatalf("retry failed site domain: %v", err)
-	}
-	if retried.Id != firstSite.Id || retried.Status != model.AdtySiteDomainPending {
-		t.Fatalf("expected reused pending row #%d, got %+v", firstSite.Id, retried)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, firstSite.Id, retried.Id)
+	assert.Equal(t, model.AdtySiteDomainPending, retried.Status)
 
-	// After removing it, a new site domain is allowed.
-	if err := db.Model(&model.AdtySiteDomain{}).Where("id = ?", firstSite.Id).Update("status", model.AdtySiteDomainRemoved).Error; err != nil {
-		t.Fatalf("mark removed: %v", err)
-	}
+	// After removing it (while api1.delta.org still keeps the site non-empty), a replacement site domain is allowed,
+	// and a subsequent site domain is again rejected by the single-slot cap.
+	require.NoError(t, db.Model(&model.AdtySiteDomain{}).Where("id = ?", firstSite.Id).Update("status", model.AdtySiteDomainRemoved).Error)
 	replacement, err := AddAdtySiteDomainWithRole(ctx, 401, "web2.delta.org", model.AdtySiteDomainRoleSite)
-	if err != nil {
-		t.Fatalf("replacement site domain: %v", err)
-	}
-	if replacement.Hostname != "web2.delta.org" || replacement.Role != model.AdtySiteDomainRoleSite {
-		t.Fatalf("unexpected replacement domain: %+v", replacement)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "web2.delta.org", replacement.Hostname)
+	assert.Equal(t, model.AdtySiteDomainRoleSite, replacement.Role)
+
+	_, err = AddAdtySiteDomainWithRole(ctx, 401, "web3.delta.org", model.AdtySiteDomainRoleSite)
+	require.ErrorIs(t, err, ErrAdtyCustomDomainRoleLimit)
 }
 
 func TestR37DomainPairQuotaAndRateLimits(t *testing.T) {
