@@ -44,16 +44,23 @@ func RequestBEpusdtPay(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if _, err := service.AuthorizeAdtyPaymentScene(c.GetInt("id"), req.PaymentScene, model.PaymentProviderAdtyBEpusdt, req.Chain, quote); err != nil {
+	scene, err := service.AuthorizeAdtyPaymentScene(c.GetInt("id"), req.PaymentScene, model.PaymentProviderAdtyBEpusdt, req.Chain, quote)
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if err := replaceOtherPendingAdtyOrders(c, quote); err != nil {
-		if errors.Is(err, service.ErrAdtyPaymentDetected) {
-			common.ApiErrorT(c, "A transfer has been detected. Please wait")
-			return
-		}
+	reused, err := findReusablePendingOrCheckCap(c, adtyPendingReuseFilter{
+		paymentScene: scene.Key,
+		provider:     model.PaymentProviderAdtyBEpusdt,
+		method:       req.Chain,
+		quote:        quote,
+	})
+	if err != nil {
 		writeAdtyTopUpError(c, err)
+		return
+	}
+	if reused != nil {
+		common.ApiSuccess(c, reused)
 		return
 	}
 	minutes := adty_setting.GetTopupSetting().USDTOrderMinutes

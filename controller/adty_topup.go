@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -147,9 +148,18 @@ func CancelAdtyTopUpOrder(c *gin.Context) {
 		cancelErr := provider.Cancel(locked)
 		if cancelErr != nil {
 			common.SysLog(common.LogText("cancel adty order at provider failed trade_no=%s: %s", locked.TradeNo, cancelErr.Error()))
-			if !errors.Is(cancelErr, service.ErrAdtyPaymentDetected) {
-				providerCancelFailed = true
+			if errors.Is(cancelErr, service.ErrAdtyPaymentDetected) {
+				return cancelErr
 			}
+			// Epay orders with no reserved site gift hold zero site funds; PAY-06 still
+			// auto-credits late callbacks on canceled orders, so a broken/unqueryable
+			// Epay gateway must not trap users from canceling unpaid orders.
+			if locked.Provider == model.PaymentProviderAdtyEpay &&
+				!locked.GiftReserveEarning.IsPositive() &&
+				!locked.GiftReserveMargin.IsPositive() {
+				return nil
+			}
+			providerCancelFailed = true
 			return cancelErr
 		}
 		return nil
@@ -545,40 +555,126 @@ func newAdtyTradeNo(prefix string, userID int) (string, error) {
 	return fmt.Sprintf("%s%d%06d%d", prefix, userID, n.Int64(), time.Now().Unix()), nil
 }
 
-// replaceOtherPendingAdtyOrders freezes the user's other payable orders before
-// a new one is created, and asks the gateway to cancel when it can.
-func replaceOtherPendingAdtyOrders(c *gin.Context, quote ...*service.AdtyQuote) error {
+const (
+	maxActivePendingAdtyTopUps  = 10
+	reusablePendingMinRemaining = int64(60)
+)
+
+type adtyPendingReuseFilter struct {
+	paymentScene     string
+	provider         string
+	method           string
+	quote            *service.AdtyQuote
+	requestedChannel int
+	allowedChannels  []int
+	excludedChannels map[int]bool
+}
+
+func adtyPendingScopeFromQuote(quote *service.AdtyQuote) (ownerSiteID int, business string) {
+	if quote != nil && (quote.Business == model.AdtyBusinessOwnerSelfUseTopup || quote.Business == model.AdtyBusinessOwnerMarginTopup) {
+		return quote.SiteID, quote.Business
+	}
+	return 0, ""
+}
+
+// findReusablePendingOrCheckCap reuses an existing unexpired pending order matching the
+// same payment method, scene, and quote snapshot when available; otherwise enforces the
+// per-user active unexpired pending order cap (maxActivePendingAdtyTopUps = 10) without
+// canceling or replacing orders on other payment methods.
+func findReusablePendingOrCheckCap(c *gin.Context, filter adtyPendingReuseFilter) (*model.AdtyTopUpView, error) {
 	userID := c.GetInt("id")
-	ownerSiteID := 0
-	business := ""
-	if len(quote) > 0 && quote[0] != nil && (quote[0].Business == model.AdtyBusinessOwnerSelfUseTopup || quote[0].Business == model.AdtyBusinessOwnerMarginTopup) {
-		ownerSiteID = quote[0].SiteID
-		business = quote[0].Business
-	}
-	tradeNos, err := model.ListUserPendingAdtyTradeNosForBusiness(userID, ownerSiteID, business)
+	now := time.Now().Unix()
+	ownerSiteID, scopeBusiness := adtyPendingScopeFromQuote(filter.quote)
+	pendingList, err := model.ListUserActivePendingAdtyTopUpsForBusiness(userID, now, ownerSiteID, scopeBusiness)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	for _, tradeNo := range tradeNos {
-		_, err := model.ReplaceAdtyTopUpAfterLock(tradeNo, userID, func(locked *model.AdtyTopupOrder) error {
-			provider := service.AdtyPaymentProviderByName(locked.Provider)
-			if provider == nil {
-				return nil
-			}
-			cancelErr := provider.Cancel(locked)
-			if cancelErr != nil {
-				return cancelErr
-			}
-			return nil
-		})
-		if errors.Is(err, model.ErrAdtyTopUpNotCancel) {
+	expectedSiteID := 0
+	if filter.quote != nil {
+		if filter.quote.Business == model.AdtyBusinessOwnerSelfUseTopup || filter.quote.Business == model.AdtyBusinessOwnerMarginTopup {
+			expectedSiteID = filter.quote.SiteID
+		} else if site := service.AdtyBillingSiteForUser(userID); site != nil {
+			expectedSiteID = site.Id
+		}
+	}
+	for i := range pendingList {
+		ext := &pendingList[i]
+		if !adtyPendingOrderReusable(ext, filter, expectedSiteID, now) {
 			continue
 		}
+		view, err := model.GetUserAdtyTopUp(ext.TradeNo, userID)
 		if err != nil {
-			return err
+			if errors.Is(err, model.ErrTopUpNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		if view != nil && view.Status == common.TopUpStatusPending && view.Ext != nil && view.Ext.ExpireAt > now+reusablePendingMinRemaining {
+			return view, nil
 		}
 	}
-	return nil
+	if len(pendingList) >= maxActivePendingAdtyTopUps {
+		return nil, common.NewMessage("Too many pending payment orders. Please complete or cancel an existing order first")
+	}
+	return nil, nil
+}
+
+func adtyPendingOrderReusable(ext *model.AdtyTopupOrder, filter adtyPendingReuseFilter, expectedSiteID int, now int64) bool {
+	if ext == nil || filter.quote == nil {
+		return false
+	}
+	if ext.ExpireAt <= now+reusablePendingMinRemaining {
+		return false
+	}
+	if ext.Provider != filter.provider || ext.Method != filter.method || ext.PaymentScene != filter.paymentScene {
+		return false
+	}
+	if ext.Business != filter.quote.Business || ext.SiteId != expectedSiteID {
+		return false
+	}
+	if !ext.FaceUSD.Equal(filter.quote.FaceUSD) || !ext.BonusUSD.Equal(filter.quote.BonusUSD) ||
+		ext.CreditQuota != filter.quote.CreditQuota || ext.PayCurrency != filter.quote.PayCurrency {
+		return false
+	}
+	switch filter.provider {
+	case model.PaymentProviderAdtyBEpusdt:
+		// BEpusdt adjusts PayAmount by small unique decimals (e.g. 10.0001), so
+		// FaceUSD + BonusUSD + CreditQuota + PayCurrency + non-empty address define match.
+		return strings.TrimSpace(ext.PayAddress) != ""
+	case model.PaymentProviderAdtyEpay:
+		if !ext.PayAmount.Equal(filter.quote.PayAmount) {
+			return false
+		}
+		if strings.TrimSpace(ext.PayURL) == "" && strings.TrimSpace(ext.QRCode) == "" && strings.TrimSpace(ext.URLScheme) == "" {
+			return false
+		}
+		if ext.ChannelId <= 0 {
+			return false
+		}
+		if filter.requestedChannel > 0 && ext.ChannelId != filter.requestedChannel {
+			return false
+		}
+		if len(filter.allowedChannels) > 0 && !slices.Contains(filter.allowedChannels, ext.ChannelId) {
+			return false
+		}
+		if filter.excludedChannels[ext.ChannelId] {
+			return false
+		}
+		channel, err := model.GetAdtyEpayChannel(ext.ChannelId)
+		if err != nil || channel == nil || channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() {
+			return false
+		}
+		methodEnabled := false
+		for i := range channel.Methods {
+			if channel.Methods[i].Method == filter.method && channel.Methods[i].Enabled {
+				methodEnabled = true
+				break
+			}
+		}
+		return methodEnabled
+	default:
+		return false
+	}
 }
 
 // createAdtyOrder 写 top_ups 和扩展行，带上返佣快照。
@@ -640,6 +736,10 @@ func writeAdtyTopUpError(c *gin.Context, err error) {
 		common.ApiErrorStatus(c, 404, common.NewMessage("Order not found"))
 	case errors.Is(err, model.ErrAdtyTopUpNotCancel):
 		common.ApiErrorT(c, "Only orders waiting for payment can be canceled")
+	case errors.Is(err, service.ErrAdtyPaymentDetected):
+		common.ApiErrorT(c, "A transfer has been detected. Please wait")
+	case errors.Is(err, model.ErrPaymentMethodMismatch):
+		common.ApiErrorT(c, "This payment method is not available")
 	default:
 		common.SysError(common.LogText("adty topup: %s", err.Error()))
 		common.ApiErrorT(c, "Database error, please contact the administrator")

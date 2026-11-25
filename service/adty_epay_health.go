@@ -326,6 +326,7 @@ func (adtyEpayProvider) Cancel(ext *model.AdtyTopupOrder) error {
 	defer cancel()
 	facts, err := (adtyEpayProvider{}).Query(ctx, ext)
 	if err != nil {
+		common.SysLog(common.LogText("epay cancel query failed trade_no=%s channel_id=%d: %s", ext.TradeNo, ext.ChannelId, err.Error()))
 		return err
 	}
 	if facts != nil {
@@ -356,7 +357,12 @@ func (adtyEpayProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder) (*
 		}
 		return nil, err
 	}
-	if result == nil || result.OutTradeNo != ext.TradeNo || result.MerchantId != channel.MerchantId {
+	if result == nil || result.OutTradeNo != ext.TradeNo {
+		return nil, model.ErrPaymentMethodMismatch
+	}
+	// Enforce merchant ID match whenever the gateway includes pid in query responses;
+	// many real Epay v1/v2 query endpoints omit pid on the response payload.
+	if merchantID := strings.TrimSpace(result.MerchantId); merchantID != "" && merchantID != strings.TrimSpace(channel.MerchantId) {
 		return nil, model.ErrPaymentMethodMismatch
 	}
 	if !result.Paid {

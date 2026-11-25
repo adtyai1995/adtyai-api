@@ -11609,6 +11609,7 @@
     "© 2025 Your Company. All rights reserved.": "© 2025 Your Company. All rights reserved.",
     "、": ", ",
     "，": ", ",
-    "，and ": ", and "
+    "，and ": ", and ",
+    "Too many pending payment orders. Please complete or cancel an existing order first": "Too many pending payment orders. Please complete or cancel an existing order first"
   }
 }

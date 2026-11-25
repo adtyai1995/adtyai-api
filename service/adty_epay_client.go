@@ -295,6 +295,25 @@ func adtyRejectUnsafeEpayLink(result *AdtyEpayCreateResult) error {
 	return nil
 }
 
+// isEpayOrderAbsentMsg reports whether an Epay gateway error message means the
+// queried order does not exist on the gateway (e.g. a submit-mode order before redirect).
+func isEpayOrderAbsentMsg(msg string) bool {
+	lower := strings.ToLower(strings.TrimSpace(msg))
+	if lower == "" {
+		return false
+	}
+	for _, needle := range []string{
+		"订单不存在", "订单号不存在", "无此订单", "未找到订单", "订单未找到",
+		"未找到该订单", "找不到订单", "查无此单",
+		"order not found", "order does not exist", "order doesn't exist", "not exist",
+	} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 // QueryAdtyEpayOrder 按我们的订单号查单。MD5 走 api.php?act=order；RSA 走 POST /api/pay/query 并验签。
 func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, outTradeNo string) (*AdtyEpayQueryResult, error) {
 	if channel == nil || channel.Status == model.AdtyEpayStatusRevoked || !channel.HasCredentials() {
@@ -359,8 +378,7 @@ func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, out
 		return nil, fmt.Errorf("epay query returned non-JSON")
 	}
 	if strings.Trim(strings.TrimSpace(string(parsed.Code)), `"`) != "1" {
-		msg := strings.ToLower(parsed.Msg)
-		if strings.Contains(msg, "订单不存在") || strings.Contains(msg, "订单号不存在") || strings.Contains(msg, "order not found") {
+		if isEpayOrderAbsentMsg(parsed.Msg) {
 			return nil, errEpayOrderAbsent
 		}
 		return nil, fmt.Errorf("epay order query did not succeed")
@@ -403,8 +421,7 @@ func queryAdtyEpayOrderRSA(ctx context.Context, channel *model.AdtyEpayChannel, 
 	if err != nil {
 		var apiErr *epayRSAAPIError
 		if errors.As(err, &apiErr) {
-			msg := strings.ToLower(apiErr.Msg)
-			if strings.Contains(msg, "订单不存在") || strings.Contains(msg, "订单号不存在") || strings.Contains(msg, "order not found") {
+			if isEpayOrderAbsentMsg(apiErr.Msg) {
 				return nil, errEpayOrderAbsent
 			}
 			return nil, fmt.Errorf("epay order query did not succeed")

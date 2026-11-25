@@ -700,6 +700,29 @@ func ListUserPendingAdtyTradeNosForBusiness(userId, ownerSiteID int, business st
 	return tradeNos, err
 }
 
+// CountUserActivePendingAdtyTopUps counts unexpired pending orders for a user within the business scope.
+func CountUserActivePendingAdtyTopUps(userId int, now int64, ownerSiteID int, business string) (int64, error) {
+	var count int64
+	query := DB.Table("adty_topup_orders AS a").
+		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
+		Where("a.user_id = ? AND t.status = ? AND a.expire_at > ?", userId, common.TopUpStatusPending, now)
+	query = adtyPendingBusinessScope(query, ownerSiteID, business)
+	err := query.Count(&count).Error
+	return count, err
+}
+
+// ListUserActivePendingAdtyTopUpsForBusiness returns unexpired pending orders (newest first)
+// for a user within the business scope so checkout can reuse matching orders without replacing others.
+func ListUserActivePendingAdtyTopUpsForBusiness(userId int, now int64, ownerSiteID int, business string) ([]AdtyTopupOrder, error) {
+	var exts []AdtyTopupOrder
+	query := DB.Table("adty_topup_orders AS a").Select("a.*").
+		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
+		Where("a.user_id = ? AND t.status = ? AND a.expire_at > ?", userId, common.TopUpStatusPending, now)
+	query = adtyPendingBusinessScope(query, ownerSiteID, business)
+	err := query.Order("a.id DESC").Scan(&exts).Error
+	return exts, err
+}
+
 func adtyPendingBusinessScope(query *gorm.DB, ownerSiteID int, business string) *gorm.DB {
 	if ownerSiteID > 0 {
 		if business == "" {

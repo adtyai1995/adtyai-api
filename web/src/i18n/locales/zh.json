@@ -11609,6 +11609,7 @@
     "© 2025 Your Company. All rights reserved.": "© 2025 您的公司。保留所有权利。",
     "、": "、",
     "，": "，",
-    "，and ": "，并"
+    "，and ": "，并",
+    "Too many pending payment orders. Please complete or cancel an existing order first": "待付款订单过多，请先完成支付或取消不需要的订单"
   }
 }

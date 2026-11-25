@@ -101,17 +101,26 @@ func RequestAdtyEpayPay(c *gin.Context) {
 	// DEC-027 (R1-035): Never auto-switch payment channels on gateway failure.
 	// Always attempt at most one channel and let the user manually choose another.
 	maxAttempts := 1
-	if err := replaceOtherPendingAdtyOrders(c, quote); err != nil {
-		if errors.Is(err, service.ErrAdtyPaymentDetected) {
-			common.ApiErrorT(c, "A transfer has been detected. Please wait")
-			return
-		}
-		writeAdtyTopUpError(c, err)
-		return
-	}
 	exclude := map[int]bool{}
 	for _, id := range req.ExcludeChannelIds {
 		exclude[id] = true
+	}
+	reused, err := findReusablePendingOrCheckCap(c, adtyPendingReuseFilter{
+		paymentScene:     scene.Key,
+		provider:         model.PaymentProviderAdtyEpay,
+		method:           req.Method,
+		quote:            quote,
+		requestedChannel: req.ChannelId,
+		allowedChannels:  allowedChannels,
+		excludedChannels: exclude,
+	})
+	if err != nil {
+		writeAdtyTopUpError(c, err)
+		return
+	}
+	if reused != nil {
+		common.ApiSuccess(c, reused)
+		return
 	}
 	channelTimeout, totalTimeout, err := adtyEpayTimeouts()
 	if err != nil {
