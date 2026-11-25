@@ -738,6 +738,10 @@ func PostAdtyTeamRegistrationComplete(c *gin.Context) {
 	}
 	created, err := service.CompleteAdtyTeamRegistration(body.Code, body.Username, body.Password, body.Name, &trustedSiteID)
 	if err != nil {
+		if errors.Is(err, model.ErrSiteRegistrationUnavailable) || err.Error() == "Site is not open for registration" {
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Site is not open for registration"))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}

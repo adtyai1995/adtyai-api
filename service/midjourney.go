@@ -250,6 +250,31 @@ func settleDurableMidjourney(task *model.Midjourney) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// R9-05: Repair legacy/anomalous rows whose BillingOperation already reached a
+	// terminal state under kind="request" (e.g. SettleAmbiguous or expired refund)
+	// so billing_charge_pending / recovery LIMIT 100 can never be stuck forever.
+	if op != nil && task != nil && task.Id > 0 {
+		switch op.State {
+		case model.BillingSettled:
+			if op.Kind != "mj_charge" && (task.BillingChargePending || task.BillingPending) {
+				_ = model.DB.Model(&model.Midjourney{}).Where("id = ?", task.Id).Updates(map[string]any{
+					"quota":                  op.AppliedQuota,
+					"token_id":               op.TokenId,
+					"billing_token_quota":    op.TokenAppliedQuota,
+					"billing_charge_pending": false,
+					"billing_pending":        false,
+				}).Error
+			}
+		case model.BillingRefunded, model.BillingCanceled:
+			conflictReason := "billing_conflict: reservation already " + op.State
+			common.SysError(common.LogText("billing recovery: Midjourney id=%d has terminal non-settled op %s (%s)", task.Id, key, op.State))
+			_ = model.DB.Model(&model.Midjourney{}).Where("id = ?", task.Id).Updates(map[string]any{
+				"billing_pending": false,
+				"fail_reason":     conflictReason,
+			}).Error
+			return false, model.ErrBillingOperationConflict
+		}
+	}
 	task.Quota, task.BillingTokenQuota = op.AppliedQuota, op.TokenAppliedQuota
 	task.BillingChargePending, task.BillingPending = false, false
 	projectBillingEarnings(key)

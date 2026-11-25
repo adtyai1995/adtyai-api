@@ -1245,6 +1245,14 @@ func UpdateSelf(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	// R9-10: Reject uppercase or non-ASCII keys (e.g. "Password", "pa\u017f\u017fword")
+	// so encoding/json case/Unicode folding cannot bypass password_change security audits.
+	for k := range requestData {
+		if !isCanonicalASCIILowerKey(k) {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+	}
 
 	passwordRequested := false
 	if value, exists := requestData["password"]; exists && value != nil {
@@ -1253,7 +1261,9 @@ func UpdateSelf(c *gin.Context) {
 	}
 	succeeded, notificationFailed := false, false
 	reloginRequired, cacheSyncFailed, sessionRotationFailed := false, false, false
+	auditRegistered := false
 	if passwordRequested {
+		auditRegistered = true
 		defer func() {
 			params := map[string]any{
 				"success":             succeeded,
@@ -1363,6 +1373,22 @@ func UpdateSelf(c *gin.Context) {
 		DisplayName: user.DisplayName,
 	}
 	if user.Password != "" {
+		if !auditRegistered {
+			auditRegistered = true
+			defer func() {
+				params := map[string]any{
+					"success":             succeeded,
+					"committed":           succeeded,
+					"notification_failed": notificationFailed,
+				}
+				if succeeded {
+					params["relogin_required"] = reloginRequired
+					params["cache_sync_failed"] = cacheSyncFailed
+					params["session_rotation_failed"] = sessionRotationFailed
+				}
+				recordUserSecurityAudit(c, c.GetInt("id"), "user.password_change", params)
+			}()
+		}
 		identity, ok := middleware.GetStepUpIdentity(c)
 		if !ok {
 			writeSecurityOperationError(c, service.ErrAuthTokenInvalid)

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -231,7 +232,7 @@ func miniMaxImageHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 			Message: minimaxResponse.BaseResp.StatusMsg,
 			Type:    "minimax_image_error",
 			Code:    fmt.Sprintf("%d", minimaxResponse.BaseResp.StatusCode),
-		}, resp.StatusCode)
+		}, channel.ResolveUpstreamErrorStatus(resp, minimaxResponse.BaseResp.StatusCode))
 	}
 
 	openAIResponse, err := responseMiniMax2OpenAIImage(&minimaxResponse, info)

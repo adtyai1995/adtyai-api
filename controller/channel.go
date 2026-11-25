@@ -1059,24 +1059,49 @@ func EditTagChannels(c *gin.Context) {
 		common.ApiErrorT(c, "Tag cannot be empty")
 		return
 	}
+	// R9-03: Bulk-editing a tag containing TaskPlugin channels requires TaskPluginBind.
+	var taskPluginCount int64
+	if err := model.DB.Model(&model.Channel{}).Where("tag = ? AND type = ?", channelTag.Tag, constant.ChannelTypeTaskPlugin).Count(&taskPluginCount).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if taskPluginCount > 0 && !canActWithPermission(c, authz.TaskPluginBind) {
+		common.ApiErrorT(c, "Task plugin channels require the task_plugin.bind permission")
+		return
+	}
 	if (channelTag.ParamOverride != nil || channelTag.HeaderOverride != nil) &&
 		!canActWithPermission(c, authz.ChannelSensitiveWrite) {
 		common.ApiErrorT(c, "Unauthorized, insufficient privileges")
 		return
 	}
+	if channelTag.Models != nil {
+		for _, m := range strings.Split(*channelTag.Models, ",") {
+			m = strings.TrimSpace(m)
+			if len(m) > 255 {
+				common.ApiErrorT(c, "Model name is too long: {{model}}", map[string]any{"model": m})
+				return
+			}
+		}
+	}
 	if channelTag.ParamOverride != nil {
 		trimmed := strings.TrimSpace(*channelTag.ParamOverride)
-		if trimmed != "" && !json.Valid([]byte(trimmed)) {
-			common.ApiErrorT(c, "Parameter override must be valid JSON format")
-			return
+		if trimmed != "" {
+			var parsed map[string]any
+			if err := common.Unmarshal([]byte(trimmed), &parsed); err != nil || parsed == nil {
+				common.ApiErrorT(c, "Parameter override must be valid JSON format")
+				return
+			}
 		}
 		channelTag.ParamOverride = common.GetPointer[string](trimmed)
 	}
 	if channelTag.HeaderOverride != nil {
 		trimmed := strings.TrimSpace(*channelTag.HeaderOverride)
-		if trimmed != "" && !json.Valid([]byte(trimmed)) {
-			common.ApiErrorT(c, "Header override must be valid JSON format")
-			return
+		if trimmed != "" {
+			var parsed map[string]any
+			if err := common.Unmarshal([]byte(trimmed), &parsed); err != nil || parsed == nil {
+				common.ApiErrorT(c, "Header override must be valid JSON format")
+				return
+			}
 		}
 		channelTag.HeaderOverride = common.GetPointer[string](trimmed)
 	}
@@ -1168,10 +1193,11 @@ func UpdateChannel(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	// R8-03: Reject uppercase / case-folded JSON keys before struct decoding so
-	// encoding/json case-insensitive matching cannot bypass requestData guards.
+	// R8-03 & R9-02: Require canonical ASCII lowercase snake_case keys before
+	// struct decoding so uppercase and Unicode SimpleFold variants (e.g. U+017F)
+	// cannot bypass requestData guards.
 	for k := range requestData {
-		if k != strings.ToLower(k) {
+		if !isCanonicalASCIILowerKey(k) {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
 		}
@@ -1184,27 +1210,19 @@ func UpdateChannel(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	clearChannelReadOnlyFields(&channel, requestData)
-
-	if channel.Type == constant.ChannelTypeTaskPlugin &&
-		!canActWithPermission(c, authz.TaskPluginBind) {
-		common.ApiErrorT(c, "Task plugin channels require the task_plugin.bind permission")
+	if channel.Status != 0 {
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	clearChannelReadOnlyFields(&channel, requestData)
 
-	baseURLFromPluginDefault := channel.Type == constant.ChannelTypeTaskPlugin &&
-		(channel.BaseURL == nil || strings.TrimSpace(*channel.BaseURL) == "")
-	if _, groupProvided := requestData["group"]; groupProvided {
+	_, groupProvided := requestData["group"]
+	if groupProvided || channel.Group != "" {
 		channel.NormalizeGroup()
 		if len(channel.GetGroups()) == 0 {
 			common.ApiError(c, model.ErrChannelNoGroup)
 			return
 		}
-	}
-	// 使用统一的校验函数
-	if err := validateChannel(&channel.Channel, false); err != nil {
-		common.ApiError(c, err)
-		return
 	}
 	// Preserve existing ChannelInfo to ensure multi-key channels keep correct state even if the client does not send ChannelInfo in the request.
 	// Hold the polling lock from this read through the write so an automatic
@@ -1216,6 +1234,63 @@ func UpdateChannel(c *gin.Context) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	// R9-03: Derive effective channel type from originChannel before enforcing
+	// TaskPluginBind and type-specific validation so omitting "type" in partial
+	// updates cannot bypass permissions or validations.
+	effectiveType := channel.Type
+	if effectiveType == 0 {
+		effectiveType = originChannel.Type
+	}
+	if (originChannel.Type == constant.ChannelTypeTaskPlugin || effectiveType == constant.ChannelTypeTaskPlugin) &&
+		!canActWithPermission(c, authz.TaskPluginBind) {
+		common.ApiErrorT(c, "Task plugin channels require the task_plugin.bind permission")
+		return
+	}
+	candidate := *originChannel
+	candidate.Type = effectiveType
+	candidate.Key = channel.Key
+	if _, ok := requestData["base_url"]; ok || channel.BaseURL != nil {
+		candidate.BaseURL = channel.BaseURL
+	}
+	if _, ok := requestData["other"]; ok {
+		candidate.Other = channel.Other
+	}
+	if _, ok := requestData["setting"]; ok || channel.Setting != nil {
+		candidate.Setting = channel.Setting
+	}
+	if _, ok := requestData["settings"]; ok {
+		candidate.OtherSettings = channel.OtherSettings
+	}
+	if _, ok := requestData["models"]; ok {
+		candidate.Models = channel.Models
+	}
+	if groupProvided || channel.Group != "" {
+		candidate.Group = channel.Group
+	}
+	if _, ok := requestData["model_mapping"]; ok || channel.ModelMapping != nil {
+		candidate.ModelMapping = channel.ModelMapping
+	}
+	if _, ok := requestData["status_code_mapping"]; ok || channel.StatusCodeMapping != nil {
+		candidate.StatusCodeMapping = channel.StatusCodeMapping
+	}
+	if _, ok := requestData["param_override"]; ok || channel.ParamOverride != nil {
+		candidate.ParamOverride = channel.ParamOverride
+	}
+	if _, ok := requestData["header_override"]; ok || channel.HeaderOverride != nil {
+		candidate.HeaderOverride = channel.HeaderOverride
+	}
+	if _, ok := requestData["remark"]; ok || channel.Remark != nil {
+		candidate.Remark = channel.Remark
+	}
+	baseURLFromPluginDefault := effectiveType == constant.ChannelTypeTaskPlugin &&
+		(candidate.BaseURL == nil || strings.TrimSpace(*candidate.BaseURL) == "")
+	if err := validateChannel(&candidate, false); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if baseURLFromPluginDefault && candidate.BaseURL != nil {
+		channel.BaseURL = candidate.BaseURL
 	}
 	originProxy := originChannel.GetSetting().Proxy
 	proxyChanged := false
@@ -1275,7 +1350,7 @@ func UpdateChannel(c *gin.Context) {
 				}
 
 				// 处理 Vertex AI 的特殊情况
-				if channel.Type == constant.ChannelTypeVertexAi && channel.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey {
+				if effectiveType == constant.ChannelTypeVertexAi && candidate.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey {
 					// 尝试解析新密钥为JSON数组
 					if strings.HasPrefix(strings.TrimSpace(channel.Key), "[") {
 						array, err := getVertexArrayKeys(channel.Key)

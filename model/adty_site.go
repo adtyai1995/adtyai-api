@@ -585,15 +585,32 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 			return nil, 0, err
 		}
 		if fromSite > 0 && tx.Migrator().HasTable(&AdtyFundBatch{}) {
-			if err := tx.Model(&AdtyFundBatch{}).
-				Select("COALESCE(SUM(remaining), 0)").
-				Where("user_id IN ? AND site_id = ? AND kind = ? AND source <> ? AND remaining > 0",
-					ids, fromSite, AdtyFundBatchKindPrincipal, adtyLegacyBatchSource).
-				Scan(&movedPrincipal).Error; err != nil {
+			// R9-08: Lock customer batches with FOR UPDATE (InnoDB current read)
+			// and sum/update only the locked IDs so concurrent commission-to-balance
+			// conversions under REPEATABLE READ cannot be moved by UPDATE while missed
+			// by a stale snapshot SUM(remaining).
+			var customerBatches []AdtyFundBatch
+			if err := lockForUpdate(tx).
+				Where("user_id IN ? AND site_id = ?", ids, fromSite).
+				Order("id ASC").
+				Find(&customerBatches).Error; err != nil {
 				return nil, 0, err
 			}
-		}
-		if err := adtyMoveFundBatchesToSiteTx(tx, ids, fromSite, toSite); err != nil {
+			if len(customerBatches) > 0 {
+				moveBatchIDs := make([]int64, 0, len(customerBatches))
+				for _, batch := range customerBatches {
+					moveBatchIDs = append(moveBatchIDs, batch.Id)
+					if batch.Kind == AdtyFundBatchKindPrincipal && batch.Source != adtyLegacyBatchSource && batch.Remaining > 0 {
+						movedPrincipal += batch.Remaining
+					}
+				}
+				if err := tx.Model(&AdtyFundBatch{}).
+					Where("id IN ?", moveBatchIDs).
+					Update("site_id", toSite).Error; err != nil {
+					return nil, 0, err
+				}
+			}
+		} else if err := adtyMoveFundBatchesToSiteTx(tx, ids, fromSite, toSite); err != nil {
 			return nil, 0, err
 		}
 		if toSite == 0 {

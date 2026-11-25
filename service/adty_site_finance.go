@@ -264,8 +264,22 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 	}
 	// Personal withdrawals and transfers may use only this owner's share
 	// of a historical site's earnings. The wallet lock serializes every hold.
-	if kind == model.AdtySiteWalletEarnings && (change.Type == "earning_withdraw_freeze" || change.Type == ownerTransfer || change.Type == "earning_to_margin" || change.Type == "voucher_freeze" || change.Type == "owner_customer_balance" || change.Type == "owner_team_balance" || change.Type == "staff_balance" || change.Type == "financial_adjustment") {
+	if kind == model.AdtySiteWalletEarnings && (change.Type == "earning_withdraw_freeze" || change.Type == ownerTransfer || change.Type == "earning_to_margin" || change.Type == "voucher_freeze" || change.Type == "owner_customer_balance" || change.Type == "owner_team_balance" || change.Type == "staff_balance" || change.Type == "financial_adjustment" || change.Type == "gift_reserve") {
 		ownerID := change.OperatorID
+		if ownerID == 0 && change.Type == "gift_reserve" && strings.TrimSpace(change.RefID) != "" {
+			var order model.AdtyTopupOrder
+			res := tx.Where("site_id = ? AND trade_no = ?", siteID, change.RefID).Limit(1).Find(&order)
+			if res.Error != nil {
+				return nil, res.Error
+			}
+			if res.RowsAffected > 0 {
+				var err error
+				ownerID, err = model.ResolveAdtySiteFinancialOwnerTx(tx, siteID, order.SiteOwnerUserId)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
 		if ownerID == 0 {
 			var err error
 			ownerID, err = model.CurrentAdtySiteFinancialOwnerTx(tx, siteID)

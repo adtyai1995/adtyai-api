@@ -14,7 +14,6 @@ import (
 
 func SetRelayRouter(router *gin.Engine) {
 	router.Use(middleware.CORS())
-	router.Use(middleware.DecompressRequestMiddleware())
 	router.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
 	router.Use(middleware.StatsMiddleware())
 	// https://platform.openai.com/docs/api-reference/introduction
@@ -74,6 +73,7 @@ func SetRelayRouter(router *gin.Engine) {
 	relayV1Router.Use(middleware.ModelRequestRateLimit())
 	relayV1Router.Use(middleware.AdtyUserLimit()) // 二开：按用户限制（任务 7.4）
 	relayV1Router.Use(middleware.AdtyKeyRateLimit())
+	relayV1Router.Use(middleware.DecompressRequestMiddleware())
 	{
 		// WebSocket 路由（统一到 Relay）
 		wsRouter := relayV1Router.Group("")
@@ -202,6 +202,7 @@ func SetRelayRouter(router *gin.Engine) {
 	relayGeminiRouter.Use(middleware.ModelRequestRateLimit())
 	relayGeminiRouter.Use(middleware.AdtyUserLimit()) // 二开：任务 7.4
 	relayGeminiRouter.Use(middleware.AdtyKeyRateLimit())
+	relayGeminiRouter.Use(middleware.DecompressRequestMiddleware())
 	relayGeminiRouter.Use(middleware.Distribute())
 	{
 		// Gemini API 路径格式: /v1beta/models/{model_name}:{action}
@@ -213,7 +214,7 @@ func SetRelayRouter(router *gin.Engine) {
 
 func registerMjRouterGroup(relayMjRouter *gin.RouterGroup) {
 	relayMjRouter.GET("/image/:id", relay.RelayMidjourneyImage)
-	relayMjRouter.Use(middleware.TokenAuth(), middleware.AdtyRequireCurrentSiteTerms(), middleware.Distribute())
+	relayMjRouter.Use(middleware.TokenAuth(), middleware.AdtyRequireCurrentSiteTerms(), middleware.DecompressRequestMiddleware(), middleware.Distribute())
 	// 二开：提交类路由按用户限制，查询类（fetch、image-seed、list-by-condition）不算（任务 7.4）
 	{
 		relayMjRouter.POST("/submit/action", middleware.AdtyUserLimit(true), middleware.AdtyKeyRateLimit(true), controller.RelayMidjourney)

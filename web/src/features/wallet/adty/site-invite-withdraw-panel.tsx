@@ -153,18 +153,68 @@ async function cancelWithdrawal(id: number): Promise<void> {
   requireServerSuccess(res.data)
 }
 
-function freeAmount(row: SiteCommission, nowSeconds: number): number {
+const USD_SCALE = 8
+const USD_SCALE_FACTOR = 100_000_000n
+const USD_DECIMAL_RE = /^([+-])?(?:(\d+)(?:\.(\d*))?|\.(\d+))$/
+
+/** Parses a decimal USD string into fixed-point 1e8 units (matching decimal(20,8)). */
+function parseUsdMicros(
+  raw: string | undefined,
+  options?: { overflow?: 'reject' | 'truncate' | 'ceil' }
+): bigint | null {
+  if (raw === undefined) return null
+  const trimmed = raw.trim()
+  if (trimmed === '') return null
+  const match = USD_DECIMAL_RE.exec(trimmed)
+  if (!match) return null
+  const sign = match[1] === '-' ? -1n : 1n
+  const intPart = match[2] ?? '0'
+  const fracPart = match[3] ?? match[4] ?? ''
+  const overflow = options?.overflow ?? 'reject'
+  if (fracPart.length > USD_SCALE && overflow === 'reject') {
+    return null
+  }
+  const normalizedFrac = fracPart.slice(0, USD_SCALE).padEnd(USD_SCALE, '0')
+  let micros =
+    sign * (BigInt(intPart) * USD_SCALE_FACTOR + BigInt(normalizedFrac))
+  if (
+    overflow === 'ceil' &&
+    fracPart.length > USD_SCALE &&
+    sign > 0n &&
+    /[1-9]/.test(fracPart.slice(USD_SCALE))
+  ) {
+    micros += 1n
+  }
+  return micros
+}
+
+function microsToUsdString(micros: bigint): string {
+  const negative = micros < 0n
+  const abs = negative ? -micros : micros
+  const whole = abs / USD_SCALE_FACTOR
+  const frac = (abs % USD_SCALE_FACTOR)
+    .toString()
+    .padStart(USD_SCALE, '0')
+    .replace(/0+$/, '')
+  const prefix = negative ? '-' : ''
+  return frac === '' ? `${prefix}${whole}` : `${prefix}${whole}.${frac}`
+}
+
+function freeAmountMicros(row: SiteCommission, nowSeconds: number): bigint {
   if (
     row.status !== 'available' ||
     !row.available_at ||
     row.available_at > nowSeconds
   ) {
-    return 0
+    return 0n
   }
-  const hold =
-    Number(row.earnings_hold_usd || 0) + Number(row.margin_hold_usd || 0)
-  const free = hold - Number(row.frozen_usd || 0)
-  return free > 0 ? free : 0
+  const earningsHold =
+    parseUsdMicros(row.earnings_hold_usd, { overflow: 'truncate' }) ?? 0n
+  const marginHold =
+    parseUsdMicros(row.margin_hold_usd, { overflow: 'truncate' }) ?? 0n
+  const frozen = parseUsdMicros(row.frozen_usd, { overflow: 'truncate' }) ?? 0n
+  const free = earningsHold + marginHold - frozen
+  return free > 0n ? free : 0n
 }
 
 function methodLabel(method: string): string {
@@ -279,12 +329,18 @@ function SiteWithdrawForm(props: {
     }
   }, [enabledNetworks, network])
 
-  const available = props.rows.reduce(
-    (sum, row) => sum + freeAmount(row, Math.floor(Date.now() / 1000)),
-    0
+  const nowSeconds = Math.floor(Date.now() / 1000)
+  const availableMicros = props.rows.reduce(
+    (sum, row) => sum + freeAmountMicros(row, nowSeconds),
+    0n
   )
-  const value = Number(amount)
-  const minimum = Number(rules.data?.min_usd || 0)
+  const available = Number(microsToUsdString(availableMicros))
+  const amountMicros = parseUsdMicros(amount)
+  const rawMinUsd = rules.data?.min_usd?.trim() ?? ''
+  const minimumMicros =
+    rawMinUsd === ''
+      ? 0n
+      : (parseUsdMicros(rawMinUsd, { overflow: 'ceil' }) ?? 0n)
   const isCny = method === 'alipay'
   const usdtEnabled = visibleMethods.includes('usdt')
   const alipayEnabled = visibleMethods.includes('alipay')
@@ -315,13 +371,17 @@ function SiteWithdrawForm(props: {
 
   const validate = (): string => {
     if (amount.trim() === '') return ''
-    if (!(value > 0)) return t('Enter a withdrawal amount')
-    if (value > available) return t('Not enough withdrawable commission')
+    if (amountMicros === null || amountMicros <= 0n) {
+      return t('Enter a withdrawal amount')
+    }
+    if (amountMicros > availableMicros) {
+      return t('Not enough withdrawable commission')
+    }
     if (method !== 'balance') {
       if (!visibleMethods.includes(method)) {
         return t('This withdrawal method is not available yet')
       }
-      if (value < minimum) {
+      if (amountMicros < minimumMicros) {
         return t('The minimum withdrawal is ${{amount}}', {
           amount: rules.data?.min_usd,
         })

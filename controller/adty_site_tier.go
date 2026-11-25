@@ -89,7 +89,7 @@ func PutAdtySiteTiers(c *gin.Context) {
 			common.ApiErrorStatus(c, http.StatusConflict, err)
 			return
 		}
-		if err == service.ErrAdtySiteTierInvalid {
+		if errors.Is(err, service.ErrAdtySiteTierInvalid) {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
 		}
@@ -122,7 +122,7 @@ func PutAdtySiteTierAssignment(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusNotFound, err)
 	case errors.Is(err, service.ErrAdtySiteTierNotFound):
 		common.ApiErrorT(c, "This level does not exist or is disabled")
-	case errors.Is(err, service.ErrAdtySiteTierMode):
+	case errors.Is(err, service.ErrAdtySiteTierMode), errors.Is(err, service.ErrAdtySiteTierInvalid):
 		common.ApiErrorT(c, "Invalid parameters")
 	case err != nil:
 		common.ApiError(c, err)

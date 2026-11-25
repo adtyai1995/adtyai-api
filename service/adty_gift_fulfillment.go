@@ -305,6 +305,25 @@ func reacquireAdtySiteGiftAmountTx(tx *gorm.DB, ext *model.AdtyTopupOrder, bonus
 		return nil
 	}
 	fromEarning := earning.Balance.Sub(earning.FrozenUSD)
+	pooledErr := ReviewAdtyPooledSiteFinance(tx, ext.SiteId)
+	pooledSite := errors.Is(pooledErr, ErrAdtyOwnerWalletReview)
+	if pooledErr != nil && !pooledSite {
+		return pooledErr
+	}
+	if pooledSite {
+		owner, ownerErr := model.ResolveAdtySiteFinancialOwnerTx(tx, ext.SiteId, ext.SiteOwnerUserId)
+		if ownerErr != nil {
+			return ownerErr
+		}
+		ownerAvail, _, availErr := ownerEarningsWalletTx(tx, ext.SiteId, owner, &earning)
+		if errors.Is(availErr, ErrAdtyOwnerWalletReview) {
+			fromEarning = decimal.Zero
+		} else if availErr != nil {
+			return availErr
+		} else {
+			fromEarning = decimal.Min(fromEarning, ownerAvail)
+		}
+	}
 	if fromEarning.GreaterThan(needed) {
 		fromEarning = needed
 	}
@@ -314,7 +333,7 @@ func reacquireAdtySiteGiftAmountTx(tx *gorm.DB, ext *model.AdtyTopupOrder, bonus
 	rest := needed.Sub(fromEarning)
 	fromMargin := decimal.Zero
 	if rest.IsPositive() {
-		if !adty_setting.SiteBonusMarginFillAllowed(ext.SiteId) {
+		if !adty_setting.SiteBonusMarginFillAllowed(ext.SiteId) || pooledSite {
 			return errGiftGuaranteeShort
 		}
 		var margin model.AdtySiteWallet

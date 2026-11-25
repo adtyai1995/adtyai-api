@@ -11422,6 +11422,9 @@
     "Too many tickets created in the last 24 hours; please try again later": "过去 24 小时内创建的工单过多，请稍后再试",
     "Too many active team invites; please revoke unused invites first": "团队有效邀请码数量已达上限，请先撤销未使用的邀请码",
     "Cannot promote a subsite customer, site staff, or team employee account to platform administrator.": "不能将分站客户、站点员工或团队员工账号提升为平台管理员。",
-    "Reviewed gift fulfillment": "审核了赠金履约"
+    "Reviewed gift fulfillment": "审核了赠金履约",
+    "Withdrawal status has changed. Refresh and try again.": "提现状态已变更，请刷新后重试。",
+    "Withdrawal request not found": "未找到该提现申请",
+    "Context length must be between 0 and 100000000": "上下文长度必须在 0 到 100000000 之间"
   }
 }

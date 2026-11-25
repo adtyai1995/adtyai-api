@@ -34,43 +34,31 @@
 
 ## 步骤三：安装 ADTY AI
 
-> ⚠️ **方法一和方法二只用于本地试用或单机试跑**：不设 `SQL_DSN` 时数据库退回 SQLite，也不会有 Redis，属于单机形态，不能作为生产部署。正式环境必须使用 PostgreSQL + Redis，并配置 `SESSION_COOKIE_SECURE`、`SESSION_COOKIE_TRUSTED_URL`（`deploy/adty/docker-compose.yml` 把 PostgreSQL 和 Redis 都列为必需依赖）。生产按 [ADTY 部署文档](../adty/deploy.md) 的 `deploy/adty/` 编排做，不要用本页的两段示例。
+> ⚠️ **ADTY AI 启动强依赖 PostgreSQL 18.x**：`SQL_DSN` 为 PostgreSQL 18.x 必填连接串，程序在连库与迁移前就会检查 `SQL_DSN`（及已配置的 `LOG_SQL_DSN`），未配置或非 PostgreSQL 会在启动时直接退出，不支持 SQLite 单机回退。下方方法二仅用于本地试用，正式环境请按 [ADTY 部署文档](../adty/deploy.md) 使用 `deploy/adty/` 编排，并配置 PostgreSQL 18.x、Redis、`SESSION_COOKIE_SECURE` 与 `SESSION_COOKIE_TRUSTED_URL`。
 
 ### 方法一：不要用应用商店里的旧项目
 
 宝塔应用商店里的 New-API 不是本产品，也不要把它的镜像当作 ADTY AI。本产品的容器镜像是 `ghcr.io/adtyai1995/adtyai-api`，生产标签必须是提交摘要，例如 `ghcr.io/adtyai1995/adtyai-api:sha-1a2b3c4`。本地试用用下面的方法二，从本仓库构建。
 
-本地试用按方法二从本仓库构建。生产按 [ADTY 部署文档](../adty/deploy.md) 填写 `ghcr.io/adtyai1995/adtyai-api` 的提交摘要标签。面板里需要的环境变量是 `SESSION_SECRET`（必填；多机部署时各机必须一致）和 `CRYPTO_SECRET`（使用 Redis 时必填）。容器名可以自定。不要在应用商店搜索或安装 New-API。
+本地试用按方法二使用仓库根目录的 `docker-compose.yml` 构建启动（内置 PostgreSQL 18 与 Redis）。生产按 [ADTY 部署文档](../adty/deploy.md) 填写 `ghcr.io/adtyai1995/adtyai-api` 的提交摘要标签。无论试用还是生产，都必须提供指向 PostgreSQL 18.x 的 `SQL_DSN`，面板里还需设置 `SESSION_SECRET`（必填；多机部署时各机必须一致）和 `CRYPTO_SECRET`（加密敏感配置与使用 Redis 时必填）。容器名可以自定。不要在应用商店搜索或安装 New-API。
 
-### 方法二：使用 Docker Compose（仅本地试用）
+### 方法二：使用仓库根目录的 Docker Compose（仅本地试用）
 
-1. 在宝塔面板中创建网站目录，如 `/www/wwwroot/new-api`
-2. 创建 `docker-compose.yml` 文件：
+仓库根目录已提供包含 **PostgreSQL 18 + Redis** 的本地试用编排文件 [`docker-compose.yml`](../../docker-compose.yml)（请勿移除 `postgres` 服务或清空 `SQL_DSN`，否则 ADTY AI 启动时会直接退出）。
 
-```yaml
-services:
-  new-api:
-    image: adtyai-api:local
-    build: .
-    container_name: new-api
-    restart: always
-    ports:
-      - "127.0.0.1:3000:3000"
-    volumes:
-      - ./data:/data
-    environment:
-      - SESSION_SECRET=your_session_secret_here  # 请修改为随机字符串
-      - TZ=UTC
-```
-
-这段示例没有 `SQL_DSN` 和 `REDIS_CONN_STRING`，起的是 SQLite 单机形态，正式环境不要用。生产编排在 `deploy/adty`，镜像由本仓库构建，数据库必须 PostgreSQL、缓存必须 Redis，还要同时配 `SESSION_COOKIE_SECURE=true` 和 `SESSION_COOKIE_TRUSTED_URL`（正式 https origin，不带路径）。`TZ` 按实际网络设置，不要把某个地区时区写成默认值。
-
-1. 在终端中进入目录并启动：
+1. 在宝塔面板中克隆或上传本仓库到服务器目录（如 `/www/wwwroot/adtyai-api`），确认目录下包含仓库根目录的 `docker-compose.yml` 与 `Dockerfile`。
+2. 设置必填环境变量 `POSTGRES_PASSWORD` 与 `REDIS_PASSWORD`（可在终端 `export`，或在同目录写入 `.env` 文件；建议同时配置 `SESSION_SECRET`），然后启动：
 
 ```bash
-cd /www/wwwroot/new-api
-docker-compose up -d
+cd /www/wwwroot/adtyai-api
+export POSTGRES_PASSWORD="请替换为随机数据库密码"
+export REDIS_PASSWORD="请替换为随机Redis密码"
+docker compose up -d --build
 ```
+
+启动后该编排会自动拉起 `postgres:18`、`redis:7.4.4-alpine` 与本地构建的 `adtyai-api:local`，并自动注入 `SQL_DSN` 与 `REDIS_CONN_STRING`，在 `127.0.0.1:3000` 提供本地访问。
+
+> 注意：仓库根目录 `docker-compose.yml` 仅供本地试用，不可直接用于生产。正式环境请按 [ADTY 部署文档](../adty/deploy.md) 使用 `deploy/adty/` 编排，镜像使用提交摘要标签，并同时配置 `SESSION_COOKIE_SECURE=true`、`SESSION_COOKIE_TRUSTED_URL`（正式 https origin，不带路径）与 `ADTY_FLUSH_TOKEN`。
 
 ***
 
@@ -82,7 +70,7 @@ docker-compose up -d
 | ---------------------------- | ------------------------------------------------------------------ | ------------------ |
 | `SESSION_SECRET`             | 会话密钥，多机部署必须一致                                                      | **必填**             |
 | `CRYPTO_SECRET`              | 加密密钥（Cloudflare Token、Turnstile secret 等敏感值）；不设时等于 `SESSION_SECRET` | 生产必填               |
-| `SQL_DSN`                    | 数据库连接串，生产必须是 `postgresql://…`；不设时退回 SQLite 单机形态，仅供试用                  | 生产必填（试用可空）         |
+| `SQL_DSN`                    | PostgreSQL 18.x 数据库连接串（`postgresql://…`）；未配置或非 PostgreSQL 会在启动时直接退出，不支持 SQLite 单机回退 | **必填**             |
 | `REDIS_CONN_STRING`          | Redis 连接串，缓存、批量更新和限流都依赖它                                           | 生产必填（试用可空）         |
 | `SESSION_COOKIE_SECURE`      | 生产设 `true`，与下一项必须同时设                                               | 生产必填               |
 | `SESSION_COOKIE_TRUSTED_URL` | 正式 https origin，多个用英文逗号分隔，不带路径或通配符                                  | 生产必填（与上一项成对）       |

@@ -12,7 +12,38 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 )
+
+func writeAdtySiteWithdrawError(c *gin.Context, err error, forReview bool) {
+	var changed *service.RateChangedError
+	if errors.As(err, &changed) {
+		common.ApiErrorStatus(c, http.StatusOK, common.NewMessage("The exchange rate has changed. Confirm the new amount"), gin.H{"code": "rate_changed", "data": changed.Change})
+		return
+	}
+	switch {
+	case errors.Is(err, model.ErrAdtyIdempotencyConflict), errors.Is(err, service.ErrAdtySiteWalletIdempotencyConflict):
+		common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
+	case errors.Is(err, service.ErrAdtySiteWalletInsufficient):
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Insufficient available funds"))
+	case errors.Is(err, service.ErrAdtySiteWithdrawUnset):
+		common.ApiErrorT(c, "Withdrawal rules are not set")
+	case errors.Is(err, service.ErrAdtySiteWithdrawLocked):
+		if forReview {
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("Withdrawal status has changed. Refresh and try again."))
+		} else {
+			common.ApiErrorT(c, "Only pending withdrawals can be canceled")
+		}
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Withdrawal request not found"))
+	case errors.Is(err, service.ErrAdtySiteWalletInvalidKind),
+		errors.Is(err, service.ErrAdtySiteWalletInvalidOperation),
+		errors.Is(err, service.ErrAdtySiteWalletIdempotencyKey):
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
+	default:
+		common.ApiError(c, err)
+	}
+}
 
 func GetAdtySiteWithdrawRules(c *gin.Context) {
 	if _, ok := adtyOwnerAccountingSite(c); !ok {
@@ -34,7 +65,7 @@ func GetAdtySiteWithdrawRules(c *gin.Context) {
 		}
 		payout, err := service.QuoteSiteWithdrawal(amount, method)
 		if err != nil {
-			common.ApiError(c, err)
+			writeAdtySiteWithdrawError(c, err, false)
 			return
 		}
 		common.ApiSuccess(c, gin.H{"payout_amount": payout.String()})
@@ -46,11 +77,7 @@ func GetAdtySiteWithdrawRules(c *gin.Context) {
 func GetAdtyAdminWithdrawRules(c *gin.Context) {
 	view, err := service.LoadAdtySiteWithdrawRules()
 	if err != nil {
-		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
-			return
-		}
-		common.ApiError(c, err)
+		writeAdtySiteWithdrawError(c, err, true)
 		return
 	}
 	common.ApiSuccess(c, view)
@@ -79,11 +106,7 @@ func GetAdtySiteWithdrawals(c *gin.Context) {
 	page, offset, limit := adtyPage(c)
 	rows, total, err := service.PageAdtySiteWithdrawals(site.Id, c.GetInt("id"), c.Query("status"), c.Query("number"), offset, limit)
 	if err != nil {
-		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
-			return
-		}
-		common.ApiError(c, err)
+		writeAdtySiteWithdrawError(c, err, true)
 		return
 	}
 	ownerIDs := make([]int, 0, len(rows))
@@ -256,11 +279,7 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
-		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
-			return
-		}
-		common.ApiError(c, err)
+		writeAdtySiteWithdrawError(c, err, false)
 		return
 	}
 	redactSiteWithdrawalForOwner(row)
@@ -280,7 +299,7 @@ func PostAdtySiteWithdrawalCancel(c *gin.Context) {
 		return
 	}
 	if err := service.CancelAdtySiteWithdrawal(site.Id, c.GetInt("id"), id); err != nil {
-		common.ApiError(c, err)
+		writeAdtySiteWithdrawError(c, err, false)
 		return
 	}
 	common.ApiSuccess(c, gin.H{"cancelled": true})
@@ -298,7 +317,7 @@ func PutAdtySiteWithdrawRules(c *gin.Context) {
 	}
 	eventID, err := service.SaveAdtySiteWithdrawRulesWithAudit(body, c.GetInt("id"))
 	if err != nil {
-		common.ApiError(c, err)
+		writeAdtySiteWithdrawError(c, err, true)
 		return
 	}
 	if eventID != "" {
@@ -319,11 +338,7 @@ func GetAdtyAdminSiteWithdrawals(c *gin.Context) {
 	page := common.GetPageQuery(c)
 	rows, total, err := service.ListAdtySiteWithdrawalsForAdmin(strings.TrimSpace(c.Query("status")), page.GetStartIdx(), page.GetPageSize())
 	if err != nil {
-		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
-			return
-		}
-		common.ApiError(c, err)
+		writeAdtySiteWithdrawError(c, err, true)
 		return
 	}
 	ids := make([]int, 0, len(rows)*2)
@@ -409,11 +424,7 @@ func reviewAdtySiteWithdrawal(c *gin.Context, action string) {
 		eventID, replayed, err = service.MarkAdtySiteWithdrawalPaidWithAudit(id, c.GetInt("id"), body.TxID, body.Proof, body.Attempt)
 	}
 	if err != nil {
-		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
-			return
-		}
-		common.ApiError(c, err)
+		writeAdtySiteWithdrawError(c, err, true)
 		return
 	}
 	if replayed {

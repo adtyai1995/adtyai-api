@@ -75,7 +75,7 @@ func GetAndValidateRequest(c *gin.Context, format types.RelayFormat) (request dt
 }
 
 func GetAndValidAudioRequest(c *gin.Context, relayMode int) (*dto.AudioRequest, error) {
-	if strings.Contains(c.Request.Header.Get("Content-Type"), "multipart/form-data") {
+	if common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type")) == gin.MIMEMultipartPOSTForm {
 		form, err := common.ParseMultipartFormReusable(c)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse audio form request: %w", err)
@@ -240,7 +240,7 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 
 	switch relayMode {
 	case relayconstant.RelayModeImagesEdits:
-		if strings.Contains(c.Request.Header.Get("Content-Type"), "multipart/form-data") {
+		if common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type")) == gin.MIMEMultipartPOSTForm {
 			form, err := common.ParseMultipartFormReusable(c)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse image edit form request: %w", err)

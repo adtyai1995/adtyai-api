@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -69,7 +70,7 @@ func palmStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 			Type:    palmResponse.Error.Status,
 			Param:   "",
 			Code:    palmResponse.Error.Code,
-		}, resp.StatusCode), ""
+		}, channel.ResolveUpstreamErrorStatus(resp, palmResponse.Error.Code)), ""
 	}
 	if len(palmResponse.Candidates) == 0 {
 		return types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError), ""
@@ -117,7 +118,7 @@ func palmHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respons
 			Type:    palmResponse.Error.Status,
 			Param:   "",
 			Code:    palmResponse.Error.Code,
-		}, resp.StatusCode)
+		}, channel.ResolveUpstreamErrorStatus(resp, palmResponse.Error.Code))
 	}
 	fullTextResponse := responsePaLM2OpenAI(&palmResponse)
 	usage := service.ResponseText2Usage(c, palmResponse.Candidates[0].Content, info.UpstreamModelName, info.GetEstimatePromptTokens())

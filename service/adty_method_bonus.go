@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"slices"
 	"strings"
 
@@ -204,6 +205,25 @@ func SiteBonusEarningCovers(siteID int, bonus decimal.Decimal) error {
 		return err
 	}
 	earningAvailable := earning.Balance.Sub(earning.FrozenUSD)
+	pooledErr := ReviewAdtyPooledSiteFinance(model.DB, siteID)
+	pooledSite := errors.Is(pooledErr, ErrAdtyOwnerWalletReview)
+	if pooledErr != nil && !pooledSite {
+		return pooledErr
+	}
+	if pooledSite && earning.Id != 0 {
+		owner, ownerErr := model.CurrentAdtySiteFinancialOwnerTx(model.DB, siteID)
+		if ownerErr != nil {
+			return ownerErr
+		}
+		ownerAvail, _, availErr := ownerEarningsWalletTx(model.DB, siteID, owner, &earning)
+		if errors.Is(availErr, ErrAdtyOwnerWalletReview) {
+			earningAvailable = decimal.Zero
+		} else if availErr != nil {
+			return availErr
+		} else {
+			earningAvailable = decimal.Min(earningAvailable, ownerAvail)
+		}
+	}
 	if earningAvailable.IsNegative() {
 		earningAvailable = decimal.Zero
 	}
@@ -216,6 +236,9 @@ func SiteBonusEarningCovers(siteID int, bonus decimal.Decimal) error {
 	}
 	if !adty_setting.SiteBonusMarginFillAllowed(siteID) {
 		return common.NewMessage("Site gift reserve is not covered by the earning wallet")
+	}
+	if pooledSite {
+		return common.NewMessage("Site gift reserve is not covered by the earning wallet or authorized margin")
 	}
 	var margin model.AdtySiteWallet
 	if err := model.DB.Where("site_id = ? AND kind = ?", siteID, model.AdtySiteWalletMargin).Limit(1).Find(&margin).Error; err != nil {
@@ -249,6 +272,25 @@ func ReserveAdtySiteGiftTx(tx *gorm.DB, ext *model.AdtyTopupOrder, marginAuthori
 		return err
 	}
 	fromEarning := earning.Balance.Sub(earning.FrozenUSD)
+	pooledErr := ReviewAdtyPooledSiteFinance(tx, ext.SiteId)
+	pooledSite := errors.Is(pooledErr, ErrAdtyOwnerWalletReview)
+	if pooledErr != nil && !pooledSite {
+		return pooledErr
+	}
+	if pooledSite {
+		owner, ownerErr := model.ResolveAdtySiteFinancialOwnerTx(tx, ext.SiteId, ext.SiteOwnerUserId)
+		if ownerErr != nil {
+			return ownerErr
+		}
+		ownerAvail, _, availErr := ownerEarningsWalletTx(tx, ext.SiteId, owner, &earning)
+		if errors.Is(availErr, ErrAdtyOwnerWalletReview) {
+			fromEarning = decimal.Zero
+		} else if availErr != nil {
+			return availErr
+		} else {
+			fromEarning = decimal.Min(fromEarning, ownerAvail)
+		}
+	}
 	if fromEarning.GreaterThan(bonus) {
 		fromEarning = bonus
 	}
@@ -264,6 +306,9 @@ func ReserveAdtySiteGiftTx(tx *gorm.DB, ext *model.AdtyTopupOrder, marginAuthori
 		}
 		if !marginAllowed {
 			return common.NewMessage("Site gift reserve is not covered by the earning wallet")
+		}
+		if pooledSite {
+			return common.NewMessage("Site gift reserve is not covered by the earning wallet or authorized margin")
 		}
 		var margin model.AdtySiteWallet
 		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND kind = ?", ext.SiteId, model.AdtySiteWalletMargin).First(&margin).Error; err != nil {

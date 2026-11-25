@@ -21,12 +21,13 @@ func OaiResponsesCompactionHandler(c *gin.Context, info *relaycommon.RelayInfo, 
 		return nil, apiErr
 	}
 
+	if oaiErr, statusCode := ExtractEmbeddedOpenAIError(responseBody, upstreamErrorFallbackStatus(resp)); oaiErr != nil {
+		return nil, types.WithOpenAIError(*oaiErr, statusCode)
+	}
+
 	var compactResp dto.OpenAIResponsesCompactionResponse
 	if err := common.Unmarshal(responseBody, &compactResp); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
-	}
-	if oaiError := compactResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)

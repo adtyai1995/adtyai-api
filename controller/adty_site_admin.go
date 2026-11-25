@@ -583,6 +583,14 @@ func CreateAdtyAdminSite(c *gin.Context) {
 			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
 			return
 		}
+		if errors.Is(err, service.ErrAdtySiteTierNotFound) {
+			common.ApiErrorT(c, "This level does not exist or is disabled")
+			return
+		}
+		if errors.Is(err, service.ErrAdtySiteTierInvalid) || errors.Is(err, service.ErrAdtySiteTierMode) {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}

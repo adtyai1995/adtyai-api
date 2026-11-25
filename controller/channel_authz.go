@@ -90,7 +90,26 @@ var channelReadOnlyFields = map[string]struct{}{
 	"used_quota":           {},
 }
 
+// isCanonicalASCIILowerKey returns true only for non-empty pure ASCII lowercase
+// snake_case JSON object keys, blocking uppercase and Unicode case-folding
+// characters (such as U+017F Latin small letter long s) that Go's encoding/json
+// SimpleFold would otherwise match against struct tags (R9-02, R9-10).
+func isCanonicalASCIILowerKey(k string) bool {
+	if k == "" {
+		return false
+	}
+	for i := 0; i < len(k); i++ {
+		b := k[i]
+		if (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func clearChannelReadOnlyFields(channel *PatchChannel, _ map[string]any) {
+	channel.Status = 0
 	channel.CreatedTime = 0
 	channel.TestTime = 0
 	channel.ResponseTime = 0

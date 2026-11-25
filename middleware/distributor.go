@@ -244,9 +244,9 @@ func getModelFromRequest(c *gin.Context) (*ModelRequest, error) {
 			return &cachedRequest, nil
 		}
 	}
-	contentType := strings.ToLower(strings.TrimSpace(c.Request.Header.Get("Content-Type")))
-	if contentType == "" || strings.HasPrefix(contentType, "application/json") ||
-		(!strings.HasPrefix(contentType, "application/x-www-form-urlencoded") && !strings.HasPrefix(contentType, "multipart/form-data")) {
+	mediaType := common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))
+	if mediaType == "" || mediaType == "application/json" ||
+		(mediaType != gin.MIMEPOSTForm && mediaType != gin.MIMEMultipartPOSTForm) {
 		return getModelFromJSONBody(c)
 	}
 
@@ -256,6 +256,19 @@ func getModelFromRequest(c *gin.Context) (*ModelRequest, error) {
 		return nil, err
 	}
 	return &modelRequest, nil
+}
+
+var billingSensitiveTopLevelJSONKeys = []string{
+	"model",
+	"group",
+	"n",
+	"quality",
+	"size",
+	"stream",
+	"max_tokens",
+	"max_completion_tokens",
+	"max_output_tokens",
+	"parameters",
 }
 
 func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
@@ -270,16 +283,11 @@ func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
 	if !gjson.ValidBytes(requestBody) {
 		return nil, errors.New("invalid JSON request body")
 	}
-	// R8-02: Reject duplicate or case-folded top-level "model"/"group" keys so
-	// encoding/json case-insensitive decoding downstream cannot smuggle a
-	// different model/group past distributor authorization and billing.
-	modelExact, modelVariants := inspectTopLevelJSONKey(requestBody, "model")
-	if modelExact > 1 || modelVariants > 0 {
-		return nil, errors.New("model must be provided once")
-	}
-	groupExact, groupVariants := inspectTopLevelJSONKey(requestBody, "group")
-	if groupExact > 1 || groupVariants > 0 {
-		return nil, errors.New("group must be provided once")
+	// R8-02 & R9-11: Reject duplicate or case/Unicode-folded top-level routing
+	// and billing keys in a single O(n) pass so encoding/json downstream or
+	// pass-through upstreams cannot disagree with distributor auth/billing.
+	if badKey := findDuplicateOrFoldedTopLevelJSONKey(requestBody, billingSensitiveTopLevelJSONKeys); badKey != "" {
+		return nil, fmt.Errorf("%s must be provided once", badKey)
 	}
 
 	values := gjson.GetManyBytes(requestBody, "model", "group")
@@ -303,7 +311,8 @@ func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
 	}, nil
 }
 
-func inspectTopLevelJSONKey(data []byte, target string) (exactCount int, variantCount int) {
+func findDuplicateOrFoldedTopLevelJSONKey(data []byte, targets []string) string {
+	exactCounts := make(map[string]int, len(targets))
 	depth := 0
 	arrayDepth := 0
 	inString := false
@@ -335,10 +344,17 @@ func inspectTopLevelJSONKey(data []byte, target string) (exactCount int, variant
 					cursor++
 				}
 				if cursor < len(data) && data[cursor] == ':' {
-					if key == target {
-						exactCount++
-					} else if strings.EqualFold(key, target) {
-						variantCount++
+					for _, target := range targets {
+						if key == target {
+							exactCounts[target]++
+							if exactCounts[target] > 1 {
+								return target
+							}
+							break
+						}
+						if strings.EqualFold(key, target) {
+							return target
+						}
 					}
 				}
 				expectingKey = false
@@ -366,7 +382,7 @@ func inspectTopLevelJSONKey(data []byte, target string) (exactCount int, variant
 			}
 		}
 	}
-	return exactCount, variantCount
+	return ""
 }
 
 func getJSONStringValue(result gjson.Result, field string) (string, error) {
@@ -465,7 +481,7 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			modelRequest.Model = modelName
 		}
 		c.Set("relay_mode", relayMode)
-	} else if !strings.HasPrefix(c.Request.URL.Path, "/v1/audio/transcriptions") && !strings.Contains(strings.ToLower(c.Request.Header.Get("Content-Type")), "multipart/form-data") {
+	} else if !strings.HasPrefix(c.Request.URL.Path, "/v1/audio/transcriptions") && common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type")) != gin.MIMEMultipartPOSTForm {
 		req, err := getModelFromRequest(c)
 		if err != nil {
 			return nil, false, err
@@ -494,7 +510,7 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		modelRequest.Model = constant.DeepSeekFetchModel
 	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/images/generations") {
-		if strings.Contains(strings.ToLower(c.Request.Header.Get("Content-Type")), "multipart/form-data") {
+		if common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type")) == gin.MIMEMultipartPOSTForm {
 			req, err := getModelFromRequest(c)
 			if err != nil {
 				return nil, false, err
@@ -506,10 +522,13 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		modelRequest.Model = common.GetStringIfEmpty(modelRequest.Model, "dall-e")
 	} else if strings.HasPrefix(c.Request.URL.Path, "/v1/images/edits") || strings.HasPrefix(c.Request.URL.Path, "/v1/edits") {
 		//modelRequest.Model = common.GetStringIfEmpty(c.PostForm("model"), "gpt-image-1")
-		contentType := c.ContentType()
+		contentType := common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))
 		if slices.Contains([]string{gin.MIMEPOSTForm, gin.MIMEMultipartPOSTForm}, contentType) {
 			req, err := getModelFromRequest(c)
-			if err == nil && req.Model != "" {
+			if err != nil {
+				return nil, false, err
+			}
+			if req != nil && req.Model != "" {
 				modelRequest.Model = req.Model
 			}
 		}
@@ -521,14 +540,22 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			modelRequest.Model = common.GetStringIfEmpty(modelRequest.Model, "tts-1")
 		} else if strings.HasPrefix(c.Request.URL.Path, "/v1/audio/translations") {
 			// 先尝试从请求读取
-			if req, err := getModelFromRequest(c); err == nil && req.Model != "" {
+			req, err := getModelFromRequest(c)
+			if err != nil {
+				return nil, false, err
+			}
+			if req != nil && req.Model != "" {
 				modelRequest.Model = req.Model
 			}
 			modelRequest.Model = common.GetStringIfEmpty(modelRequest.Model, "whisper-1")
 			relayMode = relayconstant.RelayModeAudioTranslation
 		} else if strings.HasPrefix(c.Request.URL.Path, "/v1/audio/transcriptions") {
 			// 先尝试从请求读取
-			if req, err := getModelFromRequest(c); err == nil && req.Model != "" {
+			req, err := getModelFromRequest(c)
+			if err != nil {
+				return nil, false, err
+			}
+			if req != nil && req.Model != "" {
 				modelRequest.Model = req.Model
 			}
 			modelRequest.Model = common.GetStringIfEmpty(modelRequest.Model, "whisper-1")

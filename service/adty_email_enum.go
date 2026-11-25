@@ -596,9 +596,17 @@ func RetryAdtySystemEmails(now time.Time) (int, error) {
 			"updated_at": now.Unix(),
 		}).Error
 
+	// R9-15: Filter eligible pending, due failed, and expired failed rows in SQL
+	// so backed-off failures for one tenant cannot head-of-line block LIMIT 50.
+	nowUnix := now.Unix()
 	var rows []AdtySystemEmailDelivery
-	if err := db.Where("status IN ?", []string{AdtySystemEmailStatusPending, AdtySystemEmailStatusFailed}).
-		Order("id").Limit(50).Find(&rows).Error; err != nil {
+	if err := db.Where(
+		"status = ? OR (status = ? AND (next_retry_at <= ? OR (expires_at > 0 AND expires_at <= ?)))",
+		AdtySystemEmailStatusPending,
+		AdtySystemEmailStatusFailed,
+		nowUnix,
+		nowUnix,
+	).Order("id").Limit(50).Find(&rows).Error; err != nil {
 		return 0, err
 	}
 	processed := 0

@@ -118,6 +118,9 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		openaiResponse := streamResponseXAI2OpenAI(&xAIResp, usage)
 		if err := helper.ObjectData(c, openaiResponse); err != nil {
 			common.SysLog(err.Error())
+			if info != nil && info.StreamStatus != nil {
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+			}
 			sr.Stop(err)
 			return
 		}
@@ -132,8 +135,16 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 
 	if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
-		if helper.ClientRequestCanceled(c) {
-			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		if helper.ClientRequestCanceled(c) || (info != nil && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone) {
+			var cancelErr error
+			if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
+				cancelErr = info.StreamStatus.EndError
+			} else if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+				cancelErr = c.Request.Context().Err()
+			} else {
+				cancelErr = errors.New("client closed request")
+			}
+			return nil, types.NewError(cancelErr, types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
 		}
 		if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
 			return nil, types.NewOpenAIError(info.StreamStatus.EndError, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
@@ -176,6 +187,12 @@ func xAIHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	if xaiResponse.Usage != nil {
+		xaiResponse.Usage.PromptTokens = max(xaiResponse.Usage.PromptTokens, 0)
+		xaiResponse.Usage.CompletionTokens = max(xaiResponse.Usage.CompletionTokens, 0)
+		xaiResponse.Usage.TotalTokens = max(xaiResponse.Usage.TotalTokens, 0)
+		if xaiResponse.Usage.TotalTokens == 0 && (xaiResponse.Usage.PromptTokens > 0 || xaiResponse.Usage.CompletionTokens > 0) {
+			xaiResponse.Usage.TotalTokens = xaiResponse.Usage.PromptTokens + xaiResponse.Usage.CompletionTokens
+		}
 		normalizeXAIUsage(xaiResponse.Usage, "xai non-stream")
 		xaiResponse.Usage.CompletionTokenDetails.ReasoningTokens = max(xaiResponse.Usage.CompletionTokenDetails.ReasoningTokens, 0)
 		xaiResponse.Usage.CompletionTokenDetails.TextTokens = max(xaiResponse.Usage.CompletionTokens-xaiResponse.Usage.CompletionTokenDetails.ReasoningTokens, 0)

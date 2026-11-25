@@ -775,6 +775,45 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			if channel.Status != common.ChannelStatusEnabled {
 				return service.MidjourneyErrorWrapper(constant.MjRequestError, i18n.T(c, i18n.MsgRelayTaskChannelDisabled))
 			}
+			// R9-04: Enforce current group/model authorization and re-resolve
+			// "auto" group for the origin channel before reusing it (mirroring R8-05).
+			actionModelName := service.CovertMjpActionToModelName(midjRequest.Action)
+			if actionModelName != "" && relayInfo != nil {
+				if relayInfo.TokenGroup == "auto" || relayInfo.UsingGroup == "auto" {
+					userGroup := relayInfo.UserGroup
+					if userGroup == "" {
+						userGroup = common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+					}
+					resolvedGroup := ""
+					for _, g := range service.GetRequestAutoGroups(c, userGroup) {
+						if g == "" || g == "auto" {
+							continue
+						}
+						if !service.SelectedBillingGroupAllowed(c, g, actionModelName) {
+							continue
+						}
+						if model.IsChannelEnabledForGroupModel(g, actionModelName, channel.Id) {
+							resolvedGroup = g
+							break
+						}
+					}
+					if resolvedGroup == "" {
+						return service.MidjourneyErrorWrapper(constant.MjRequestError, "task_channel_forbidden")
+					}
+					common.SetContextKey(c, constant.ContextKeyAutoGroup, resolvedGroup)
+					relayInfo.UsingGroup = resolvedGroup
+				} else {
+					effectiveGroup := relayInfo.UsingGroup
+					if effectiveGroup == "" {
+						effectiveGroup = relayInfo.TokenGroup
+					}
+					if effectiveGroup == "" ||
+						!service.SelectedBillingGroupAllowed(c, effectiveGroup, actionModelName) ||
+						!model.IsChannelEnabledForGroupModel(effectiveGroup, actionModelName, channel.Id) {
+						return service.MidjourneyErrorWrapper(constant.MjRequestError, "task_channel_forbidden")
+					}
+				}
+			}
 			key, _, keyErr := channel.GetNextEnabledKey()
 			if keyErr != nil {
 				return service.MidjourneyErrorWrapper(constant.MjRequestError, keyErr.Error())

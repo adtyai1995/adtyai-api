@@ -182,7 +182,44 @@ func (midjourney *Midjourney) Insert() error {
 			}
 			midjourney.BillingSiteOwnerUserId = owner
 		}
-		return tx.Create(midjourney).Error
+		if err := tx.Create(midjourney).Error; err != nil {
+			return err
+		}
+		// R9-05: Atomically bind the pre-reserved BillingOperation to this
+		// persisted Midjourney row in the same transaction (mirroring Task.InsertWithContext)
+		// so a crash or DB hiccup before SettleMidjourneyTaskBilling cannot
+		// leave reference_id=0 eligible for lease-expiry auto-refund or starve recovery.
+		if midjourney.BillingChargePending && midjourney.BillingOperationKey != "" && tx.Migrator().HasTable(&BillingOperation{}) {
+			var existing []BillingOperation
+			if err := lockForUpdate(tx).Where("operation_key = ?", midjourney.BillingOperationKey).Limit(1).Find(&existing).Error; err != nil {
+				return err
+			}
+			if len(existing) > 0 {
+				cur := existing[0]
+				if cur.UserId != midjourney.UserId || cur.State != BillingReserved {
+					return ErrBillingOperationConflict
+				}
+				updates := map[string]any{
+					"kind":         "mj_charge",
+					"reference_id": int64(midjourney.Id),
+					"actual_quota": midjourney.Quota,
+					"state":        BillingSettlePending,
+				}
+				if cur.EarningRootKey == "" {
+					updates["earning_root_key"] = midjourney.BillingOperationKey
+				}
+				res := tx.Model(&BillingOperation{}).
+					Where("operation_key = ? AND state = ?", midjourney.BillingOperationKey, BillingReserved).
+					Updates(updates)
+				if res.Error != nil {
+					return res.Error
+				}
+				if res.RowsAffected != 1 {
+					return ErrBillingOperationConflict
+				}
+			}
+		}
+		return nil
 	})
 }
 

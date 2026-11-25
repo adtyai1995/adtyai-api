@@ -28,12 +28,12 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	if apiErr != nil {
 		return nil, apiErr
 	}
+	if oaiErr, statusCode := ExtractEmbeddedOpenAIError(responseBody, upstreamErrorFallbackStatus(resp)); oaiErr != nil {
+		return nil, types.WithOpenAIError(*oaiErr, statusCode)
+	}
 	err := common.Unmarshal(responseBody, &responsesResponse)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
-	}
-	if oaiError := responsesResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
 	info.ObserveResponseModel(responsesResponse.Model)
@@ -103,6 +103,29 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	var streamErr *types.NewAPIError
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		raw := common.StringToByteSlice(data)
+		if oaiErr, statusCode := extractEmbeddedOpenAIErrorRaw(raw); oaiErr != nil {
+			if statusCode < 400 || statusCode > 599 {
+				statusCode = responsesErrorTypeHTTPStatus(oaiErr.Type)
+			}
+			errObj := types.WithOpenAIError(*oaiErr, statusCode)
+			if info != nil && info.StreamStatus != nil {
+				code := ""
+				if oaiErr.Code != nil {
+					code = fmt.Sprint(oaiErr.Code)
+				}
+				info.StreamStatus.MarkFailed(code, oaiErr.Type, errObj.StatusCode)
+			}
+			if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+				streamErr = errObj
+				sr.Stop(streamErr)
+				return
+			}
+			logger.LogError(c, common.LogText("upstream responses stream returned embedded error after payload written: %s", errObj.Error()))
+			sr.Error(errObj)
+			sr.Stop(nil)
+			return
+		}
 
 		// 检查当前数据是否包含 completed 状态和 usage 信息
 		var streamResponse dto.ResponsesStreamResponse
@@ -114,7 +137,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 		if (streamResponse.Type == "error" || streamResponse.Type == "response.failed" || streamResponse.Type == "response.error") &&
 			!helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
-			streamErr = extractResponsesStreamError(&streamResponse, common.StringToByteSlice(data))
+			streamErr = extractResponsesStreamError(&streamResponse, raw)
 			if info != nil && info.StreamStatus != nil {
 				oaiErr := streamErr.ToOpenAIError()
 				code := ""
@@ -175,42 +198,52 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	return accumulator.Finish(), nil
 }
 
+func responsesErrorTypeHTTPStatus(errType string) int {
+	switch errType {
+	case "invalid_request_error":
+		return http.StatusBadRequest
+	case "rate_limit_error":
+		return http.StatusTooManyRequests
+	case "authentication_error":
+		return http.StatusUnauthorized
+	default:
+		return http.StatusBadGateway
+	}
+}
+
 func extractResponsesStreamError(event *dto.ResponsesStreamResponse, raw []byte) *types.NewAPIError {
 	var envelope struct {
-		Status int                `json:"status"`
-		Error  *types.OpenAIError `json:"error"`
+		Status     any `json:"status"`
+		StatusCode any `json:"status_code"`
+		Code       any `json:"code"`
 	}
 	_ = common.Unmarshal(raw, &envelope)
 
 	var oaiErr types.OpenAIError
+	var statusCode int
 	switch {
 	case event != nil && event.Response != nil && event.Response.GetOpenAIError() != nil:
 		oaiErr = *event.Response.GetOpenAIError()
-	case envelope.Error != nil && (strings.TrimSpace(envelope.Error.Message) != "" || strings.TrimSpace(envelope.Error.Type) != "" || envelope.Error.Code != nil):
-		oaiErr = *envelope.Error
-	case event != nil:
-		oaiErr = types.OpenAIError{
-			Message: event.Message,
-			Type:    "server_error",
-			Param:   event.Param,
-			Code:    event.Code,
+		statusCode = parseEmbeddedHTTPStatus(oaiErr.Code, envelope.StatusCode, envelope.Status, envelope.Code)
+	default:
+		if embeddedErr, embeddedStatus := extractEmbeddedOpenAIErrorRaw(raw); embeddedErr != nil {
+			oaiErr = *embeddedErr
+			statusCode = embeddedStatus
+		} else if event != nil {
+			oaiErr = types.OpenAIError{
+				Message: event.Message,
+				Type:    "server_error",
+				Param:   event.Param,
+				Code:    event.Code,
+			}
+			statusCode = parseEmbeddedHTTPStatus(event.Code, envelope.StatusCode, envelope.Status, envelope.Code)
 		}
 	}
 	if strings.TrimSpace(oaiErr.Message) == "" {
 		oaiErr.Message = "upstream responses stream failed"
 	}
-	statusCode := envelope.Status
 	if statusCode < 400 || statusCode > 599 {
-		switch oaiErr.Type {
-		case "invalid_request_error":
-			statusCode = http.StatusBadRequest
-		case "rate_limit_error":
-			statusCode = http.StatusTooManyRequests
-		case "authentication_error":
-			statusCode = http.StatusUnauthorized
-		default:
-			statusCode = http.StatusBadGateway
-		}
+		statusCode = responsesErrorTypeHTTPStatus(oaiErr.Type)
 	}
 	return types.WithOpenAIError(oaiErr, statusCode)
 }

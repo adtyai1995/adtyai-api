@@ -32,14 +32,14 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		return nil, apiErr
 	}
 
+	if oaiErr, statusCode := ExtractEmbeddedOpenAIError(responseBody, upstreamErrorFallbackStatus(resp)); oaiErr != nil {
+		return nil, types.WithOpenAIError(*oaiErr, statusCode)
+	}
+
 	var usageResp dto.SimpleResponse
 	err := common.Unmarshal(responseBody, &usageResp)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
-	}
-
-	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
 	normalizeOpenAIUsage(&usageResp.Usage)
@@ -352,15 +352,16 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 		return nil, apiErr
 	}
 
+	if oaiErr, statusCode := ExtractEmbeddedOpenAIError(responseBody, upstreamErrorFallbackStatus(resp)); oaiErr != nil {
+		return nil, types.WithOpenAIError(*oaiErr, statusCode)
+	}
+
 	// Only decode usage/error. Do not Unmarshal data[] into dto.ImageResponse —
 	// b64_json values are large and would be copied into Go strings then
 	// re-marshaled for each SSE event.
 	var usageResp dto.SimpleResponse
 	if err := common.Unmarshal(responseBody, &usageResp); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
-	}
-	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 	normalizeOpenAIUsage(&usageResp.Usage)
 	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)

@@ -2,8 +2,9 @@ package ali
 
 import (
 	"net/http"
-	"github.com/QuantumNous/new-api/common"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -52,7 +53,7 @@ func RerankHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 			Type:    aliResponse.Code,
 			Param:   aliResponse.RequestId,
 			Code:    aliResponse.Code,
-		}, resp.StatusCode), nil
+		}, channel.ResolveUpstreamErrorStatus(resp, aliResponse.Code)), nil
 	}
 
 	// Rerank results are delivered before billing, and some Bailian rerank

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -27,12 +28,13 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		return nil, apiErr
 	}
 
+	if oaiErr, statusCode := ExtractEmbeddedOpenAIError(body, upstreamErrorFallbackStatus(resp)); oaiErr != nil {
+		return nil, types.WithOpenAIError(*oaiErr, statusCode)
+	}
+
 	var chatResp dto.OpenAITextResponse
 	if err := common.Unmarshal(body, &chatResp); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
-	}
-	if oaiError := chatResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
 	info.ObserveResponseModel(chatResp.Model)
@@ -214,20 +216,21 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			return
 		}
 
-		var errorResp dto.OpenAITextResponse
-		if err := common.UnmarshalJsonStr(data, &errorResp); err == nil {
-			if oaiError := errorResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-				if failResponsesStream(fmt.Errorf("%s", oaiError.Message)) {
-					// The client got response.failed, so the request is never
-					// retried; the recorded error keeps the stream failed.
-					upstreamFailure = types.WithOpenAIError(*oaiError, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
-					sr.Stop(upstreamFailure)
-					return
-				}
-				streamErr = types.WithOpenAIError(*oaiError, resp.StatusCode)
-				stopStream(sr, streamErr)
+		if oaiError, statusCode := ExtractEmbeddedOpenAIError(common.StringToByteSlice(data), upstreamErrorFallbackStatus(resp)); oaiError != nil {
+			errMsg := strings.TrimSpace(oaiError.Message)
+			if errMsg == "" {
+				errMsg = fmt.Sprintf("upstream error: %v", oaiError.Code)
+			}
+			if failResponsesStream(fmt.Errorf("%s", errMsg)) {
+				// The client got response.failed, so the request is never
+				// retried; the recorded error keeps the stream failed.
+				upstreamFailure = types.WithOpenAIError(*oaiError, statusCode, types.ErrOptionWithSkipRetry())
+				sr.Stop(upstreamFailure)
 				return
 			}
+			streamErr = types.WithOpenAIError(*oaiError, statusCode)
+			stopStream(sr, streamErr)
+			return
 		}
 
 		var chunk dto.ChatCompletionsStreamResponse

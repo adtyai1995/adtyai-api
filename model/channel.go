@@ -737,6 +737,11 @@ func (channel *Channel) Update() error {
 		}
 		effectiveStatus := existing.Status
 		if channel.Status != 0 {
+			if channel.Status != common.ChannelStatusEnabled &&
+				channel.Status != common.ChannelStatusManuallyDisabled &&
+				channel.Status != common.ChannelStatusAutoDisabled {
+				return common.NewMessage("Invalid parameters")
+			}
 			effectiveStatus = channel.Status
 		}
 		if effectiveStatus == common.ChannelStatusEnabled && len(effectiveGroups) == 0 {

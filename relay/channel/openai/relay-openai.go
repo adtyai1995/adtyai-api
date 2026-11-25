@@ -199,11 +199,14 @@ func hasNonEmptyErrorCode(code any) bool {
 	return true
 }
 
-// ExtractEmbeddedOpenAIError inspects a JSON payload (such as an HTTP 200 body
-// or SSE data frame) for a non-empty embedded OpenAI "error" field and resolves
-// the HTTP status code from any embedded 4xx/5xx status/code or fallbackStatus
-// (defaulting to 502 Bad Gateway).
-func ExtractEmbeddedOpenAIError(raw []byte, fallbackStatus int) (*types.OpenAIError, int) {
+func upstreamErrorFallbackStatus(resp *http.Response) int {
+	if resp != nil && resp.StatusCode >= http.StatusBadRequest && resp.StatusCode <= 599 {
+		return resp.StatusCode
+	}
+	return http.StatusBadGateway
+}
+
+func extractEmbeddedOpenAIErrorRaw(raw []byte) (*types.OpenAIError, int) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' || !bytes.Contains(trimmed, []byte(`"error"`)) {
 		return nil, 0
@@ -229,6 +232,18 @@ func ExtractEmbeddedOpenAIError(raw []byte, fallbackStatus int) (*types.OpenAIEr
 		statusCode = parseEmbeddedHTTPStatus(errMap["status_code"], errMap["status"], errMap["code"], payload.StatusCode, payload.Status, payload.Code)
 	} else {
 		statusCode = parseEmbeddedHTTPStatus(oaiErr.Code, payload.StatusCode, payload.Status, payload.Code)
+	}
+	return oaiErr, statusCode
+}
+
+// ExtractEmbeddedOpenAIError inspects a JSON payload (such as an HTTP 200 body
+// or SSE data frame) for a non-empty embedded OpenAI "error" field and resolves
+// the HTTP status code from any embedded 4xx/5xx status/code or fallbackStatus
+// (defaulting to 502 Bad Gateway).
+func ExtractEmbeddedOpenAIError(raw []byte, fallbackStatus int) (*types.OpenAIError, int) {
+	oaiErr, statusCode := extractEmbeddedOpenAIErrorRaw(raw)
+	if oaiErr == nil {
+		return nil, 0
 	}
 	if statusCode == 0 {
 		if fallbackStatus >= 400 && fallbackStatus <= 599 {
@@ -497,13 +512,13 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		}
 	}
 
+	if oaiErr, statusCode := ExtractEmbeddedOpenAIError(responseBody, upstreamErrorFallbackStatus(resp)); oaiErr != nil {
+		return nil, types.WithOpenAIError(*oaiErr, statusCode)
+	}
+
 	err = common.Unmarshal(responseBody, &simpleResponse)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
-	}
-
-	if oaiError := simpleResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
 	info.ObserveResponseModel(simpleResponse.Model)

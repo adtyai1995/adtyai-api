@@ -118,6 +118,12 @@ func adtyResolveOwnerFundingSplitTx(tx *gorm.DB, siteID, operatorID int, amountU
 		return AdtyOwnerFundingSplit{}, err
 	}
 	marginExcess := marginWallet.Balance.Sub(marginWallet.FrozenUSD).Sub(marginWallet.ExcessFrozenUSD).Sub(floor)
+	if pooledErr := ReviewAdtyPooledSiteFinance(tx, siteID); errors.Is(pooledErr, ErrAdtyOwnerWalletReview) {
+		// R9-14: Never auto-draw pooled excess margin on a historical-handover site.
+		marginExcess = decimal.Zero
+	} else if pooledErr != nil {
+		return AdtyOwnerFundingSplit{}, pooledErr
+	}
 	if marginExcess.IsNegative() {
 		marginExcess = decimal.Zero
 	}

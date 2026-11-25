@@ -238,6 +238,9 @@ func resolveAdtyTeamRegistrationLeader(tx *gorm.DB, siteId int, username, passwo
 		if errors.Is(err, model.ErrUsernameAlreadyTaken) || errors.Is(err, model.ErrEmailAlreadyTaken) {
 			return 0, nil, ErrAdtyTeamInvalid
 		}
+		if errors.Is(err, model.ErrSiteRegistrationUnavailable) {
+			return 0, nil, common.NewMessage("Site is not open for registration")
+		}
 		return 0, nil, err
 	}
 	return user.Id, user, nil

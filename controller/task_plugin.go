@@ -48,8 +48,16 @@ type taskPluginUploadRequest struct {
 }
 
 func UploadTaskPlugin(c *gin.Context) {
+	// R9-09: Enforce a hard upper bound on the exempted plugin upload body before
+	// JSON decoding so oversized payloads cannot exhaust server memory.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxTaskPluginSourceBytes+2<<20)
 	var request taskPluginUploadRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			common.ApiErrorT(c, "Plugin source exceeds the 8 MiB limit.")
+			return
+		}
 		common.ApiErrorT(c, "Invalid request parameters: {{error}}", map[string]any{"error": err.Error()})
 		return
 	}

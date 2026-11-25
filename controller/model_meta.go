@@ -122,6 +122,18 @@ func GetModelMeta(c *gin.Context) {
 	common.ApiSuccess(c, &m)
 }
 
+func writeModelMetaValidationError(c *gin.Context, err error) {
+	if errors.Is(err, model.ErrModelContextInvalid) {
+		common.ApiErrorT(c, "Context length must be between 0 and 100000000")
+		return
+	}
+	if err != nil && strings.Contains(err.Error(), "catalog visibility") {
+		common.ApiErrorT(c, "Invalid catalog visibility")
+		return
+	}
+	common.ApiErrorT(c, "Invalid parameters")
+}
+
 // CreateModelMeta 新建模型
 func CreateModelMeta(c *gin.Context) {
 	if err := adtyAuthorizeAdminActions(c, authz.AdtyModelCreate); err != nil {
@@ -145,11 +157,11 @@ func CreateModelMeta(c *gin.Context) {
 		}
 	}
 	if err := model.ValidateMetadataValues(model.MetadataValues{Endpoints: m.Endpoints, Status: m.Status, NameRule: m.NameRule}); err != nil {
-		common.ApiError(c, err)
+		writeModelMetaValidationError(c, err)
 		return
 	}
 	if err := model.ValidateModelContextLength(m.ContextLength); err != nil {
-		common.ApiError(c, err)
+		writeModelMetaValidationError(c, err)
 		return
 	}
 	// 名称冲突检查
@@ -211,11 +223,11 @@ func UpdateModelMeta(c *gin.Context) {
 			return
 		}
 		if err := model.ValidateMetadataValues(model.MetadataValues{Endpoints: m.Endpoints, Status: m.Status, NameRule: m.NameRule}); err != nil {
-			common.ApiError(c, err)
+			writeModelMetaValidationError(c, err)
 			return
 		}
 		if err := model.ValidateModelContextLength(m.ContextLength); err != nil {
-			common.ApiError(c, err)
+			writeModelMetaValidationError(c, err)
 			return
 		}
 		// 名称冲突检查

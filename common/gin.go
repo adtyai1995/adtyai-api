@@ -117,17 +117,34 @@ func CleanupBodyStorage(c *gin.Context) {
 	}
 }
 
+// NormalizedContentMediaType returns the lowercase media type stripped of
+// parameters (R9-11), preventing substring smuggling like
+// "application/json; x=multipart/form-data" and case-sensitivity mismatches.
+func NormalizedContentMediaType(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if mediaType, _, err := mime.ParseMediaType(trimmed); err == nil {
+		return strings.ToLower(strings.TrimSpace(mediaType))
+	}
+	if semi := strings.IndexByte(trimmed, ';'); semi >= 0 {
+		trimmed = trimmed[:semi]
+	}
+	return strings.ToLower(strings.TrimSpace(trimmed))
+}
+
 func UnmarshalBodyReusable(c *gin.Context, v any) error {
 	storage, err := GetBodyStorage(c)
 	if err != nil {
 		return err
 	}
-	contentType := c.Request.Header.Get("Content-Type")
+	mediaType := NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))
 
 	// disk-backed JSON: stream-decode directly from the file to avoid
 	// materializing the entire payload back into a transient []byte
 	// (diskStorage.Bytes() would ReadFull the whole file into the heap).
-	if storage.IsDisk() && strings.HasPrefix(contentType, "application/json") {
+	if storage.IsDisk() && (mediaType == "" || mediaType == "application/json") {
 		if _, seekErr := storage.Seek(0, io.SeekStart); seekErr != nil {
 			return seekErr
 		}
@@ -145,11 +162,13 @@ func UnmarshalBodyReusable(c *gin.Context, v any) error {
 	if err != nil {
 		return err
 	}
-	if strings.HasPrefix(contentType, "application/json") {
-		err = Unmarshal(requestBody, v)
-	} else if strings.Contains(contentType, gin.MIMEPOSTForm) {
+	if mediaType == "" || mediaType == "application/json" {
+		if len(bytes.TrimSpace(requestBody)) > 0 {
+			err = Unmarshal(requestBody, v)
+		}
+	} else if mediaType == gin.MIMEPOSTForm {
 		err = parseFormData(requestBody, v)
-	} else if strings.Contains(contentType, gin.MIMEMultipartPOSTForm) {
+	} else if mediaType == gin.MIMEMultipartPOSTForm {
 		err = parseMultipartFormData(c, requestBody, v)
 	} else {
 		// skip for now

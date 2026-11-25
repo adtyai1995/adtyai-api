@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -59,7 +58,7 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
-		if strings.Contains(c.Request.Header.Get("Content-Type"), "multipart/form-data") {
+		if common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type")) == gin.MIMEMultipartPOSTForm {
 			requestBody = common.NewReplayableBodyReader(storage)
 		} else {
 			jsonData, err = storage.Bytes()
@@ -81,9 +80,9 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		}
 		relaycommon.AppendRequestConversionFromRequest(info, convertedRequest)
 
-		switch convertedRequest.(type) {
-		case *bytes.Buffer:
-			requestBody = convertedRequest.(io.Reader)
+		switch convertedBody := convertedRequest.(type) {
+		case io.Reader:
+			requestBody = convertedBody
 		default:
 			jsonData, err = common.Marshal(convertedRequest)
 			if err != nil {

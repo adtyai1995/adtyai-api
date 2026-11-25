@@ -13,13 +13,15 @@ import (
 const DefaultAPIRequestBodyMaxBytes int64 = 1 << 20 // 1 MiB
 
 func isExemptFromDefaultAPIBodyLimit(path string) bool {
-	if path == "/api/plugin/task" || path == "/api/adty/site/logo" {
+	switch path {
+	case "/api/plugin/task",
+		"/api/adty/site/logo",
+		"/api/adty/site/withdrawals/qr",
+		"/api/user/referral/upload",
+		"/api/user/admin/referral/upload":
 		return true
 	}
 	if strings.HasPrefix(path, "/api/adty/tickets/") && strings.HasSuffix(path, "/images") {
-		return true
-	}
-	if strings.Contains(path, "/withdrawals/") && (strings.HasSuffix(path, "/pay") || strings.HasSuffix(path, "/paying")) {
 		return true
 	}
 	return false

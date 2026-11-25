@@ -1313,6 +1313,12 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 	var moved []int
 	var disabledStaff []int
 	var closed model.AdtySite
+	var txOpts []*sql.TxOptions
+	if common.UsingMainDatabase(common.DatabaseTypeMySQL) {
+		// R9-08: Avoid REPEATABLE READ snapshot skew against concurrent
+		// commission-to-balance conversions while migrating customer batches.
+		txOpts = append(txOpts, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	}
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteId).First(&site).Error; err != nil {
@@ -1424,7 +1430,7 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 		return recordSiteAuditTx(tx, site.Id, "close", 0, nil, map[string]any{
 			"transfer_to": target, "customers": len(moved), "archived_memberships": len(moved), "claw_back": false,
 		}, "")
-	})
+	}, txOpts...)
 	if err != nil {
 		return err
 	}

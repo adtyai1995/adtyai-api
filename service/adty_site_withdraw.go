@@ -90,15 +90,15 @@ func SaveAdtySiteWithdrawRules(rules AdtySiteWithdrawRules, operatorID int) erro
 func SaveAdtySiteWithdrawRulesWithAudit(rules AdtySiteWithdrawRules, operatorID int) (string, error) {
 	_, minRaw, err := requiredPositiveDecimal(rules.MinUSD)
 	if err != nil {
-		return "", ErrAdtySiteWithdrawUnset
+		return "", common.NewMessage("Invalid parameters")
 	}
 	_, feeRaw, err := requiredPositiveDecimal(rules.FeeUSD)
 	if err != nil {
-		return "", ErrAdtySiteWithdrawUnset
+		return "", common.NewMessage("Invalid parameters")
 	}
 	_, usdtRaw, err := requiredPositiveDecimal(rules.USDTUSDRate)
 	if err != nil {
-		return "", ErrAdtySiteWithdrawUnset
+		return "", common.NewMessage("Invalid parameters")
 	}
 	values := map[string]string{
 		adtySiteWithdrawMinKey:  minRaw,

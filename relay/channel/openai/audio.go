@@ -44,8 +44,23 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 	if info.IsStream {
 		var streamedAudioBytes int
 		var lastParseErr error
+		var streamErr *types.NewAPIError
 		headersWritten := false
 		helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+			if len(data) > 0 {
+				if oaiErr, statusCode := ExtractEmbeddedOpenAIError(common.StringToByteSlice(data), upstreamErrorFallbackStatus(resp)); oaiErr != nil {
+					if !headersWritten && !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+						streamErr = types.WithOpenAIError(*oaiErr, statusCode)
+						sr.Stop(streamErr)
+						return
+					}
+					embeddedErr := types.WithOpenAIError(*oaiErr, statusCode)
+					logger.LogError(c, common.LogText("upstream TTS stream returned embedded error after payload written: %s", embeddedErr.Error()))
+					sr.Error(embeddedErr)
+					sr.Stop(nil)
+					return
+				}
+			}
 			if service.SundaySearch(data, "audio") {
 				var chunk struct {
 					Type  string `json:"type"`
@@ -107,6 +122,9 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 				info.SendResponseCount++
 			}
 		})
+		if streamErr != nil {
+			return nil, streamErr
+		}
 		if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
 			if helper.ClientRequestCanceled(c) || (info != nil && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone) {
 				var cancelErr error
@@ -155,6 +173,14 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		}
 		if len(bodyBytes) == 0 {
 			return nil, types.NewOpenAIError(errors.New("empty upstream TTS response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+		}
+
+		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+		trimmedBody := bytes.TrimSpace(bodyBytes)
+		if strings.Contains(contentType, "json") || (len(trimmedBody) > 0 && trimmedBody[0] == '{') {
+			if oaiErr, statusCode := ExtractEmbeddedOpenAIError(trimmedBody, upstreamErrorFallbackStatus(resp)); oaiErr != nil {
+				return nil, types.WithOpenAIError(*oaiErr, statusCode)
+			}
 		}
 
 		// 仅在首块有效数据到达后再写入响应头与状态码

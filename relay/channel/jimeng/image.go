@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -81,7 +82,7 @@ func jimengImageHandler(c *gin.Context, resp *http.Response, info *relaycommon.R
 			Type:    "jimeng_error",
 			Param:   "",
 			Code:    fmt.Sprintf("%d", jimengResponse.Code),
-		}, resp.StatusCode)
+		}, channel.ResolveUpstreamErrorStatus(resp, jimengResponse.Status, jimengResponse.Code))
 	}
 
 	// Convert Jimeng response to OpenAI format

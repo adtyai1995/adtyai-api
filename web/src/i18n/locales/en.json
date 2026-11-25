@@ -11422,6 +11422,9 @@
     "Too many tickets created in the last 24 hours; please try again later": "Too many tickets created in the last 24 hours; please try again later",
     "Too many active team invites; please revoke unused invites first": "Too many active team invites; please revoke unused invites first",
     "Cannot promote a subsite customer, site staff, or team employee account to platform administrator.": "Cannot promote a subsite customer, site staff, or team employee account to platform administrator.",
-    "Reviewed gift fulfillment": "Reviewed gift fulfillment"
+    "Reviewed gift fulfillment": "Reviewed gift fulfillment",
+    "Withdrawal status has changed. Refresh and try again.": "Withdrawal status has changed. Refresh and try again.",
+    "Withdrawal request not found": "Withdrawal request not found",
+    "Context length must be between 0 and 100000000": "Context length must be between 0 and 100000000"
   }
 }

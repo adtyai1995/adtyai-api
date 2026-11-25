@@ -4,6 +4,8 @@ import (
 	"compress/gzip"
 	"io"
 	"net/http"
+	"strings"
+	"sync"
 
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/andybalholm/brotli"
@@ -11,14 +13,105 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-type readCloser struct {
-	io.Reader
-	closeFn func() error
+const maxZstdDecoderWindow uint64 = 8 << 20 // 8 MiB power-of-two cap (R9-01)
+
+func zstdWindowForLimit(maxBytes int64) uint64 {
+	limit := uint64(maxBytes)
+	if limit >= maxZstdDecoderWindow {
+		return maxZstdDecoderWindow
+	}
+	w := uint64(1 << 10)
+	for (w << 1) <= limit {
+		w <<= 1
+	}
+	return w
 }
 
-func (rc *readCloser) Close() error {
-	if rc.closeFn != nil {
-		return rc.closeFn()
+// lazyDecompressReadCloser defers decoder construction until the first Read so
+// unconsumed bodies (e.g. rejected/early-aborted requests) never spawn zstd
+// goroutines or parse gzip headers, and Close always cleans up both decoder
+// and underlying compressed body (R9-01).
+type lazyDecompressReadCloser struct {
+	encoding  string
+	orig      io.ReadCloser
+	maxBytes  int64
+	mu        sync.Mutex
+	closed    bool
+	initDone  bool
+	initErr   error
+	reader    io.Reader
+	closeFn   func() error
+}
+
+func (l *lazyDecompressReadCloser) initLocked() error {
+	if l.initDone {
+		return l.initErr
+	}
+	l.initDone = true
+	switch l.encoding {
+	case "gzip":
+		gr, err := gzip.NewReader(l.orig)
+		if err != nil {
+			l.initErr = err
+			return err
+		}
+		l.reader = gr
+		l.closeFn = gr.Close
+	case "br":
+		l.reader = brotli.NewReader(l.orig)
+	case "zstd":
+		zr, err := zstd.NewReader(
+			l.orig,
+			zstd.WithDecoderConcurrency(1),
+			zstd.WithDecoderLowmem(true),
+			zstd.WithDecoderMaxWindow(zstdWindowForLimit(l.maxBytes)),
+		)
+		if err != nil {
+			l.initErr = err
+			return err
+		}
+		l.reader = zr
+		l.closeFn = func() error {
+			zr.Close()
+			return nil
+		}
+	default:
+		l.reader = l.orig
+	}
+	return nil
+}
+
+func (l *lazyDecompressReadCloser) Read(p []byte) (int, error) {
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return 0, io.EOF
+	}
+	if err := l.initLocked(); err != nil {
+		l.mu.Unlock()
+		return 0, err
+	}
+	r := l.reader
+	l.mu.Unlock()
+	return r.Read(p)
+}
+
+func (l *lazyDecompressReadCloser) Close() error {
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return nil
+	}
+	l.closed = true
+	closeFn := l.closeFn
+	orig := l.orig
+	l.mu.Unlock()
+
+	if closeFn != nil {
+		_ = closeFn()
+	}
+	if orig != nil {
+		return orig.Close()
 	}
 	return nil
 }
@@ -39,56 +132,25 @@ func DecompressRequestMiddleware() gin.HandlerFunc {
 		wrapMaxBytes := func(body io.ReadCloser) io.ReadCloser {
 			return http.MaxBytesReader(c.Writer, body, maxBytes)
 		}
-		decompressed := false
 
-		switch c.GetHeader("Content-Encoding") {
-		case "gzip":
-			gzipReader, err := gzip.NewReader(origBody)
-			if err != nil {
-				_ = origBody.Close()
-				c.AbortWithStatus(http.StatusBadRequest)
-				return
+		encoding := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Encoding")))
+		switch encoding {
+		case "gzip", "br", "zstd":
+			// R9-01: Bound the compressed stream before decoding (blocking gzip
+			// header OOM and zstd skippable-frame floods), initialize lazily,
+			// bound decompressed output, and always Close on request return.
+			limitedOrig := http.MaxBytesReader(c.Writer, origBody, maxBytes)
+			lazy := &lazyDecompressReadCloser{
+				encoding: encoding,
+				orig:     limitedOrig,
+				maxBytes: maxBytes,
 			}
-			// Replace the request body with the decompressed data, and enforce a max size (post-decompression).
-			c.Request.Body = wrapMaxBytes(&readCloser{
-				Reader: gzipReader,
-				closeFn: func() error {
-					_ = gzipReader.Close()
-					return origBody.Close()
-				},
-			})
-			decompressed = true
-		case "br":
-			reader := brotli.NewReader(origBody)
-			c.Request.Body = wrapMaxBytes(&readCloser{
-				Reader: reader,
-				closeFn: func() error {
-					return origBody.Close()
-				},
-			})
-			decompressed = true
-		case "zstd":
-			reader, err := zstd.NewReader(origBody)
-			if err != nil {
-				_ = origBody.Close()
-				c.AbortWithStatus(http.StatusBadRequest)
-				return
-			}
-			c.Request.Body = wrapMaxBytes(&readCloser{
-				Reader: reader,
-				closeFn: func() error {
-					reader.Close()
-					return origBody.Close()
-				},
-			})
-			decompressed = true
+			defer func() { _ = lazy.Close() }()
+			c.Request.Body = wrapMaxBytes(lazy)
+			c.Request.Header.Del("Content-Encoding")
 		default:
 			// Even for uncompressed bodies, enforce a max size to avoid huge request allocations.
 			c.Request.Body = wrapMaxBytes(origBody)
-		}
-
-		if decompressed {
-			c.Request.Header.Del("Content-Encoding")
 		}
 
 		// Continue processing the request

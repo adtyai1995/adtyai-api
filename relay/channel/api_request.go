@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -408,6 +410,88 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	return resp, nil
 }
 
+// ContentTypeBody is an optional interface implemented by request bodies that
+// carry their own Content-Type (for example, regenerated multipart/form-data
+// payloads whose boundary differs from the incoming client request).
+type ContentTypeBody interface {
+	io.Reader
+	ContentType() string
+}
+
+type formBody struct {
+	data        []byte
+	reader      *bytes.Reader
+	contentType string
+}
+
+// NewFormBody wraps generated multipart/form-data bytes together with their
+// Content-Type so DoFormRequest can set the upstream header without mutating
+// c.Request.Header. It also implements common.ReplayableBody so
+// ApplyUpstreamBodyMetadata preserves ContentLength and GetBody.
+func NewFormBody(buf *bytes.Buffer, contentType string) ContentTypeBody {
+	var data []byte
+	if buf != nil {
+		data = buf.Bytes()
+	}
+	return &formBody{
+		data:        data,
+		reader:      bytes.NewReader(data),
+		contentType: contentType,
+	}
+}
+
+func (b *formBody) Read(p []byte) (int, error) {
+	return b.reader.Read(p)
+}
+
+func (b *formBody) ContentType() string {
+	return b.contentType
+}
+
+func (b *formBody) Size() int64 {
+	return int64(len(b.data))
+}
+
+func (b *formBody) NewReader() (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(b.data)), nil
+}
+
+func resolveFormBodyContentType(requestBody io.Reader) string {
+	if ctb, ok := requestBody.(interface{ ContentType() string }); ok {
+		if ct := strings.TrimSpace(ctb.ContentType()); ct != "" {
+			return ct
+		}
+	}
+	return ""
+}
+
+// ResolveUpstreamErrorStatus normalizes an HTTP status code for upstream
+// error responses that may arrive with HTTP 200. It prefers the first 4xx/5xx
+// status found in candidates, then falls back to resp.StatusCode if it is
+// 4xx/5xx, and finally defaults to 502 Bad Gateway.
+func ResolveUpstreamErrorStatus(resp *http.Response, candidates ...any) int {
+	for _, candidate := range candidates {
+		switch v := candidate.(type) {
+		case int:
+			if v >= http.StatusBadRequest && v <= 599 {
+				return v
+			}
+		case int64:
+			if v >= http.StatusBadRequest && v <= 599 {
+				return int(v)
+			}
+		case string:
+			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= http.StatusBadRequest && n <= 599 {
+				return n
+			}
+		}
+	}
+	if resp != nil && resp.StatusCode >= http.StatusBadRequest && resp.StatusCode <= 599 {
+		return resp.StatusCode
+	}
+	return http.StatusBadGateway
+}
+
 func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
@@ -420,11 +504,22 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	}
 	ApplyUpstreamBodyMetadata(req, requestBody)
 	// set form data
-	req.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
+	bodyContentType := resolveFormBodyContentType(requestBody)
+	if bodyContentType != "" {
+		req.Header.Set("Content-Type", bodyContentType)
+	} else {
+		req.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
+	}
 	headers := req.Header
 	err = a.SetupRequestHeader(c, &headers, info)
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
+	}
+	// SetupApiRequestHeader copies c.Request.Header.Get("Content-Type") for
+	// modes such as ImagesEdits; re-apply the generated multipart body's own
+	// Content-Type before ApplyHeaderOverride so the boundary matches the body.
+	if bodyContentType != "" {
+		req.Header.Set("Content-Type", bodyContentType)
 	}
 	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
 	// 这样可以覆盖默认的 Authorization header 设置

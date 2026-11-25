@@ -523,9 +523,9 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 
 		// 关闭 multipart 编写器以设置分界线
 		writer.Close()
-		c.Request.Header.Set("Content-Type", writer.FormDataContentType())
-		logger.LogDebug(c.Request.Context(), "--header 'Content-Type: %s'", writer.FormDataContentType())
-		return &requestBody, nil
+		formContentType := writer.FormDataContentType()
+		logger.LogDebug(c.Request.Context(), "--header 'Content-Type: %s'", formContentType)
+		return channel.NewFormBody(&requestBody, formContentType), nil
 	}
 }
 
@@ -660,8 +660,7 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 
 		// 关闭 multipart 编写器以设置分界线
 		writer.Close()
-		c.Request.Header.Set("Content-Type", writer.FormDataContentType())
-		return &requestBody, nil
+		return channel.NewFormBody(&requestBody, writer.FormDataContentType()), nil
 
 	default:
 		return request, nil
