@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
@@ -42,6 +43,53 @@ type BillingSession struct {
 	operationKey      string
 	requestContext    *gin.Context
 	realtimeShortfall int
+	heartbeatStop     func() bool
+	heartbeatTimer    *time.Timer
+}
+
+func (s *BillingSession) stopReservationHeartbeatLocked() {
+	if s.heartbeatStop != nil {
+		s.heartbeatStop()
+		s.heartbeatStop = nil
+	}
+	if s.heartbeatTimer != nil {
+		s.heartbeatTimer.Stop()
+		s.heartbeatTimer = nil
+	}
+	if s.operationKey != "" {
+		activeBillingReservations.Delete(s.operationKey)
+	}
+}
+
+// DetachReservationHeartbeat detaches the reservation heartbeat from the client
+// request context for detached upstream task submissions (context.WithoutCancel)
+// so an early client disconnect cannot cause RecoverBillingOperations to refund
+// the reservation while upstream submission is still in flight (R3-12).
+func (s *BillingSession) DetachReservationHeartbeat(maxTTL time.Duration) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.operationKey == "" || s.settled || s.refunded || s.fundingSettled {
+		return
+	}
+	if s.heartbeatStop != nil {
+		s.heartbeatStop()
+		s.heartbeatStop = nil
+	}
+	if s.heartbeatTimer != nil {
+		s.heartbeatTimer.Stop()
+		s.heartbeatTimer = nil
+	}
+	activeBillingReservations.Store(s.operationKey, struct{}{})
+	if maxTTL <= 0 {
+		maxTTL = 4 * time.Minute
+	}
+	opKey := s.operationKey
+	s.heartbeatTimer = time.AfterFunc(maxTTL, func() {
+		activeBillingReservations.Delete(opKey)
+	})
 }
 
 // Settle 根据实际消耗额度提交持久化结算决定，再原子调整钱包与令牌。
@@ -62,7 +110,7 @@ func (s *BillingSession) Settle(actualQuota int) error {
 		// The durable intent owns this reservation from here, including if an
 		// apply fails. A failure handler must not issue a competing full refund.
 		s.fundingSettled = true
-		activeBillingReservations.Delete(s.operationKey)
+		s.stopReservationHeartbeatLocked()
 		row, _, err := model.ApplyBillingSettlement(s.operationKey)
 		if err != nil {
 			return err
@@ -143,7 +191,7 @@ func (s *BillingSession) Refund(c *gin.Context) {
 			return
 		}
 		s.refunded = true
-		activeBillingReservations.Delete(s.operationKey)
+		s.stopReservationHeartbeatLocked()
 		if _, _, err := model.ApplyBillingSettlement(s.operationKey); err != nil {
 			common.SysError(common.LogText("billing refund remains pending: %s", err.Error()))
 		}
@@ -289,10 +337,13 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 		c.Set(adtyDurableBillingContextKey, true)
 		c.Set(adtyBillingOperationContextKey, s.operationKey)
 		c.Set(usageBillingContextKey, row)
+		s.mu.Lock()
 		activeBillingReservations.Store(s.operationKey, struct{}{})
 		if c.Request != nil {
-			context.AfterFunc(c.Request.Context(), func() { activeBillingReservations.Delete(s.operationKey) })
+			opKey := s.operationKey
+			s.heartbeatStop = context.AfterFunc(c.Request.Context(), func() { activeBillingReservations.Delete(opKey) })
 		}
+		s.mu.Unlock()
 		return nil
 	}
 	effectiveQuota := quota

@@ -363,7 +363,9 @@ func GetReferralAsset(c *gin.Context) {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
-	c.Header("Cache-Control", "private, max-age=60")
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("Referrer-Policy", "no-referrer")
+	c.Header("X-Content-Type-Options", "nosniff")
 	c.File(path)
 }
 

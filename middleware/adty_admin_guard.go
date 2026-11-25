@@ -56,7 +56,10 @@ func adtyAdminRouteAllowed(c *gin.Context, minRole int) bool {
 	}
 	role := c.GetInt("role")
 	if role >= common.RoleRootUser {
-		return true
+		legacy, isToken := c.Get("access_token_legacy")
+		if !isToken || legacy == true {
+			return true
+		}
 	}
 	userID := c.GetInt("id")
 	key := c.Request.Method + " " + c.FullPath()

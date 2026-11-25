@@ -636,8 +636,13 @@ func cleanReplacedSenderDomains(ctx context.Context, now int64, siteID int) erro
 	for _, row := range rows {
 		if err := model.DB.Transaction(func(tx *gorm.DB) error {
 			var site model.AdtySite
+			siteMissing := false
 			if err := model.AdtyLockForUpdate(tx).First(&site, row.SiteID).Error; err != nil {
-				return err
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					siteMissing = true
+				} else {
+					return err
+				}
 			}
 			var job model.AdtySenderDomainCleanup
 			lookup := model.AdtyLockForUpdate(tx).Where("remote_id = ? AND retry_at <= ?", row.RemoteID, now).Limit(1).Find(&job)
@@ -645,8 +650,10 @@ func cleanReplacedSenderDomains(ctx context.Context, now int64, siteID int) erro
 				return lookup.Error
 			}
 			var bound int64
-			if err := tx.Model(&model.AdtySiteSenderDomain{}).Where("resend_domain_id = ? AND status <> ?", job.RemoteID, model.AdtySenderDomainDisabled).Count(&bound).Error; err != nil {
-				return err
+			if !siteMissing {
+				if err := tx.Model(&model.AdtySiteSenderDomain{}).Where("resend_domain_id = ? AND status <> ?", job.RemoteID, model.AdtySenderDomainDisabled).Count(&bound).Error; err != nil {
+					return err
+				}
 			}
 			if bound == 0 {
 				if err := deleteSenderDomainIfPresent(ctx, job.RemoteID); err != nil {
@@ -655,53 +662,26 @@ func cleanReplacedSenderDomains(ctx context.Context, now int64, siteID int) erro
 			}
 			return tx.Delete(&job).Error
 		}); err != nil {
-			return err
+			common.SysError(common.LogText("sender domain cleanup job remote_id=%s site=%d: %s", row.RemoteID, row.SiteID, err.Error()))
 		}
 	}
 	return nil
 }
 
-// RunAdtySenderDomainCheckOnce 查一遍 pending 的发件域名，Resend 说 verified 就启用，failed 就标失败。
+// RunAdtySenderDomainCheckOnce 清理已替换、停用或已关停分站的存量托管发件域名，并重试关站通知邮件。
+// R-37 (#5) / R3-43: 平台托管 Resend 发件域名已退役，不再把历史 pending 记录升级为 verified。
 func RunAdtySenderDomainCheckOnce(ctx context.Context, now time.Time) error {
 	if err := cleanReplacedSenderDomains(ctx, now.Unix(), 0); err != nil {
-		return err
+		common.SysError(common.LogText("clean replaced sender domains: %s", err.Error()))
 	}
 	var cleanup []model.AdtySiteSenderDomain
-	closedSites := model.DB.Model(&model.AdtySite{}).Select("id").Where("status = ?", model.AdtySiteStatusClosed)
-	if err := model.DB.Where("status <> ? AND retry_at <= ? AND (status = ? OR site_id IN (?))", model.AdtySenderDomainDisabled, now.Unix(), model.AdtySenderDomainRemoving, closedSites).Find(&cleanup).Error; err != nil {
+	inactiveSites := model.DB.Model(&model.AdtySite{}).Select("id").Where("status IN ?", []string{model.AdtySiteStatusClosed, model.AdtySiteStatusDeleting})
+	if err := model.DB.Where("status <> ? AND retry_at <= ? AND (status = ? OR site_id IN (?))", model.AdtySenderDomainDisabled, now.Unix(), model.AdtySenderDomainRemoving, inactiveSites).Find(&cleanup).Error; err != nil {
 		return err
 	}
 	for _, row := range cleanup {
 		if err := DisableAdtySiteSenderDomain(ctx, row.SiteId, row.DisabledBy); err != nil {
 			common.SysError(common.LogText("sender domain cleanup site %d: %s", row.SiteId, err.Error()))
-		}
-	}
-	var rows []model.AdtySiteSenderDomain
-	if err := model.DB.Where("status = ?", model.AdtySenderDomainPending).Find(&rows).Error; err != nil {
-		return err
-	}
-	for _, row := range rows {
-		updates := map[string]any{"last_checked_at": now.Unix()}
-		domain, err := AdtyResend.GetDomain(ctx, row.ResendDomainId)
-		switch {
-		case err != nil:
-			if errors.Is(err, ErrAdtyResendNotConfigured) {
-				if retryErr := RunAdtySiteCloseMailRetryOnce(now); retryErr != nil {
-					common.SysError(common.LogText("close migration mail retry: %s", retryErr.Error()))
-				}
-				return nil
-			}
-			common.SysError(common.LogText("resend domain check failed for site %d", row.SiteId))
-		case domain.Status == "verified":
-			updates["status"] = model.AdtySenderDomainVerified
-		case domain.Status == "failed":
-			updates["status"] = model.AdtySenderDomainFailed
-		}
-		// 只写回仍是这次巡检读到的 pending 行。停用或换了域名后，不能把旧的 verified/failed 盖上去。
-		if err := model.DB.Model(&model.AdtySiteSenderDomain{}).
-			Where("site_id = ? AND status = ? AND resend_domain_id = ?", row.SiteId, model.AdtySenderDomainPending, row.ResendDomainId).
-			Updates(updates).Error; err != nil {
-			return err
 		}
 	}
 	if err := RunAdtySiteCloseMailRetryOnce(now); err != nil {

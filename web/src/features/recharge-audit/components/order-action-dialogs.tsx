@@ -316,6 +316,7 @@ export function RefundDialog(
   )
   const reconcileOrphanParam =
     parsedReconcileOrphanId > 0 ? parsedReconcileOrphanId : undefined
+  const hasActivePreview = typedReady || parsedReconcileOrphanId > 0
   const preview = useQuery({
     queryKey: [
       'topup-refund-preview',
@@ -333,7 +334,7 @@ export function RefundDialog(
         props.ownerMode === true,
         reconcileOrphanParam
       ),
-    enabled: props.order !== null && typedReady,
+    enabled: props.order !== null && hasActivePreview,
   })
   const listing = useQuery({
     queryKey: [
@@ -350,8 +351,12 @@ export function RefundDialog(
       ),
     enabled: props.order !== null,
   })
-  const facts = listing.data?.facts ?? preview.data?.facts
-  const occupancy = listing.data?.occupancy ?? facts?.occupancy
+  const activePreviewFacts = hasActivePreview ? preview.data?.facts : undefined
+  const facts = activePreviewFacts ?? listing.data?.facts
+  const occupancy =
+    activePreviewFacts?.occupancy ??
+    listing.data?.occupancy ??
+    facts?.occupancy
   const refunds =
     listing.data?.facts?.manual_refunds ?? facts?.manual_refunds ?? []
   const selected =
@@ -766,7 +771,7 @@ export function RefundDialog(
           onChange={(event) => setRefundUsd(event.target.value)}
         />
       </div>
-      {preview.data && (
+      {hasActivePreview && preview.data && (
         <CommissionRefundPreviewDetails preview={preview.data} t={t} />
       )}
       {!props.ownerMode && pendingReversalOrphans.length > 0 && (

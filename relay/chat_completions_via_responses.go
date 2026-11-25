@@ -121,6 +121,28 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 
 	info.RelayMode = relayconstant.RelayModeResponses
 	info.RequestURLPath = "/v1/responses"
+	if len(responsesReq.Tools) > 0 {
+		if info.ResponsesUsageInfo == nil {
+			info.ResponsesUsageInfo = &relaycommon.ResponsesUsageInfo{
+				BuiltInTools: make(map[string]*relaycommon.BuildInToolInfo),
+			}
+		} else if info.ResponsesUsageInfo.BuiltInTools == nil {
+			info.ResponsesUsageInfo.BuiltInTools = make(map[string]*relaycommon.BuildInToolInfo)
+		}
+		for _, tool := range responsesReq.GetToolsMap() {
+			toolType := common.Interface2String(tool["type"])
+			if toolType == "" {
+				continue
+			}
+			if _, exists := info.ResponsesUsageInfo.BuiltInTools[toolType]; !exists {
+				info.ResponsesUsageInfo.BuiltInTools[toolType] = &relaycommon.BuildInToolInfo{
+					ToolName:  toolType,
+					CallCount: 0,
+				}
+			}
+		}
+	}
+	adaptor.Init(info)
 
 	convertedRequest, err := adaptor.ConvertOpenAIResponsesRequest(c, info, *responsesReq)
 	if err != nil {
@@ -164,16 +186,17 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 	statusCodeMappingStr := c.GetString("status_code_mapping")
 
 	httpResp = resp.(*http.Response)
-	clientStream := info.IsStream
-	upstreamStream := isResponsesEventStreamContentType(httpResp.Header.Get("Content-Type"))
-	info.IsStream = clientStream || upstreamStream
 	if httpResp.StatusCode != http.StatusOK {
 		newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, false)
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 		return nil, newApiErr
 	}
 
+	clientStream := info.IsStream
+	upstreamStream := isResponsesEventStreamContentType(httpResp.Header.Get("Content-Type"))
+
 	if upstreamStream && clientStream {
+		info.IsStream = true
 		usage, newApiErr := openaichannel.OaiResponsesToChatStreamHandler(c, info, httpResp)
 		if newApiErr != nil {
 			service.ResetStatusCode(newApiErr, statusCodeMappingStr)

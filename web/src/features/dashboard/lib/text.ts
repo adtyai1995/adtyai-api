@@ -16,7 +16,47 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-const TRANSLATION_NOT_READY_MARKER = 'English is not ready'
+export const TRANSLATION_NOT_READY_MARKERS = [
+  '英文译文未就绪',
+  'English is not ready',
+] as const
+
+const TRANSLATION_NOT_READY_MARKER_SET = new Set(
+  TRANSLATION_NOT_READY_MARKERS.map((marker) => marker.toLowerCase())
+)
+
+const NON_TEXT_NOTIFICATION_SOURCES = new Set(['channel_watcher'])
+
+const MARKER_CORE_EXPR = '(?:英文译文未就绪|English is not ready)[.。]?'
+const WRAPPED_MARKER_EXPR = `(?:[(（\\[【]\\s*${MARKER_CORE_EXPR}\\s*[)）\\]】]|${MARKER_CORE_EXPR})`
+const HTML_WRAPPED_MARKER_EXPR = `(?:<(?:p|div|span|small|em|i)\\b[^>]*>\\s*${WRAPPED_MARKER_EXPR}\\s*</(?:p|div|span|small|em|i)>|${WRAPPED_MARKER_EXPR})`
+
+const TRAILING_NOT_READY_PATTERNS = [
+  new RegExp(
+    `(?:[ \\t]*\\n+[ \\t]*)+(?:(?:[-_*—–]{3,}|<hr\\s*/?>)(?:[ \\t]*\\n+[ \\t]*)+)?${HTML_WRAPPED_MARKER_EXPR}[ \\t]*$`,
+    'i'
+  ),
+  new RegExp(
+    `(?:[ \\t]*(?:<br\\s*/?>|<hr\\s*/?>)[ \\t]*)+${HTML_WRAPPED_MARKER_EXPR}[ \\t]*$`,
+    'i'
+  ),
+  new RegExp(
+    `<(p|div|small|span|em|i)\\b[^>]*>\\s*${WRAPPED_MARKER_EXPR}\\s*</\\1>[ \\t]*$`,
+    'i'
+  ),
+  new RegExp(
+    `(?:(?:[ \\t]*\\n+[ \\t]*)+|(?:[ \\t]*<br\\s*/?>[ \\t]*)+)${WRAPPED_MARKER_EXPR}(?=[ \\t]*</(?:p|div)>\\s*$)`,
+    'i'
+  ),
+  new RegExp(
+    `[ \\t]*(?:[|/—–·•]|--+| - )[ \\t]*${WRAPPED_MARKER_EXPR}[ \\t]*$`,
+    'i'
+  ),
+  new RegExp(
+    `[ \\t]*[(（\\[【]\\s*${MARKER_CORE_EXPR}\\s*[)）\\]】][ \\t]*$`,
+    'i'
+  ),
+]
 
 const NAMED_HTML_ENTITIES: Record<string, string> = {
   nbsp: ' ',
@@ -45,10 +85,14 @@ const NAMED_HTML_ENTITIES: Record<string, string> = {
 }
 
 export interface LocalizedAnnouncementFields {
+  id?: number | string
   title?: string
   title_en?: string
   content?: string
   content_en?: string
+  english?: string
+  source?: string
+  translation_status?: string
   content_format?: string
   extra?: string
 }
@@ -127,48 +171,137 @@ export function extractAnnouncementPlainText(content: string): string {
     .join('\n')
 }
 
-function stripTrailingSection(content: string, suffix: string): string {
+export function isTranslationNotReadyMarker(text?: string | null): boolean {
+  if (!text) return false
+  const plain = extractAnnouncementPlainText(text)
+    .replaceAll(/^[([（【\s\-—–/|·•]+|[)\]）】\s.。!！]+$/g, '')
+    .trim()
+    .toLowerCase()
+  return TRANSLATION_NOT_READY_MARKER_SET.has(plain)
+}
+
+function stripTrailingSection(
+  content: string,
+  suffix: string,
+  caseInsensitive = false
+): string {
   const trimmedContent = content.trim()
   const trimmedSuffix = suffix.trim()
   if (!trimmedContent || !trimmedSuffix) return trimmedContent
 
-  const normalizedContent = trimmedContent.replaceAll('\r\n', '\n')
-  const normalizedSuffix = trimmedSuffix.replaceAll('\r\n', '\n')
+  const normalizedContent = trimmedContent
+    .replaceAll('\r\n', '\n')
+    .replaceAll('\r', '\n')
+  const normalizedSuffix = trimmedSuffix
+    .replaceAll('\r\n', '\n')
+    .replaceAll('\r', '\n')
   const doubleNewlineMarker = `\n\n${normalizedSuffix}`
-  if (normalizedContent.endsWith(doubleNewlineMarker)) {
+  if (
+    caseInsensitive
+      ? normalizedContent
+          .toLowerCase()
+          .endsWith(doubleNewlineMarker.toLowerCase())
+      : normalizedContent.endsWith(doubleNewlineMarker)
+  ) {
     return normalizedContent
       .slice(0, normalizedContent.length - doubleNewlineMarker.length)
       .trim()
   }
 
-  const splitIndex = normalizedContent.lastIndexOf('\n\n')
-  if (splitIndex > 0) {
-    const head = normalizedContent.slice(0, splitIndex).trim()
-    const tail = normalizedContent.slice(splitIndex + 2).trim()
-    if (
-      head &&
-      tail &&
-      extractAnnouncementPlainText(tail) ===
-        extractAnnouncementPlainText(normalizedSuffix)
-    ) {
-      return head
+  let splitStart = -1
+  let splitEnd = -1
+  for (const match of normalizedContent.matchAll(/\n[ \t]*\n/g)) {
+    if (match.index !== undefined) {
+      splitStart = match.index
+      splitEnd = match.index + match[0].length
+    }
+  }
+  if (splitStart > 0) {
+    const head = normalizedContent.slice(0, splitStart).trim()
+    const tail = normalizedContent.slice(splitEnd).trim()
+    if (head && tail) {
+      const tailPlain = extractAnnouncementPlainText(tail)
+      const suffixPlain = extractAnnouncementPlainText(normalizedSuffix)
+      const matched = caseInsensitive
+        ? tailPlain.toLowerCase() === suffixPlain.toLowerCase()
+        : tailPlain === suffixPlain
+      if (matched) {
+        return head
+      }
     }
   }
 
   return trimmedContent
 }
 
+export function stripTranslationNotReadyMarkers(content: string): string {
+  let current = content.trim().replaceAll('\r\n', '\n').replaceAll('\r', '\n')
+  if (!current) return ''
+  if (isTranslationNotReadyMarker(current)) {
+    return ''
+  }
+
+  for (let pass = 0; pass < 4; pass += 1) {
+    let next = current
+    for (const marker of TRANSLATION_NOT_READY_MARKERS) {
+      next = stripTrailingSection(next, marker, true)
+    }
+    for (const pattern of TRAILING_NOT_READY_PATTERNS) {
+      next = next.replace(pattern, '').trim()
+    }
+    if (isTranslationNotReadyMarker(next)) {
+      return ''
+    }
+    if (next === current) {
+      break
+    }
+    current = next
+  }
+
+  return current
+}
+
 export function extractChineseAnnouncementContent(
   content: string,
   contentEn?: string
 ): string {
-  let current = content.trim()
+  let current = stripTranslationNotReadyMarkers(content)
   if (!current) return ''
-  if (contentEn?.trim()) {
-    current = stripTrailingSection(current, contentEn)
+  const trimmedEn = contentEn?.trim() ?? ''
+  if (trimmedEn && !isTranslationNotReadyMarker(trimmedEn)) {
+    current = stripTrailingSection(current, trimmedEn)
   }
-  current = stripTrailingSection(current, TRANSLATION_NOT_READY_MARKER)
-  return current
+  return stripTranslationNotReadyMarkers(current)
+}
+
+function resolveChineseSourceText(
+  item: LocalizedAnnouncementFields,
+  rawContent: string
+): string {
+  const rawSource = item.source?.trim() ?? ''
+  if (!rawSource) return ''
+  if (NON_TEXT_NOTIFICATION_SOURCES.has(rawSource.toLowerCase())) {
+    return ''
+  }
+  const idStr = item.id !== undefined && item.id !== null ? String(item.id) : ''
+  if (idStr.startsWith('watcher:')) {
+    return ''
+  }
+  const hasTranslationMeta =
+    typeof item.translation_status === 'string' ||
+    typeof item.content_en === 'string' ||
+    typeof item.english === 'string'
+  if (!hasTranslationMeta) {
+    return ''
+  }
+  const cleanedSource = stripTranslationNotReadyMarkers(rawSource)
+  if (!cleanedSource) return ''
+  const rawPlain = extractAnnouncementPlainText(rawContent)
+  const srcPlain = extractAnnouncementPlainText(cleanedSource)
+  if (rawPlain && srcPlain && !rawPlain.includes(srcPlain)) {
+    return ''
+  }
+  return cleanedSource
 }
 
 export function resolveLocalizedAnnouncement(
@@ -184,14 +317,33 @@ export function resolveLocalizedAnnouncement(
   }
   const isEnglish = isEnglishLanguage(language)
   const titleZh = item.title?.trim() ?? ''
-  const titleEn = item.title_en?.trim() ?? ''
+  const rawTitleEn = item.title_en?.trim() ?? ''
+  const titleEn = isTranslationNotReadyMarker(rawTitleEn) ? '' : rawTitleEn
   const title = isEnglish ? titleEn || titleZh : titleZh || titleEn
 
   const rawContent = item.content?.trim() ?? ''
-  const contentEn = item.content_en?.trim() ?? ''
+  const rawContentEn = item.content_en?.trim() || item.english?.trim() || ''
+  const contentEn = isTranslationNotReadyMarker(rawContentEn)
+    ? ''
+    : rawContentEn
+  const extractedChinese = extractChineseAnnouncementContent(
+    rawContent,
+    contentEn
+  )
+  const sourceChinese = resolveChineseSourceText(item, rawContent)
+  const chineseContent =
+    sourceChinese &&
+    (contentEn !== '' ||
+      extractedChinese !== rawContent ||
+      extractAnnouncementPlainText(rawContent).startsWith(
+        extractAnnouncementPlainText(sourceChinese)
+      ))
+      ? sourceChinese
+      : extractedChinese
+
   const content = isEnglish
-    ? contentEn || rawContent
-    : extractChineseAnnouncementContent(rawContent, contentEn)
+    ? contentEn || chineseContent
+    : chineseContent
 
   const rawExtra = item.extra?.trim() ?? ''
   const bilingualTitle = titleZh && titleEn ? `${titleZh} / ${titleEn}` : ''

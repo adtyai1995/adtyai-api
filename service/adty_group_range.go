@@ -93,7 +93,7 @@ func SiteGroupAllowed(siteID int, group string) bool {
 		return false
 	}
 	if len(groups) == 0 {
-		return true
+		return false
 	}
 	for _, id := range groups {
 		if strings.TrimSpace(id) == group {

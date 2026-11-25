@@ -58,6 +58,7 @@ import {
   formatNotificationRecipients,
   notificationKindLabels,
 } from '@/features/adty-notifications/lib/schema'
+import { resolveLocalizedAnnouncement } from '@/features/dashboard/lib/text'
 import { getAnnouncementDetail } from '@/lib/api'
 import { getAnnouncementColorClass } from '@/lib/colors'
 import { formatDateTimeObject } from '@/lib/time'
@@ -72,6 +73,8 @@ interface AnnouncementItem {
   content_en?: string
   content_format?: string
   english?: string
+  source?: string
+  translation_status?: string
   extra?: string
   publishDate?: string | Date
   title?: string
@@ -184,34 +187,60 @@ function AnnouncementDot({ type }: { type?: string }) {
 
 function AnnouncementDetailButton(props: { readKey: string }) {
   const { t, i18n } = useTranslation()
-  const isEnglish = !(i18n.resolvedLanguage || i18n.language || '')
-    .toLowerCase()
-    .startsWith('zh')
+  const currentLanguage = i18n.resolvedLanguage || i18n.language
   const [open, setOpen] = useState(false)
   const detail = useQuery({
     queryKey: ['adty-announcement', props.readKey],
     queryFn: () => getAnnouncementDetail(props.readKey),
     enabled: open,
   })
-  const detailTitleEn =
-    typeof detail.data?.title_en === 'string'
-      ? detail.data.title_en.trim()
-      : ''
-  const detailTitleRaw =
-    typeof detail.data?.title === 'string' ? detail.data.title.trim() : ''
-  const detailTitle = (isEnglish && detailTitleEn) || detailTitleRaw || t('Details')
-  let detailContentEn = ''
-  if (typeof detail.data?.content_en === 'string') {
-    detailContentEn = detail.data.content_en.trim()
-  } else if (typeof detail.data?.english === 'string') {
-    detailContentEn = detail.data.english.trim()
-  }
-  const content =
-    (isEnglish && detailContentEn) ||
-    (typeof detail.data?.content === 'string' ? detail.data.content : '')
+  const detailData = detail.data
+  const { title: resolvedDetailTitle, content } = resolveLocalizedAnnouncement(
+    detailData
+      ? {
+          id:
+            typeof detailData.id === 'string' ||
+            typeof detailData.id === 'number'
+              ? detailData.id
+              : undefined,
+          title:
+            typeof detailData.title === 'string' ? detailData.title : undefined,
+          title_en:
+            typeof detailData.title_en === 'string'
+              ? detailData.title_en
+              : undefined,
+          content:
+            typeof detailData.content === 'string'
+              ? detailData.content
+              : undefined,
+          content_en:
+            typeof detailData.content_en === 'string'
+              ? detailData.content_en
+              : undefined,
+          english:
+            typeof detailData.english === 'string'
+              ? detailData.english
+              : undefined,
+          source:
+            typeof detailData.source === 'string'
+              ? detailData.source
+              : undefined,
+          translation_status:
+            typeof detailData.translation_status === 'string'
+              ? detailData.translation_status
+              : undefined,
+          content_format:
+            typeof detailData.content_format === 'string'
+              ? detailData.content_format
+              : undefined,
+        }
+      : null,
+    currentLanguage
+  )
+  const detailTitle = resolvedDetailTitle || t('Details')
   const detailFormat =
-    typeof detail.data?.content_format === 'string'
-      ? detail.data.content_format
+    typeof detailData?.content_format === 'string'
+      ? detailData.content_format
       : undefined
   const detailMode = isHtmlNotificationContent(content, detailFormat)
     ? 'html'
@@ -326,14 +355,14 @@ function AnnouncementsContent({
   announcements,
   loading,
   t,
-  isEnglish,
+  language,
   onHide,
   hiding,
 }: {
   announcements: AnnouncementItem[]
   loading: boolean
   t: TFunction
-  isEnglish: boolean
+  language?: string
   onHide?: (readKey: string) => void
   hiding?: string
 }) {
@@ -368,12 +397,11 @@ function AnnouncementsContent({
             ? formatDateTimeObject(publishDate)
             : ''
 
-          const displayTitle =
-            (isEnglish && item.title_en?.trim()) || item.title
-          const displayContent =
-            (isEnglish && (item.content_en?.trim() || item.english?.trim())) ||
-            item.content ||
-            ''
+          const {
+            title: displayTitle,
+            content: displayContent,
+            extra: displayExtra,
+          } = resolveLocalizedAnnouncement(item, language)
           const contentMode = isHtmlNotificationContent(
             displayContent,
             item.content_format
@@ -434,9 +462,9 @@ function AnnouncementsContent({
                           {t('Open ticket')}
                         </a>
                       )}
-                    {item.extra ? (
+                    {displayExtra ? (
                       <div className='text-muted-foreground text-xs'>
-                        <RichContent breaks content={item.extra} />
+                        <RichContent breaks content={displayExtra} />
                       </div>
                     ) : null}
                     {item.business && (
@@ -502,9 +530,7 @@ export function NotificationPopover({
 }: NotificationPopoverProps) {
   const { t, i18n } = useTranslation()
   const staffSiteId = useAuthStore((state) => state.auth.user?.staff_site_id ?? 0)
-  const isEnglish = !(i18n.resolvedLanguage || i18n.language || '')
-    .toLowerCase()
-    .startsWith('zh')
+  const currentLanguage = i18n.resolvedLanguage || i18n.language
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger
@@ -570,7 +596,7 @@ export function NotificationPopover({
                 announcements={announcements}
                 loading={loading}
                 t={t}
-                isEnglish={isEnglish}
+                language={currentLanguage}
                 onHide={onHideAnnouncement}
                 hiding={hidingAnnouncement}
               />

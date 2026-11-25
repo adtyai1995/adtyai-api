@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -44,6 +45,8 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 	streamFailed := false
 
 	var clientGone bool
+	wroteToClient := false
+	receivedEvent := false
 	sendResponsesEvent := func(eventType string, payload dto.ResponsesStreamResponse) bool {
 		payload.Type = eventType
 		data, err := common.Marshal(payload)
@@ -58,6 +61,10 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 			}
 			logger.LogWarn(c, common.LogText("Claude responses client disconnected during stream: %v", err))
 			return false
+		}
+		wroteToClient = true
+		if info != nil {
+			info.SendResponseCount++
 		}
 		return true
 	}
@@ -74,6 +81,9 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 		return sendResponsesEvent(event.Type, event.Payload)
 	}
 	failResponsesStream := func(err error) bool {
+		if !wroteToClient {
+			return false
+		}
 		failureResults, handled := state.FailResponsesStream("server_error", err.Error(), "")
 		if !handled {
 			return false
@@ -97,6 +107,7 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 	}
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		receivedEvent = true
 		var claudeResponse dto.ClaudeResponse
 		if err := common.UnmarshalJsonStr(data, &claudeResponse); err != nil {
 			logger.LogError(c, common.LogText("failed to unmarshal Claude stream event: %s", err.Error()))
@@ -172,9 +183,24 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 			}
 		}
 	})
-	if clientGone || (streamErr != nil && (c.Writer.Written() || (info != nil && info.SendResponseCount > 0))) {
+	hasWritten := func() bool {
+		return wroteToClient || (info != nil && info.SendResponseCount > 0)
+	}
+	clientCancelError := func() error {
+		if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
+			return info.StreamStatus.EndError
+		}
+		if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+			return c.Request.Context().Err()
+		}
+		return errors.New("client closed request")
+	}
+	if (clientGone || streamErr != nil) && hasWritten() {
 		HandleStreamFinalResponse(c, info, claudeInfo)
 		return claudeInfo.Usage, nil
+	}
+	if clientGone {
+		return nil, types.NewError(clientCancelError(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
 	}
 	if streamErr != nil {
 		return nil, streamErr
@@ -187,21 +213,30 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 		HandleStreamFinalResponse(c, info, claudeInfo)
 		return claudeInfo.Usage, nil
 	}
+	if !hasWritten() && (!receivedEvent || (claudeInfo.ResponseText.Len() == 0 && !claudeInfo.Done && claudeInfo.ToolUseCount == 0)) {
+		if helper.ClientRequestCanceled(c) {
+			return nil, types.NewError(clientCancelError(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
+		return nil, types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
 
 	HandleStreamFinalResponse(c, info, claudeInfo)
 	openAIUsage := buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
 	state.SetUsage(&openAIUsage)
 	finalResults, err := service.FinalizeStreamResponse(c, info, state)
 	if err != nil {
-		if failResponsesStream(err) || c.Writer.Written() || (info != nil && info.SendResponseCount > 0) {
+		if failResponsesStream(err) || hasWritten() {
 			return claudeInfo.Usage, nil
 		}
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 	for _, result := range finalResults {
 		if !sendResult(result) {
-			if clientGone || c.Writer.Written() || (info != nil && info.SendResponseCount > 0) {
+			if hasWritten() {
 				return claudeInfo.Usage, nil
+			}
+			if clientGone {
+				return nil, types.NewError(clientCancelError(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
 			}
 			return nil, streamErr
 		}

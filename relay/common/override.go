@@ -216,6 +216,11 @@ func buildLegacyParamOverride(paramOverride map[string]any) map[string]any {
 }
 
 func ApplyParamOverrideWithRelayInfo(jsonData []byte, info *RelayInfo) ([]byte, error) {
+	if info != nil {
+		info.RuntimeHeadersOverride = nil
+		info.UseRuntimeHeadersOverride = false
+		info.ParamOverrideAudit = nil
+	}
 	paramOverride := getParamOverrideMap(info)
 	if len(paramOverride) == 0 {
 		return jsonData, nil

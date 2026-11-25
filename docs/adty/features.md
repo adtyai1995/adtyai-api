@@ -167,7 +167,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 **规则**：
 
 - **谁有推广链接**：主站用户注册时自动成为推广员（8 位邀请码，直接是已通过）。分站客户不能成为推广员：打开推广页也不会建推广员和邀请码（`service/referral.go` 的 `EnsureAffiliate` 直接拒绝），所以主站用户不会通过分站客户的链接给分站客户计佣。
-- **比例**：全局 `adty_referral_setting.default_rate`（百分数，10 表示 10%，没有默认值）；单个推广员可以单设（合作伙伴审批或后台调整时设，传空就回到全局）。下单时把推广员和比例快照进订单，之后改比例不影响已下的单。
+- **比例**：全局 `adty_referral_setting.default_rate`（百分数，10 表示 10%，没有默认值）；单个推广员可以单设（由管理员在推广管理后台直接调整，传空就回到全局）。下单时把推广员和比例快照进订单，之后改比例不影响已下的单。
 - **佣金** = 面额 × 快照比例 ÷ 100（8 位小数），不含任何加赠。永久计佣，没有期限。
 - **绑定**：打开 `/r/<邀请码>` 或任意页面带 `?ref=<邀请码>`，写一个签名 cookie `adty_ref`，有效期 `cookie_ttl_days`（默认 30 天），以最后一次点击为准；注册时绑定，绑定后不能改。拒绝自己邀请自己和互相邀请。部署时必须固定 `CRYPTO_SECRET` 或 `SESSION_SECRET`，否则重启后 cookie 全部失效。
 - **冻结和结算**：入账时插一条计佣任务，主节点每 60 秒（环境变量 `REFERRAL_SETTLEMENT_INTERVAL_SECONDS`）跑一轮：先生成待结算佣金（`冻结到 = 现在 + freeze_days`，默认 7 天），再把到期的转成可提现。佣金最多晚一轮才出现。
@@ -177,23 +177,23 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
   - **支付宝、微信收款码**：上传收款码和收款人姓名，免手续费，要达到 `min_withdraw_usd`；汇率 `withdraw_cny_rate` 由管理员实时改，提交时直接查库，和用户看到的不一样就让用户确认新汇率，一样就锁进提现单；人工审核。
   - 防并发多提：条件更新 `可提现 ≥ 金额`，加幂等键。提交后 `cancel_window_minutes`（默认 30 分钟）内待审核的单可以撤回。驳回要填原因，会解冻并发邮件。
 - **防刷**：被邀请人注册时的 IP 或设备和推广人 `self_invite_window_days`（默认 30 天）内用过的相同，照样绑定但标成自邀、不计佣；同一个推广员 `batch_register_window_hours`（默认 24 小时）内同一个 IP 的绑定达到 `batch_register_threshold`（默认 3）个，停这个推广员的结算。IP 和 UA 只存哈希。
-- **合作伙伴**：用户申请，后台通过时填单独的比例，驳回要填原因。
+- **合作伙伴申请/审批已退役**：用户端申请入口与后台审批入口均已下线（`POST /api/user/referral/apply` 与 `POST /api/user/admin/referral/affiliates/:user_id/partner` 返回 410 Gone）；推广员单独比例由管理员在推广管理直接调整。
 - **站长停止计佣**：付款人或推广员开站（站点变成 active）后，他的推广链接照样能打开，但不再绑定、新订单不再带返佣快照；开站前创建的订单保留当时的快照，即使之后才支付也照常计佣。订单创建与开站使用同一用户行锁排序。关站后不自动恢复邀请返佣，要后台「恢复邀请返佣」。站长收益提现不走这套 `referral_*` 账户。分站客户充值不计主站推广佣金；一级邀请佣金见下一节。
 - **退款**：按退掉的本金比例扣回佣金，见「充值退款」。
 
 **算例**：面额 $100（不管送了多少）× 10% = $10 佣金，7 天后转成可提现。USDT 提现 $150、手续费 2：实到 148 USDT。收款码提现 $50、汇率 7.1：锁定 ¥355.00。
 
-**后台**：推广管理（`/admin-referral`）：提现审核、合作伙伴申请、推广员（调比例、停结算、停提现、恢复邀请返佣）、计佣任务（按状态筛选，默认看失败的；失败或卡住的任务可以「重新执行」，需要「推广·调整」，已计佣或已跳过的不会重复计佣）、佣金流水（四个余额的每笔变动，可按推广员筛选）、后台操作记录（审核、推广员调整、调佣金、改提现汇率）、设置，以及「立即结算」按钮。接口 `GET /api/user/admin/referral/commission-jobs`、`POST .../commission-jobs/retry`、`GET .../ledgers`、`GET .../audit-logs`。用户侧：`/referral`（推广页和提现）、公开页 `/affiliate`、落地 `/r/$code`。
+**后台**：推广管理（`/admin-referral`）：推广提现审核、推广员（调比例、停结算、停提现、恢复邀请返佣）、计佣任务（按状态筛选，默认看失败的；失败或卡住的任务可以「重新执行」，需要「推广·调整」，已计佣或已跳过的不会重复计佣）、佣金流水（四个余额的每笔变动，可按推广员筛选）、后台操作记录（审核、推广员调整、调佣金、改提现汇率）、设置，以及「立即结算」按钮。接口 `GET /api/user/admin/referral/commission-jobs`、`POST .../commission-jobs/retry`、`GET .../ledgers`、`GET .../audit-logs`。用户侧：`/referral`（推广页和提现）、公开页 `/affiliate`、落地 `/r/$code`。
 
 **默认**：总开关 `adty_referral_setting.enabled` 默认关；关着时点击、绑定、下单快照、推广佣金提现全部不工作；站长收益走独立的分站提现（见「站长收益提现」），不受这个开关影响。没有内置值的四项：`default_rate`（没设不能打开总开关）、`min_withdraw_usd`（没设不能提到 USDT 和收款码）、`usdt_withdraw_fee`（没设不能提到 USDT）、`withdraw_cny_rate`（没设不能提到收款码）。
 
-**表和接口**：`referral_affiliates`、`referral_bindings`、`referral_clicks`、`referral_commission_accounts`、`referral_commissions`、`referral_commission_ledgers`、`referral_commission_jobs`、`referral_withdrawals` 等 12 张表，加上 `adty_user_fingerprints`。公开 `POST /api/adty/referral/click`、`GET /api/adty/referral/public-settings`；用户 `GET /api/user/referral/profile`、`POST /api/user/referral/apply`、`GET`/`POST /api/user/referral/withdrawals`、`POST /api/user/referral/withdrawals/:id/cancel`；后台都在 `/api/user/admin/referral/` 下。
+**表和接口**：`referral_affiliates`、`referral_bindings`、`referral_clicks`、`referral_commission_accounts`、`referral_commissions`、`referral_commission_ledgers`、`referral_commission_jobs`、`referral_withdrawals` 等 12 张表，加上 `adty_user_fingerprints`。公开 `POST /api/adty/referral/click`、`GET /api/adty/referral/public-settings`；用户 `GET /api/user/referral/profile`、`GET`/`POST /api/user/referral/withdrawals`、`POST /api/user/referral/withdrawals/:id/cancel`（旧 `POST /api/user/referral/apply` 已退役返回 410）；后台都在 `/api/user/admin/referral/` 下。
 
 **限制**：
 
 - 上线时要先把批量注册阈值设成 0，真实 IP 验证通过后再改回 3（见上线清单）。代码默认是 3。
 
-任务 6.1–6.8、11.1。合作伙伴比例受后台配置的合作伙伴比例范围约束（未单独配置区间时默认 0–100）；方案 11.1 要求「站长首次提现必须人工审核」：现在站长收益走独立提现，每笔都由 Root 审核后打款，不再转进推广佣金余额（见「站长收益提现」）。
+任务 6.1–6.8、11.1。合作伙伴申请与审批已退役，单个推广员比例由管理员直接在推广管理调整；方案 11.1 要求「站长首次提现必须人工审核」：现在站长收益走独立提现，每笔都由 Root 审核后打款，不再转进推广佣金余额（见「站长收益提现」）。
 
 ## 分站邀请佣金
 
@@ -302,9 +302,9 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 实现接口为 `/api/adty/site/wallets/self-use`、`/wallets/earning-to-personal` 及 `/self-use/keys|transfers|usage`（均在 `/api/adty/site` 下，PAT `site_owner_order:read/write`）。
 
-站长中心（`/site-owner/<分区>`，侧边栏只对站长显示）：概览（收益数字、近 30 天、趋势）；客户（列表、精确查找、详情：请求记录、充值、密钥、手动增加余额、单独定价、举报）；邀请佣金提现；员工账号；订单管理；定价；加赠；站点设置（品牌和 Logo、自定义域名、发件域名、SEO 开关）；收益（含收益流水、自用余额、日结单、保证金、提现与 CSV 导出，邮箱一律打码）；充值码；公告；历史站点账号。
+站长中心（`/site-owner/<分区>`，侧边栏只对站长显示）：概览（收益数字、近 30 天、趋势）；客户（列表、精确查找、详情：请求记录、充值、密钥、手动增加余额、单独定价、举报）；邀请佣金提现；员工账号；订单管理；定价；加赠；站点设置（品牌和 Logo、自定义域名、发件配置、SEO 开关）；收益（含收益流水、自用余额、日结单、保证金、提现与 CSV 导出，邮箱一律打码）；充值码；公告；历史站点账号。
 
-改全站价、改客户价、改加赠、手动给客户/团队加余额、签发/冻结/作废充值码、提现、删自定义域名、删发件域名，都要重新验证身份（二次验证：主站支持 2FA、Passkey、邮箱验证码或密码，分站关闭 Passkey；验证一次只能用一次，绑定具体操作和对象）。
+改全站价、改客户价、改加赠、手动给客户/团队加余额、签发/冻结/作废充值码、提现、删自定义域名（及清理历史发件域名），都要重新验证身份（二次验证：主站支持 2FA、Passkey、邮箱验证码或密码，分站关闭 Passkey；验证一次只能用一次，绑定具体操作和对象）。
 
 品牌图片：Logo 和独立 Favicon 均接受 PNG、JPEG、WebP，不超过 200 KB，存在 `/data/uploads/site-assets`；新上传拒绝 SVG。站长可保存最多 80 字符的网站标题和 `#RRGGBB` 主色；标题、站名、标语、公告、客服联系方式按纯文本显示。标题留空沿用站名/标语；Favicon 留空回退 Logo，再回退平台图标；主题色留空恢复平台默认。保存按当前站长归属更新，公开配置按 Host 隔离。
 
@@ -338,14 +338,12 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 - 表：`adty_site_domains`（`role` 列）。接口：`GET`、`POST /api/adty/site/domains`，`DELETE /api/adty/site/domains/:id`（要重新验证）。
 - 2026-11-01 还没用真实的 Cloudflare 账号测过，代码按官方 API 文档写，上线前按任务 11.0 实测。
 
-### 发件域名
+### 分站发件配置
 
-分站注册、已注册提醒、密码找回、绑定及换绑邮箱、重要操作、账号注销和账号安全变更邮件，均展示本站名称；图片选用本站上传的 PNG、JPEG 或 WebP Logo。未设置可用 Logo 时只展示站名。找回密码链接优先使用已激活的 `role=site` 网站域名，缺省时使用本站默认网站。团队成员使用本人账号的邮箱，团队建队邀请沿用一次性链接。要让客户在发件地址中也只看到本站域名，须验证独立发件域名并启用 Resend。
+分站注册、已注册提醒、密码找回、绑定及换绑邮箱、重要操作、账号注销和账号安全变更邮件，均展示本站名称；图片选用本站上传的 PNG、JPEG 或 WebP Logo。未设置可用 Logo 时只展示站名。找回密码链接优先使用已激活的 `role=site` 网站域名，缺省时使用本站默认网站。团队成员使用本人账号的邮箱，团队建队邀请沿用一次性链接。
 
-- 要先打开 `sender_domain_enabled`（默认关），并在「系统设置 → 邮件」填好上游的 `ResendApiKey`。
-- **流程**：站长在站点设置里填域名 → 后端在 Resend 建域名，把要加的 DNS 记录给站长看 → 主节点每 10 分钟查一次，验证通过就启用。启用后，这个站客户的系统邮件用「站名 <noreply@站长域名>」发；没验证或停用时用平台发信地址、显示分站站名。营销发送任务已删除。
-- Resend 套餐有域名数上限，满了提示「No sender domain slots are left」。关站时自动删除。
-- 表：`adty_site_sender_domains`。接口：`GET`、`POST`、`DELETE /api/adty/site/sender-domain`（删除要重新验证）；管理员停用 `DELETE /api/adty/admin/sites/:id/sender-domain`。
+- **现行发件方式**：站长在「站长中心 → 站点设置」配置本站发件设置（`GET`/`PUT /api/adty/site/mail-config`，测试发送 `POST /api/adty/site/mail-config/test`），支持三种模式：使用平台默认发件（显示分站站名）、分站自有 **Resend API Key**（配置发件地址与发件人名称），或 **自定义 SMTP**（服务器、端口、账号、密钥、发件地址与 SSL/STARTTLS 选项）。密钥仅加密存储、不回显明文。
+- **托管 Resend 发件域名已退役**：原平台托管的 Resend 发件域名配置（`sender_domain_enabled` / `POST /api/adty/site/sender-domain`）已退役，创建接口返回 410 Gone；营销发送任务已删除。历史遗留的 `adty_site_sender_domains` 表及只读/删除接口（`GET`/`DELETE /api/adty/site/sender-domain`、`DELETE /api/adty/admin/sites/:id/sender-domain`）仅保留用于存量历史记录清理。
 
 ### 关站和暂停
 
@@ -372,7 +370,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 分站管理（`/site-admin/<分区>`），权限按「分站」的 read、create、review、adjust、delete、settings_read、settings 细分：
 
 - 站点列表和明细（状态、站长、域名、供货倍率、客户），通过或驳回旧申请，改供货倍率，关站，一键下线公告（`DELETE /api/adty/admin/sites/:id/notice`，只清空公告，写审计）。
-- 设置：`adty_reseller_setting` 的全部填写项（Cloudflare Token 只写不读；没填时显示「未配置」，依赖它的开关打不开），用量卡片（Resend 发件域名按状态计数和最近一次「名额已满」的时间；每个 Turnstile widget 已登记的域名数 / 10，第一个 widget 含主站域名和根域名，剩余少于 5 个时提醒）。
+- 设置：`adty_reseller_setting` 的全部填写项（Cloudflare Token 只写不读；没填时显示「未配置」，依赖它的开关打不开），用量卡片（每个 Turnstile widget 已登记的域名数 / 10，第一个 widget 含主站域名和根域名，剩余少于 5 个时提醒；原托管 Resend 发件域名已退役）。
 - 邀请码开站已退役；后台邀请码接口已删除，`adty_site_invite_codes` 历史行保留只读。
 - 分站等级：在「设置」页的「分站等级」分区配置等级（最低客户累计净充值本金门槛、供货折扣、保证金要求），在分站详情里把站点固定到某个已启用等级或交回自动考核（`PUT /api/adty/admin/sites/:id/tier`），并可针对私下大额转账手动调整该分站等级考核累计充值总额（`GET/POST /api/adty/admin/sites/:id/tier-principal`，绝不改钱包余额，自动模式下立即重算等级）。
 - 提现：在「提现」分区审核站长收益提现（「打款中」状态可由 Root 撤回为「待审核」），列表由 `GET /api/adty/admin/site-withdrawals` 提供。
@@ -430,7 +428,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 | 日志和统计 `adty_log` | `read` 查看所有人的日志、任务和全站统计；`export` 导出所有人的用量日志 |
 | 模型 `adty_model` | `read` 查看；`create` 新建模型、厂商、预填分组（含上游同步新增）；`write` 编辑；`delete` 删除模型、厂商、预填分组 |
 | 充值财务 `adty_finance` | `read` 查看订单和充值对账；`manual_credit` 手动补单；`refund` 退款 |
-| 推广返佣 `adty_referral` | `read` 查看；`review` 审核合作伙伴申请和提现；`payout` 标记已打款；`adjust` 调整佣金、冻结结算、比例、停用推广员；`settings_read` 查看设置；`settings` 修改设置（含提现汇率） |
+| 推广返佣 `adty_referral` | `read` 查看；`review` 审核推广提现；`payout` 标记已打款；`adjust` 调整佣金、冻结结算、比例、停用推广员；`settings_read` 查看设置；`settings` 修改设置（含提现汇率） |
 | 支付通道 `adty_payment` | `read` 查看状态；`operate` 启停和测试 |
 | 分站 `adty_site` | `read` 查看站点、客户、统计；`create` 建站；`review` 审核旧申请、复核风控客户、处理举报；`adjust` 调整可见范围与允许分组；`delete` 删除站点附属记录（域名、发件域名、公告）；`settings_read` 查看分站设置；`settings` 修改分站设置 |
 
@@ -475,7 +473,7 @@ Telegram 通知解绑分别用 `DELETE /api/adty/telegram/me` 和 `DELETE /api/a
 
 上述三库及实际 MySQL 5.7.8-rc 已验证完整主库和独立日志库的新建、代表性历史升级、两次迁移、数据与唯一约束保留；还覆盖并发 OAuth 绑定、源字段扩容/排序规则变化和表选项。5.7.8-rc 的虚拟生成列索引曾在原生 SQL 与完整升级回归中漏掉已有身份，故采用 STORED；修复后完整升级连续 12 次拒绝重复。验证范围仅限本次启动与约束变更，不代表全平台数据库业务验收。
 
-系统通知、公告、验证码、找回密码、充值到账、额度提醒、站点经营通知及发件域名管理保留。外部 Resend 与正式支付供应商仍需独立联调验收。
+系统通知、公告、验证码、找回密码、充值到账、额度提醒、站点经营通知及分站发件配置（自有 Resend API Key / 自定义 SMTP）保留。外部 Resend 与正式支付供应商仍需独立联调验收。
 
 ## 网页客服、状态页、多语言、首页 SEO
 
@@ -649,7 +647,7 @@ Root 在支付设置的 General 页新增、编辑、停用或删除支付场景
 
 平台不提供 io.net 模型部署、硬件资源报价、实例和容器管理。模型页保留元数据和厂商分类，渠道页保留中转配置与云供应商区域；旧部署 API 返回 JSON 404，旧页面和设置书签回退保留的模型设置。历史配置、渠道数据和审计保留，旧部署配置不再对外返回或接受写入，旧 PAT 权限不能恢复功能。
 
-## 团队页面、通知机器人、工单、翻译和分组健康
+## 团队页面、通知机器人、工单、翻译和内置模型探活
 
 **团队页面**：钱包页展示当前团队的名称、共享额度、折扣、角色、成员和已绑定的团队 Key。负责人可创建独立员工、发一次性限时注册链接、禁用、启用或删除本团队员工，并绑定或撤销自己的团队 Key、关闭团队。禁用及删除立即撤销员工会话和团队 Key；启用不恢复已撤销 Key，也不能覆盖管理员另行封禁。员工身份不兼任分站员工，退出后不能转入第二团队；删除保留历史。已登录普通账号不能凭邀请码加入。建团注册遇到已有用户名时拒绝，不核验该账号密码，也不把已有普通账号收成负责人。独立员工只能绑定和撤销自己的团队 Key，可以退出；退出后成员状态为禁用，并禁用该员工账号。不能更换负责人。负责人退出按关团处理，保留共享额度、成员和订单历史并停用团队 Key。绑定接口同时核对路径团队和本人活动成员关系。站点由服务端按当前账号确定，页面不提供站点选择，也不提供凭空加额度的按钮。
 
@@ -665,6 +663,6 @@ Root 在支付设置的 General 页新增、编辑、停用或删除支付场景
 
 **翻译**：正式动态译文由 Root 配置。相同内容复用；旧任务晚返回不能覆盖新版本；人工修改不被普通重试覆盖。失败时保留中文并标明英文未就绪。不扣客户或团队余额，不用客户 Key，不把翻译请求发回本站中转。Root 在系统设置 → 运维 → System translation 配置：平台模型或独立接口（OpenAI Chat Completions / Anthropic Messages，https 地址和密钥），模型、备用模型、超时、并发、单次字符上限、每日调用次数、备用模型重试次数和是否启用。表单从已保存的配置读出来，保存只改动过的项；保存和「测试连接」各要一次重新验证。页面显示今天（UTC）的调用次数、失败次数和平均耗时。
 
-**分组健康**：创建或编辑 API Key 选择分组时，展示近 24 小时请求成功率和主动探测可用率。两者分开。没有样本或采集中断时显示暂无数据或监控中断，不显示 100% 绿色。客户侧拒绝不计入上游失败。用户只看自己可用的分组，不看上游渠道。监控不自动改 Key 分组。Root 在系统设置 → 运维 → 分组健康设置「成功率不低于多少算健康」和「多久没有样本算监控中断」（`GET`/`PUT /api/adty/admin/group-health`，PAT `option:read/write`；默认 95%、6 小时），并能看到最近一次样本时间。
+**内置模型探活（原分组健康已退役）**：原「系统设置 → 运营/运维 → 分组健康」及其写接口（`PUT /api/adty/admin/group-health`、`POST /api/adty/admin/group-health/probe` 均返回 410 Gone）已退役。现行模型可用性监测由主节点**内置模型探活**承担，在「系统设置 → 内容 → 服务监控 / 模型探活」配置探活分组、文本模型探活间隔（`console_setting.model_probe_interval_minutes`）、图片模型探活间隔（`console_setting.image_probe_interval_minutes`）与探活超时（`console_setting.model_probe_timeout_seconds`），并支持按需触发手动探活。
 
-**持久审计（ISS-R1-0043）**：Bot、翻译和分组健康配置、API Key 写操作、通知隐藏及兑换码冻结或取消，将脱敏审计 intent 与主库修改放在同一事务。完整 Key 读取必须先持久化审计再返回。独立日志库中断时保留原事件身份并重投，主库审计写入失败时回滚修改或拒绝放出 Key；关站外层事务回滚不会留下撤券成功日志。日后重投不重做业务操作；以上仍需本轮复审与正式门禁验收。
+**持久审计（ISS-R1-0043）**：Bot、翻译配置、API Key 写操作、通知隐藏及兑换码冻结或取消，将脱敏审计 intent 与主库修改放在同一事务。完整 Key 读取必须先持久化审计再返回。独立日志库中断时保留原事件身份并重投，主库审计写入失败时回滚修改或拒绝放出 Key；关站外层事务回滚不会留下撤券成功日志。日后重投不重做业务操作；以上仍需本轮复审与正式门禁验收。

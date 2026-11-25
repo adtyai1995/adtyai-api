@@ -302,7 +302,7 @@ func adtySiteCustomerPrincipalAndGiftQuota(siteID int) (principalQuota int64, gi
 		for _, b := range batches {
 			split := byUser[b.UserId]
 			split.hasAnyLots = true
-			inTargetSite := b.SiteId != nil && *b.SiteId == siteID
+			inTargetSite := b.SiteId == nil || *b.SiteId == siteID
 			switch b.Kind {
 			case model.AdtyFundBatchKindPrincipal:
 				split.allPrincipal += b.Remaining

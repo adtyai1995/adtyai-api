@@ -1178,6 +1178,7 @@ web/src/components/data-table/core/__tests__/column-header.test.tsx
 web/src/components/data-table/core/__tests__/pagination.test.tsx
 web/src/components/data-table/toolbar/__tests__/faceted-filter.test.tsx
 web/src/components/data-table/toolbar/__tests__/mobile-filter.test.tsx
+web/src/components/date-picker.tsx
 web/src/components/floating-window/__tests__/floating-window.test.tsx
 web/src/components/json-code-editor/__tests__/json-code-editor-utils.test.ts
 web/src/components/json-code-editor/__tests__/json-code-editor.test.tsx
@@ -1200,6 +1201,8 @@ web/src/components/multi-select/__tests__/option-hint.test.tsx
 web/src/components/multi-select/__tests__/option-icon.test.tsx
 web/src/components/multi-select/__tests__/selection.test.tsx
 web/src/components/react-icon-by-name.tsx
+web/src/components/risk-acknowledgement-dialog.tsx
+web/src/components/theme-quick-switcher.tsx
 web/src/components/ui/__tests__/combobox.test.tsx
 web/src/components/ui/__tests__/dialog-layout.test.tsx
 web/src/components/ui/__tests__/label.test.tsx
@@ -1213,6 +1216,7 @@ web/src/components/ui/direction.tsx
 web/src/components/ui/dropdown-menu.test.tsx
 web/src/components/ui/hover-card.tsx
 web/src/components/ui/input-otp.tsx
+web/src/components/ui/item.tsx
 web/src/components/ui/kbd.tsx
 web/src/components/ui/menubar.tsx
 web/src/components/ui/navigation-menu.tsx
@@ -1374,6 +1378,7 @@ web/src/features/auth/lib/oauth.ts
 web/src/features/auth/lib/storage.ts
 web/src/features/auth/lib/telegram-login.test.ts
 web/src/features/auth/lib/telegram-login.ts
+web/src/features/auth/lib/validation.ts
 web/src/features/auth/otp/__tests__/login-verification.test.tsx
 web/src/features/auth/passkey/__tests__/domain-verification.test.tsx
 web/src/features/auth/passkey/components/passkey-domain-selector.tsx

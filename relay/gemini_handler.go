@@ -142,13 +142,13 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 			return types.NewOpenAIError(fmt.Errorf("unexpected response type %T", resp), types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
 		}
 		if httpResp != nil {
-			info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
 			if httpResp.StatusCode != http.StatusOK {
 				newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
 				// reset status code 重置状态码
 				service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 				return newAPIError
 			}
+			info.IsStream = info.IsStream || strings.HasPrefix(strings.ToLower(httpResp.Header.Get("Content-Type")), "text/event-stream")
 		}
 	}
 

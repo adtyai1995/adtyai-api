@@ -121,6 +121,9 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		}
 		countClaudeStreamBillableTools(info, &claudeResponse)
 		helper.ClaudeChunkData(c, claudeResponse, data)
+		if (c == nil || c.Request == nil || c.Request.Context().Err() == nil) && claudeResponse.Type != "ping" && info != nil {
+			info.SendResponseCount++
+		}
 	} else if info.RelayFormat == types.RelayFormatOpenAI {
 		state, err := claudeToChatStreamState(info)
 		if err != nil {
@@ -143,6 +146,8 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		err = helper.ObjectData(c, response)
 		if err != nil {
 			logger.LogError(c, common.LogText("send_stream_response_failed: %s", err.Error()))
+		} else if info != nil {
+			info.SendResponseCount++
 		}
 	} else if info.RelayFormat == types.RelayFormatGemini {
 		state, err := claudeToGeminiStreamState(info)
@@ -157,7 +162,7 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			return nil
 		}
 		countClaudeStreamBillableTools(info, &claudeResponse)
-		if sendErr := sendGeminiStreamResults(c, results); sendErr != nil {
+		if sendErr := sendGeminiStreamResults(c, info, results); sendErr != nil {
 			return sendErr
 		}
 	}
@@ -199,7 +204,7 @@ func claudeToGeminiStreamState(info *relaycommon.RelayInfo) (*relayconvert.Respo
 	return state, nil
 }
 
-func sendGeminiStreamResults(c *gin.Context, results []relayconvert.ResponseResult) *types.NewAPIError {
+func sendGeminiStreamResults(c *gin.Context, info *relaycommon.RelayInfo, results []relayconvert.ResponseResult) *types.NewAPIError {
 	for _, result := range results {
 		geminiResponse, ok := result.Value.(*dto.GeminiChatResponse)
 		if !ok {
@@ -213,7 +218,12 @@ func sendGeminiStreamResults(c *gin.Context, results []relayconvert.ResponseResu
 			return types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
 		c.Render(-1, common.CustomEvent{Data: "data: " + string(data)})
-		_ = helper.FlushWriter(c)
+		if flushErr := helper.FlushWriter(c); flushErr == nil {
+			helper.MarkStreamPayloadWritten(c)
+			if info != nil {
+				info.SendResponseCount++
+			}
+		}
 	}
 	return nil
 }
@@ -349,7 +359,7 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 			common.SysLog(common.LogText("error finalizing Gemini stream response: %s", err.Error()))
 			return
 		}
-		if sendErr := sendGeminiStreamResults(c, results); sendErr != nil {
+		if sendErr := sendGeminiStreamResults(c, info, results); sendErr != nil {
 			common.SysLog(common.LogText("send final Gemini stream response failed: %s", sendErr.Error()))
 		}
 	}
@@ -373,15 +383,19 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		}
 	})
 	info.StreamStatus.RequireTerminal()
+	wroteToClient := info != nil && info.SendResponseCount > 0
 	if err != nil {
-		if c.Writer.Written() || (info != nil && info.SendResponseCount > 0) {
+		if wroteToClient {
 			common.SysLog(common.LogText("Claude stream error after output written, billing delivered usage: %v", err))
 			HandleStreamFinalResponse(c, info, claudeInfo)
 			return claudeInfo.Usage, nil
 		}
 		return nil, err
 	}
-	if !receivedEvent && !c.Writer.Written() && (info == nil || info.SendResponseCount == 0) {
+	if !wroteToClient && (!receivedEvent || (claudeInfo.ResponseText.Len() == 0 && !claudeInfo.Done && claudeInfo.ToolUseCount == 0)) {
+		if helper.ClientRequestCanceled(c) {
+			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
 		return nil, types.NewError(errors.New("empty upstream stream response"), types.ErrorCodeBadResponseBody)
 	}
 

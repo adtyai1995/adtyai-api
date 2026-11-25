@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"crypto/subtle"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -95,4 +96,33 @@ func isAllowedSessionOrigin(c *gin.Context, origin string) bool {
 		}
 	}
 	return false
+}
+
+// ReferralClickCSRFGuard protects anonymous cookie-setting referral click
+// endpoints from cross-site and cross-subdomain CSRF overwrites (R3-31).
+func ReferralClickCSRFGuard() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(c.GetHeader("Content-Type")))
+		if err != nil || !strings.EqualFold(mediaType, "application/json") {
+			common.ApiErrorStatus(c, http.StatusUnsupportedMediaType, common.NewMessage("Content-Type must be application/json"))
+			c.Abort()
+			return
+		}
+		if fetchSite := strings.ToLower(strings.TrimSpace(c.GetHeader("Sec-Fetch-Site"))); fetchSite != "" &&
+			fetchSite != "same-origin" && fetchSite != "none" {
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Request origin is not allowed"), gin.H{"code": "AUTH_ORIGIN_FORBIDDEN"})
+			c.Abort()
+			return
+		}
+		hasOrigin := len(c.Request.Header.Values("Origin")) > 0
+		if hasOrigin || common.SessionCookieSecure {
+			origin, ok := requestBrowserOrigin(c.Request)
+			if !ok || !isAllowedSessionOrigin(c, origin) {
+				common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Request origin is not allowed"), gin.H{"code": "AUTH_ORIGIN_FORBIDDEN"})
+				c.Abort()
+				return
+			}
+		}
+		c.Next()
+	}
 }

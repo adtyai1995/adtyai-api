@@ -94,6 +94,29 @@ export function getLogCsvRow(
   ]
 }
 
+function isLeadingCsvWhitespaceOrControl(char: string): boolean {
+  const code = char.charCodeAt(0)
+  return code <= 0x20 || (code >= 0x7f && code <= 0x9f) || /\s/.test(char)
+}
+
+function needsCsvFormulaPrefix(value: string): boolean {
+  if (value.length === 0) return false
+  const first = value[0]
+  if (first === '\t' || first === '\r' || first === '\n') {
+    return true
+  }
+  let index = 0
+  while (
+    index < value.length &&
+    isLeadingCsvWhitespaceOrControl(value[index])
+  ) {
+    index += 1
+  }
+  if (index >= value.length) return false
+  const lead = value[index]
+  return lead === '=' || lead === '+' || lead === '-' || lead === '@'
+}
+
 /**
  * A CSV line with every cell quoted. Text a spreadsheet would run as a
  * formula gets a leading apostrophe, since logs carry user-entered names.
@@ -101,7 +124,7 @@ export function getLogCsvRow(
 export function toCsvLine(cells: string[]): string {
   const quoted = cells.map((cell) => {
     const text =
-      /^[=+\-@\t\r]/.test(cell) && !/^-?\d+(\.\d+)?$/.test(cell)
+      needsCsvFormulaPrefix(cell) && !/^-?\d+(\.\d+)?$/.test(cell)
         ? `'${cell}`
         : cell
     return `"${text.replaceAll('"', '""')}"`

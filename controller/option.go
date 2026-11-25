@@ -236,6 +236,7 @@ func isRetiredOptionKey(k string) bool {
 		"adty_topup_setting.bonus_rates",
 		"adty_reseller_setting.max_site_bonus_extra",
 		"adty_reseller_setting.invite_code_enabled",
+		"adty_reseller_setting.sender_domain_enabled",
 		"TopupGroupRatio",
 		"GroupGroupRatio",
 		"group_ratio_setting.group_group_ratio",

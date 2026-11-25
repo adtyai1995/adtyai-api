@@ -93,6 +93,7 @@ type RelayInfo struct {
 	isFirstResponse   bool
 	//SendLastReasoningResponse bool
 	IsStream               bool
+	originIsStream         *bool
 	IsGeminiBatchEmbedding bool
 	// IsPlayground is the official keep-list compatibility flag for retired
 	// Playground requests. It is not a registered user feature. See internal/adtygov.
@@ -269,6 +270,31 @@ func (info *RelayInfo) RequestedImageCount() int {
 	return 1
 }
 
+func (info *RelayInfo) resetStreamIntent(c *gin.Context) {
+	if c != nil {
+		if v, exists := c.Get(string(constant.ContextKeyIsStream)); exists {
+			if streamVal, ok := v.(bool); ok {
+				info.IsStream = streamVal
+				origin := streamVal
+				info.originIsStream = &origin
+				return
+			}
+		}
+	}
+	if info.originIsStream != nil {
+		info.IsStream = *info.originIsStream
+		return
+	}
+	if info.Request != nil && c != nil && c.Request != nil {
+		origin := info.Request.IsStream(c.Request)
+		info.originIsStream = &origin
+		info.IsStream = origin
+		return
+	}
+	origin := info.IsStream
+	info.originIsStream = &origin
+}
+
 func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	info.ResponseModel = nil
 	info.FinalRequestRelayFormat = ""
@@ -276,9 +302,33 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	info.InitRequestConversionChain()
 	// Per-attempt only. Do not clear StreamStatus, conversion diagnostics,
 	// LastError, or billing accumulators — those are request-scoped.
+	info.resetStreamIntent(c)
+	info.isFirstResponse = true
+	if !info.StartTime.IsZero() {
+		info.FirstResponseTime = info.StartTime.Add(-time.Second)
+	} else {
+		info.FirstResponseTime = time.Time{}
+	}
 	info.SendResponseCount = 0
+	info.ReceivedResponseCount = 0
 	info.ClaudeToChatStreamState = nil
 	info.ChatToGeminiStreamState = nil
+	info.RuntimeHeadersOverride = nil
+	info.UseRuntimeHeadersOverride = false
+	info.ParamOverrideAudit = nil
+	info.responsesToolState = nil
+	info.ThinkingContentInfo = ThinkingContentInfo{
+		IsFirstThinkingContent:  true,
+		SendLastThinkingContent: false,
+		HasSentThinkingContent:  false,
+	}
+	if info.RelayFormat == types.RelayFormatClaude {
+		info.ClaudeConvertInfo = &ClaudeConvertInfo{
+			LastMessagesType: LastMessageTypeNone,
+		}
+	} else {
+		info.ClaudeConvertInfo = nil
+	}
 	channelType := common.GetContextKeyInt(c, constant.ContextKeyChannelType)
 	paramOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelParamOverride)
 	headerOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelHeaderOverride)
@@ -648,6 +698,7 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		RequestURLPath:  c.Request.URL.String(),
 		RequestHeaders:  cloneRequestHeaders(c),
 		IsStream:        isStream,
+		originIsStream:  common.GetPointer(isStream),
 
 		StartTime:         startTime,
 		FirstResponseTime: startTime.Add(-time.Second),

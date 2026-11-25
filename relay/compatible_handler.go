@@ -16,7 +16,6 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
-	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
@@ -84,11 +83,8 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			return newApiErr
 		}
 
-		var containAudioTokens = usage != nil && (usage.CompletionTokenDetails.AudioTokens > 0 || usage.PromptTokensDetails.AudioTokens > 0)
-		var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
-
 		var settleErr error
-		if containAudioTokens && containsAudioRatios {
+		if shouldConsumeAudioQuota(info, usage) {
 			settleErr = service.PostAudioConsumeQuota(c, info, usage, nil)
 		} else {
 			settleErr = service.PostTextConsumeQuota(c, info, usage, nil)
@@ -163,13 +159,13 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	if resp != nil {
 		httpResp = resp.(*http.Response)
-		info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
 		if httpResp.StatusCode != http.StatusOK {
 			newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, false)
 			// reset status code 重置状态码
 			service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 			return newApiErr
 		}
+		info.IsStream = info.IsStream || strings.HasPrefix(strings.ToLower(httpResp.Header.Get("Content-Type")), "text/event-stream")
 	}
 
 	usage, newApiErr := adaptor.DoResponse(c, httpResp, info)
@@ -183,11 +179,8 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	if usageObj == nil {
 		usageObj = &dto.Usage{}
 	}
-	var containAudioTokens = usageObj.CompletionTokenDetails.AudioTokens > 0 || usageObj.PromptTokensDetails.AudioTokens > 0
-	var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
-
 	var settleErr error
-	if containAudioTokens && containsAudioRatios {
+	if shouldConsumeAudioQuota(info, usageObj) {
 		settleErr = service.PostAudioConsumeQuota(c, info, usageObj, nil)
 	} else {
 		settleErr = service.PostTextConsumeQuota(c, info, usageObj, nil)

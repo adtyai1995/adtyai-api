@@ -19,14 +19,21 @@ const (
 	AdtyDeviceCookie = "adty_did"
 )
 
-// SetAdtyReferralCookie 写签名 cookie：按 cookie_ttl_days，SameSite=Lax、HttpOnly，https 下加 Secure。
+func adtyReferralCookieSecure(c *gin.Context) bool {
+	if common.SessionCookieSecure {
+		return true
+	}
+	return c != nil && c.Request != nil && (c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https"))
+}
+
+// SetAdtyReferralCookie 写签名 cookie：按 cookie_ttl_days，SameSite=Lax、HttpOnly，https 或安全会话模式下加 Secure。
 func SetAdtyReferralCookie(c *gin.Context, code string) error {
 	value, err := BuildReferralCookie(code, time.Now())
 	if err != nil {
 		return err
 	}
 	maxAge := max(referralSetting().CookieTTLDays, 1) * 86400
-	secure := c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
+	secure := adtyReferralCookieSecure(c)
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(AdtyReferralCookie, value, maxAge, "/", "", secure, true)
 	return nil
@@ -34,7 +41,7 @@ func SetAdtyReferralCookie(c *gin.Context, code string) error {
 
 func clearAdtyReferralCookie(c *gin.Context) {
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie(AdtyReferralCookie, "", -1, "/", "", false, true)
+	c.SetCookie(AdtyReferralCookie, "", -1, "/", "", adtyReferralCookieSecure(c), true)
 }
 
 // recordAdtyFingerprint 记下一条指纹；没有 IP 也没有设备时不记。

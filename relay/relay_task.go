@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -446,7 +447,21 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		return nil, service.TaskErrorWrapper(err, "build_request_failed", http.StatusInternalServerError, common.UpstreamAddresses(c)...)
 	}
 
-	// 9. 发送请求
+	// 9. 发送请求（R3-12: 提交脱离客户端取消，必须同步解绑预扣租约心跳避免早断连超 2 分钟误退款）
+	if session, ok := info.Billing.(*service.BillingSession); ok {
+		submitTTL := 120 * time.Second
+		if common.RelayTimeout > 0 {
+			if configured := time.Duration(common.RelayTimeout) * time.Second; configured > submitTTL {
+				submitTTL = configured
+			}
+		}
+		if constant.TaskPluginProtocolTimeoutSeconds > 0 {
+			if pluginTimeout := time.Duration(constant.TaskPluginProtocolTimeoutSeconds) * time.Second; pluginTimeout > submitTTL {
+				submitTTL = pluginTimeout
+			}
+		}
+		session.DetachReservationHeartbeat(submitTTL + 2*time.Minute)
+	}
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
 		taskErr := service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError, common.UpstreamAddresses(c)...)

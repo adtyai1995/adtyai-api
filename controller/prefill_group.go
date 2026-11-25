@@ -2,6 +2,7 @@ package controller
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -27,6 +28,8 @@ func CreatePrefillGroup(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	g.Name = strings.TrimSpace(g.Name)
+	g.Type = strings.TrimSpace(g.Type)
 	if g.Name == "" || g.Type == "" {
 		common.ApiErrorT(c, "Group name and type cannot be empty")
 		return
@@ -56,6 +59,12 @@ func UpdatePrefillGroup(c *gin.Context) {
 	}
 	if g.Id == 0 {
 		common.ApiErrorT(c, "Missing group ID")
+		return
+	}
+	g.Name = strings.TrimSpace(g.Name)
+	g.Type = strings.TrimSpace(g.Type)
+	if g.Name == "" || g.Type == "" {
+		common.ApiErrorT(c, "Group name and type cannot be empty")
 		return
 	}
 	// 名称冲突检查

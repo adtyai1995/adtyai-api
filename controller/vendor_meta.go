@@ -138,6 +138,13 @@ func ApplyVendorOperation(c *gin.Context) {
 		permissions = []authz.Permission{authz.AdtyModelWrite, authz.AdtyModelDelete}
 	case "delete":
 		permissions = []authz.Permission{authz.AdtyModelDelete}
+	default:
+		if err := adtyAuthorizeAnyAdminAction(c, authz.AdtyModelWrite, authz.AdtyModelDelete); err != nil {
+			denyAdtyAdminAction(c)
+			return
+		}
+		vendorAPIError(c, common.NewMessage("Invalid request"))
+		return
 	}
 	if err := adtyAuthorizeAdminActions(c, permissions...); err != nil {
 		denyAdtyAdminAction(c)

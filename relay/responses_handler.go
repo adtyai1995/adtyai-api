@@ -3,7 +3,6 @@ package relay
 import (
 	"fmt"
 	"net/http"
-	"strings"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -11,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 )
@@ -110,13 +110,42 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	return ConsumeResponsesQuota(c, info, usageDto)
 }
 
+func hasAudioTokenDetails(usage *dto.Usage) bool {
+	if usage == nil {
+		return false
+	}
+	if usage.PromptTokensDetails.AudioTokens > 0 ||
+		usage.CompletionTokenDetails.AudioTokens > 0 ||
+		(usage.InputTokensDetails != nil && usage.InputTokensDetails.AudioTokens > 0) ||
+		(usage.OutputTokensDetails != nil && usage.OutputTokensDetails.AudioTokens > 0) {
+		return true
+	}
+	if usage.BillingUsage != nil {
+		if canonical, ok := usage.BillingUsage.CanonicalUsage(); ok && canonical != nil {
+			return canonical.PromptTokensDetails.AudioTokens > 0 ||
+				canonical.CompletionTokenDetails.AudioTokens > 0 ||
+				(canonical.InputTokensDetails != nil && canonical.InputTokensDetails.AudioTokens > 0) ||
+				(canonical.OutputTokensDetails != nil && canonical.OutputTokensDetails.AudioTokens > 0)
+		}
+	}
+	return false
+}
+
+func shouldConsumeAudioQuota(info *relaycommon.RelayInfo, usage *dto.Usage) bool {
+	if info == nil || !hasAudioTokenDetails(usage) {
+		return false
+	}
+	billingModelName := info.GetBillingModelName()
+	return ratio_setting.ContainsAudioRatio(billingModelName) || ratio_setting.ContainsAudioCompletionRatio(billingModelName)
+}
+
 // ConsumeResponsesQuota applies the same settlement dispatch to HTTP and
 // WebSocket Responses usage. Compact requests keep their separate repricing.
 // A non-nil error means the wallet adjustment did not commit and the pre-charge
 // must be refunded by the caller.
 func ConsumeResponsesQuota(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage) *types.NewAPIError {
 	var err error
-	if strings.HasPrefix(info.OriginModelName, "gpt-4o-audio") {
+	if shouldConsumeAudioQuota(info, usage) {
 		err = service.PostAudioConsumeQuota(c, info, usage, nil)
 	} else {
 		err = service.PostTextConsumeQuota(c, info, usage, nil)

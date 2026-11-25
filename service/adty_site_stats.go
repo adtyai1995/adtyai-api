@@ -370,7 +370,7 @@ func GetAdtySitesOverview(from, to string) (*AdtySitesOverview, error) {
 			result.PendingApplicants = int64(row.Total)
 		}
 	}
-	if err := model.DB.Model(&model.User{}).Where("site_id > 0").Count(&result.SiteCustomers).Error; err != nil {
+	if err := model.DB.Model(&model.User{}).Where("site_id > 0 AND staff_site_id = 0").Count(&result.SiteCustomers).Error; err != nil {
 		return nil, err
 	}
 	if err := model.DB.Model(&model.User{}).Where("site_id = 0").Count(&result.MainCustomers).Error; err != nil {

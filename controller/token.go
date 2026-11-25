@@ -424,6 +424,16 @@ func AddOwnerSelfUseToken(c *gin.Context) {
 	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Owner self-use features have been disabled"))
 }
 
+func normalizeTokenName(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	for _, r := range trimmed {
+		if r < 0x20 || r == 0x7f {
+			return "", false
+		}
+	}
+	return trimmed, true
+}
+
 func addPersonalToken(c *gin.Context, ownerSite int) {
 	request := tokenRequest{}
 	err := c.ShouldBindJSON(&request)
@@ -432,6 +442,12 @@ func addPersonalToken(c *gin.Context, ownerSite int) {
 		return
 	}
 	token := request.Token
+	cleanName, ok := normalizeTokenName(token.Name)
+	if !ok {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	token.Name = cleanName
 	if len(token.Name) > 50 {
 		common.ApiErrorT(c, "Token name is too long")
 		return
@@ -557,6 +573,14 @@ func UpdateToken(c *gin.Context) {
 	if token.Id > 0 {
 		params["id"] = token.Id
 	}
+	if statusOnly == "" {
+		cleanName, ok := normalizeTokenName(token.Name)
+		if !ok {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		token.Name = cleanName
+	}
 	if len(token.Name) > 50 {
 		common.ApiErrorT(c, "Token name is too long")
 		return
@@ -627,8 +651,10 @@ func UpdateToken(c *gin.Context) {
 		if !request.groupSet {
 			targetGroup = previous.Group
 		}
-		if !validatePersonalTokenGroup(c, siteID, targetGroup) {
-			return
+		if cleanToken.Status != common.TokenStatusDisabled || targetGroup != previous.Group {
+			if !validatePersonalTokenGroup(c, siteID, targetGroup) {
+				return
+			}
 		}
 		cleanToken.Group = targetGroup
 		cleanToken.CrossGroupRetry = false

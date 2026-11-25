@@ -768,7 +768,7 @@ func confirmTopUpUnpaidBeforeExpireTx(tx *gorm.DB, _ *model.TopUp, ext *model.Ad
 	if latest.Id == 0 || latest.Outcome != "unpaid" {
 		return false, nil
 	}
-	return ext.LastQueryAt >= ext.ExpireAt || latest.CreatedAt >= ext.ExpireAt, nil
+	return latest.CreatedAt >= ext.ExpireAt, nil
 }
 
 func initGiftFulfillmentHooks() {

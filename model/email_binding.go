@@ -2,8 +2,10 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -141,6 +143,45 @@ func mainConfiguredHosts(tx *gorm.DB) []string {
 	return out
 }
 
+func matchesAdtySiteDefaultAPIHost(host string, site AdtySite) bool {
+	rootDom := strings.ToLower(strings.TrimSpace(site.RootDomain))
+	if site.Id <= 0 || rootDom == "" {
+		return false
+	}
+	suffix := "." + rootDom
+	if !strings.HasSuffix(host, suffix) {
+		return false
+	}
+	label := strings.TrimSuffix(host, suffix)
+	if strings.Contains(label, ".") {
+		return false
+	}
+	base := fmt.Sprintf("api-s%d", site.Id)
+	if label == base {
+		return true
+	}
+	if strings.HasPrefix(label, base+"-") {
+		nStr := strings.TrimPrefix(label, base+"-")
+		if n, err := strconv.Atoi(nStr); err == nil && n > 0 && strconv.Itoa(n) == nStr {
+			return true
+		}
+	}
+	return false
+}
+
+func siteHasPlatformBaseURLDomainWithTx(tx *gorm.DB, siteID int) (bool, error) {
+	if tx == nil || siteID <= 0 || !tx.Migrator().HasTable(&AdtySiteDomain{}) {
+		return false, nil
+	}
+	var count int64
+	if err := tx.Model(&AdtySiteDomain{}).
+		Where("site_id = ? AND managed_by = ? AND role = ?", siteID, "platform", AdtySiteDomainRoleBaseURL).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func validateEmailBindingOriginWithTx(tx *gorm.DB, siteID int, host string) error {
 	if siteID < 0 {
 		return ErrAuthFlowInvalid
@@ -151,7 +192,7 @@ func validateEmailBindingOriginWithTx(tx *gorm.DB, siteID int, host string) erro
 		if err := tx.Where("id = ?", siteID).Limit(1).Find(&site).Error; err != nil {
 			return err
 		}
-		if site.Id != 0 && (site.Status == AdtySiteStatusClosed || site.Status == AdtySiteStatusPending) {
+		if site.Id != 0 && (site.Status == AdtySiteStatusClosed || site.Status == AdtySiteStatusPending || site.Status == AdtySiteStatusDeleting) {
 			return ErrAuthFlowInvalid
 		}
 	}
@@ -179,9 +220,14 @@ func validateEmailBindingOriginWithTx(tx *gorm.DB, siteID int, host string) erro
 			if s.Subdomain != "" && rootDom != "" {
 				subHost := strings.ToLower(strings.TrimSpace(s.Subdomain)) + "." + rootDom
 				if host == subHost {
-					if s.Id != siteID || s.Status == AdtySiteStatusClosed || s.Status == AdtySiteStatusPending {
+					if s.Id != siteID || s.Status == AdtySiteStatusClosed || s.Status == AdtySiteStatusPending || s.Status == AdtySiteStatusDeleting {
 						return ErrAuthFlowInvalid
 					}
+				}
+			}
+			if matchesAdtySiteDefaultAPIHost(host, s) {
+				if s.Id != siteID || s.Status == AdtySiteStatusClosed || s.Status == AdtySiteStatusPending || s.Status == AdtySiteStatusDeleting {
+					return ErrAuthFlowInvalid
 				}
 			}
 			if rootDom != "" && host == rootDom {
@@ -224,7 +270,7 @@ func isSiteOwnerForEmailBindingWithTx(tx *gorm.DB, userID, siteID int) (bool, er
 	}
 	var count int64
 	if err := tx.Model(&AdtySite{}).
-		Where("id = ? AND owner_user_id = ? AND status <> ?", siteID, userID, AdtySiteStatusClosed).
+		Where("id = ? AND owner_user_id = ? AND status NOT IN ?", siteID, userID, []string{AdtySiteStatusClosed, AdtySiteStatusDeleting}).
 		Count(&count).Error; err != nil {
 		return false, err
 	}
@@ -275,7 +321,7 @@ func resolveOwnerSubsiteIDForHostWithTx(tx *gorm.DB, ownerUserID int, host strin
 	}
 	var sites []AdtySite
 	if err := tx.Select("id", "subdomain", "root_domain", "status").
-		Where("owner_user_id = ? AND status NOT IN ?", ownerUserID, []string{AdtySiteStatusClosed, AdtySiteStatusPending}).
+		Where("owner_user_id = ? AND status NOT IN ?", ownerUserID, []string{AdtySiteStatusClosed, AdtySiteStatusPending, AdtySiteStatusDeleting}).
 		Find(&sites).Error; err != nil {
 		return 0, err
 	}
@@ -299,6 +345,20 @@ func resolveOwnerSubsiteIDForHostWithTx(tx *gorm.DB, ownerUserID int, host strin
 		}
 		if res.RowsAffected > 0 {
 			return domain.SiteId, nil
+		}
+	}
+	// R3-15: Match dynamic platform default API hostnames (api-s<id>.<root> or
+	// collision-suffixed api-s<id>-<n>.<root>) when no fixed platform base_url row exists.
+	for _, s := range sites {
+		if !matchesAdtySiteDefaultAPIHost(host, s) {
+			continue
+		}
+		hasFixed, err := siteHasPlatformBaseURLDomainWithTx(tx, s.Id)
+		if err != nil {
+			return 0, err
+		}
+		if !hasFixed {
+			return s.Id, nil
 		}
 	}
 	return 0, nil

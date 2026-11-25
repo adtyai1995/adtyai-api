@@ -215,6 +215,23 @@ func SetEventStreamHeaders(c *gin.Context) {
 	c.Writer = &streamResponseWriter{ResponseWriter: c.Writer}
 }
 
+const contextKeyStreamPayloadWritten = "stream_payload_written"
+
+// MarkStreamPayloadWritten marks that at least one non-keepalive business frame
+// has been written to the client stream. Keepalive ": PING" writes must never
+// call this so retries and empty-stream checks are not blocked by keepalives.
+func MarkStreamPayloadWritten(c *gin.Context) {
+	if c != nil {
+		c.Set(contextKeyStreamPayloadWritten, true)
+	}
+}
+
+// HasWrittenStreamPayload reports whether any business frame (excluding
+// keepalive ": PING" comments) has been written to the client stream.
+func HasWrittenStreamPayload(c *gin.Context) bool {
+	return c != nil && c.GetBool(contextKeyStreamPayloadWritten)
+}
+
 func ClaudeData(c *gin.Context, resp dto.ClaudeResponse) error {
 	if requestContextDone(c) {
 		return nil
@@ -226,6 +243,10 @@ func ClaudeData(c *gin.Context, resp dto.ClaudeResponse) error {
 	} else {
 		c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
 		c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonData)})
+		if flushErr := FlushWriter(c); flushErr == nil && resp.Type != "ping" {
+			MarkStreamPayloadWritten(c)
+		}
+		return nil
 	}
 	_ = FlushWriter(c)
 	return nil
@@ -238,7 +259,9 @@ func ClaudeChunkData(c *gin.Context, resp dto.ClaudeResponse, data string) {
 
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s\n", data)})
-	_ = FlushWriter(c)
+	if err := FlushWriter(c); err == nil && resp.Type != "ping" {
+		MarkStreamPayloadWritten(c)
+	}
 }
 
 func ResponseChunkData(c *gin.Context, resp dto.ResponsesStreamResponse, data string) error {
@@ -254,7 +277,11 @@ func ResponseChunkData(c *gin.Context, resp dto.ResponsesStreamResponse, data st
 	if err := event.Render(c.Writer); err != nil {
 		return err
 	}
-	return FlushWriter(c)
+	if err := FlushWriter(c); err != nil {
+		return err
+	}
+	MarkStreamPayloadWritten(c)
+	return nil
 }
 
 func StringData(c *gin.Context, str string) error {
@@ -267,7 +294,11 @@ func StringData(c *gin.Context, str string) error {
 	}
 
 	c.Render(-1, common.CustomEvent{Data: "data: " + str})
-	return FlushWriter(c)
+	if err := FlushWriter(c); err != nil {
+		return err
+	}
+	MarkStreamPayloadWritten(c)
+	return nil
 }
 
 func PingData(c *gin.Context) error {

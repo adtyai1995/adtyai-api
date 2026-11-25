@@ -179,9 +179,11 @@ export function TeamPanel() {
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
   const currentUserId = useAuthStore((state) => state.auth.user?.id)
-  const selfMember = team?.members?.find(
-    (member) => member.user_id === currentUserId
-  )
+  const selfMember =
+    team?.members?.find((member) => member.user_id === currentUserId) ??
+    (team && team.role !== 'leader' && team.members?.length === 1
+      ? team.members[0]
+      : undefined)
   const independentEmployeeFlag =
     team?.independent_employee ?? selfMember?.independent_employee
   let leaveConfirmDescription = t(

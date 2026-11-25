@@ -11205,6 +11205,23 @@
     "Disabled site staff accounts must be re-enabled by the site owner": "Disabled site staff accounts must be re-enabled by the site owner",
     "Site owner accounts cannot self-delete while owning a site": "Site owner accounts cannot self-delete while owning a site",
     "Site staff accounts cannot self-delete": "Site staff accounts cannot self-delete",
-    "Auto group has been retired; select a specific group": "Auto group has been retired; select a specific group"
+    "Auto group has been retired; select a specific group": "Auto group has been retired; select a specific group",
+    "Remark must be less than 255 characters": "Remark must be less than 255 characters",
+    "Context length cannot be negative": "Context length cannot be negative",
+    "Group name is required": "Group name is required",
+    "Question is required": "Question is required",
+    "Question must be less than 200 characters": "Question must be less than 200 characters",
+    "Answer is required": "Answer is required",
+    "Answer must be less than 1000 characters": "Answer must be less than 1000 characters",
+    "Must be at least 0.1": "Must be at least 0.1",
+    "Must be 1 or less": "Must be 1 or less",
+    "Must be at least 0.002": "Must be at least 0.002",
+    "Must be ≥ 0": "Must be ≥ 0",
+    "Must be ≤ 2,147,483,647": "Must be ≤ 2,147,483,647",
+    "Must be ≥ 1": "Must be ≥ 1",
+    "Approve or reject referral withdrawals.": "Approve or reject referral withdrawals.",
+    "This group is the only allowed group for an active reseller site. Update the site's allowed groups first": "This group is the only allowed group for an active reseller site. Update the site's allowed groups first",
+    "Withdrawal state changed concurrently, please retry": "Withdrawal state changed concurrently, please retry",
+    "Content-Type must be application/json": "Content-Type must be application/json"
   }
 }

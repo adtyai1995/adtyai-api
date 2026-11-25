@@ -1548,7 +1548,7 @@ func bindSiteInviteFromIPTx(tx *gorm.DB, siteID, inviterID, inviteeID int, ipHas
 	if err := tx.First(&site, siteID).Error; err != nil {
 		return err
 	}
-	if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusClosing {
+	if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusClosing || site.Status == model.AdtySiteStatusDeleting {
 		return common.NewMessage("Site is not open for registration")
 	}
 	var rate model.AdtySiteReferralRate

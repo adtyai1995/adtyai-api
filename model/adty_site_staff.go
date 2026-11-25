@@ -11,8 +11,9 @@ type AdtySiteStaff struct {
 	DisplayName string `json:"display_name" gorm:"type:varchar(20)"`
 	Role        string `json:"role" gorm:"type:varchar(16)"`
 	Permissions string `json:"-" gorm:"type:text"`
-	Status      string `json:"status" gorm:"type:varchar(16);index"`
-	Version     int64  `json:"version"`
+	Status              string `json:"status" gorm:"type:varchar(16);index"`
+	DisabledAuthVersion int64  `json:"-"`
+	Version             int64  `json:"version"`
 	CreatedAt   int64  `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt   int64  `json:"updated_at" gorm:"autoUpdateTime"`
 }

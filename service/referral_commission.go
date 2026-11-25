@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -44,14 +45,20 @@ func adtyReferralSnapshotWithDB(db *gorm.DB, userId int, lockUser bool) (int, de
 	slices.Sort(userIDs)
 	for _, id := range userIDs {
 		var user model.User
-		userQuery := db.Select("id", "site_id").Where("id = ?", id)
+		userQuery := db.Select("id", "site_id", "status").Where("id = ?", id)
 		if lockUser {
 			userQuery = model.AdtyLockForUpdate(userQuery)
 		}
 		if err := userQuery.First(&user).Error; err != nil {
+			if id == affiliate.UserId && errors.Is(err, gorm.ErrRecordNotFound) {
+				return 0, decimal.Zero, nil
+			}
 			return 0, decimal.Zero, err
 		}
 		if user.SiteId > 0 {
+			return 0, decimal.Zero, nil
+		}
+		if id == affiliate.UserId && user.Status != common.UserStatusEnabled {
 			return 0, decimal.Zero, nil
 		}
 	}
@@ -624,6 +631,9 @@ func reclaimConvertedReferralCommissionTx(tx *gorm.DB, commission *model.Referra
 	}
 	var user model.User
 	if err := model.AdtyLockForUpdate(tx).First(&user, commission.AffiliateUserId).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return amount, nil
+		}
 		return decimal.Zero, err
 	}
 	var reclaimed int64
@@ -633,6 +643,28 @@ func reclaimConvertedReferralCommissionTx(tx *gorm.DB, commission *model.Referra
 			if left <= 0 {
 				break
 			}
+			// R3-09: Prefer the per-commission fund batch created for this commission.
+			perCommSource := fmt.Sprintf("referral-withdrawal-%d-c-%d", item.WithdrawalId, commission.Id)
+			var perLot model.AdtyFundBatch
+			perRes := tx.Where("user_id = ? AND source = ? AND kind = ?", commission.AffiliateUserId, perCommSource, model.AdtyFundBatchKindPrincipal).Limit(1).Find(&perLot)
+			if perRes.Error != nil {
+				return decimal.Zero, perRes.Error
+			}
+			if perRes.RowsAffected > 0 {
+				if perLot.Remaining <= 0 {
+					continue
+				}
+				got, err := model.ReclaimAdtyFundBatchesBySourceTx(tx, commission.AffiliateUserId, perCommSource, min(perLot.Remaining, left), 0)
+				if err != nil {
+					return decimal.Zero, err
+				}
+				reclaimed += got
+				left -= got
+				continue
+			}
+			// Legacy combined balance transfer lot: subtract amounts already clawed back
+			// for sibling commissions on the same withdrawal so the 2nd..Nth zero-spend
+			// refunds are not masked behind the original combined lot size.
 			source := fmt.Sprintf("referral-withdrawal-%d", item.WithdrawalId)
 			var lot model.AdtyFundBatch
 			res := tx.Where("user_id = ? AND source = ? AND kind = ?", commission.AffiliateUserId, source, model.AdtyFundBatchKindPrincipal).Limit(1).Find(&lot)
@@ -646,7 +678,28 @@ func reclaimConvertedReferralCommissionTx(tx *gorm.DB, commission *model.Referra
 			if err != nil {
 				return decimal.Zero, err
 			}
-			provable := lot.Remaining - max(lot.Original-int64(own), 0)
+			var siblingCommIDs []int
+			if err := tx.Model(&model.ReferralWithdrawalItem{}).
+				Where("withdrawal_id = ? AND commission_id > 0 AND commission_id <> ?", item.WithdrawalId, commission.Id).
+				Pluck("commission_id", &siblingCommIDs).Error; err != nil {
+				return decimal.Zero, err
+			}
+			var siblingClawed int64
+			if len(siblingCommIDs) > 0 && tx.Migrator().HasTable(&model.AdtyBalanceLedger{}) {
+				refIDs := make([]string, 0, len(siblingCommIDs))
+				for _, cid := range siblingCommIDs {
+					refIDs = append(refIDs, strconv.Itoa(cid))
+				}
+				if err := tx.Model(&model.AdtyBalanceLedger{}).
+					Select("COALESCE(SUM(-delta_quota), 0)").
+					Where("user_id = ? AND ref_type = ? AND ref_id IN ? AND delta_quota < 0",
+						commission.AffiliateUserId, "referral_commission_clawback", refIDs).
+					Scan(&siblingClawed).Error; err != nil {
+					return decimal.Zero, err
+				}
+			}
+			otherProtected := max(lot.Original-int64(own)-siblingClawed, 0)
+			provable := lot.Remaining - otherProtected
 			if provable <= 0 {
 				continue
 			}

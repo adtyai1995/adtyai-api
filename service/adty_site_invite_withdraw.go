@@ -726,10 +726,12 @@ func releaseSiteInviteCommissionFreezeTx(tx *gorm.DB, commission *model.AdtySite
 			return deferred, err
 		}
 		gross := withdrawal.AmountUSD.Sub(take)
-		changes = map[string]any{"amount_usd": gross, "net_usd": decimal.Max(gross.Sub(withdrawal.FeeUSD), decimal.Zero)}
+		netUSD := decimal.Max(gross.Sub(withdrawal.FeeUSD), decimal.Zero)
+		changes = map[string]any{"amount_usd": gross, "net_usd": netUSD}
 		if !withdrawal.RequestedUSD.IsPositive() {
 			changes["requested_usd"] = withdrawal.AmountUSD
 		}
+		payoutZero := false
 		if withdrawal.Method == "alipay" || withdrawal.Method == "usdt" {
 			rate, err := decimal.NewFromString(withdrawal.Rate)
 			if withdrawal.Method == "usdt" {
@@ -738,9 +740,13 @@ func releaseSiteInviteCommissionFreezeTx(tx *gorm.DB, commission *model.AdtySite
 			if err != nil {
 				return deferred, err
 			}
-			changes["payout_amount"] = siteInvitePayable(gross, withdrawal.FeeUSD, rate, withdrawal.Method)
+			payable := siteInvitePayable(gross, withdrawal.FeeUSD, rate, withdrawal.Method)
+			changes["payout_amount"] = payable
+			payableDec, parseErr := decimal.NewFromString(payable)
+			payoutZero = parseErr != nil || !payableDec.IsPositive()
 		}
-		if gross.IsZero() {
+		shouldCancel := gross.IsZero() || ((withdrawal.Method == "alipay" || withdrawal.Method == "usdt") && (!netUSD.IsPositive() || payoutZero))
+		if shouldCancel {
 			changes["status"] = model.AdtySiteInviteWithdrawCanceled
 		}
 		if err := tx.Model(&withdrawal).Updates(changes).Error; err != nil {
@@ -750,6 +756,16 @@ func releaseSiteInviteCommissionFreezeTx(tx *gorm.DB, commission *model.AdtySite
 			return deferred, err
 		}
 		commission.FrozenUSD = decimal.Max(commission.FrozenUSD.Sub(take), decimal.Zero)
+		if shouldCancel {
+			// R3-32: Release any remaining frozen items on this auto-canceled withdrawal
+			// back to their respective commissions so zero-payout pending rows never stall.
+			if err := releaseSiteInviteWithdrawalTx(tx, &withdrawal); err != nil {
+				return deferred, err
+			}
+			if remaining.IsPositive() {
+				commission.FrozenUSD = decimal.Max(commission.FrozenUSD.Sub(remaining), decimal.Zero)
+			}
+		}
 		left = left.Sub(take)
 	}
 	// Phase 2: only if still short, mark approved withdrawals for deferred reconciliation.

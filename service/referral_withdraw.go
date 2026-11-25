@@ -138,6 +138,12 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 	var result *model.ReferralWithdrawal
 	var creditQuota int64
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		// R3-08: Acquire users(UserId) BEFORE referral affiliate/commission/account locks
+		// to match canonical global User -> Affiliate -> Commission -> Withdrawal -> Account order.
+		var lockedOwner model.User
+		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id").First(&lockedOwner, input.UserId).Error; err != nil {
+			return err
+		}
 		affiliate, err := s.lockAffiliateByUserTx(tx, input.UserId)
 		if err != nil {
 			return err
@@ -339,9 +345,49 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 			if err := tx.Select("id", "site_id").First(&batchOwner, input.UserId).Error; err != nil {
 				return err
 			}
-			if err := model.CreateAdtyFundBatchesWithSiteTx(tx, input.UserId,
-				model.AdtyFundBatchSiteID(batchOwner.SiteId), ref, creditQuota, 0); err != nil {
+			// R3-09: Split balance conversion into per-commission fund batches so
+			// multi-commission balance transfers can claw back each refunded commission
+			// independently without masking the 2nd..Nth refunds behind a shared Original.
+			var allocatedItems []model.ReferralWithdrawalItem
+			if err := tx.Where("withdrawal_id = ?", withdrawal.Id).Order("id ASC").Find(&allocatedItems).Error; err != nil {
 				return err
+			}
+			type batchSlice struct {
+				source string
+				quota  int64
+			}
+			slicesToCreate := make([]batchSlice, 0, len(allocatedItems))
+			var allocatedSum int64
+			for _, item := range allocatedItems {
+				itemAmt := moneyDec(item.AllocatedAmount)
+				if !itemAmt.IsPositive() {
+					continue
+				}
+				qInt, qErr := common.WalletQuotaFromDecimalStrict(itemAmt.Mul(common.QuotaPerUnitDecimal()).Floor())
+				if qErr != nil {
+					return qErr
+				}
+				src := ref
+				if item.CommissionId > 0 {
+					src = fmt.Sprintf("referral-withdrawal-%d-c-%d", withdrawal.Id, item.CommissionId)
+				}
+				slicesToCreate = append(slicesToCreate, batchSlice{source: src, quota: int64(qInt)})
+				allocatedSum += int64(qInt)
+			}
+			if len(slicesToCreate) == 0 {
+				slicesToCreate = append(slicesToCreate, batchSlice{source: ref, quota: creditQuota})
+			} else if diff := creditQuota - allocatedSum; diff != 0 {
+				slicesToCreate[len(slicesToCreate)-1].quota += diff
+			}
+			sitePtr := model.AdtyFundBatchSiteID(batchOwner.SiteId)
+			for _, part := range slicesToCreate {
+				if part.quota <= 0 {
+					continue
+				}
+				if err := model.CreateAdtyFundBatchesWithSiteTx(tx, input.UserId,
+					sitePtr, part.source, part.quota, 0); err != nil {
+					return err
+				}
 			}
 		}
 		if err := addReferralLedgerTx(tx, &model.ReferralCommissionLedger{
@@ -679,6 +725,10 @@ func (s *ReferralService) ReviewWithdrawalForActor(withdrawalId, adminId, actorR
 		if err := tx.Where("id = ?", withdrawalId).First(&peek).Error; err != nil {
 			return err
 		}
+		// R3-08: Lock target user BEFORE referral commission/withdrawal/account rows.
+		if err := CheckReferralAdminTargetUserTx(tx, peek.UserId, adminId, actorRole, denyAdminTarget); err != nil {
+			return err
+		}
 		if err := lockWithdrawalCommissionRowsTx(tx, peek.Id); err != nil {
 			return err
 		}
@@ -686,10 +736,10 @@ func (s *ReferralService) ReviewWithdrawalForActor(withdrawalId, adminId, actorR
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", withdrawalId).First(&withdrawal).Error; err != nil {
 			return err
 		}
+		if withdrawal.UserId != peek.UserId {
+			return common.NewMessage("Withdrawal state changed concurrently, please retry")
+		}
 		if approve {
-			if err := CheckReferralAdminTargetUserTx(tx, withdrawal.UserId, adminId, actorRole, denyAdminTarget); err != nil {
-				return err
-			}
 			if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: 0, AccountID: withdrawal.UserId}); err != nil {
 				return err
 			}
@@ -710,9 +760,6 @@ func (s *ReferralService) ReviewWithdrawalForActor(withdrawalId, adminId, actorR
 			return common.NewMessage("Only pending or approved withdrawals can be rejected")
 		}
 		if err := s.releaseWithdrawalTx(tx, &withdrawal, model.ReferralWithdrawalStatusRejected, adminId, reason, now); err != nil {
-			return err
-		}
-		if err := CheckReferralAdminTargetUserTx(tx, withdrawal.UserId, adminId, actorRole, denyAdminTarget); err != nil {
 			return err
 		}
 		notifyUser = withdrawal.UserId
@@ -749,12 +796,19 @@ func (s *ReferralService) MarkWithdrawalPaidForActor(withdrawalId, adminId, acto
 			}
 			cleanProof = canonicalProof
 		}
+		// R3-08: Lock target user BEFORE referral commission/withdrawal/account rows.
+		if err := CheckReferralAdminTargetUserTx(tx, peek.UserId, adminId, actorRole, denyAdminTarget); err != nil {
+			return err
+		}
 		if err := lockWithdrawalCommissionRowsTx(tx, peek.Id); err != nil {
 			return err
 		}
 		var withdrawal model.ReferralWithdrawal
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", withdrawalId).First(&withdrawal).Error; err != nil {
 			return err
+		}
+		if withdrawal.UserId != peek.UserId {
+			return common.NewMessage("Withdrawal state changed concurrently, please retry")
 		}
 		if withdrawal.Status != model.ReferralWithdrawalStatusApproved {
 			return common.NewMessage("This withdrawal cannot be marked as paid")
@@ -764,9 +818,6 @@ func (s *ReferralService) MarkWithdrawalPaidForActor(withdrawalId, adminId, acto
 		}
 		account, err := lockReferralAccountTx(tx, withdrawal.AffiliateId)
 		if err != nil {
-			return err
-		}
-		if err := CheckReferralAdminTargetUserTx(tx, withdrawal.UserId, adminId, actorRole, denyAdminTarget); err != nil {
 			return err
 		}
 		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: 0, AccountID: withdrawal.UserId}); err != nil {

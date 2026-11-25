@@ -959,7 +959,7 @@ func AdjustAdtySiteWithAuditForActor(siteId, adminId, actorRole int, denyAdminTa
 func ApplyDueAdtySiteCostFactors(now int64) (int64, error) {
 	var dueIDs []int
 	if err := model.DB.Model(&model.AdtySite{}).
-		Where("pending_cost_factor_at > 0 AND pending_cost_factor_at <= ?", now).
+		Where("pending_cost_factor_at > 0 AND pending_cost_factor_at <= ? AND status NOT IN ?", now, []string{model.AdtySiteStatusClosed, model.AdtySiteStatusDeleting}).
 		Order("id ASC").
 		Pluck("id", &dueIDs).Error; err != nil {
 		return 0, err
@@ -977,7 +977,7 @@ func ApplyDueAdtySiteCostFactors(now int64) (int64, error) {
 				}
 				return err
 			}
-			if site.PendingCostFactor == nil || site.PendingCostFactorAt <= 0 || site.PendingCostFactorAt > now {
+			if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting || site.PendingCostFactor == nil || site.PendingCostFactorAt <= 0 || site.PendingCostFactorAt > now {
 				return nil
 			}
 			beforeEff, beforeOK := AdtySiteCostFactor(&site)
@@ -1026,7 +1026,7 @@ func ApplyDueAdtySiteCostFactors(now int64) (int64, error) {
 func ApplyDueAdtySiteTierCostFactors(now int64) (int64, error) {
 	var dueIDs []int
 	if err := model.DB.Model(&model.AdtySite{}).
-		Where("pending_tier_cost_factor_at > 0 AND pending_tier_cost_factor_at <= ?", now).
+		Where("pending_tier_cost_factor_at > 0 AND pending_tier_cost_factor_at <= ? AND status NOT IN ?", now, []string{model.AdtySiteStatusClosed, model.AdtySiteStatusDeleting}).
 		Where("(tier_mode = ? OR tier_mode IS NULL) AND (tier_code = ? OR tier_code IS NULL)", "", "").
 		Order("id ASC").
 		Pluck("id", &dueIDs).Error; err != nil {
@@ -1045,7 +1045,7 @@ func ApplyDueAdtySiteTierCostFactors(now int64) (int64, error) {
 				}
 				return err
 			}
-			if site.PendingTierCostFactor == nil || site.PendingTierCostFactorAt <= 0 || site.PendingTierCostFactorAt > now || site.TierMode != "" || site.TierCode != "" {
+			if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting || site.PendingTierCostFactor == nil || site.PendingTierCostFactorAt <= 0 || site.PendingTierCostFactorAt > now || site.TierMode != "" || site.TierCode != "" {
 				return nil
 			}
 			beforeEff, beforeOK := AdtySiteCostFactor(&site)
@@ -1446,7 +1446,13 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 			}
 		}
 		if err := tx.Model(&model.AdtySite{}).Where("id = ?", site.Id).Updates(map[string]any{
-			"status": model.AdtySiteStatusClosed, "closed_at": now, "close_transfer_to": target,
+			"status":                      model.AdtySiteStatusClosed,
+			"closed_at":                   now,
+			"close_transfer_to":           target,
+			"pending_cost_factor":         gorm.Expr("NULL"),
+			"pending_cost_factor_at":      0,
+			"pending_tier_cost_factor":    gorm.Expr("NULL"),
+			"pending_tier_cost_factor_at": 0,
 		}).Error; err != nil {
 			return err
 		}

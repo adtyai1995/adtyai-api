@@ -45,6 +45,7 @@ import { Textarea } from '@/components/ui/textarea'
 import type { SiteOwnerAction } from '@/features/auth/secure-verification'
 import { DraftDiscardDialog } from '@/features/system-settings/components/draft-discard-dialog'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
+import { formatBonusRateFraction } from '@/features/wallet/adty/api'
 import { ORDER_STATUS_LABELS } from '@/features/wallet/adty/lib/methods'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
 import type { AdtyOrderStatus } from '@/features/wallet/adty/types'
@@ -285,9 +286,16 @@ export function CustomerSheet(props: {
                       {
                         id: 'bonus-rate',
                         header: t('Bonus rate'),
-                        cell: (row) => (
-                          <span className='tabular-nums'>{row.bonus_rate}</span>
-                        ),
+                        cell: (row) => {
+                          const percent = formatBonusRateFraction(
+                            row.bonus_rate
+                          )
+                          return (
+                            <span className='tabular-nums'>
+                              {percent ? `${percent}%` : '0%'}
+                            </span>
+                          )
+                        },
                       },
                       {
                         id: 'bonus',

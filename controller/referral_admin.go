@@ -362,14 +362,14 @@ func UpdateReferralAffiliate(c *gin.Context) {
 	denyAdminTarget := isAccessTokenRequest(c)
 	replayed := false
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		// R3-08: Lock target user BEFORE referral affiliate/account rows to preserve
+		// canonical User -> Affiliate -> Commission -> Withdrawal -> Account lock order.
+		if err := service.CheckReferralAdminTargetUserTx(tx, userID, adminID, actorRole, denyAdminTarget); err != nil {
+			return err
+		}
 		var affiliate model.ReferralAffiliate
 		if err := model.AdtyLockForUpdate(tx).Where("user_id = ?", userID).First(&affiliate).Error; err != nil {
 			return err
-		}
-		if body.Action != "adjust" {
-			if err := service.CheckReferralAdminTargetUserTx(tx, userID, adminID, actorRole, denyAdminTarget); err != nil {
-				return err
-			}
 		}
 		oldSnap := map[string]any{
 			"rate_override":      affiliate.RateOverride,
@@ -436,9 +436,6 @@ func UpdateReferralAffiliate(c *gin.Context) {
 			}
 			var acc model.ReferralCommissionAccount
 			if err := model.AdtyLockForUpdate(tx).Where("affiliate_id = ?", affiliate.Id).First(&acc).Error; err != nil {
-				return err
-			}
-			if err := service.CheckReferralAdminTargetUserTx(tx, userID, adminID, actorRole, denyAdminTarget); err != nil {
 				return err
 			}
 			if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: 0, AccountID: userID}); err != nil {

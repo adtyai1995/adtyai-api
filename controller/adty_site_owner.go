@@ -671,6 +671,8 @@ func GetAdtyOwnerExport(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("Pragma", "no-cache")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="site-%d-%s.csv"`, site.Id, c.Query("kind")))
 	c.Data(http.StatusOK, "text/csv; charset=utf-8", []byte(b.String()))
 }

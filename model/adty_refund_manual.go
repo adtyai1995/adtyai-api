@@ -1826,15 +1826,22 @@ func CompleteAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyR
 		}
 		var before, checkinQuota int64
 		if ext.TeamId == 0 {
-			// R2-022: Pre-read commission inviter_id and lock [invitee, inviter] in strict
-			// ascending user_id order to prevent AB-BA deadlocks with commission clawback.
+			// R2-022 / R3-08: Pre-read commission inviter_id (both subsite and main-site)
+			// and lock [invitee, inviter] in strict ascending user_id order to prevent
+			// AB-BA deadlocks with commission clawback and referral write transactions.
 			var inviterID int
-			if tx.Migrator().HasTable(&AdtySiteInviteCommission{}) {
+			if ext.SiteId > 0 && tx.Migrator().HasTable(&AdtySiteInviteCommission{}) {
 				var commStub AdtySiteInviteCommission
 				if err := tx.Select("inviter_id").Where("trade_no = ?", ext.TradeNo).Limit(1).Find(&commStub).Error; err != nil {
 					return err
 				}
 				inviterID = commStub.InviterId
+			} else if ext.SiteId == 0 && tx.Migrator().HasTable(&ReferralCommission{}) {
+				var refStub ReferralCommission
+				if err := tx.Select("affiliate_user_id").Where("source_type = ? AND source_trade_no = ?", ReferralSourceTopup, ext.TradeNo).Limit(1).Find(&refStub).Error; err != nil {
+					return err
+				}
+				inviterID = refStub.AffiliateUserId
 			}
 			if inviterID > 0 && inviterID < topUp.UserId {
 				var inviter User

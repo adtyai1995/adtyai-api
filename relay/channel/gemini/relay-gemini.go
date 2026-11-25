@@ -408,9 +408,11 @@ func geminiStreamHandlerWithOutcome(c *gin.Context, info *relaycommon.RelayInfo,
 	var streamErr error
 	var accumulatedUsageMetadata *dto.GeminiUsageMetadata
 	var grounding geminiGroundingCounter
+	receivedEvent := false
 	responseText := strings.Builder{}
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		receivedEvent = true
 		var geminiResponse dto.GeminiChatResponse
 		if err := common.UnmarshalJsonStr(data, &geminiResponse); err != nil {
 			streamErr = fmt.Errorf("unmarshal Gemini stream response: %w", err)
@@ -488,12 +490,16 @@ func geminiStreamHandlerWithOutcome(c *gin.Context, info *relaycommon.RelayInfo,
 		patchGeminiZeroCompletionUsage(c, info, usage, responseText.String(), inlineOutput)
 	}
 
+	wroteToClient := info != nil && info.SendResponseCount > 0
 	if streamErr != nil {
-		if c.Writer.Written() || (info != nil && info.SendResponseCount > 0) {
+		if wroteToClient {
 			logger.LogWarn(c, common.LogText("Gemini stream error after output written, billing delivered usage: %v", streamErr))
 			return usage, outcome, nil
 		}
-		return usage, outcome, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		return nil, outcome, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
+	if !isGeminiDownstreamStop(c, info) && !receivedEvent && !wroteToClient {
+		return nil, outcome, types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
 	}
 	if info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
 		logger.LogWarn(c, common.LogText("Gemini stream ended unexpectedly: %s", info.StreamStatus.Summary()))
@@ -522,6 +528,9 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 
 	usage, outcome, err := geminiStreamHandlerWithOutcome(c, info, resp, func(data string, geminiResponse *dto.GeminiChatResponse) bool {
 		if geminiAbnormalFinishReason(geminiResponse) != "" && !geminiHasVisibleOutput(geminiResponse) {
+			return true
+		}
+		if info.SendResponseCount == 0 && !geminiHasRenderablePart(geminiResponse) {
 			return true
 		}
 		response, isStop := streamResponseGeminiChat2OpenAI(geminiResponse)
@@ -608,7 +617,7 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	})
 
 	if err != nil {
-		return usage, err
+		return nil, err
 	}
 
 	streamNormallyEnded := info.StreamStatus == nil || info.StreamStatus.IsNormalEnd()
@@ -621,8 +630,8 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 		} else {
 			errMsg = fmt.Sprintf("gemini stream finished with empty visible output: finishReason=%s", outcome.lastFinishReason)
 		}
-		if info.SendResponseCount == 0 && !c.Writer.Written() {
-			return usage, types.NewOpenAIError(errors.New(errMsg), errCode, http.StatusInternalServerError)
+		if info.SendResponseCount == 0 {
+			return nil, types.NewOpenAIError(errors.New(errMsg), errCode, http.StatusInternalServerError)
 		}
 		if info.StreamStatus != nil {
 			info.StreamStatus.MarkFailed(string(errCode), "server_error", http.StatusInternalServerError)

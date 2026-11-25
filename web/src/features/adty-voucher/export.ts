@@ -190,10 +190,31 @@ export function formatVoucherBatchTxt(batch: NormalizedVoucherBatch): string {
   return batch.items.map((item) => item.code).join('\n')
 }
 
-const CSV_FORMULA_PREFIX_RE = /^[\s]*[=+\-@]|^[\t\r]/
+function isLeadingCsvWhitespaceOrControl(char: string): boolean {
+  const code = char.charCodeAt(0)
+  return code <= 0x20 || (code >= 0x7f && code <= 0x9f) || /\s/.test(char)
+}
+
+function needsCsvFormulaPrefix(value: string): boolean {
+  if (value.length === 0) return false
+  const first = value[0]
+  if (first === '\t' || first === '\r' || first === '\n') {
+    return true
+  }
+  let index = 0
+  while (
+    index < value.length &&
+    isLeadingCsvWhitespaceOrControl(value[index])
+  ) {
+    index += 1
+  }
+  if (index >= value.length) return false
+  const lead = value[index]
+  return lead === '=' || lead === '+' || lead === '-' || lead === '@'
+}
 
 function escapeCsvField(value: string): string {
-  const safe = CSV_FORMULA_PREFIX_RE.test(value) ? `'${value}` : value
+  const safe = needsCsvFormulaPrefix(value) ? `'${value}` : value
   if (/[",\r\n]/.test(safe)) {
     return `"${safe.replaceAll('"', '""')}"`
   }

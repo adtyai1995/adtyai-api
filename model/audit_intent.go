@@ -102,8 +102,17 @@ func HasPendingAuditIntents() bool {
 // ClickHouse currently retains the stable logical identity with at-least-once
 // physical inserts; its projection deduplication remains a separate requirement.
 func DeliverAuditIntent(ctx context.Context, eventID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var intent AuditIntent
 	if err := DB.WithContext(ctx).Where("event_id = ?", eventID).Take(&intent).Error; err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return err
 	}
 	if intent.DeliveredAt != 0 {
@@ -121,11 +130,17 @@ func DeliverAuditIntent(ctx context.Context, eventID string) error {
 	}
 	query := DB.WithContext(ctx).Model(&AuditIntent{}).Where("event_id = ? AND delivered_at = ?", eventID, 0)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+			return context.Canceled
+		}
 		// Never persist driver errors: they can contain SQL parameters or DSNs.
 		if updateErr := query.Updates(map[string]any{
 			"attempts": gorm.Expr("attempts + ?", 1), "next_attempt_at": common.GetTimestamp() + 15,
 			"last_error_category": category,
 		}).Error; updateErr != nil {
+			if errors.Is(updateErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+				return context.Canceled
+			}
 			return errors.New("audit delivery retry receipt unavailable")
 		}
 		return errors.New("audit delivery " + category)
@@ -134,6 +149,9 @@ func DeliverAuditIntent(ctx context.Context, eventID string) error {
 		"attempts": gorm.Expr("attempts + ?", 1), "delivered_at": common.GetTimestamp(),
 		"next_attempt_at": 0, "last_error_category": "",
 	}).Error; err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+			return context.Canceled
+		}
 		return errors.New("audit delivery confirmation unavailable")
 	}
 	return nil
@@ -142,9 +160,21 @@ func DeliverAuditIntent(ctx context.Context, eventID string) error {
 // DeliverPendingAuditIntents performs a bounded pass; a cancelled or cleaned
 // scheduler run cannot remove the evidence or prevent a later run from retrying.
 func DeliverPendingAuditIntents(ctx context.Context, limit int) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	var intents []AuditIntent
 	if err := DB.WithContext(ctx).Select("event_id").Where("delivered_at = ? AND next_attempt_at <= ?", 0, common.GetTimestamp()).
 		Order("id ASC").Limit(min(max(limit, 1), 100)).Find(&intents).Error; err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return 0, ctxErr
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return 0, err
+		}
 		return 0, errors.New("audit intent scan unavailable")
 	}
 	delivered := 0
@@ -157,10 +187,19 @@ func DeliverPendingAuditIntents(ctx context.Context, limit int) (int, error) {
 		err := DeliverAuditIntent(attemptCtx, intent.EventID)
 		cancel()
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return delivered, ctxErr
+			}
+			if errors.Is(err, context.Canceled) {
+				return delivered, err
+			}
 			deliveryErr = err
 			continue
 		}
 		delivered++
+	}
+	if err := ctx.Err(); err != nil {
+		return delivered, err
 	}
 	return delivered, deliveryErr
 }

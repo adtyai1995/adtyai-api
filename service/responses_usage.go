@@ -161,7 +161,18 @@ func ApplyResponsesUsage(dst *dto.Usage, src *dto.Usage) {
 		incoming.InputTokensDetails = &inputDetails
 	}
 	if src.OutputTokensDetails != nil {
-		incoming.CompletionTokenDetails = *src.OutputTokensDetails
+		if src.OutputTokensDetails.TextTokens > 0 {
+			incoming.CompletionTokenDetails.TextTokens = src.OutputTokensDetails.TextTokens
+		}
+		if src.OutputTokensDetails.AudioTokens > 0 {
+			incoming.CompletionTokenDetails.AudioTokens = src.OutputTokensDetails.AudioTokens
+		}
+		if src.OutputTokensDetails.ImageTokens > 0 {
+			incoming.CompletionTokenDetails.ImageTokens = src.OutputTokensDetails.ImageTokens
+		}
+		if src.OutputTokensDetails.ReasoningTokens > 0 {
+			incoming.CompletionTokenDetails.ReasoningTokens = src.OutputTokensDetails.ReasoningTokens
+		}
 	}
 	// Map top-level or details reasoning into details only; do not add it
 	// into CompletionTokens / TotalTokens.

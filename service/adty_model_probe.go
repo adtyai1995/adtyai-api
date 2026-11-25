@@ -69,16 +69,21 @@ func init() {
 	adtyMasterTasks = append(adtyMasterTasks, StartAdtyModelProbes)
 }
 
-// ResetAdtyModelProbeGroup removes a deleted group's cached last-run timestamp
+// ResetAdtyModelProbeGroup removes a deleted group's cached last-run timestamps
 // so re-creating or inspecting probes never sees stale scheduler state.
 func ResetAdtyModelProbeGroup(groupID string) {
 	groupID = strings.TrimSpace(groupID)
 	if groupID == "" {
 		return
 	}
+	prefix := groupID + "\x00"
 	adtyModelProbeGroupLastRunMu.Lock()
-	delete(adtyModelProbeGroupLastRun, groupID)
-	adtyModelProbeGroupLastRunMu.Unlock()
+	defer adtyModelProbeGroupLastRunMu.Unlock()
+	for k := range adtyModelProbeGroupLastRun {
+		if k == groupID || strings.HasPrefix(k, prefix) {
+			delete(adtyModelProbeGroupLastRun, k)
+		}
+	}
 }
 
 // AdtyModelProbeRunSummary summarizes a completed probe batch.
@@ -893,7 +898,7 @@ func effectiveProbeGroupKey(g console_setting.UptimeKumaGroup) string {
 }
 
 func adtyProbeTargetRunKey(groupKey, modelName string) string {
-	return groupKey + "\x00" + modelName
+	return strings.TrimSpace(groupKey) + "\x00" + strings.TrimSpace(modelName)
 }
 
 func adtyProbeIntervalSecondsForGroup(g console_setting.UptimeKumaGroup, modelName string) int64 {

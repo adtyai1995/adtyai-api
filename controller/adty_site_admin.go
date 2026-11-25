@@ -933,10 +933,6 @@ func adtyResellerSettingsWarnings(cfg *adty_setting.ResellerSetting) []string {
 			break
 		}
 	}
-	if cfg.SenderDomainEnabled && !adtyResendConfigured() {
-		warnings = append(warnings,
-			"Sender domains are on but the Resend API key is empty: sender domains cannot be verified.")
-	}
 	return warnings
 }
 
@@ -1084,7 +1080,7 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 			return
 		}
 	}
-	for _, key := range []string{"cost_factor", "min_cost_factor", "cost_factor_tiers", "invite_code_enabled"} {
+	for _, key := range []string{"cost_factor", "min_cost_factor", "cost_factor_tiers", "invite_code_enabled", "sender_domain_enabled"} {
 		if _, present := body[key]; present {
 			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("This legacy reseller setting has been retired"))
 			return

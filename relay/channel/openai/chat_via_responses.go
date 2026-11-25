@@ -2,6 +2,7 @@ package openai
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -18,6 +19,29 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func countResponsesOutputTools(info *relaycommon.RelayInfo, resp *dto.OpenAIResponsesResponse, rawBody []byte) {
+	if info == nil || resp == nil {
+		return
+	}
+	for _, output := range resp.Output {
+		switch output.Type {
+		case dto.BuildInCallWebSearchCall:
+			info.CountBillableToolCall(dto.BuildInCallWebSearchCall, "")
+		case dto.BuildInCallFileSearchCall:
+			info.CountBillableToolCall(dto.BuildInCallFileSearchCall, "")
+		case dto.BuildInCallFunctionCall:
+			info.CountBillableToolCall(dto.BuildInCallFunctionCall, output.Name)
+		}
+	}
+	info.ApplyVendorToolUsage(rawBody)
+
+	imageCounter := &relaycommon.ImageGenerationCallCounter{}
+	for i := range resp.Output {
+		imageCounter.Observe(&resp.Output[i], &i)
+	}
+	imageCounter.Commit(info)
+}
 
 func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
@@ -41,6 +65,7 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	}
 
 	info.ObserveResponseModel(responsesResp.Model)
+	countResponsesOutputTools(info, &responsesResp, body)
 	responseValue, usage, err := convertResponsesResponseForClient(c, info, &responsesResp)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
@@ -63,8 +88,12 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 	info.StreamStatus = relaycommon.NewStreamStatus()
 	info.StreamStatus.RequireTerminal()
 	accumulator := relayconvert.NewResponsesBufferedAccumulator()
+	imageCounter := &relaycommon.ImageGenerationCallCounter{}
 	var finalResponse *dto.OpenAIResponsesResponse
 	var streamErr *types.NewAPIError
+	var terminalRaw []byte
+	receivedValidEvent := false
+	countedItemTools := false
 
 	scanner := helper.NewStreamScanner(resp.Body)
 	scanner.Split(bufio.ScanLines)
@@ -88,13 +117,25 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 			break
 		}
+		receivedValidEvent = true
 		if streamResp.Response != nil {
 			info.ObserveResponseModel(streamResp.Response.Model)
 		}
 		service.ObserveResponsesOutcome(info, &streamResp)
 		accumulator.ProcessEvent(&streamResp)
 		switch streamResp.Type {
+		case dto.ResponsesOutputTypeItemDone:
+			if streamResp.Item != nil {
+				switch streamResp.Item.Type {
+				case dto.BuildInCallWebSearchCall, dto.BuildInCallFileSearchCall, dto.BuildInCallFunctionCall:
+					info.CountBillableToolCall(streamResp.Item.Type, streamResp.Item.Name)
+					countedItemTools = true
+				case dto.ResponsesOutputTypeImageGenerationCall:
+					imageCounter.Observe(streamResp.Item, streamResp.OutputIndex)
+				}
+			}
 		case "response.completed", "response.done", "response.incomplete":
+			terminalRaw = append([]byte(nil), data...)
 			finalResponse = streamResp.Response
 			if streamResp.Type == "response.incomplete" {
 				if finalResponse == nil {
@@ -123,7 +164,12 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 	if err := scanner.Err(); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
+	if !receivedValidEvent {
+		return nil, types.NewOpenAIError(errors.New("empty upstream responses stream"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+	}
+	synthesizedFinal := false
 	if finalResponse == nil {
+		synthesizedFinal = true
 		finalResponse = &dto.OpenAIResponsesResponse{
 			ID:        helper.GetResponseID(c),
 			CreatedAt: dto.IntValue(time.Now().Unix()),
@@ -132,6 +178,29 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 		}
 	}
 	accumulator.SupplementResponseOutput(finalResponse)
+	if synthesizedFinal && len(finalResponse.Output) == 0 {
+		return nil, types.NewOpenAIError(errors.New("empty upstream responses stream"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+	}
+
+	if !countedItemTools {
+		for _, output := range finalResponse.Output {
+			switch output.Type {
+			case dto.BuildInCallWebSearchCall:
+				info.CountBillableToolCall(dto.BuildInCallWebSearchCall, "")
+			case dto.BuildInCallFileSearchCall:
+				info.CountBillableToolCall(dto.BuildInCallFileSearchCall, "")
+			case dto.BuildInCallFunctionCall:
+				info.CountBillableToolCall(dto.BuildInCallFunctionCall, output.Name)
+			}
+		}
+	}
+	if len(terminalRaw) > 0 {
+		info.ApplyVendorToolUsage(terminalRaw)
+	}
+	for i := range finalResponse.Output {
+		imageCounter.Observe(&finalResponse.Output[i], &i)
+	}
+	imageCounter.Commit(info)
 
 	responseValue, usage, err := convertResponsesResponseForClient(c, info, finalResponse)
 	if err != nil {
@@ -190,6 +259,11 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	// failedUsage the usage it reported, if any.
 	upstreamFailed := false
 	var failedUsage *dto.Usage
+	wroteToClient := false
+	receivedEvent := false
+	countedItemTools := false
+	imageCounter := &relaycommon.ImageGenerationCallCounter{}
+	imageCommitted := false
 
 	if info.RelayFormat == types.RelayFormatClaude && info.ClaudeConvertInfo == nil {
 		info.ClaudeConvertInfo = &relaycommon.ClaudeConvertInfo{LastMessagesType: relaycommon.LastMessageTypeNone}
@@ -207,6 +281,13 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		return false
 	}
 
+	markWritten := func() {
+		wroteToClient = true
+		if info != nil {
+			info.SendResponseCount++
+		}
+	}
+
 	sendGeminiResponse := func(geminiResponse *dto.GeminiChatResponse) bool {
 		if geminiResponse == nil {
 			return true
@@ -217,7 +298,11 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			return false
 		}
 		c.Render(-1, common.CustomEvent{Data: "data: " + string(geminiResponseStr)})
-		_ = helper.FlushWriter(c)
+		if err := helper.FlushWriter(c); err != nil {
+			return writeFailed(err)
+		}
+		helper.MarkStreamPayloadWritten(c)
+		markWritten()
 		return true
 	}
 
@@ -230,6 +315,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			if err := helper.ObjectData(c, &value); err != nil {
 				return writeFailed(err)
 			}
+			markWritten()
 			return true
 		case *dto.ChatCompletionsStreamResponse:
 			if value == nil || (len(value.Choices) == 0 && value.Usage == nil) {
@@ -238,10 +324,14 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			if err := helper.ObjectData(c, value); err != nil {
 				return writeFailed(err)
 			}
+			markWritten()
 			return true
 		case dto.ClaudeResponse:
 			if err := helper.ClaudeData(c, value); err != nil {
 				return writeFailed(err)
+			}
+			if value.Type != "ping" {
+				markWritten()
 			}
 			return true
 		case *dto.ClaudeResponse:
@@ -250,6 +340,9 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			}
 			if err := helper.ClaudeData(c, *value); err != nil {
 				return writeFailed(err)
+			}
+			if value.Type != "ping" {
+				markWritten()
 			}
 			return true
 		case dto.GeminiChatResponse:
@@ -275,9 +368,50 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			return
 		}
 
+		receivedEvent = true
 		if streamResp.Response != nil {
 			info.ObserveResponseModel(streamResp.Response.Model)
 		}
+		service.ObserveResponsesOutcome(info, &streamResp)
+		switch streamResp.Type {
+		case "response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
+			if streamResp.Response != nil && !countedItemTools {
+				for _, output := range streamResp.Response.Output {
+					switch output.Type {
+					case dto.BuildInCallWebSearchCall:
+						info.CountBillableToolCall(dto.BuildInCallWebSearchCall, "")
+					case dto.BuildInCallFileSearchCall:
+						info.CountBillableToolCall(dto.BuildInCallFileSearchCall, "")
+					case dto.BuildInCallFunctionCall:
+						info.CountBillableToolCall(dto.BuildInCallFunctionCall, output.Name)
+					}
+				}
+				countedItemTools = true
+			}
+			info.ApplyVendorToolUsage(common.StringToByteSlice(data))
+			if !imageCommitted {
+				if streamResp.Response != nil {
+					for i := range streamResp.Response.Output {
+						imageCounter.Observe(&streamResp.Response.Output[i], &i)
+					}
+				}
+				imageCounter.Commit(info)
+				imageCommitted = true
+			}
+		case dto.ResponsesOutputTypeItemDone:
+			if streamResp.Item != nil {
+				switch streamResp.Item.Type {
+				case dto.BuildInCallWebSearchCall, dto.BuildInCallFileSearchCall, dto.BuildInCallFunctionCall:
+					info.CountBillableToolCall(streamResp.Item.Type, streamResp.Item.Name)
+					countedItemTools = true
+				case dto.ResponsesOutputTypeImageGenerationCall:
+					if !imageCommitted {
+						imageCounter.Observe(streamResp.Item, streamResp.OutputIndex)
+					}
+				}
+			}
+		}
+
 		if streamResp.Type == "response.error" || streamResp.Type == "response.failed" {
 			upstreamFailed = true
 			if streamResp.Response != nil {
@@ -307,14 +441,20 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		}
 	})
 
+	info.StreamStatus.RequireTerminal()
+
 	if streamErr != nil {
-		if !upstreamFailed || state.UsageText() == "" {
+		if !wroteToClient || !upstreamFailed || state.UsageText() == "" {
 			return nil, streamErr
+		}
+		if !imageCommitted {
+			imageCounter.Commit(info)
+			imageCommitted = true
 		}
 		// The upstream failed after output reached the client: bill the
 		// delivered output (upstream usage when reported, otherwise the
-		// estimate) and send the client the same error the failed request
-		// path writes. stream_status already records the failure.
+		// estimate) and terminate the already-open SSE stream with a protocol
+		// error frame instead of writing raw JSON via c.JSON.
 		usage := relayconvert.UsageFromResponsesUsage(failedUsage)
 		if usage.TotalTokens == 0 {
 			usage = state.Usage()
@@ -337,14 +477,34 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 				usage.BillingUsage = dto.CloneBillingUsageWithEstimatedCompletion(usage.BillingUsage, usage.CompletionTokens)
 			}
 		}
+		if info.StreamStatus != nil {
+			info.StreamStatus.MarkFailed(string(streamErr.GetErrorCode()), string(streamErr.GetErrorType()), streamErr.StatusCode)
+		}
 		logger.LogError(c, common.LogText("responses stream failed after output was delivered, billing the delivered output: %s", streamErr.Error()))
 		streamErr.SetMessage(common.MessageWithRequestId(streamErr.Error(), c.GetString(common.RequestIdKey)))
+		upstreamURLs := common.UpstreamAddresses(c)
 		if info.RelayFormat == types.RelayFormatClaude {
-			c.JSON(streamErr.StatusCode, gin.H{"type": "error", "error": streamErr.ToClaudeError(common.UpstreamAddresses(c)...)})
+			_ = helper.ClaudeData(c, dto.ClaudeResponse{
+				Type:  "error",
+				Error: streamErr.ToClaudeError(upstreamURLs...),
+			})
 		} else {
-			c.JSON(streamErr.StatusCode, gin.H{"error": streamErr.ToOpenAIError(common.UpstreamAddresses(c)...)})
+			_ = helper.ObjectData(c, gin.H{"error": streamErr.ToOpenAIError(upstreamURLs...)})
+			helper.Done(c)
 		}
 		return usage, nil
+	}
+
+	if !receivedEvent && !wroteToClient {
+		if info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone && helper.ClientRequestCanceled(c) {
+			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
+		return nil, types.NewOpenAIError(errors.New("empty upstream responses stream"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+	}
+
+	if !imageCommitted {
+		imageCounter.Commit(info)
+		imageCommitted = true
 	}
 
 	usage := state.Usage()

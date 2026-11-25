@@ -194,7 +194,7 @@ func AccessTokenOwnerRouteScope(method, fullPath string) string {
 func AccessTokenCatalog(userID, role int) []AccessTokenCatalogGroup {
 	resources := map[string][]AccessTokenResource{}
 	isSiteOwner, ownerErr := isAccessTokenSiteOwner(userID)
-	pureSiteOwner := ownerErr == nil && isSiteOwner && role < common.RoleAdminUser
+	pureSiteOwner := (ownerErr != nil || isSiteOwner) && role < common.RoleAdminUser
 	for _, resource := range accessTokenStaticResources {
 		if role < resource.minRole {
 			continue

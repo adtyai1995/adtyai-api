@@ -67,6 +67,8 @@ func adtyGroupOptionDefaultValue(key string) string {
 			return raw
 		}
 		return "{}"
+	case "console_setting.uptime_kuma_groups":
+		return "[]"
 	default:
 		return "{}"
 	}
@@ -966,26 +968,37 @@ func DeleteAdtyGroup(id string) error {
 		}
 		if tx.Migrator().HasTable(&AdtySite{}) {
 			var sites []AdtySite
-			if err := lockForUpdate(tx).Select("id", "allowed_groups").
+			if err := lockForUpdate(tx).Select("id", "status", "allowed_groups").
 				Where("allowed_groups <> ''").
 				Order("id").Find(&sites).Error; err != nil {
 				return err
 			}
+			type siteAllowUpdate struct {
+				id      int
+				encoded string
+			}
+			pendingUpdates := make([]siteAllowUpdate, 0)
 			for _, site := range sites {
 				groups, err := parseAdtySiteAllowedGroups(site.AllowedGroups)
 				if err != nil || !slices.Contains(groups, id) {
 					continue
 				}
 				next := slices.DeleteFunc(slices.Clone(groups), func(group string) bool { return group == id })
-				encoded := ""
-				if len(next) > 0 {
-					raw, err := common.Marshal(next)
-					if err != nil {
-						return err
+				if len(next) == 0 {
+					if site.Status != AdtySiteStatusClosed && site.Status != AdtySiteStatusDeleting {
+						return common.NewMessage("This group is the only allowed group for an active reseller site. Update the site's allowed groups first")
 					}
-					encoded = string(raw)
+					pendingUpdates = append(pendingUpdates, siteAllowUpdate{id: site.Id, encoded: "[]"})
+					continue
 				}
-				if err := tx.Model(&AdtySite{}).Where("id = ?", site.Id).Update("allowed_groups", encoded).Error; err != nil {
+				raw, err := common.Marshal(next)
+				if err != nil {
+					return err
+				}
+				pendingUpdates = append(pendingUpdates, siteAllowUpdate{id: site.Id, encoded: string(raw)})
+			}
+			for _, upd := range pendingUpdates {
+				if err := tx.Model(&AdtySite{}).Where("id = ?", upd.id).Update("allowed_groups", upd.encoded).Error; err != nil {
 					return err
 				}
 			}

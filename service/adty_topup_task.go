@@ -117,7 +117,7 @@ func verifyExpiredOrdersUnpaidBeforeExpire(now int64) {
 			Order("id desc").Limit(1).Find(&latest).Error; qErr != nil {
 			continue
 		}
-		if latest.Id > 0 && latest.Outcome == "unpaid" && (ext.LastQueryAt >= ext.ExpireAt || latest.CreatedAt >= ext.ExpireAt) {
+		if latest.Id > 0 && latest.Outcome == "unpaid" && latest.CreatedAt >= ext.ExpireAt {
 			continue
 		}
 		_ = model.UpdateAdtyTopupOrderFields(ext.TradeNo, map[string]any{"last_query_at": now})

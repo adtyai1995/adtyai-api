@@ -740,7 +740,7 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 		}
 	}
 	enabled := rateConfigured && rateRow.Enabled && effectiveRate.IsPositive() && !affiliateDisabled
-	siteOpen := site.Status != model.AdtySiteStatusClosed && site.Status != model.AdtySiteStatusClosing
+	siteOpen := site.Status != model.AdtySiteStatusClosed && site.Status != model.AdtySiteStatusClosing && site.Status != model.AdtySiteStatusDeleting
 	profile := &AdtySiteCustomerReferralProfile{
 		SiteId:             site.Id,
 		SiteName:           siteName,
@@ -855,7 +855,7 @@ func ValidateAdtySiteInviteCode(siteID int, code string) (string, error) {
 	if err := model.DB.Select("id", "status").First(&site, siteID).Error; err != nil {
 		return "", common.NewMessage("Invalid site invite code")
 	}
-	if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusClosing {
+	if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusClosing || site.Status == model.AdtySiteStatusDeleting {
 		return "", common.NewMessage("Site referral is not enabled")
 	}
 	var rate model.AdtySiteReferralRate
@@ -894,7 +894,7 @@ func SetAdtySiteInviteCookie(c *gin.Context, siteID int, code string) (int64, er
 	}
 	ttlDays := adtySiteInviteCookieTTLDays(siteID)
 	maxAge := int(ttlDays * 86400)
-	secure := c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
+	secure := adtyReferralCookieSecure(c)
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(AdtySiteInviteCookie, value, maxAge, "/", "", secure, true)
 	return ttlDays, nil
@@ -902,9 +902,8 @@ func SetAdtySiteInviteCookie(c *gin.Context, siteID int, code string) (int64, er
 
 // ClearAdtySiteInviteCookie clears the server-signed subsite invite cookie.
 func ClearAdtySiteInviteCookie(c *gin.Context) {
-	secure := c != nil && c.Request != nil && (c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https"))
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie(AdtySiteInviteCookie, "", -1, "/", "", secure, true)
+	c.SetCookie(AdtySiteInviteCookie, "", -1, "/", "", adtyReferralCookieSecure(c), true)
 }
 
 // BindSiteInviteByCodeFromIP resolves a subsite customer invite code within siteID

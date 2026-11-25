@@ -1189,7 +1189,7 @@ func adtyVoucherManageAllowedTx(tx *gorm.DB, actor *model.User, voucher *model.A
 			}
 			site = &loaded
 		}
-		if site.OwnerUserId != actor.Id || site.Status == model.AdtySiteStatusClosing || site.Status == model.AdtySiteStatusClosed {
+		if site.OwnerUserId != actor.Id || site.Status == model.AdtySiteStatusClosing || site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting {
 			return ErrAdtyVoucherForbidden
 		}
 	}

@@ -168,7 +168,7 @@ type AdtyTeamMemberView struct {
 	Username            string `json:"username"`
 	Role                string `json:"role"`
 	Status              string `json:"status"`
-	IndependentEmployee bool   `json:"independent_employee,omitempty"`
+	IndependentEmployee bool   `json:"independent_employee"`
 }
 
 type AdtyTeamKeyView struct {
@@ -846,7 +846,10 @@ func LeaveAdtyTeam(userId int, teamId int64) error {
 		if lookup.RowsAffected == 0 {
 			return ErrAdtyTeamForbidden
 		}
-		if err := tx.Model(&member).Update("status", model.AdtyTeamMemberLeft).Error; err != nil {
+		if err := tx.Model(&member).Updates(map[string]any{
+			"status":                model.AdtyTeamMemberLeft,
+			"disabled_auth_version": 0,
+		}).Error; err != nil {
 			return err
 		}
 		if member.IndependentEmployee {
@@ -854,18 +857,10 @@ func LeaveAdtyTeam(userId int, teamId int64) error {
 			if err := model.AdtyLockForUpdate(tx).Select("id", "status", "auth_version").First(&targetUser, userId).Error; err != nil {
 				return err
 			}
-			wasEnabled := targetUser.Status == common.UserStatusEnabled
 			if err := disableIndependentTeamEmployeeUserTx(tx, userId); err != nil {
 				return err
 			}
 			disabledEmployeeIDs = append(disabledEmployeeIDs, userId)
-			memberUpdates := map[string]any{"status": model.AdtyTeamMemberDisabled}
-			if wasEnabled {
-				memberUpdates["disabled_auth_version"] = tx.Model(&model.User{}).Select("auth_version").Where("id = ?", userId)
-			}
-			if err := tx.Model(&member).Updates(memberUpdates).Error; err != nil {
-				return err
-			}
 		}
 		if err := disableAdtyTeamMemberKeysTx(tx, team.Id, userId); err != nil {
 			return err

@@ -14,11 +14,12 @@ import (
 
 // 站点状态和开站方式。
 const (
-	AdtySiteStatusPending = "pending"
-	AdtySiteStatusActive  = "active"
-	AdtySiteStatusPaused  = "paused"
-	AdtySiteStatusClosing = "closing"
-	AdtySiteStatusClosed  = "closed"
+	AdtySiteStatusPending  = "pending"
+	AdtySiteStatusActive   = "active"
+	AdtySiteStatusPaused   = "paused"
+	AdtySiteStatusClosing  = "closing"
+	AdtySiteStatusClosed   = "closed"
+	AdtySiteStatusDeleting = "deleting"
 
 	AdtySiteOpenedByApply  = "apply"
 	AdtySiteOpenedByAdmin  = "admin"

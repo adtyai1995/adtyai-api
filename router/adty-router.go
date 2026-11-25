@@ -322,7 +322,7 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions/withdrawals/by-key", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/site-commissions/:id/convert/by-key", "scope", "wallet:read")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/site-commissions/:id/convert", "scope", "wallet:write")
-	apiRouter.POST("/adty/site-referral/click", middleware.CriticalRateLimit(), middleware.AnonymousRequestBodyLimit(), controller.PostAdtySiteReferralClick)
+	apiRouter.POST("/adty/site-referral/click", middleware.CriticalRateLimit(), middleware.AnonymousRequestBodyLimit(), middleware.ReferralClickCSRFGuard(), controller.PostAdtySiteReferralClick)
 	apiRouter.GET("/adty/site-referral/profile", middleware.UserAuth(), controller.GetAdtySiteCustomerReferralProfile)
 	apiRouter.POST("/adty/site-referral/bind", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), middleware.UserCriticalRateLimit("CT:site-invite-bind"), controller.PostAdtySiteCustomerReferralBind)
 	apiRouter.GET("/adty/site-commissions", middleware.UserAuth(), controller.GetAdtySiteCommissions)
@@ -409,7 +409,7 @@ func registerAdtyReferralRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/referral/click", "session", "")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/referral/public-settings", "any", "")
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/referral-assets/*path", "session", "")
-	apiRouter.POST("/adty/referral/click", middleware.CriticalRateLimit(), controller.PostAdtyReferralClick)
+	apiRouter.POST("/adty/referral/click", middleware.CriticalRateLimit(), middleware.AnonymousRequestBodyLimit(), middleware.ReferralClickCSRFGuard(), controller.PostAdtyReferralClick)
 	apiRouter.GET("/adty/referral/public-settings", controller.GetAdtyReferralPublicSettings)
 	apiRouter.GET("/referral-assets/*path", controller.GetReferralAsset)
 
@@ -579,7 +579,7 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/customers/:id/balance", ownerCustWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-customer-balance"), controller.PostAdtyOwnerCustomerBalance}},
 		{http.MethodPost, "/customers/:id/password", ownerCustWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-customer-password"), middleware.DisableCache(), controller.PostAdtyOwnerCustomerPassword}},
 		{http.MethodPost, "/report", ownerCustWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-report"), controller.PostAdtyOwnerReport}},
-		{http.MethodGet, "/export", ownerLogRead, []gin.HandlerFunc{controller.GetAdtyOwnerExport}},
+		{http.MethodGet, "/export", ownerLogRead, []gin.HandlerFunc{middleware.DisableCache(), controller.GetAdtyOwnerExport}},
 		{http.MethodPost, "/logo", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-logo"), controller.UploadAdtySiteLogo}},
 		// 站长发件域名（任务 11.3）与独立邮件配置（R-37）
 		{http.MethodGet, "/sender-domain", ownerSetRead, []gin.HandlerFunc{controller.GetAdtySiteSenderDomain}},

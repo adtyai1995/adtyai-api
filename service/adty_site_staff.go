@@ -170,8 +170,15 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 		if input.ExpectedVersion <= 0 || staff.Version != input.ExpectedVersion {
 			return ErrAdtyStaffConflict
 		}
+		var targetUser model.User
+		if err := model.AdtyLockForUpdate(tx).Select("id", "status", "auth_version").
+			Where("id = ? AND staff_site_id = ?", staff.UserId, siteID).First(&targetUser).Error; err != nil {
+			return err
+		}
 		before := AdtyStaffViewOf(staff)
+		previousStaffStatus := staff.Status
 		userUpdates := map[string]any{}
+		syncDisabledAuthVersion := false
 		switch action {
 		case AdtySiteOwnerActionStaffUpdate:
 			input.DisplayName = strings.TrimSpace(input.DisplayName)
@@ -195,22 +202,49 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 					}
 				}
 			}
+			// R3-02: Never let a site owner bypass a platform administrator/Root ban.
+			if input.Status == "enabled" {
+				if previousStaffStatus == "disabled" {
+					if targetUser.Status != common.UserStatusEnabled {
+						if targetUser.Status != common.UserStatusDisabled || staff.DisabledAuthVersion == 0 || targetUser.AuthVersion != staff.DisabledAuthVersion {
+							return ErrAdtyStaffDenied
+						}
+						userUpdates["status"] = common.UserStatusEnabled
+					}
+					staff.DisabledAuthVersion = 0
+				}
+				// When previousStaffStatus == "enabled", keep users.status untouched so editing
+				// display name or permissions cannot overwrite an active platform ban.
+			} else {
+				// input.Status == "disabled"
+				userUpdates["status"] = common.UserStatusDisabled
+				if targetUser.Status == common.UserStatusEnabled ||
+					(previousStaffStatus == "disabled" && staff.DisabledAuthVersion > 0 && targetUser.AuthVersion == staff.DisabledAuthVersion) {
+					syncDisabledAuthVersion = true
+				} else {
+					staff.DisabledAuthVersion = 0
+				}
+			}
 			staff.DisplayName, staff.Role, staff.Permissions, staff.Status = input.DisplayName, input.Role, common.GetJsonString(grants), input.Status
 			userUpdates["display_name"] = staff.DisplayName
-			userUpdates["status"] = common.UserStatusDisabled
-			if staff.Status == "enabled" {
-				userUpdates["status"] = common.UserStatusEnabled
-			}
 		case AdtySiteOwnerActionStaffPassword:
 			userUpdates["password"] = hash
+			if staff.Status == "disabled" && staff.DisabledAuthVersion > 0 && targetUser.AuthVersion == staff.DisabledAuthVersion {
+				syncDisabledAuthVersion = true
+			}
 		case AdtySiteOwnerActionStaffDelete:
 			staff.Status = "deleted"
+			staff.DisabledAuthVersion = 0
 			userUpdates["status"] = common.UserStatusDisabled
 		default:
 			return ErrAdtyStaffInput
 		}
-		if _, err := model.IncrementUserAuthVersionWithTx(tx, staff.UserId); err != nil {
+		nextAuthVersion, err := model.IncrementUserAuthVersionWithTx(tx, staff.UserId)
+		if err != nil {
 			return err
+		}
+		if syncDisabledAuthVersion {
+			staff.DisabledAuthVersion = nextAuthVersion
 		}
 		if staff.Status != "enabled" || action == AdtySiteOwnerActionStaffPassword || action == AdtySiteOwnerActionStaffDelete {
 			if _, err := model.DeleteUserAccessTokensWithTx(tx, staff.UserId); err != nil {
@@ -224,7 +258,9 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 		}
 		staff.Version++
 		result := tx.Model(&model.AdtySiteStaff{}).Where("id = ? AND version = ?", staffID, input.ExpectedVersion).Updates(map[string]any{
-			"display_name": staff.DisplayName, "role": staff.Role, "permissions": staff.Permissions, "status": staff.Status, "version": staff.Version})
+			"display_name": staff.DisplayName, "role": staff.Role, "permissions": staff.Permissions,
+			"status": staff.Status, "disabled_auth_version": staff.DisabledAuthVersion, "version": staff.Version,
+		})
 		if result.Error != nil {
 			return result.Error
 		}

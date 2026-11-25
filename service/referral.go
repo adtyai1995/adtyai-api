@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -207,10 +208,10 @@ func (s *ReferralService) AffiliateByCode(code string) (*model.ReferralAffiliate
 		return nil, ErrReferralCodeInvalid
 	}
 	var owners []model.User
-	if err := model.DB.Select("site_id").Where("id = ?", rows[0].UserId).Limit(1).Find(&owners).Error; err != nil {
+	if err := model.DB.Select("id", "site_id", "status").Where("id = ?", rows[0].UserId).Limit(1).Find(&owners).Error; err != nil {
 		return nil, err
 	}
-	if len(owners) > 0 && owners[0].SiteId > 0 {
+	if len(owners) == 0 || owners[0].SiteId > 0 || owners[0].Status != common.UserStatusEnabled {
 		return nil, ErrReferralCodeInvalid
 	}
 	return &rows[0], nil
@@ -237,10 +238,23 @@ func (s *ReferralService) RecordClick(code, landingPath, referer, ip, userAgent 
 
 func truncateText(value string, limit int) string {
 	value = strings.TrimSpace(value)
-	if len(value) > limit {
-		return value[:limit]
+	if limit <= 0 {
+		return ""
 	}
-	return value
+	if len(value) <= limit {
+		return value
+	}
+	// R3-33: Truncate strictly on UTF-8 rune boundaries so PostgreSQL never sees
+	// an invalid split multi-byte sequence.
+	cut := 0
+	for cut < len(value) {
+		_, size := utf8.DecodeRuneInString(value[cut:])
+		if size <= 0 || cut+size > limit {
+			break
+		}
+		cut += size
+	}
+	return value[:cut]
 }
 
 // BindInvitee 注册后绑定邀请关系。拒绝自己邀请自己和循环邀请；绑定之后不能改。
@@ -273,9 +287,9 @@ func (s *ReferralService) BindInvitee(inviteeId int, code, ipHash string) (*mode
 	return binding, nil
 }
 
-// CheckReferralAdminTargetUserTx locks the target user row (after any referral
-// locks, matching CreateWithdrawal's canonical Affiliate -> Commission ->
-// Withdrawal -> Account -> User lock order) and enforces role hierarchy,
+// CheckReferralAdminTargetUserTx locks the target user row BEFORE any referral
+// affiliate/commission/withdrawal/account locks (canonical User -> Affiliate ->
+// Commission -> Withdrawal -> Account order, R3-08) and enforces role hierarchy,
 // anti-self-operation, and PAT admin-target restrictions (R11-004).
 func CheckReferralAdminTargetUserTx(tx *gorm.DB, targetUserID, adminID, actorRole int, denyAdminTarget bool) error {
 	if tx == nil || (actorRole <= 0 && !denyAdminTarget) {

@@ -924,6 +924,9 @@ func (dataRetentionHandler) NewPayload() any {
 }
 
 func (dataRetentionHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	if task == nil {
+		return
+	}
 	payload := DataRetentionPayload{Trigger: model.DataRetentionTriggerScheduled}
 	_ = task.DecodePayload(&payload)
 	if payload.Trigger == "" {
@@ -934,21 +937,32 @@ func (dataRetentionHandler) Run(ctx context.Context, task *model.SystemTask, run
 	if run != nil {
 		result.RunID = run.Id
 	}
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			if finishErr := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusCancelled, result, "cancelled"); finishErr != nil {
-				logSystemTaskLockError(ctx, task, finishErr)
-			}
+	if errors.Is(err, context.Canceled) || (ctx != nil && errors.Is(ctx.Err(), context.Canceled)) {
+		cancelled, checkErr := model.SystemTaskCancelRequested(task.TaskID)
+		if checkErr != nil {
+			common.SysLog(common.LogText("data retention task %s cancel check failed after context cancellation: %v", task.TaskID, checkErr))
 			return
 		}
+		if !cancelled {
+			// Context cancellation without cancel_requested indicates lease loss;
+			// do not overwrite the task state.
+			logSystemTaskLockError(context.Background(), task, model.ErrSystemTaskLockLost)
+			return
+		}
+		if finishErr := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusCancelled, result, "cancelled"); finishErr != nil {
+			logSystemTaskLockError(context.Background(), task, finishErr)
+		}
+		return
+	}
+	if err != nil {
 		if finishErr := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusFailed, result, err.Error()); finishErr != nil {
-			logSystemTaskLockError(ctx, task, finishErr)
+			logSystemTaskLockError(context.Background(), task, finishErr)
 		}
 		return
 	}
 	if cancelled, cancelErr := model.SystemTaskCancelRequested(task.TaskID); cancelErr == nil && cancelled {
 		if finishErr := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusCancelled, result, "cancelled"); finishErr != nil {
-			logSystemTaskLockError(ctx, task, finishErr)
+			logSystemTaskLockError(context.Background(), task, finishErr)
 		}
 		return
 	}

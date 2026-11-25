@@ -46,6 +46,25 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	if !ok {
 		return nil, types.NewOpenAIError(fmt.Errorf("expected OpenAI responses response, got %T", convertResult.Value), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
+	for _, choice := range chatResp.Choices {
+		for _, tc := range choice.Message.ParseToolCalls() {
+			info.CountBillableToolCall(dto.BuildInCallFunctionCall, tc.Function.Name)
+		}
+	}
+	imageCounter := &relaycommon.ImageGenerationCallCounter{}
+	for i := range responsesResp.Output {
+		switch responsesResp.Output[i].Type {
+		case dto.BuildInCallWebSearchCall:
+			info.CountBillableToolCall(dto.BuildInCallWebSearchCall, "")
+		case dto.BuildInCallFileSearchCall:
+			info.CountBillableToolCall(dto.BuildInCallFileSearchCall, "")
+		case dto.ResponsesOutputTypeImageGenerationCall:
+			imageCounter.Observe(&responsesResp.Output[i], &i)
+		}
+	}
+	info.ApplyVendorToolUsage(body)
+	imageCounter.Commit(info)
+
 	usage := convertResult.Usage
 	if usage == nil || usage.TotalTokens == 0 {
 		text := service.ExtractOutputTextFromResponses(responsesResp)
@@ -81,6 +100,55 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	// upstreamFailure is the upstream or conversion failure the client was
 	// told about with response.failed.
 	var upstreamFailure *types.NewAPIError
+	seenStreamToolCalls := make(map[string]struct{})
+	var streamFunctionCallNames []string
+	var lastStreamData string
+	var secondLastStreamData string
+	var vendorUsageFrame string
+	imageCounter := &relaycommon.ImageGenerationCallCounter{}
+	toolsCommitted := false
+
+	observeConvertedEvent := func(event relayconvert.ChatToResponsesStreamEvent) {
+		switch event.Type {
+		case dto.ResponsesOutputTypeItemDone:
+			if event.Payload.Item == nil {
+				return
+			}
+			switch event.Payload.Item.Type {
+			case dto.BuildInCallWebSearchCall, dto.BuildInCallFileSearchCall:
+				info.CountBillableToolCall(event.Payload.Item.Type, event.Payload.Item.Name)
+			case dto.ResponsesOutputTypeImageGenerationCall:
+				imageCounter.Observe(event.Payload.Item, event.Payload.OutputIndex)
+			}
+		case "response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
+			if event.Payload.Response != nil {
+				for i := range event.Payload.Response.Output {
+					imageCounter.Observe(&event.Payload.Response.Output[i], &i)
+				}
+			}
+		}
+	}
+
+	commitStreamTools := func() {
+		if toolsCommitted {
+			return
+		}
+		toolsCommitted = true
+		for _, name := range streamFunctionCallNames {
+			info.CountBillableToolCall(dto.BuildInCallFunctionCall, name)
+		}
+		rawUsage := vendorUsageFrame
+		if rawUsage == "" {
+			rawUsage = lastStreamData
+		}
+		if rawUsage == "" {
+			rawUsage = secondLastStreamData
+		}
+		if rawUsage != "" {
+			info.ApplyVendorToolUsage(common.StringToByteSlice(rawUsage))
+		}
+		imageCounter.Commit(info)
+	}
 
 	sendEvent := func(event relayconvert.ChatToResponsesStreamEvent) bool {
 		data, err := common.Marshal(event.Payload)
@@ -98,6 +166,9 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			}
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 			return false
+		}
+		if info != nil {
+			info.SendResponseCount++
 		}
 		return true
 	}
@@ -154,7 +225,15 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			return
 		}
 
+		if lastStreamData != "" {
+			secondLastStreamData = lastStreamData
+		}
+		lastStreamData = data
+		if chunk.Usage != nil {
+			vendorUsageFrame = data
+		}
 		info.ObserveResponseModel(chunk.Model)
+		observeStreamChoices(info, data, seenStreamToolCalls, &streamFunctionCallNames)
 		results, err := service.ConvertStreamResponseChunk(c, info, state, &chunk)
 		if err != nil {
 			if failResponsesStream(err) {
@@ -173,6 +252,7 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 				stopStream(sr, streamErr)
 				return
 			}
+			observeConvertedEvent(event)
 			if !sendEvent(event) {
 				stopStream(sr, streamErr)
 				return
@@ -196,12 +276,14 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		state.SetUsage(usage)
 	}
 	if info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
+		commitStreamTools()
 		return usage, nil
 	}
 
 	finalResults, err := service.FinalizeStreamResponse(c, info, state)
 	if err != nil {
 		if failResponsesStream(err) {
+			commitStreamTools()
 			return usage, streamErr
 		}
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
@@ -211,14 +293,17 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		if !ok {
 			return nil, types.NewOpenAIError(fmt.Errorf("expected OAI responses stream event, got %T", result.Value), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 		}
+		observeConvertedEvent(event)
 		if !sendEvent(event) {
 			if streamErr != nil {
 				return nil, streamErr
 			}
+			commitStreamTools()
 			return usage, nil
 		}
 	}
 
+	commitStreamTools()
 	return usage, nil
 }
 

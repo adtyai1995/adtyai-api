@@ -158,9 +158,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	generalSettings := operation_setting.GetGeneralSetting()
 	// 二开：所有流式格式在预扣准入通过后再开始保活，避免余额不足等准入失败被 SSE 200 头劫持；
 	// 同时推理模型首字慢时 Cloudflare 不会 524 断开（任务 7.5）。Realtime 走 WebSocket，不发 SSE 注释行。
-	if relayFormat != types.RelayFormatOpenAIRealtime && relayInfo.IsStream && generalSettings.PingIntervalEnabled {
-		stopKeepAlive := helper.StartStreamKeepAlive(c, time.Duration(generalSettings.PingIntervalSeconds)*time.Second)
-		defer stopKeepAlive()
+	stopKeepAlive := func() {}
+	keepAliveEnabled := relayFormat != types.RelayFormatOpenAIRealtime && relayInfo.IsStream && generalSettings.PingIntervalEnabled
+	keepAliveInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
+	if keepAliveEnabled {
+		stopKeepAlive = helper.StartStreamKeepAlive(c, keepAliveInterval)
+		defer func() { stopKeepAlive() }()
 	}
 
 	retryParam := &service.RetryParam{
@@ -175,6 +178,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	retryTimes := common.GetRetryTimes()
 	for ; retryParam.GetRetry() <= retryTimes; retryParam.IncreaseRetry() {
+		if retryParam.GetRetry() > 0 && keepAliveEnabled {
+			stopKeepAlive = helper.StartStreamKeepAlive(c, keepAliveInterval)
+		}
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
 		relayInfo.PerformanceOutputTokens = 0
@@ -223,7 +229,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
 
-		decision := service.DecideRelayRetry(c, newAPIError, retryTimes-retryParam.GetRetry())
+		// Only block retry when business payload frames were written to the client;
+		// keepalive ": PING" comments set c.Writer.Written() without delivering output.
+		var decision service.PolicyDecision
+		if relayInfo.SendResponseCount > 0 || helper.HasWrittenStreamPayload(c) {
+			decision = service.PolicyDecision{Action: "stop", Reason: "response_already_written", Source: "system"}
+		} else {
+			decision = service.DecideRelayRetry(c, newAPIError, retryTimes-retryParam.GetRetry())
+		}
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)
 

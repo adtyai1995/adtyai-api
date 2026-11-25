@@ -776,6 +776,9 @@ func clawConvertedSiteCommissionTx(tx *gorm.DB, row *model.AdtySiteInviteCommiss
 	}
 	var user model.User
 	if err := model.AdtyLockForUpdate(tx).First(&user, row.InviterId).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return amount, nil
+		}
 		return decimal.Zero, err
 	}
 	found, siteFound, err := reclaimConvertedCommissionFundBatchesTx(tx, row, int64(quota))

@@ -419,10 +419,20 @@ func RetryDueChannelWatcherNotices(now int64) int {
 }
 
 func retryChannelWatcherNotices(dueOnly bool, now int64) int {
+	return retryChannelWatcherNoticesCtx(context.Background(), dueOnly, now)
+}
+
+func retryChannelWatcherNoticesCtx(ctx context.Context, dueOnly bool, now int64) int {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return 0
+	}
 	if model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherOutbox{}) {
 		return 0
 	}
-	query := model.DB.Where("status IN ? AND attempt_count < ?", []string{AdtyWatcherOutboxPending, AdtyWatcherOutboxFailed}, adtyWatcherOutboxMaxAttempts)
+	query := model.DB.WithContext(ctx).Where("status IN ? AND attempt_count < ?", []string{AdtyWatcherOutboxPending, AdtyWatcherOutboxFailed}, adtyWatcherOutboxMaxAttempts)
 	if dueOnly {
 		query = query.Where("next_retry_at = 0 OR next_retry_at <= ?", now)
 	}
@@ -432,6 +442,9 @@ func retryChannelWatcherNotices(dueOnly bool, now int64) int {
 	}
 	delivered := 0
 	for i := range rows {
+		if ctx.Err() != nil {
+			break
+		}
 		if deliverWatcherOutboxEntry(&rows[i], nil, !dueOnly) {
 			delivered++
 		}
@@ -462,14 +475,40 @@ func (adtyChannelWatcherRetryHandler) Run(ctx context.Context, task *model.Syste
 	if task == nil {
 		return
 	}
-	status, errorCategory := model.SystemTaskStatusSucceeded, ""
 	delivered := 0
-	if ctx != nil && ctx.Err() != nil {
-		status, errorCategory = model.SystemTaskStatusFailed, "cancelled"
-	} else {
-		delivered = RetryDueChannelWatcherNotices(time.Now().Unix())
+	if ctx == nil || ctx.Err() == nil {
+		delivered = retryChannelWatcherNoticesCtx(ctx, true, time.Now().Unix())
 	}
-	if err := model.FinishSystemTask(task.TaskID, runnerID, status, map[string]int{"delivered": delivered}, errorCategory); err != nil {
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		cancelled, checkErr := model.SystemTaskCancelRequested(task.TaskID)
+		if checkErr != nil {
+			common.SysLog(common.LogText("channel watcher retry task %s cancel check failed after context cancellation: %v", task.TaskID, checkErr))
+			return
+		}
+		if !cancelled {
+			// Context cancellation without cancel_requested indicates lease loss;
+			// do not overwrite the task state.
+			logSystemTaskLockError(context.Background(), task, model.ErrSystemTaskLockLost)
+			return
+		}
+		if err := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusCancelled, map[string]int{"delivered": delivered}, "cancelled"); err != nil {
+			logSystemTaskLockError(context.Background(), task, err)
+		}
+		return
+	}
+	if ctx != nil && ctx.Err() != nil {
+		if err := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusFailed, map[string]int{"delivered": delivered}, ctx.Err().Error()); err != nil {
+			logSystemTaskLockError(context.Background(), task, err)
+		}
+		return
+	}
+	if cancelled, checkErr := model.SystemTaskCancelRequested(task.TaskID); checkErr == nil && cancelled {
+		if err := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusCancelled, map[string]int{"delivered": delivered}, "cancelled"); err != nil {
+			logSystemTaskLockError(context.Background(), task, err)
+		}
+		return
+	}
+	if err := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusSucceeded, map[string]int{"delivered": delivered}, ""); err != nil {
 		common.SysLog(common.LogText("channel watcher retry task result could not be persisted: %s", err.Error()))
 	}
 }

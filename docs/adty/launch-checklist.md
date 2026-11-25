@@ -79,7 +79,7 @@
 
 - [ ] Telegram：在「系统设置 → 运营 → Telegram bots」保存两个机器人的 Token 并启用，确保已配置 `ADTY_TELEGRAM_ALLOW_NETWORK=1`，再于个人页绑定用户机器人、于本页下方或个人页绑定管理机器人（站长在站长中心 → 公告页绑定管理机器人），最后点「发送测试」确认收到测试通知。
 - [ ] 系统翻译：在「系统设置 → 运营 → System translation」选平台模型或独立接口并保存，点「测试连接」通过；按需设每日调用上限。
-- [ ] 分组健康：在「系统设置 → 运营 → 分组健康」确认健康阈值（默认 95%）和监控中断时长（默认 6 小时）。
+- [ ] 模型探活：在「系统设置 → 内容 → 服务监控 / 模型探活」确认内置模型探活间隔（`console_setting.model_probe_interval_minutes`、`image_probe_interval_minutes`）与超时（`model_probe_timeout_seconds`），并执行一次手动探活确认结果正常。原「系统设置 → 运营 → 分组健康」已退役，不再配置。
 
 ## 5. 邮件
 
@@ -136,7 +136,7 @@
 - [ ] 按方案任务 11.0 实测四项，结果记下来，任何一项不通先改代码再上线：
   - [ ] Cloudflare 自定义主机名：用 API 建一个（`ssl.method=http`），另一个域名的子域名 CNAME 过来，等 `status` 和 `ssl.status` 都是 active，curl 确认证书有效，记下用了多久。
   - [ ] Turnstile：把这个自定义域名加进 widget 的 domains，在这个域名上能过验证，后端校验通过、返回的 hostname 对。
-  - [ ] Resend：加一个发件域名并验证通过，从它发一封，邮件原文里 SPF、DKIM 都通过。营销联系人和 Broadcast 已删除。
+  - [ ] 分站发件配置：在「站长中心 → 站点设置」验证平台默认发件，以及分站自有 Resend API Key 或自定义 SMTP（`PUT /api/adty/site/mail-config`、`POST /api/adty/site/mail-config/test`），发一封测试邮件确认送达且 SPF、DKIM 通过。原托管 Resend 发件域名（`sender_domain_enabled` / `POST /api/adty/site/sender-domain`）与营销联系人/Broadcast 均已退役。
   - [ ] SSE：自定义域名下跑首字延迟 100 秒和 150 秒的流式请求，开 30 秒 ping 时都不断，关了 ping 时 150 秒那个报 524。
 
 ### 设置
@@ -152,7 +152,7 @@
 - [ ] 邮件：分站客户的验证码、找回密码邮件，链接是分站地址，站名是分站站名；用伪造的 Host 请求找回密码，收到的链接仍然是用户所属站点的地址。
 - [ ] 支付：分站客户用支付宝付款，付完回到分站钱包。
 - [ ] 搜索引擎：没开 SEO 的分站，首页网页源码里有 noindex。
-- [ ] 后台能看到 Turnstile widget 用量（每个 widget 已登记域名数 / 10）和 Resend 发件域名用量（含最近一次「名额已满」时间）。
+- [ ] 后台能看到 Turnstile widget 用量（每个 widget 已登记域名数 / 10）。原托管 Resend 发件域名已退役，分站改用自有 Resend API Key 或自定义 SMTP，不再验收托管发件域名名额。
 
 ## 12. 收尾
 

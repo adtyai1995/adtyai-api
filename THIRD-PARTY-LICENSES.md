@@ -142,7 +142,6 @@ Versions below are the resolved versions for the checked-in manifests and lockfi
 | web      | development | npm       | `knip`                                                  | `6.45.1`                             | ISC                     |
 | web      | development | npm       | `oxfmt`                                                 | `0.72.0`                             | MIT                     |
 | web      | development | npm       | `oxlint`                                                | `1.74.0`                             | MIT                     |
-| web      | development | npm       | `playwright`                                            | `1.65.0`                             | Apache-2.0              |
 | web      | development | npm       | `vitest`                                                | `5.0.4`                              | MIT                     |
 
 ## License Texts

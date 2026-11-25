@@ -56,6 +56,23 @@ func adtyAuthorizeAdminActions(c *gin.Context, permissions ...authz.Permission) 
 	return nil
 }
 
+// adtyAuthorizeAnyAdminAction requires the caller (and its scoped PAT, if any)
+// to hold at least one of the given permissions.
+func adtyAuthorizeAnyAdminAction(c *gin.Context, permissions ...authz.Permission) error {
+	if !service.AdtyAdminPermissionsEnabled() {
+		return nil
+	}
+	if len(permissions) == 0 {
+		return errAdtyAdminActionDenied
+	}
+	for _, permission := range permissions {
+		if err := adtyAuthorizeAdminActions(c, permission); err == nil {
+			return nil
+		}
+	}
+	return errAdtyAdminActionDenied
+}
+
 func denyAdtyAdminAction(c *gin.Context) {
 	common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Unauthorized, insufficient privileges"), gin.H{"code": AdtyPermissionDeniedCode})
 }

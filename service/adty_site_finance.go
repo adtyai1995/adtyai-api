@@ -570,7 +570,7 @@ func notifyAdtyAnomalyDispositionTx(tx *gorm.DB, row model.AdtyAnomalyDispositio
 		IssuerSiteId:    0,
 		PublisherId:     operatorID,
 		PublisherName:   publisher,
-		Title:           "资金异常处置",
+		Title:           "资金异常处置 / Fund anomaly review",
 		Content:         content,
 		Kind:            "system",
 		Audience:        "user",
@@ -982,10 +982,10 @@ func saveAdtySiteTiers(tiers []model.AdtySiteTier, existingOnly bool) error {
 			// Fixed mode fixes the assigned level, not an obsolete copy of
 			// that level's Root-managed financial terms.
 			var affectedBefore []model.AdtySite
-			if err := tx.Where("tier_code = ? AND status <> ?", input.Code, model.AdtySiteStatusClosed).Find(&affectedBefore).Error; err != nil {
+			if err := tx.Where("tier_code = ? AND status NOT IN ?", input.Code, []string{model.AdtySiteStatusClosed, model.AdtySiteStatusDeleting}).Find(&affectedBefore).Error; err != nil {
 				return err
 			}
-			if err := tx.Model(&model.AdtySite{}).Where("tier_code = ?", input.Code).Updates(map[string]any{
+			if err := tx.Model(&model.AdtySite{}).Where("tier_code = ? AND status NOT IN ?", input.Code, []string{model.AdtySiteStatusClosed, model.AdtySiteStatusDeleting}).Updates(map[string]any{
 				"tier_cost_factor":         input.CostFactor,
 				"pending_tier_cost_factor": nil, "pending_tier_cost_factor_at": 0,
 			}).Error; err != nil {
@@ -1002,7 +1002,7 @@ func saveAdtySiteTiers(tiers []model.AdtySiteTier, existingOnly bool) error {
 					changedSiteIDs[beforeSite.Id] = struct{}{}
 				}
 			}
-			sites := tx.Model(&model.AdtySite{}).Select("id").Where("tier_code = ?", input.Code)
+			sites := tx.Model(&model.AdtySite{}).Select("id").Where("tier_code = ? AND status NOT IN ?", input.Code, []string{model.AdtySiteStatusClosed, model.AdtySiteStatusDeleting})
 			if err := tx.Model(&model.AdtySiteWallet{}).
 				Where("kind = ? AND site_id IN (?)", model.AdtySiteWalletMargin, sites).
 				Update("required_balance", input.DepositUSD).Error; err != nil {
@@ -1254,6 +1254,9 @@ func EvaluateAdtySiteTierAt(siteID int, now int64, periodID string) (*model.Adty
 			}
 			return err
 		}
+		if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting {
+			return ErrAdtySiteStatus
+		}
 		beforeEff, beforeOK := AdtySiteCostFactor(&site)
 		if err := ensureAdtySiteWalletsTx(tx, siteID); err != nil {
 			return err
@@ -1274,10 +1277,10 @@ func EvaluateAdtySiteTierAt(siteID int, now int64, periodID string) (*model.Adty
 			return err
 		}
 		var tiers []model.AdtySiteTier
-		if err := tx.Where("enabled = ?", true).Find(&tiers).Error; err != nil {
+		if err := tx.Where("enabled = ? AND cost_factor IS NOT NULL AND cost_factor > 0", true).Find(&tiers).Error; err != nil {
 			return err
 		}
-		// R3-026: Bail out without wiping existing site tier assignment if no enabled tiers exist.
+		// R3-026 / R3-22: Bail out without wiping existing site tier assignment if no ready enabled tiers exist.
 		if len(tiers) == 0 {
 			return nil
 		}
@@ -1285,6 +1288,9 @@ func EvaluateAdtySiteTierAt(siteID int, now int64, periodID string) (*model.Adty
 		warn = selected == nil && len(tiers) > 0
 		if selected == nil {
 			selected = lowestEnabledAdtySiteTier(tiers)
+		}
+		if selected == nil {
+			return nil
 		}
 		previous := site.TierCode
 		next := ""
@@ -1390,6 +1396,9 @@ func SetAdtySiteTier(siteID int, code, mode string, now int64) (*model.AdtySite,
 				return ErrAdtySiteNotFound
 			}
 			return err
+		}
+		if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting {
+			return ErrAdtySiteStatus
 		}
 		oldFactor, oldHasFactor := AdtySiteCostFactor(&site)
 		// Read the definition after acquiring the site lock so a concurrent

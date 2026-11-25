@@ -11205,6 +11205,23 @@
     "Disabled site staff accounts must be re-enabled by the site owner": "已停用的分站员工账号需由站长重新启用",
     "Site owner accounts cannot self-delete while owning a site": "名下存在分站的站长账号无法自助注销",
     "Site staff accounts cannot self-delete": "分站员工账号无法自助注销",
-    "Auto group has been retired; select a specific group": "自动分组已停用，请选择具体分组"
+    "Auto group has been retired; select a specific group": "自动分组已停用，请选择具体分组",
+    "Remark must be less than 255 characters": "备注长度必须少于 255 个字符",
+    "Context length cannot be negative": "上下文长度不能为负数",
+    "Group name is required": "请输入分组名称",
+    "Question is required": "请输入问题",
+    "Question must be less than 200 characters": "问题长度必须少于 200 个字符",
+    "Answer is required": "请输入答案",
+    "Answer must be less than 1000 characters": "答案长度必须少于 1000 个字符",
+    "Must be at least 0.1": "不能小于 0.1",
+    "Must be 1 or less": "不能大于 1",
+    "Must be at least 0.002": "不能小于 0.002",
+    "Must be ≥ 0": "必须大于等于 0",
+    "Must be ≤ 2,147,483,647": "必须小于等于 2,147,483,647",
+    "Must be ≥ 1": "必须大于等于 1",
+    "Approve or reject referral withdrawals.": "通过或驳回推广提现申请。",
+    "This group is the only allowed group for an active reseller site. Update the site's allowed groups first": "该分组是某运营中分站唯一允许使用的分组，请先调整该分站的允许分组后再删除",
+    "Withdrawal state changed concurrently, please retry": "提现单状态已发生并发变更，请重试",
+    "Content-Type must be application/json": "请求头 Content-Type 必须为 application/json"
   }
 }

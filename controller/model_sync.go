@@ -440,6 +440,10 @@ func SyncUpstreamPreview(c *gin.Context) {
 }
 
 func SyncUpstreamModels(c *gin.Context) {
+	if err := adtyAuthorizeAnyAdminAction(c, authz.AdtyModelCreate, authz.AdtyModelWrite); err != nil {
+		denyAdtyAdminAction(c)
+		return
+	}
 	var request struct {
 		Locale        string                        `json:"locale"`
 		SourceVersion string                        `json:"source_version"`

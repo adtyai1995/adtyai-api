@@ -1056,10 +1056,14 @@ func (a *TaskAdaptor) ParseBatchResult(pollCtx context.Context, tasks []*model.T
 				}
 			}
 			facts, hookErr := a.plugin.Engine.Call(pluginruntime.WithFetcher(pollCtx, a.hookFetcher(baseURL, proxy)), "extractUsageOnComplete", itemCtx, jsonValue(&info), usageBody)
-			if hookErr == nil {
-				upstreamModel, _ := itemCtx["upstreamModel"].(string)
-				originModel, _ := itemCtx["model"].(string)
-				a.applyCompletionUsageFacts(&info, facts, upstreamModel, originModel)
+			if hookErr != nil {
+				logger.LogWarn(pollCtx, common.LogText("task plugin %s extractUsageOnComplete failed for task %s: %v", a.plugin.Meta.Key, item.TaskID, hookErr))
+				return nil, fmt.Errorf("extractUsageOnComplete failed for task %s: %w", item.TaskID, hookErr)
+			}
+			upstreamModel, _ := itemCtx["upstreamModel"].(string)
+			originModel, _ := itemCtx["model"].(string)
+			if usageErr := a.applyCompletionUsageFacts(&info, facts, upstreamModel, originModel); usageErr != nil {
+				return nil, fmt.Errorf("extractUsageOnComplete invalid usage for task %s: %w", item.TaskID, usageErr)
 			}
 		}
 		results[item.TaskID] = &service.BatchTaskResult{TaskInfo: info, Action: item.Action, SubmitTime: item.SubmitTime, StartTime: item.StartTime, FinishTime: item.FinishTime, Data: item.Data}
@@ -1126,10 +1130,14 @@ func (a *TaskAdaptor) ParseTaskResult(pollCtx context.Context, task *model.Task,
 	// units here so the host settlement path can consume them from TaskInfo.
 	if a.hasHook(pollCtx, "extractUsageOnComplete") && model.TaskStatus(result.Status) == model.TaskStatusSuccess {
 		facts, hookErr := a.plugin.Engine.Call(pluginruntime.WithFetcher(pollCtx, a.hookFetcher(baseURL, proxy)), "extractUsageOnComplete", ctx, jsonValue(result), input)
-		if hookErr == nil {
-			upstreamModel, _ := ctx["upstreamModel"].(string)
-			originModel, _ := ctx["model"].(string)
-			a.applyCompletionUsageFacts(result, facts, upstreamModel, originModel)
+		if hookErr != nil {
+			logger.LogWarn(pollCtx, common.LogText("task plugin %s extractUsageOnComplete failed: %v", a.plugin.Meta.Key, hookErr))
+			return nil, fmt.Errorf("extractUsageOnComplete failed: %w", hookErr)
+		}
+		upstreamModel, _ := ctx["upstreamModel"].(string)
+		originModel, _ := ctx["model"].(string)
+		if usageErr := a.applyCompletionUsageFacts(result, facts, upstreamModel, originModel); usageErr != nil {
+			return nil, fmt.Errorf("extractUsageOnComplete invalid usage: %w", usageErr)
 		}
 	}
 	taskStatus := model.TaskStatus(result.Status)

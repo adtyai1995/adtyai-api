@@ -140,13 +140,15 @@ export function SiteTierControl(props: { site: AdminSite }) {
     (Array.isArray(tiers.data) ? tiers.data : []).find(
       (tier) => tier.code === props.site.tier_code
     )?.name ?? props.site.tier_code
+  const siteStatus = String(props.site.status)
+  const isSiteLocked = siteStatus === 'closed' || siteStatus === 'deleting'
   const parsedAmount = Number(adjustAmount.trim())
   const validAdjustAmount =
     adjustAmount.trim() !== '' &&
     Number.isFinite(parsedAmount) &&
     (adjustMode === 'delta' ? parsedAmount !== 0 : parsedAmount >= 0)
   const canAdjust =
-    props.site.status !== 'closed' &&
+    !isSiteLocked &&
     validAdjustAmount &&
     adjustReason.trim() !== '' &&
     !adjust.isPending
@@ -176,6 +178,7 @@ export function SiteTierControl(props: { site: AdminSite }) {
             <NativeSelect
               id={`site-tier-${props.site.id}`}
               value={choice}
+              disabled={isSiteLocked || save.isPending}
               onChange={(event) => setChoice(event.target.value)}
             >
               <NativeSelectOption value={AUTOMATIC}>
@@ -191,16 +194,20 @@ export function SiteTierControl(props: { site: AdminSite }) {
           <Button
             type='button'
             variant='outline'
-            disabled={save.isPending || choice === current}
-            onClick={() => save.mutate()}
+            disabled={isSiteLocked || save.isPending || choice === current}
+            onClick={() => {
+              if (!isSiteLocked) save.mutate()
+            }}
           >
             {t('Save')}
           </Button>
         </div>
         <p className='text-muted-foreground text-xs'>
-          {t(
-            'Switching to automatic immediately matches the site to its qualifying level based on cumulative net customer top-up principal.'
-          )}
+          {isSiteLocked
+            ? t('Site is closed')
+            : t(
+                'Switching to automatic immediately matches the site to its qualifying level based on cumulative net customer top-up principal.'
+              )}
         </p>
       </div>
 
@@ -248,7 +255,7 @@ export function SiteTierControl(props: { site: AdminSite }) {
           </dl>
         )}
 
-        {props.site.status !== 'closed' && (
+        {!isSiteLocked && (
           <div className='flex flex-col gap-2'>
             <div className='grid gap-2 sm:grid-cols-3'>
               <div className='flex flex-col gap-1'>

@@ -120,7 +120,7 @@ var adtyResources = []ResourceDefinition{
 		LabelKey: "Referrals",
 		Actions: []ActionDefinition{
 			{Action: ActionRead, LabelKey: "View referrals", DescriptionKey: "View affiliates, commissions and withdrawals."},
-			{Action: ActionReview, LabelKey: "Review referrals", DescriptionKey: "Approve or reject partner applications and withdrawals."},
+			{Action: ActionReview, LabelKey: "Review referrals", DescriptionKey: "Approve or reject referral withdrawals."},
 			{Action: ActionPayout, LabelKey: "Mark payouts", DescriptionKey: "Mark withdrawals as paid and upload proof."},
 			{Action: ActionAdjust, LabelKey: "Adjust referrals", DescriptionKey: "Adjust commissions, freeze settlement, set rates and disable affiliates."},
 			{Action: ActionSettings, LabelKey: "Referral settings", DescriptionKey: "Change referral settings, including the withdrawal exchange rate."},

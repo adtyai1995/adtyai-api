@@ -929,7 +929,7 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 				if res.RowsAffected == 0 || staff.Status == "deleted" {
 					return false, common.NewMessage("Deleted site staff accounts cannot be re-enabled")
 				}
-				if staff.Status != "active" {
+				if staff.Status != "enabled" {
 					return false, common.NewMessage("Disabled site staff accounts must be re-enabled by the site owner")
 				}
 			}
@@ -1330,9 +1330,38 @@ func userOwnsOpenSite(tx *gorm.DB, userId int) (bool, error) {
 	}
 	var count int64
 	err := tx.Model(&AdtySite{}).Where("owner_user_id = ? AND status IN ?", userId, []string{
-		AdtySiteStatusActive, AdtySiteStatusPaused, AdtySiteStatusClosing,
+		AdtySiteStatusActive, AdtySiteStatusPaused, AdtySiteStatusClosing, AdtySiteStatusDeleting,
 	}).Count(&count).Error
 	return count > 0, err
+}
+
+func disableDeletedUserAffiliatesTx(tx *gorm.DB, userId int) error {
+	if tx == nil || userId <= 0 {
+		return nil
+	}
+	now := time.Now().Unix()
+	if tx.Migrator().HasTable(&ReferralAffiliate{}) {
+		if err := tx.Model(&ReferralAffiliate{}).
+			Where("user_id = ?", userId).
+			Updates(map[string]any{
+				"status":              ReferralAffiliateStatusDisabled,
+				"acquisition_enabled": false,
+				"disabled_at":         now,
+			}).Error; err != nil {
+			return err
+		}
+	}
+	if tx.Migrator().HasTable(&AdtySiteReferralAffiliate{}) {
+		if err := tx.Model(&AdtySiteReferralAffiliate{}).
+			Where("user_id = ?", userId).
+			Updates(map[string]any{
+				"status":      AdtySiteAffiliateStatusDisabled,
+				"disabled_at": now,
+			}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // LookupLoginCandidateUserID resolves an unambiguous existing user ID for a login
@@ -1413,6 +1442,9 @@ func (user *User) deleteWithOptions(identity *AuthSessionIdentity, actorRole int
 				return err
 			}
 			disabledEmployeeIDs = append(disabledEmployeeIDs, ids...)
+		}
+		if err := disableDeletedUserAffiliatesTx(tx, user.Id); err != nil {
+			return err
 		}
 		nextAuthVersion, err = IncrementUserAuthVersionWithTx(tx, user.Id)
 		if err != nil {
@@ -1505,6 +1537,9 @@ func (user *User) hardDelete(actorRole int, denyAdminTarget bool) (int64, error)
 				return err
 			}
 			disabledEmployeeIDs = append(disabledEmployeeIDs, ids...)
+		}
+		if err := disableDeletedUserAffiliatesTx(tx, user.Id); err != nil {
+			return err
 		}
 		deletedAuthVersion, err = IncrementUserAuthVersionWithTx(tx, user.Id)
 		if err != nil {
