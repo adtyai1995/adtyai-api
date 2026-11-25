@@ -213,7 +213,12 @@ func GetAbout(c *gin.Context) {
 func GetUserAgreement(c *gin.Context) {
 	lang := service.AdtyRequestLegalLang(c)
 	if site := service.AdtySiteForRequest(c); site != nil {
-		legal := service.AdtySiteLegalFor(site)
+		legal, err := service.AdtySiteLegalForWithError(site)
+		if err != nil {
+			common.SysError(common.LogText("failed to load legal docs for site %d: %s", site.Id, err.Error()))
+			common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Site legal documents are temporarily unavailable"))
+			return
+		}
 		serveRevalidatedJSON(c, service.AdtyResolveLegalText(legal.UserAgreement, lang))
 		return
 	}
@@ -227,7 +232,12 @@ func GetUserAgreement(c *gin.Context) {
 func GetPrivacyPolicy(c *gin.Context) {
 	lang := service.AdtyRequestLegalLang(c)
 	if site := service.AdtySiteForRequest(c); site != nil {
-		legal := service.AdtySiteLegalFor(site)
+		legal, err := service.AdtySiteLegalForWithError(site)
+		if err != nil {
+			common.SysError(common.LogText("failed to load legal docs for site %d: %s", site.Id, err.Error()))
+			common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Site legal documents are temporarily unavailable"))
+			return
+		}
 		serveRevalidatedJSON(c, service.AdtyResolveLegalText(legal.PrivacyPolicy, lang))
 		return
 	}

@@ -60,6 +60,7 @@ function MarginVoucherRedeemCard() {
         })
       )
       void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
+      void queryClient.invalidateQueries({ queryKey: ['adty-topup'] })
       void invalidateSidebarBadges(queryClient)
     },
     onError: (cause) => {

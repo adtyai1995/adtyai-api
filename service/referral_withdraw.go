@@ -506,51 +506,64 @@ func shrinkFrozenWithdrawalOccupancyTx(tx *gorm.DB, commissionId int, amount dec
 		}
 		withdrawalStatus[item.WithdrawalId] = w.Status
 	}
+	var pendingItems, approvedItems []model.ReferralWithdrawalItem
+	for _, item := range items {
+		switch withdrawalStatus[item.WithdrawalId] {
+		case model.ReferralWithdrawalStatusPending:
+			pendingItems = append(pendingItems, item)
+		case model.ReferralWithdrawalStatusApproved:
+			approvedItems = append(approvedItems, item)
+		}
+	}
 	remaining := amount
 	deductedNow := decimal.Zero
 	reducedBy := map[int]decimal.Decimal{}
-	for i := range items {
+	// Phase 1: shrink or cancel pending withdrawals first before deferring clawback onto approved withdrawals.
+	for i := range pendingItems {
 		if !remaining.IsPositive() {
 			break
 		}
-		have := moneyDec(items[i].AllocatedAmount)
+		have := moneyDec(pendingItems[i].AllocatedAmount)
 		if !have.IsPositive() {
 			continue
 		}
-		switch withdrawalStatus[items[i].WithdrawalId] {
-		case model.ReferralWithdrawalStatusPending:
-			take := decimal.Min(have, remaining)
-			left := have.Sub(take)
-			updates := map[string]any{"allocated_amount": moneyF(left)}
-			if !left.IsPositive() {
-				updates["status"] = model.ReferralWithdrawalItemStatusReleased
-				updates["allocated_amount"] = 0
-				updates["pending_clawback_amount"] = 0
-			}
-			if err := tx.Model(&model.ReferralWithdrawalItem{}).Where("id = ?", items[i].Id).Updates(updates).Error; err != nil {
-				return decimal.Zero, err
-			}
-			if items[i].CommissionId > 0 && !left.IsPositive() {
-				if err := syncCommissionStatusTx(tx, items[i].CommissionId); err != nil {
-					return decimal.Zero, err
-				}
-			}
-			reducedBy[items[i].WithdrawalId] = reducedBy[items[i].WithdrawalId].Add(take)
-			deductedNow = deductedNow.Add(take)
-			remaining = remaining.Sub(take)
-		case model.ReferralWithdrawalStatusApproved:
-			alreadyPending := moneyDec(items[i].PendingClawbackAmount)
-			availToMark := have.Sub(alreadyPending)
-			if !availToMark.IsPositive() {
-				continue
-			}
-			mark := decimal.Min(availToMark, remaining)
-			if err := tx.Model(&model.ReferralWithdrawalItem{}).Where("id = ?", items[i].Id).
-				Update("pending_clawback_amount", moneyF(alreadyPending.Add(mark))).Error; err != nil {
-				return decimal.Zero, err
-			}
-			remaining = remaining.Sub(mark)
+		take := decimal.Min(have, remaining)
+		left := have.Sub(take)
+		updates := map[string]any{"allocated_amount": moneyF(left)}
+		if !left.IsPositive() {
+			updates["status"] = model.ReferralWithdrawalItemStatusReleased
+			updates["allocated_amount"] = 0
+			updates["pending_clawback_amount"] = 0
 		}
+		if err := tx.Model(&model.ReferralWithdrawalItem{}).Where("id = ?", pendingItems[i].Id).Updates(updates).Error; err != nil {
+			return decimal.Zero, err
+		}
+		if pendingItems[i].CommissionId > 0 && !left.IsPositive() {
+			if err := syncCommissionStatusTx(tx, pendingItems[i].CommissionId); err != nil {
+				return decimal.Zero, err
+			}
+		}
+		reducedBy[pendingItems[i].WithdrawalId] = reducedBy[pendingItems[i].WithdrawalId].Add(take)
+		deductedNow = deductedNow.Add(take)
+		remaining = remaining.Sub(take)
+	}
+	// Phase 2: record any remaining shortfall on approved withdrawals awaiting payout.
+	for i := range approvedItems {
+		if !remaining.IsPositive() {
+			break
+		}
+		have := moneyDec(approvedItems[i].AllocatedAmount)
+		alreadyPending := moneyDec(approvedItems[i].PendingClawbackAmount)
+		availToMark := have.Sub(alreadyPending)
+		if !availToMark.IsPositive() {
+			continue
+		}
+		mark := decimal.Min(availToMark, remaining)
+		if err := tx.Model(&model.ReferralWithdrawalItem{}).Where("id = ?", approvedItems[i].Id).
+			Update("pending_clawback_amount", moneyF(alreadyPending.Add(mark))).Error; err != nil {
+			return decimal.Zero, err
+		}
+		remaining = remaining.Sub(mark)
 	}
 	for withdrawalId, reduced := range reducedBy {
 		if err := reduceOrReleaseWithdrawalAfterClawbackTx(tx, withdrawalId, reduced); err != nil {
@@ -746,26 +759,20 @@ func (s *ReferralService) releaseWithdrawalTx(tx *gorm.DB, withdrawal *model.Ref
 		return err
 	}
 	var frozenItems []model.ReferralWithdrawalItem
-	if err := tx.Where("withdrawal_id = ? AND status = ?", withdrawal.Id, model.ReferralWithdrawalItemStatusFrozen).Find(&frozenItems).Error; err != nil {
+	if err := tx.Where("withdrawal_id = ? AND status = ?", withdrawal.Id, model.ReferralWithdrawalItemStatusFrozen).Order("id ASC").Find(&frozenItems).Error; err != nil {
 		return err
 	}
+	var pendingClawItems []model.ReferralWithdrawalItem
+	var pendingClawWeights []decimal.Decimal
 	pendingClawbackTotal := decimal.Zero
 	for _, item := range frozenItems {
 		pendingClaw := moneyDec(item.PendingClawbackAmount)
 		if !pendingClaw.IsPositive() {
 			continue
 		}
+		pendingClawItems = append(pendingClawItems, item)
+		pendingClawWeights = append(pendingClawWeights, pendingClaw)
 		pendingClawbackTotal = pendingClawbackTotal.Add(pendingClaw)
-		if item.CommissionId > 0 {
-			var comm model.ReferralCommission
-			if err := tx.Where("id = ?", item.CommissionId).First(&comm).Error; err != nil {
-				return err
-			}
-			nextBook := decimal.Max(moneyDec(comm.CommissionAmount).Sub(pendingClaw), decimal.Zero)
-			if err := tx.Model(&model.ReferralCommission{}).Where("id = ?", comm.Id).Update("commission_amount", moneyF(nextBook)).Error; err != nil {
-				return err
-			}
-		}
 	}
 	updates := map[string]any{"status": status, "reject_reason": truncateText(reason, 1000)}
 	if status == model.ReferralWithdrawalStatusCanceled {
@@ -798,12 +805,33 @@ func (s *ReferralService) releaseWithdrawalTx(tx *gorm.DB, withdrawal *model.Ref
 			return lockErr
 		}
 		deduct := decimal.Min(clawAmt, moneyDec(freshAccount.FrozenAmount))
-		if deduct.IsPositive() {
-			if err := AdjustAccountTx(tx, freshAccount, decimal.Zero, decimal.Zero, deduct.Neg(), decimal.Zero, model.ReferralCommissionLedger{
-				WithdrawalId: withdrawal.Id, Type: "clawback", RefType: "withdrawal", RefId: fmt.Sprint(withdrawal.Id),
-				ExternalRefId: fmt.Sprintf("withdraw-reject-claw:%d", withdrawal.Id), Remark: "pending refund clawback settled on withdrawal release",
-			}); err != nil {
-				return err
+		if deduct.IsPositive() && len(pendingClawItems) > 0 {
+			shares := splitDecimalByWeights(deduct, pendingClawWeights)
+			for idx, item := range pendingClawItems {
+				share := shares[idx]
+				if !share.IsPositive() {
+					continue
+				}
+				if item.CommissionId > 0 {
+					var comm model.ReferralCommission
+					if err := tx.Where("id = ?", item.CommissionId).First(&comm).Error; err != nil {
+						return err
+					}
+					nextBook := decimal.Max(moneyDec(comm.CommissionAmount).Sub(share), decimal.Zero)
+					if err := tx.Model(&model.ReferralCommission{}).Where("id = ?", comm.Id).Update("commission_amount", moneyF(nextBook)).Error; err != nil {
+						return err
+					}
+				}
+				freshAccount, lockErr = lockReferralAccountTx(tx, withdrawal.AffiliateId)
+				if lockErr != nil {
+					return lockErr
+				}
+				if err := AdjustAccountTx(tx, freshAccount, decimal.Zero, decimal.Zero, share.Neg(), decimal.Zero, model.ReferralCommissionLedger{
+					CommissionId: item.CommissionId, WithdrawalId: withdrawal.Id, Type: "withdraw_reject_clawback", RefType: "withdrawal", RefId: fmt.Sprint(withdrawal.Id),
+					ExternalRefId: fmt.Sprintf("withdraw-reject-claw:%d:%d", withdrawal.Id, item.Id), Remark: "pending refund clawback settled on withdrawal release",
+				}); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -980,6 +1008,9 @@ func (s *ReferralService) MarkWithdrawalPaidForActor(withdrawalId, adminId, acto
 			updates["receipt_key"] = receiptKey
 		}
 		if err := tx.Model(&model.ReferralWithdrawal{}).Where("id = ?", withdrawal.Id).Updates(updates).Error; err != nil {
+			if isAdtyUniqueConflictError(err) {
+				return common.NewMessage("This payout reference was already used for another withdrawal")
+			}
 			return err
 		}
 		if err := s.markWithdrawalItemsPaidTx(tx, withdrawal.Id); err != nil {
@@ -1115,13 +1146,14 @@ type referralConvertedWithdrawalItem struct {
 
 func commissionAllocatedByChannelTx(tx *gorm.DB, commissionId int) (frozen, converted, externalWithdrawn decimal.Decimal, balanceItems []referralConvertedWithdrawalItem, err error) {
 	var items []struct {
-		WithdrawalId    int
-		AllocatedAmount float64
-		Status          string
-		AccountType     string
+		WithdrawalId          int
+		AllocatedAmount       float64
+		PendingClawbackAmount float64
+		Status                string
+		AccountType           string
 	}
 	err = tx.Table("referral_withdrawal_items AS i").
-		Select("i.withdrawal_id, i.allocated_amount, i.status, COALESCE(w.account_type, '') AS account_type").
+		Select("i.withdrawal_id, i.allocated_amount, i.pending_clawback_amount, i.status, COALESCE(w.account_type, '') AS account_type").
 		Joins("LEFT JOIN referral_withdrawals AS w ON w.id = i.withdrawal_id").
 		Where("i.commission_id = ?", commissionId).
 		Order("i.id ASC").
@@ -1133,7 +1165,7 @@ func commissionAllocatedByChannelTx(tx *gorm.DB, commissionId int) (frozen, conv
 		amt := moneyDec(item.AllocatedAmount)
 		switch item.Status {
 		case model.ReferralWithdrawalItemStatusFrozen:
-			frozen = frozen.Add(amt)
+			frozen = frozen.Add(decimal.Max(amt.Sub(moneyDec(item.PendingClawbackAmount)), decimal.Zero))
 		case model.ReferralWithdrawalItemStatusWithdrawn:
 			if item.AccountType == model.ReferralWithdrawToBalance {
 				converted = converted.Add(amt)

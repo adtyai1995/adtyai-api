@@ -120,7 +120,8 @@ func SendResendEmailWithConfig(apiKey, fromAddr, displayName, subject, receiver,
 			Message string `json:"message"`
 		}
 		_ = DecodeJson(io.LimitReader(resp.Body, 4096), &failure)
-		SysError(LogText("Resend rejected the email: status=%d name=%q message=%q", resp.StatusCode, failure.Name, failure.Message))
+		safeMsg := SanitizeOutboundError(errors.New(failure.Message), apiKey).Error()
+		SysError(LogText("Resend rejected the email: status=%d name=%q message=%q", resp.StatusCode, failure.Name, safeMsg))
 		return NewMessage("Resend email delivery failed (HTTP {{status}})", map[string]any{"status": resp.StatusCode})
 	}
 	var result struct {

@@ -61,24 +61,38 @@ export async function requestSecurityEmailCode(
   )
 }
 
+function isLoginChallengeMethod(
+  option: unknown
+): option is { method: string; available: boolean } {
+  if (!option || typeof option !== 'object') return false
+  const entry = option as { method?: unknown; available?: unknown }
+  return (
+    typeof entry.method === 'string' && typeof entry.available === 'boolean'
+  )
+}
+
 export function isLoginChallenge(value: unknown): value is LoginChallenge {
   if (!value || typeof value !== 'object') return false
-  const challenge = value as Partial<LoginChallenge>
-  return (
-    challenge.require_verification === true &&
-    typeof challenge.flow_token === 'string' &&
-    challenge.flow_token.length > 0 &&
-    typeof challenge.expires_at === 'number' &&
-    Number.isFinite(challenge.expires_at) &&
-    Array.isArray(challenge.methods) &&
-    challenge.methods.length > 0 &&
-    challenge.methods.every(
-      (option) =>
-        option &&
-        option.method === '2fa' &&
-        typeof option.available === 'boolean'
-    )
-  )
+  const challenge = value as {
+    require_verification?: unknown
+    flow_token?: unknown
+    expires_at?: unknown
+    methods?: unknown
+  }
+  if (
+    challenge.require_verification !== true ||
+    typeof challenge.flow_token !== 'string' ||
+    challenge.flow_token.length === 0 ||
+    typeof challenge.expires_at !== 'number' ||
+    !Number.isFinite(challenge.expires_at) ||
+    !Array.isArray(challenge.methods) ||
+    challenge.methods.length === 0
+  ) {
+    return false
+  }
+  const methods: unknown[] = challenge.methods
+  if (!methods.every(isLoginChallengeMethod)) return false
+  return methods.some((option) => option.method === '2fa')
 }
 
 export async function getLoginVerificationRequirements(
@@ -94,7 +108,7 @@ export async function getLoginVerificationRequirements(
   signal.throwIfAborted()
   return {
     scope: 'auth.login',
-    methods: challenge.methods,
+    methods: challenge.methods.filter((option) => option.method === '2fa'),
     password_encryption_enabled: false,
   }
 }

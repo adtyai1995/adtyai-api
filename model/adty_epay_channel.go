@@ -60,8 +60,9 @@ type AdtyEpayChannel struct {
 	ProbeOkCount       int                     `json:"probe_ok_count"`
 	LastProbeAt        int64                   `json:"last_probe_at"`
 	CreatedAt          int64                   `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt          int64                   `json:"updated_at" gorm:"autoUpdateTime"`
-	Methods            []AdtyEpayChannelMethod `json:"methods" gorm:"foreignKey:ChannelId"`
+	UpdatedAt            int64                   `json:"updated_at" gorm:"autoUpdateTime"`
+	Methods              []AdtyEpayChannelMethod `json:"methods" gorm:"foreignKey:ChannelId"`
+	CredentialDecryptErr bool                    `json:"credential_decrypt_error,omitempty" gorm:"-"`
 }
 
 // EffectiveSignType returns the canonical signature type ("MD5" or "RSA"),
@@ -80,7 +81,7 @@ func (channel *AdtyEpayChannel) IsRSA() bool {
 
 // HasCredentials reports whether the signing credentials required by SignType are present.
 func (channel *AdtyEpayChannel) HasCredentials() bool {
-	if channel == nil {
+	if channel == nil || channel.CredentialDecryptErr {
 		return false
 	}
 	if channel.IsRSA() {
@@ -96,6 +97,9 @@ func (AdtyEpayChannel) TableName() string {
 
 // AfterFind transparently decrypts sealed payment credentials while remaining
 // backward-compatible with legacy plaintext rows until they are next saved.
+// Decryption failure isolates only the affected channel (failing closed via
+// CredentialDecryptErr + blank in-memory keys) so healthy channels remain
+// available and Root can re-key, revoke, or delete the broken row via API.
 func (channel *AdtyEpayChannel) AfterFind(_ *gorm.DB) error {
 	if channel == nil {
 		return nil
@@ -103,32 +107,38 @@ func (channel *AdtyEpayChannel) AfterFind(_ *gorm.DB) error {
 	if strings.HasPrefix(channel.MerchantKey, adtySecretPrefix) {
 		plain, err := OpenAdtyPurposeSecret(adtyEpayMerchantKeyPurpose, channel.MerchantKey)
 		if err != nil {
-			return err
+			channel.MerchantKey = ""
+			channel.CredentialDecryptErr = true
+			common.SysError(common.LogText("adty epay channel %d merchant_key decrypt failed: %s", channel.Id, err.Error()))
+		} else {
+			channel.MerchantKey = plain
 		}
-		channel.MerchantKey = plain
 	}
 	if strings.HasPrefix(channel.MerchantPrivateKey, adtySecretPrefix) {
 		plain, err := OpenAdtyPurposeSecret(adtyEpayMerchantPrivateKeyPurpose, channel.MerchantPrivateKey)
 		if err != nil {
-			return err
+			channel.MerchantPrivateKey = ""
+			channel.CredentialDecryptErr = true
+			common.SysError(common.LogText("adty epay channel %d merchant_private_key decrypt failed: %s", channel.Id, err.Error()))
+		} else {
+			channel.MerchantPrivateKey = plain
 		}
-		channel.MerchantPrivateKey = plain
 	}
 	return nil
 }
 
-func sealAdtyEpayChannelCredentials(channel *AdtyEpayChannel) error {
+func sealAdtyEpayChannelCredentials(channel *AdtyEpayChannel, omitKey, omitPrivateKey bool) error {
 	if channel == nil {
 		return nil
 	}
-	if channel.MerchantKey != "" && !strings.HasPrefix(channel.MerchantKey, adtySecretPrefix) {
+	if !omitKey && channel.MerchantKey != "" {
 		sealed, err := SealAdtyPurposeSecret(adtyEpayMerchantKeyPurpose, channel.MerchantKey)
 		if err != nil {
 			return err
 		}
 		channel.MerchantKey = sealed
 	}
-	if channel.MerchantPrivateKey != "" && !strings.HasPrefix(channel.MerchantPrivateKey, adtySecretPrefix) {
+	if !omitPrivateKey && channel.MerchantPrivateKey != "" {
 		sealed, err := SealAdtyPurposeSecret(adtyEpayMerchantPrivateKeyPurpose, channel.MerchantPrivateKey)
 		if err != nil {
 			return err
@@ -240,6 +250,8 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 		methods := channel.Methods
 		defer func() { channel.Methods = methods }()
 		keepPublicKey := false
+		keepCorruptedKey := false
+		keepCorruptedPrivateKey := false
 		if channel.Id != 0 {
 			var existing AdtyEpayChannel
 			if err := AdtyLockForUpdate(tx).Preload("Methods").First(&existing, channel.Id).Error; err != nil {
@@ -252,16 +264,22 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 				return common.NewMessage("This payment channel has been permanently revoked")
 			}
 			if keepKey {
+				if existing.CredentialDecryptErr && existing.MerchantKey == "" {
+					keepCorruptedKey = true
+				}
 				channel.MerchantKey = existing.MerchantKey
 			}
 			if channel.MerchantPrivateKey == "" {
+				if existing.CredentialDecryptErr && existing.MerchantPrivateKey == "" {
+					keepCorruptedPrivateKey = true
+				}
 				channel.MerchantPrivateKey = existing.MerchantPrivateKey
 			}
 			if channel.PlatformPublicKey == "" {
 				keepPublicKey = true
 				channel.PlatformPublicKey = existing.PlatformPublicKey
 			}
-			if !existing.SamePaymentIdentity(channel) {
+			if !existing.CredentialDecryptErr && !existing.SamePaymentIdentity(channel) {
 				var count int64
 				if err := tx.Model(&AdtyTopupOrder{}).Where("channel_id = ?", channel.Id).Count(&count).Error; err != nil {
 					return err
@@ -276,7 +294,7 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 		}
 		channel.Methods = nil
 		toSave := *channel
-		if err := sealAdtyEpayChannelCredentials(&toSave); err != nil {
+		if err := sealAdtyEpayChannelCredentials(&toSave, keepCorruptedKey, keepCorruptedPrivateKey); err != nil {
 			return err
 		}
 		if channel.Id == 0 {
@@ -288,6 +306,12 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 			channel.UpdatedAt = toSave.UpdatedAt
 		} else {
 			omit := []string{"created_at", "unpaid_streak", "probe_fail_count", "probe_ok_count", "last_probe_at"}
+			if keepCorruptedKey {
+				omit = append(omit, "merchant_key")
+			}
+			if keepCorruptedPrivateKey {
+				omit = append(omit, "merchant_private_key")
+			}
 			if keepPublicKey {
 				omit = append(omit, "platform_public_key")
 			}

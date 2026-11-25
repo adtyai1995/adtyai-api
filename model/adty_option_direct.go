@@ -8,6 +8,14 @@ func ReadOptionFromDB(key string) (string, bool, error) {
 	return readOption(DB, key, false)
 }
 
+// ReadOptionInTx 在给定 db/tx 里不加行锁读取 options 表，用于只读接口避免在 GET 链路持有 FOR UPDATE。
+func ReadOptionInTx(tx *gorm.DB, key string) (string, bool, error) {
+	if tx == nil {
+		tx = DB
+	}
+	return readOption(tx, key, false)
+}
+
 // ReadOptionForUpdate 在调用方事务里锁住这一行再读。行不存在时不加锁，返回 false。
 func ReadOptionForUpdate(tx *gorm.DB, key string) (string, bool, error) {
 	return readOption(tx, key, true)

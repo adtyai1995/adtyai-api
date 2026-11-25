@@ -134,6 +134,12 @@ func NormalizedContentMediaType(raw string) string {
 	return strings.ToLower(strings.TrimSpace(trimmed))
 }
 
+// IsJSONMediaType reports whether a normalized media type represents JSON
+// (empty/omitted, application/json, or structured-syntax suffix *+json).
+func IsJSONMediaType(mediaType string) bool {
+	return mediaType == "" || mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
+}
+
 func UnmarshalBodyReusable(c *gin.Context, v any) error {
 	storage, err := GetBodyStorage(c)
 	if err != nil {
@@ -144,7 +150,7 @@ func UnmarshalBodyReusable(c *gin.Context, v any) error {
 	// disk-backed JSON: stream-decode directly from the file to avoid
 	// materializing the entire payload back into a transient []byte
 	// (diskStorage.Bytes() would ReadFull the whole file into the heap).
-	if storage.IsDisk() && (mediaType == "" || mediaType == "application/json") {
+	if storage.IsDisk() && IsJSONMediaType(mediaType) {
 		if _, seekErr := storage.Seek(0, io.SeekStart); seekErr != nil {
 			return seekErr
 		}
@@ -162,7 +168,7 @@ func UnmarshalBodyReusable(c *gin.Context, v any) error {
 	if err != nil {
 		return err
 	}
-	if mediaType == "" || mediaType == "application/json" {
+	if IsJSONMediaType(mediaType) {
 		if len(bytes.TrimSpace(requestBody)) > 0 {
 			err = Unmarshal(requestBody, v)
 		}

@@ -110,49 +110,6 @@ func adtyResolveOwnerFundingSplitTx(tx *gorm.DB, siteID, operatorID int, amountU
 	}, nil
 }
 
-// adtyDebitOwnerAutoFundingTx immediately debits earnings first and excess
-// margin above the level floor second within tx.
-func adtyDebitOwnerAutoFundingTx(tx *gorm.DB, siteID, operatorID int, amountUSD decimal.Decimal, changeType, refType, refID, reason, baseKey string) (AdtyOwnerFundingSplit, error) {
-	ownerID := operatorID
-	if ownerID <= 0 {
-		var err error
-		ownerID, err = model.CurrentAdtySiteFinancialOwnerTx(tx, siteID)
-		if err != nil {
-			return AdtyOwnerFundingSplit{}, err
-		}
-	}
-	split, err := adtyResolveOwnerFundingSplitTx(tx, siteID, ownerID, amountUSD)
-	if err != nil {
-		return AdtyOwnerFundingSplit{}, err
-	}
-	if split.EarningsUSD.IsPositive() {
-		if _, err := applyAdtySiteWalletChangeTx(tx, siteID, model.AdtySiteWalletEarnings, split.EarningsUSD.Neg(), AdtySiteWalletChange{
-			Type:           changeType,
-			RefType:        refType,
-			RefID:          refID,
-			Reason:         reason,
-			OperatorID:     ownerID,
-			IdempotencyKey: baseKey + ":earnings",
-		}); err != nil {
-			return AdtyOwnerFundingSplit{}, err
-		}
-	}
-	if split.MarginUSD.IsPositive() {
-		if _, err := applyAdtySiteWalletChangeTx(tx, siteID, model.AdtySiteWalletMargin, split.MarginUSD.Neg(), AdtySiteWalletChange{
-			Type:             changeType,
-			RefType:          refType,
-			RefID:            refID,
-			Reason:           reason,
-			OperatorID:       ownerID,
-			IdempotencyKey:   baseKey + ":margin",
-			MarginExcessOnly: true,
-		}); err != nil {
-			return AdtyOwnerFundingSplit{}, err
-		}
-	}
-	return split, nil
-}
-
 // adtyFreezeOwnerAutoFundingTx freezes earnings first and excess margin above
 // the level floor second within tx (used by site-owner voucher issuance).
 func adtyFreezeOwnerAutoFundingTx(tx *gorm.DB, siteID, operatorID int, amountUSD decimal.Decimal, refID, reason, earnKey, marginKey string) (AdtyOwnerFundingSplit, error) {

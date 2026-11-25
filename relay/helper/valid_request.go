@@ -206,6 +206,9 @@ func GetAndValidateAlphaSearchRequest(c *gin.Context) (*dto.AlphaSearchRequest, 
 // GetAndValidateDeepSeekToolsRequest keeps the raw body for forwarding. The
 // upstream validates query/url itself, and no field changes the per-call price.
 func GetAndValidateDeepSeekToolsRequest(c *gin.Context) (*dto.DeepSeekToolsRequest, error) {
+	if !common.IsJSONMediaType(common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))) {
+		return nil, errors.New("Content-Type must be application/json")
+	}
 	request := &dto.DeepSeekToolsRequest{}
 	if err := common.UnmarshalBodyReusable(c, request); err != nil {
 		return nil, err
@@ -467,6 +470,9 @@ func GetAndValidateGeminiRequest(c *gin.Context) (*dto.GeminiChatRequest, error)
 }
 
 func GetAndValidateGeminiEmbeddingRequest(c *gin.Context) (*dto.GeminiEmbeddingRequest, error) {
+	if !common.IsJSONMediaType(common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))) {
+		return nil, errors.New("Content-Type must be application/json")
+	}
 	request := &dto.GeminiEmbeddingRequest{}
 	err := common.UnmarshalBodyReusable(c, request)
 	if err != nil {
@@ -476,6 +482,9 @@ func GetAndValidateGeminiEmbeddingRequest(c *gin.Context) (*dto.GeminiEmbeddingR
 }
 
 func GetAndValidateGeminiBatchEmbeddingRequest(c *gin.Context) (*dto.GeminiBatchEmbeddingRequest, error) {
+	if !common.IsJSONMediaType(common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))) {
+		return nil, errors.New("Content-Type must be application/json")
+	}
 	request := &dto.GeminiBatchEmbeddingRequest{}
 	err := common.UnmarshalBodyReusable(c, request)
 	if err != nil {

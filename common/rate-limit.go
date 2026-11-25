@@ -77,6 +77,15 @@ type InMemoryRateLimiter struct {
 	reservations       map[string]int
 	mutex              sync.Mutex
 	expirationDuration time.Duration
+	failClosedOnCap    bool
+}
+
+// SetFailClosedOnCap configures whether new keys are rejected instead of
+// evicting live buckets when the in-memory limiter reaches capacity.
+func (l *InMemoryRateLimiter) SetFailClosedOnCap(enabled bool) {
+	l.mutex.Lock()
+	l.failClosedOnCap = enabled
+	l.mutex.Unlock()
 }
 
 // Init initializes the limiter once. Repeated calls leave the first configuration unchanged.
@@ -148,16 +157,42 @@ func (l *InMemoryRateLimiter) touchEntry(key string, now time.Time, windowDurati
 	entry, ok := l.store[key]
 	if !ok {
 		if len(l.store) >= maxInMemoryRateLimitEntries {
+			// First reclaim genuinely expired buckets (honoring per-entry TTL).
 			for cur := l.lru.Back(); cur != nil && len(l.store) >= maxInMemoryRateLimitEntries; {
 				prev := cur.Prev()
 				victim := cur.Value.(*rateLimitEntry)
 				if l.reservations[victim.key] == 0 {
-					delete(l.store, victim.key)
-					l.lru.Remove(cur)
-					victim.element = nil
-					victim.requests.clear()
+					vttl := victim.ttl
+					if vttl < l.expirationDuration {
+						vttl = l.expirationDuration
+					}
+					if vttl > 0 && now.Sub(victim.lastActive) >= vttl {
+						delete(l.store, victim.key)
+						l.lru.Remove(cur)
+						victim.element = nil
+						victim.requests.clear()
+					}
 				}
 				cur = prev
+			}
+			if len(l.store) >= maxInMemoryRateLimitEntries {
+				if l.failClosedOnCap {
+					return nil
+				}
+				for cur := l.lru.Back(); cur != nil && len(l.store) >= maxInMemoryRateLimitEntries; {
+					prev := cur.Prev()
+					victim := cur.Value.(*rateLimitEntry)
+					if l.reservations[victim.key] == 0 {
+						delete(l.store, victim.key)
+						l.lru.Remove(cur)
+						victim.element = nil
+						victim.requests.clear()
+					}
+					cur = prev
+				}
+				if len(l.store) >= maxInMemoryRateLimitEntries {
+					return nil
+				}
 			}
 		}
 		entry = &rateLimitEntry{
@@ -184,6 +219,9 @@ func (l *InMemoryRateLimiter) Request(key string, maxRequestNum int, duration in
 
 	now := time.Now()
 	entry := l.touchEntry(key, now, time.Duration(duration)*time.Second)
+	if entry == nil {
+		return false
+	}
 	entry.requests.removeExpired(now.Unix(), duration)
 
 	allowed := entry.requests.length < maxRequestNum
@@ -211,6 +249,9 @@ func (l *InMemoryRateLimiter) Reserve(key string, maxRequests int, duration int6
 
 	now := time.Now()
 	entry := l.touchEntry(key, now, time.Duration(duration)*time.Second)
+	if entry == nil {
+		return nil
+	}
 	entry.requests.removeExpired(now.Unix(), duration)
 	if entry.requests.length+l.reservations[key] >= maxRequests {
 		return nil
@@ -235,7 +276,9 @@ func (r *RateLimitReservation) Complete(success bool) {
 		}
 		if success {
 			now := time.Now()
-			l.touchEntry(r.key, now, time.Duration(r.duration)*time.Second).requests.append(now.Unix())
+			if entry := l.touchEntry(r.key, now, time.Duration(r.duration)*time.Second); entry != nil {
+				entry.requests.append(now.Unix())
+			}
 		}
 	})
 }

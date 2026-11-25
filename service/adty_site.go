@@ -822,8 +822,8 @@ func AdjustAdtySiteWithAuditForActor(siteId, adminId, actorRole int, denyAdminTa
 		}
 		if adjust.HomePageContent != nil {
 			content := strings.TrimSpace(*adjust.HomePageContent)
-			if len(content) > 200*1024 {
-				return common.NewMessage("Home page content is too long")
+			if err := validateAdtySiteHomePageContent(content); err != nil {
+				return err
 			}
 			updates["home_page_content"] = content
 		}

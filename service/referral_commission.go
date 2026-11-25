@@ -318,7 +318,7 @@ func referralRefundClawback(commission, ratio decimal.Decimal) decimal.Decimal {
 func referralCommissionRefundBalanceTx(tx *gorm.DB, commission *model.ReferralCommission) (remaining, recovered decimal.Decimal, err error) {
 	var entries []model.ReferralCommissionLedger
 	if err = tx.Where("commission_id = ? AND type IN ?", commission.Id,
-		[]string{"commission_accrue", "commission_clawback_partial", "commission_clawback", "commission_void"}).Order("id").Find(&entries).Error; err != nil {
+		[]string{"commission_accrue", "commission_clawback_partial", "commission_clawback", "commission_void", "withdraw_reject_clawback"}).Order("id").Find(&entries).Error; err != nil {
 		return
 	}
 	remaining = moneyDec(commission.CommissionAmount)
@@ -341,9 +341,33 @@ func referralCommissionRefundBalanceTx(tx *gorm.DB, commission *model.ReferralCo
 	if err != nil {
 		return
 	}
-	recovered = extRecovered.Add(cvtRecovered).Add(cvtClawed)
+	pendingClaw, err := commissionPendingClawbackTx(tx, commission.Id)
+	if err != nil {
+		return
+	}
+	recovered = extRecovered.Add(cvtRecovered).Add(cvtClawed).Add(pendingClaw)
 	remaining = decimal.Max(remaining.Sub(recovered), decimal.Zero)
 	return
+}
+
+func commissionPendingClawbackTx(tx *gorm.DB, commissionID int) (decimal.Decimal, error) {
+	if tx == nil || commissionID <= 0 {
+		return decimal.Zero, nil
+	}
+	var items []model.ReferralWithdrawalItem
+	if err := tx.Select("pending_clawback_amount").
+		Where("commission_id = ? AND status = ?", commissionID, model.ReferralWithdrawalItemStatusFrozen).
+		Find(&items).Error; err != nil {
+		return decimal.Zero, err
+	}
+	total := decimal.Zero
+	for _, item := range items {
+		amt := moneyDec(item.PendingClawbackAmount)
+		if amt.IsPositive() {
+			total = total.Add(amt)
+		}
+	}
+	return total, nil
 }
 
 func referralCommissionRecoveriesByKindTx(tx *gorm.DB, commissionID int) (externalRecovered, convertedRecovered decimal.Decimal, err error) {

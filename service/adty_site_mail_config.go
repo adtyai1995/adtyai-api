@@ -616,11 +616,7 @@ func sendSubsiteConfiguredEmail(site *model.AdtySite, subject, receiver, content
 				if errors.As(sendErr, &msg) {
 					return sendErr
 				}
-				secrets := []string{token}
-				if token != "" {
-					secrets = append(secrets, "\x00"+cfg.SMTPAccount+"\x00"+token)
-				}
-				return common.SanitizeOutboundError(sendErr, secrets...)
+				return common.SanitizeSMTPError(sendErr, cfg.SMTPAccount, token)
 			}
 			return nil
 
@@ -655,12 +651,11 @@ func sendSubsiteConfiguredEmail(site *model.AdtySite, subject, receiver, content
 	if sendErr := adtySendSubsitePlatform(AdtySenderFor(site), subject, receiver, content); sendErr != nil {
 		common.OptionMapRWMutex.RLock()
 		platSecrets := []string{common.SMTPToken, common.OptionMap["ResendApiKey"]}
+		if common.SMTPToken != "" {
+			platSecrets = append(platSecrets, "\x00"+common.SMTPAccount+"\x00"+common.SMTPToken)
+		}
 		common.OptionMapRWMutex.RUnlock()
 		common.SysError(common.LogText("subsite %d platform mail delivery failed: %s", site.Id, common.SanitizeOutboundError(sendErr, platSecrets...).Error()))
-		var msg *common.Message
-		if errors.As(sendErr, &msg) {
-			return sendErr
-		}
 		return common.NewMessage("Failed to send email via platform mail service")
 	}
 	return nil
@@ -675,6 +670,21 @@ func classifySubsiteTestMailError(siteID int, sendErr error) error {
 		return sendErr
 	}
 	common.SysError(common.LogText("subsite %d test email delivery failed: %s", siteID, sendErr.Error()))
+	var mailErr *common.SanitizedMailError
+	if errors.As(sendErr, &mailErr) {
+		switch mailErr.Kind {
+		case common.MailErrAuth:
+			return common.NewMessage("Email authentication failed")
+		case common.MailErrTLS:
+			return common.NewMessage("TLS handshake with mail server failed")
+		case common.MailErrTimeout:
+			return common.NewMessage("Connection to mail server timed out")
+		case common.MailErrConnect:
+			return common.NewMessage("Could not connect to mail server")
+		case common.MailErrRejected:
+			return common.NewMessage("Mail server rejected the test message")
+		}
+	}
 	var tpErr *textproto.Error
 	if errors.As(sendErr, &tpErr) {
 		switch tpErr.Code {

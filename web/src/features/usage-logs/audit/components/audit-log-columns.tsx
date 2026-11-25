@@ -26,35 +26,8 @@ import dayjs from '@/lib/dayjs'
 import { formatUserIdentity } from '@/lib/format-user-identity'
 
 import type { AuditLog } from '../api'
-import { buildAuditDetails } from '../lib/audit-details'
+import { buildAuditDetails, formatAuditObject } from '../lib/audit-details'
 import { AuditLogDetailsDialog } from './audit-log-details-dialog'
-
-type AuditLogEntry = AuditLog & {
-  object_username?: string | null
-}
-
-const USER_AUDIT_OBJECT_TYPES = new Set([
-  'user',
-  'customer',
-  'site_customer',
-  'staff',
-  'site_staff',
-  'site.staff',
-])
-
-function formatAuditObject(entry: AuditLogEntry): string {
-  const objectType = entry.object_type?.trim() ?? ''
-  const objectId = entry.object_id?.trim() ?? ''
-  const objectUsername = entry.object_username?.trim() ?? ''
-  if (
-    objectType &&
-    USER_AUDIT_OBJECT_TYPES.has(objectType.toLowerCase()) &&
-    objectUsername
-  ) {
-    return `${objectType} · ${formatUserIdentity(objectId, objectUsername)}`
-  }
-  return [objectType, objectId].filter(Boolean).join(' / ')
-}
 
 export function useAuditLogColumns(
   accessOnly?: boolean
@@ -160,7 +133,7 @@ export function useAuditLogColumns(
         id: 'object',
         header: t('Object'),
         size: 180,
-        accessorFn: (entry) => formatAuditObject(entry as AuditLogEntry),
+        accessorFn: (entry) => formatAuditObject(entry),
         cell: ({ getValue }) => (
           <TruncatedCell className='max-w-48 font-mono'>
             {getValue<string>() || '—'}

@@ -199,6 +199,20 @@ func UpdateUserSetting(userId int, setting dto.UserSetting) error {
 	if userId == 0 {
 		return common.NewMessage("ID is empty!")
 	}
+	if ws := strings.TrimSpace(setting.WebhookSecret); ws != "" && !strings.HasPrefix(ws, adtySecretPrefix) {
+		sealed, err := SealAdtyPurposeSecret(fmt.Sprintf("user_notify:%d:webhook_secret", userId), ws)
+		if err != nil {
+			return err
+		}
+		setting.WebhookSecret = sealed
+	}
+	if gt := strings.TrimSpace(setting.GotifyToken); gt != "" && !strings.HasPrefix(gt, adtySecretPrefix) {
+		sealed, err := SealAdtyPurposeSecret(fmt.Sprintf("user_notify:%d:gotify_token", userId), gt)
+		if err != nil {
+			return err
+		}
+		setting.GotifyToken = sealed
+	}
 	settingBytes, err := common.Marshal(setting)
 	if err != nil {
 		return err
@@ -479,7 +493,7 @@ func GetOpenUserSiteIDs(_ int) ([]int, error) {
 		return result, nil
 	}
 	var openSiteIDs []int
-	siteQuery := DB.Model(&AdtySite{}).Where("status NOT IN ?", []string{AdtySiteStatusClosed, AdtySiteStatusDeleting})
+	siteQuery := DB.Model(&AdtySite{}).Where("status IN ?", []string{AdtySiteStatusActive, AdtySiteStatusPaused, AdtySiteStatusClosing})
 	if DB.Migrator().HasColumn(&AdtySite{}, "archived_hidden_at") {
 		siteQuery = siteQuery.Where("archived_hidden_at = 0")
 	}

@@ -33,7 +33,7 @@ func adtyAllocatePlatformDomainsTx(tx *gorm.DB, site *model.AdtySite) error {
 		return nil
 	}
 	if site.RootDomain != cfg.AliyunDomain {
-		return fmt.Errorf("Site root is outside the managed DNS domain")
+		return common.NewMessage("Site root is outside the managed DNS domain")
 	}
 	for _, role := range []string{model.AdtySiteDomainRoleSite, model.AdtySiteDomainRoleBaseURL} {
 		host := site.Subdomain + "." + site.RootDomain
@@ -408,7 +408,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 						return err
 					}
 					if found == nil || found.ID != existing.ID {
-						return fmt.Errorf("Managed DNS record is missing or changed; administrator reconciliation is required")
+						return common.NewMessage("Managed DNS record is missing or changed; administrator reconciliation is required")
 					}
 					return nil
 				}
@@ -422,7 +422,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 		}
 		if found != nil {
 			if index < 0 {
-				return fmt.Errorf("A matching unmanaged DNS record exists; administrator reconciliation is required")
+				return common.NewMessage("A matching unmanaged DNS record exists; administrator reconciliation is required")
 			}
 			records[index] = *found
 			encoded, _ := common.Marshal(records)
@@ -478,14 +478,14 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 		// based solely on the matching hostname.
 		if row.ManagedBy != "platform" {
 			if row.OwnershipToken == "" {
-				return fmt.Errorf("Domain ownership verification is required")
+				return common.NewMessage("Domain ownership verification is required")
 			}
 			matched, err := adtyOwnershipTXTMatches(ctx, row.Hostname, row.OwnershipToken)
 			if err != nil {
-				return fmt.Errorf("Domain ownership lookup failed")
+				return common.NewMessage("Domain ownership lookup failed")
 			}
 			if !matched {
-				return fmt.Errorf("Domain ownership TXT is not verified")
+				return common.NewMessage("Domain ownership TXT is not verified")
 			}
 		}
 		candidate, err := AdtyCloudflare.findCustomHostname(ctx, row.ProviderZone, row.Hostname)
@@ -493,7 +493,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			return err
 		}
 		if candidate != nil {
-			return fmt.Errorf("An unrecorded Cloudflare hostname exists; administrator reconciliation is required")
+			return common.NewMessage("An unrecorded Cloudflare hostname exists; administrator reconciliation is required")
 		}
 		if err := adtySaveDomainResource(row, map[string]any{"cf_create_started_at": time.Now().Unix()}); err != nil {
 			return err
@@ -503,7 +503,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			return err
 		}
 		if detail.Id == "" {
-			return fmt.Errorf("Cloudflare did not return a hostname ID")
+			return common.NewMessage("Cloudflare did not return a hostname ID")
 		}
 		row.CFHostnameId = detail.Id
 		if err := adtySaveDomainResource(row, map[string]any{"cf_hostname_id": detail.Id}); err != nil {
@@ -515,7 +515,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 		return err
 	}
 	if !strings.EqualFold(detail.Hostname, row.Hostname) {
-		return fmt.Errorf("Cloudflare hostname identity mismatch")
+		return common.NewMessage("Cloudflare hostname identity mismatch")
 	}
 	verify := verifyRecordsFor(row.Hostname, row.DNSTarget, detail)
 	if row.ManagedBy == "platform" {

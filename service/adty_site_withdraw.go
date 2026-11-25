@@ -123,7 +123,7 @@ func SaveAdtySiteWithdrawRulesWithAudit(rules AdtySiteWithdrawRules, operatorID 
 	var auditEvent *model.AuditLog
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		before := map[string]any{"configured": false}
-		if prev, cfgErr := loadAdtySiteWithdrawConfigTx(tx); cfgErr == nil {
+		if prev, cfgErr := loadAdtySiteWithdrawConfigTx(tx, true); cfgErr == nil {
 			before = map[string]any{
 				"configured":    true,
 				"min_usd":       prev.Min.String(),
@@ -198,29 +198,40 @@ func requiredPositiveDecimal(raw string) (decimal.Decimal, string, error) {
 	return value, trimmed, nil
 }
 
-func loadAdtySiteWithdrawConfigTx(tx *gorm.DB) (adtySiteWithdrawConfig, error) {
+func loadAdtySiteWithdrawConfigTx(tx *gorm.DB, lock bool) (adtySiteWithdrawConfig, error) {
 	var cfg adtySiteWithdrawConfig
 	var err error
-	if cfg.Min, _, err = readPositiveOptionTx(tx, adtySiteWithdrawMinKey); err != nil {
-		return cfg, err
-	}
-	if cfg.Fee, _, err = readPositiveOptionTx(tx, adtySiteWithdrawFeeKey); err != nil {
-		return cfg, err
-	}
-	if cfg.USDTUSDRate, cfg.USDTUSDRaw, err = readPositiveOptionTx(tx, adtySiteWithdrawUSDTKey); err != nil {
-		return cfg, err
-	}
-	if alipayRate, alipayRaw, alipayErr := readPositiveOptionTx(tx, adtySiteWithdrawAlipayKey); alipayErr == nil {
+	// Lock/read keys in strict lexicographical order matching SaveOptionsTx
+	// (alipay_cny_rate < fee_usd < min_usd < usdt_usd_rate) to avoid deadlocks.
+	if alipayRate, alipayRaw, alipayErr := readPositiveOptionTx(tx, adtySiteWithdrawAlipayKey, lock); alipayErr == nil {
 		cfg.AlipayCNYRate = alipayRate
 		cfg.AlipayCNYRaw = alipayRaw
 	} else if !errors.Is(alipayErr, ErrAdtySiteWithdrawUnset) {
 		return cfg, alipayErr
 	}
+	if cfg.Fee, _, err = readPositiveOptionTx(tx, adtySiteWithdrawFeeKey, lock); err != nil {
+		return cfg, err
+	}
+	if cfg.Min, _, err = readPositiveOptionTx(tx, adtySiteWithdrawMinKey, lock); err != nil {
+		return cfg, err
+	}
+	if cfg.USDTUSDRate, cfg.USDTUSDRaw, err = readPositiveOptionTx(tx, adtySiteWithdrawUSDTKey, lock); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
 }
 
-func readPositiveOptionTx(tx *gorm.DB, key string) (decimal.Decimal, string, error) {
-	raw, ok, err := model.ReadOptionForUpdate(tx, key)
+func readPositiveOptionTx(tx *gorm.DB, key string, lock bool) (decimal.Decimal, string, error) {
+	var (
+		raw string
+		ok  bool
+		err error
+	)
+	if lock {
+		raw, ok, err = model.ReadOptionForUpdate(tx, key)
+	} else {
+		raw, ok, err = model.ReadOptionInTx(tx, key)
+	}
 	if err != nil {
 		return decimal.Zero, "", err
 	}
@@ -246,22 +257,19 @@ func LoadAdtySiteWithdrawRules() (AdtySiteWithdrawRulesView, error) {
 		Methods:  []string{"usdt"},
 		Networks: append([]string(nil), adtySiteWithdrawUSDTNetworks...),
 	}
-	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		cfg, err := loadAdtySiteWithdrawConfigTx(tx)
-		if errors.Is(err, ErrAdtySiteWithdrawUnset) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		view.Configured = true
-		view.MinUSD = cfg.Min.String()
-		view.FeeUSD = cfg.Fee.String()
-		view.AlipayCNYRate = cfg.AlipayCNYRaw
-		view.USDTUSDRate = cfg.USDTUSDRaw
-		return nil
-	})
-	return view, err
+	cfg, err := loadAdtySiteWithdrawConfigTx(model.DB, false)
+	if errors.Is(err, ErrAdtySiteWithdrawUnset) {
+		return view, nil
+	}
+	if err != nil {
+		return view, err
+	}
+	view.Configured = true
+	view.MinUSD = cfg.Min.String()
+	view.FeeUSD = cfg.Fee.String()
+	view.AlipayCNYRate = cfg.AlipayCNYRaw
+	view.USDTUSDRate = cfg.USDTUSDRaw
+	return view, nil
 }
 
 func ListAdtySiteWithdrawals(siteID, ownerID int) ([]model.AdtySiteWithdrawal, error) {
@@ -372,22 +380,18 @@ func QuoteSiteWithdrawal(amount decimal.Decimal, method string) (decimal.Decimal
 	if normalized != "usdt" {
 		return decimal.Zero, common.NewMessage("Only USDT withdrawal is supported")
 	}
-	var payout decimal.Decimal
-	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		cfg, err := loadAdtySiteWithdrawConfigTx(tx)
-		if err != nil {
-			return err
-		}
-		if !amount.Equal(amount.Round(8)) || amount.LessThan(cfg.Min) || !amount.GreaterThan(cfg.Fee) {
-			return common.NewMessage("Invalid parameters")
-		}
-		payout = siteWithdrawalPayout(amount.Sub(cfg.Fee), cfg.USDTUSDRate, normalized)
-		if !payout.IsPositive() {
-			return common.NewMessage("The payout amount is too small")
-		}
-		return nil
-	})
-	return payout, err
+	cfg, err := loadAdtySiteWithdrawConfigTx(model.DB, false)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	if !amount.Equal(amount.Round(8)) || amount.LessThan(cfg.Min) || !amount.GreaterThan(cfg.Fee) {
+		return decimal.Zero, common.NewMessage("Invalid parameters")
+	}
+	payout := siteWithdrawalPayout(amount.Sub(cfg.Fee), cfg.USDTUSDRate, normalized)
+	if !payout.IsPositive() {
+		return decimal.Zero, common.NewMessage("The payout amount is too small")
+	}
+	return payout, nil
 }
 
 func adtySiteWithdrawScopedKey(siteID int, rawKey string) string {
@@ -475,7 +479,7 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 		if currentOwner && site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && site.Status != model.AdtySiteStatusClosing && site.Status != model.AdtySiteStatusClosed {
 			return common.NewMessage("No permission to perform this action")
 		}
-		cfg, err := loadAdtySiteWithdrawConfigTx(tx)
+		cfg, err := loadAdtySiteWithdrawConfigTx(tx, true)
 		if err != nil {
 			return err
 		}

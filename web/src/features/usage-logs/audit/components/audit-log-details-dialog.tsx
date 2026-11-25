@@ -31,7 +31,11 @@ import {
   DetailSection,
 } from '../../components/dialogs/log-detail-layout'
 import type { AuditLog } from '../api'
-import { auditFieldLabel, buildAuditDetails } from '../lib/audit-details'
+import {
+  auditFieldLabel,
+  buildAuditDetails,
+  formatAuditObject,
+} from '../lib/audit-details'
 import { AuditDetailFields } from './audit-detail-fields'
 import { AuditDetailValue } from './audit-detail-value'
 
@@ -66,9 +70,7 @@ export function AuditLogDetailsDialog(props: { entry: AuditLog }) {
     },
     {
       label: t('Object'),
-      value: [props.entry.object_type, props.entry.object_id]
-        .filter((part) => !!part)
-        .join(' / '),
+      value: formatAuditObject(props.entry),
     },
     { label: t('Before value'), value: props.entry.before_value, copyable: true },
     { label: t('After value'), value: props.entry.after_value, copyable: true },

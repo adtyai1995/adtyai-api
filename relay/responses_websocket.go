@@ -993,14 +993,11 @@ func normalizeResponsesWSCreateEvent(message []byte, event responsesWSCreateEven
 	if err := common.Unmarshal(source, &raw); err != nil {
 		return create, err
 	}
-	if len(event.Request) > 0 {
-		if len(create.Generate) == 0 {
-			create.Generate = raw["generate"]
-		}
-	} else {
-		for _, key := range []string{"type", "event_id", "background", "stream", "stream_options"} {
-			delete(raw, key)
-		}
+	if len(event.Request) > 0 && len(create.Generate) == 0 {
+		create.Generate = raw["generate"]
+	}
+	for _, key := range []string{"type", "event_id", "background", "stream", "stream_options"} {
+		delete(raw, key)
 	}
 	delete(raw, "generate")
 	delete(raw, "stream_id")

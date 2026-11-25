@@ -91,6 +91,14 @@ export function siteWalletLedgerTypeLabel(t: TFunction, type: string): string {
       return t('Principal adjustment debit')
     case 'principal_refund':
       return t('Customer principal refunded')
+    case 'customer_topup_refund':
+      return t('Customer top-up refund')
+    case 'customer_topup_refund_release':
+      return t('Customer top-up refund released')
+    case 'owner_topup_refund':
+      return t('Owner top-up refund')
+    case 'owner_topup_refund_release':
+      return t('Owner top-up refund released')
     case 'principal_site_close_migrate':
       return t('Site-close principal migration')
     case 'site_earning_settlement':

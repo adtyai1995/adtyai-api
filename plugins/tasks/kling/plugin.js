@@ -612,6 +612,9 @@ export function buildSubmitRequest(ctx) {
     if (req.mode) body.mode = req.mode;
     if (action === "text_to_video" && req.size !== undefined && req.size !== null && req.size !== "")
       body.aspect_ratio = aspectRatio(sizeDimensions(req.size), KLING_ASPECT_RATIOS);
+    for (const key of UNSUPPORTED_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(metadata, key)) throw new Error(key + " is not supported");
+    }
     Object.assign(body, metadata);
     body.model_name = model;
     body.mode = outboundMode(req, model);
@@ -655,7 +658,13 @@ export function extractUsage(ctx) {
   if (usesKling4(ctx, req)) return { units: kling4ReservedUnits(kling4Submission(ctx).body) };
   // A native body reads like the metadata of a host-protocol request.
   const model = submitModel(ctx, req);
-  if (req.vendorBody) checkPre4VendorBody(req.vendorBody, model);
+  if (req.vendorBody) {
+    checkPre4VendorBody(req.vendorBody, model);
+  } else if (req.metadata) {
+    for (const key of UNSUPPORTED_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(req.metadata, key)) throw new Error(key + " is not supported");
+    }
+  }
   const source = req.vendorBody ? { metadata: req.vendorBody } : req;
   return { units: unitsPerSecond(model, outboundMode(source, model), source.metadata || {}) * outboundDuration(source) };
 }

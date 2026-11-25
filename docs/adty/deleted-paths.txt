@@ -1695,6 +1695,8 @@ web/src/features/usage-logs/components/__tests__/task-artifacts-cell.test.tsx
 web/src/features/usage-logs/components/__tests__/usage-facts.test.tsx
 web/src/features/usage-logs/components/columns/drawing-logs-columns.tsx
 web/src/features/usage-logs/components/common-logs-header-actions.tsx
+web/src/features/usage-logs/components/dialogs/image-dialog.tsx
+web/src/features/usage-logs/components/dialogs/prompt-dialog.tsx
 web/src/features/usage-logs/lib/__tests__/billing-source.test.ts
 web/src/features/usage-logs/lib/__tests__/export.test.ts
 web/src/features/usage-logs/lib/__tests__/response-model.test.ts

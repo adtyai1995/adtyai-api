@@ -1752,11 +1752,15 @@ func insertAdtyVoucherOrderTx(tx *gorm.DB, userId int, trade string, voucher *mo
 	if voucher.Purpose == model.AdtyVoucherPurposeSiteMargin && voucher.DesignatedOwnerId > 0 {
 		siteOwnerUserID = voucher.DesignatedOwnerId
 	}
+	business := model.AdtyBusinessWalletTopup
+	if voucher.Purpose == model.AdtyVoucherPurposeSiteMargin {
+		business = model.AdtyBusinessOwnerMarginTopup
+	}
 	// Official decimal amounts and the already-determined credit are the
 	// source of truth. Wallet and ledger credit use voucher.Quota / AmountUSD
 	// directly; this formal order does not go through float or IntPart.
 	if err := tx.Create(&model.AdtyTopupOrder{
-		TradeNo: trade, UserId: userId, Provider: model.AdtyVoucherProvider, Method: voucher.Purpose,
+		TradeNo: trade, UserId: userId, Business: business, Provider: model.AdtyVoucherProvider, Method: voucher.Purpose,
 		FaceUSD: voucher.AmountUSD, CreditQuota: voucher.Quota, PayAmount: voucher.AmountUSD, PayCurrency: "USD",
 		PaidAmount: voucher.AmountUSD, PaidCurrency: "USD", PaidSource: "voucher", SiteId: voucher.TargetSiteId,
 		SiteOwnerUserId: siteOwnerUserID, TopupGroupRatio: decimal.NewFromInt(1),

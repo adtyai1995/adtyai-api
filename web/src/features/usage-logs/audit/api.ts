@@ -44,6 +44,8 @@ export interface AuditLog {
   site_id?: number | null
   object_type?: string
   object_id?: string
+  object_user_id?: number
+  object_username?: string
   before_value?: string
   after_value?: string
   reason?: string

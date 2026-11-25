@@ -43,12 +43,32 @@ func projectBillingEarnings(key string) {
 
 func projectAdtySiteEarningEvent(ctx context.Context, key string) error {
 	return model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Pre-read site_id unlocked and acquire earnings wallet FOR UPDATE before
+		// locking AdtySiteEarningEvent so lock order matches ReviewAdtySiteCustomerWithAuditForActor.
+		var peek []model.AdtySiteEarningEvent
+		if err := tx.Select("id", "site_id", "projected", "review_status").
+			Where("operation_key = ?", key).Limit(1).Find(&peek).Error; err != nil {
+			return err
+		}
+		if len(peek) == 0 || peek[0].Projected || peek[0].ReviewStatus == model.AdtyEarningNeedsReview {
+			return nil
+		}
+		if peek[0].SiteId > 0 {
+			if err := preLockAdtySiteWalletsTx(tx, peek[0].SiteId, model.AdtySiteWalletEarnings); err != nil {
+				return err
+			}
+		}
 		var rows []model.AdtySiteEarningEvent
 		if err := model.AdtyLockForUpdate(tx).Where("operation_key = ?", key).Limit(1).Find(&rows).Error; err != nil {
 			return err
 		}
 		if len(rows) == 0 || rows[0].Projected || rows[0].ReviewStatus == model.AdtyEarningNeedsReview {
 			return nil
+		}
+		if rows[0].SiteId > 0 && rows[0].SiteId != peek[0].SiteId {
+			if err := preLockAdtySiteWalletsTx(tx, rows[0].SiteId, model.AdtySiteWalletEarnings); err != nil {
+				return err
+			}
 		}
 		event := rows[0]
 		return projectAdtySiteEarningEventTx(tx, &event)

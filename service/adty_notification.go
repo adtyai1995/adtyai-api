@@ -1820,6 +1820,38 @@ func adtyUserOwnsOpenSiteWithDB(db *gorm.DB, userID int) (bool, error) {
 	return count > 0, nil
 }
 
+func adtyUserOwnedOpenSiteIDsWithDB(db *gorm.DB, userID int) ([]int, error) {
+	if db == nil {
+		db = model.DB
+	}
+	if db == nil || userID <= 0 || !db.Migrator().HasTable(&model.AdtySite{}) {
+		return nil, nil
+	}
+	var ids []int
+	if err := db.Model(&model.AdtySite{}).
+		Where("id > 0 AND owner_user_id = ? AND status IN ?", userID, adtyOpenSiteStatuses).
+		Pluck("id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+func adtyUserOwnsSpecificOpenSiteWithDB(db *gorm.DB, userID, siteID int) (bool, error) {
+	if db == nil {
+		db = model.DB
+	}
+	if db == nil || userID <= 0 || siteID <= 0 || !db.Migrator().HasTable(&model.AdtySite{}) {
+		return false, nil
+	}
+	var count int64
+	if err := db.Model(&model.AdtySite{}).
+		Where("id = ? AND owner_user_id = ? AND status IN ?", siteID, userID, adtyOpenSiteStatuses).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func adtyUserInActiveTeamOnSiteWithDB(db *gorm.DB, userID, siteID int) (bool, error) {
 	if db == nil {
 		db = model.DB
@@ -1894,7 +1926,24 @@ func adtyUserCanReadPublication(user *model.User, pub *model.AdtyNotificationPub
 	case "site":
 		return user.SiteId == pub.TargetSiteId && pub.TargetSiteId > 0
 	case "user":
-		return user.StaffSiteId == 0 && user.SiteId == pub.TargetSiteId && pub.TargetSiteName == fmt.Sprintf("user:%d", user.Id)
+		if user.StaffSiteId != 0 || pub.TargetSiteName != fmt.Sprintf("user:%d", user.Id) {
+			return false
+		}
+		if pub.IssuerSiteId > 0 && pub.TargetSiteId != pub.IssuerSiteId {
+			return false
+		}
+		isStaff, err := adtyUserIsStaffWithDB(model.DB, user)
+		if err != nil || isStaff {
+			return false
+		}
+		if user.SiteId == pub.TargetSiteId {
+			return true
+		}
+		if pub.IssuerSiteId == 0 && pub.TargetSiteId > 0 && user.SiteId == 0 {
+			owned, err := adtyUserOwnsSpecificOpenSiteWithDB(model.DB, user.Id, pub.TargetSiteId)
+			return err == nil && owned
+		}
+		return false
 	case "team":
 		if user.StaffSiteId != 0 || user.SiteId != pub.TargetSiteId {
 			return false
@@ -1944,9 +1993,19 @@ func adtyVisibleNotificationPublicationsWithDB(db *gorm.DB, userID int, site *mo
 	if err != nil {
 		return nil, err
 	}
-	isSiteOwner, err := adtyUserOwnsOpenSiteWithDB(db, userID)
-	if err != nil {
-		return nil, err
+	var ownedOpenSiteIDs []int
+	if user.SiteId == 0 && user.StaffSiteId == 0 {
+		ownedOpenSiteIDs, err = adtyUserOwnedOpenSiteIDsWithDB(db, userID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	isSiteOwner := len(ownedOpenSiteIDs) > 0
+	if !isSiteOwner && (user.SiteId != 0 || user.StaffSiteId != 0) {
+		isSiteOwner, err = adtyUserOwnsOpenSiteWithDB(db, userID)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	clauses := make([]string, 0, 8)
@@ -1965,6 +2024,13 @@ func adtyVisibleNotificationPublicationsWithDB(db *gorm.DB, userID int, site *mo
 	if site == nil {
 		if user.SiteId == 0 && !isStaff {
 			addClause("audience = ? AND target_site_id = 0 AND target_site_name = ?", "user", userTarget)
+			if user.StaffSiteId == 0 && len(ownedOpenSiteIDs) > 0 {
+				if hasTargetAudiences {
+					addClause("COALESCE(target_audiences, '') IN ('', '[]') AND audience = ? AND issuer_site_id = 0 AND target_site_id IN ? AND target_site_name = ?", "user", ownedOpenSiteIDs, userTarget)
+				} else {
+					addClause("audience = ? AND issuer_site_id = 0 AND target_site_id IN ? AND target_site_name = ?", "user", ownedOpenSiteIDs, userTarget)
+				}
+			}
 			teamTargets, err := adtyUserActiveTeamTargetsWithDB(db, userID, 0)
 			if err != nil {
 				return nil, err
@@ -2042,6 +2108,12 @@ func adtyVisibleNotificationPublicationsWithDB(db *gorm.DB, userID int, site *mo
 				teamArgs = append(teamArgs, teamSiteArgs...)
 				addClause("target_audiences LIKE ? AND ("+teamSiteSQL+")", teamArgs...)
 			}
+		}
+	} else if !isStaff && user.SiteId == 0 && user.StaffSiteId == 0 && current.OwnerUserId == userID && slices.Contains(ownedOpenSiteIDs, site.Id) {
+		if hasTargetAudiences {
+			addClause("COALESCE(target_audiences, '') IN ('', '[]') AND audience = ? AND issuer_site_id = 0 AND target_site_id = ? AND target_site_name = ?", "user", site.Id, userTarget)
+		} else {
+			addClause("audience = ? AND issuer_site_id = 0 AND target_site_id = ? AND target_site_name = ?", "user", site.Id, userTarget)
 		}
 	}
 

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"net/http"
 	"net/mail"
 	"strings"
 
@@ -27,7 +28,12 @@ func GetAdtySite(c *gin.Context) {
 	var contact string
 	if site := service.AdtySiteForRequest(c); site != nil {
 		brand := service.AdtyBrandFor(site)
-		legal := service.AdtySiteLegalFor(site)
+		legal, err := service.AdtySiteLegalForWithError(site)
+		if err != nil {
+			common.SysError(common.LogText("failed to load legal docs for site %d: %s", site.Id, err.Error()))
+			common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Site legal documents are temporarily unavailable"))
+			return
+		}
 		settings = adty_setting.SiteSetting{
 			APIBaseURL:          service.AdtySiteAPIBaseURL(site),
 			TawkPropertyID:      brand.TawkPropertyID,

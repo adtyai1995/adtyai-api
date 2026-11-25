@@ -756,7 +756,7 @@ func GetAdtyTicket(userId int, ticketId int64, workspace ...string) (*AdtyTicket
 	if !actor.isHandling() {
 		ticket.AssigneeId = 0
 		for i := range messages {
-			if ticketSupportAuthor(messages[i].AuthorRole) {
+			if ticketSupportAuthor(messages[i].AuthorRole) || (messages[i].AuthorRole != "customer" && messages[i].AuthorId != actor.User.Id) {
 				messages[i].AuthorId = 0
 			}
 		}

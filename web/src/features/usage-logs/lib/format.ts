@@ -661,6 +661,8 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'adty.margin.commission_freeze': 'Froze margin for invite commission',
   'adty.margin.commission_release': 'Released margin for invite commission',
   'adty.margin.commission_deduct': 'Deducted margin for invite commission',
+  'adty.margin.commission_closed_payout_deduct':
+    'Deducted margin for closed-site invite commission payout',
   'adty.margin.commission_clawback_return':
     'Returned clawed-back invite commission to margin',
   'adty.anomaly_disposition.review': 'Reviewed fund anomaly disposition',

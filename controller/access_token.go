@@ -389,18 +389,38 @@ func GetAuditLogs(c *gin.Context) {
 	type auditLogView struct {
 		*model.AuditLog
 		ObjectUsername string `json:"object_username,omitempty"`
+		ObjectUserId   int    `json:"object_user_id,omitempty"`
 	}
 	lookupIDs := make([]int, 0, len(logs))
+	lookupStaffIDs := make([]int, 0)
 	objectUserIDs := make([]int, len(logs))
+	staffRecordIDs := make([]int, len(logs))
 	for i, entry := range logs {
 		if entry == nil {
 			continue
 		}
 		switch strings.ToLower(strings.TrimSpace(entry.ObjectType)) {
-		case "user", "customer", "site_customer", "staff", "site_staff", "site.staff":
+		case "user", "admin.user", "customer", "site_customer":
 			if uid, parseErr := strconv.Atoi(strings.TrimSpace(entry.ObjectId)); parseErr == nil && uid > 0 {
 				objectUserIDs[i] = uid
 				lookupIDs = append(lookupIDs, uid)
+			}
+		case "staff", "site_staff", "site.staff":
+			if sid, parseErr := strconv.Atoi(strings.TrimSpace(entry.ObjectId)); parseErr == nil && sid > 0 {
+				staffRecordIDs[i] = sid
+				lookupStaffIDs = append(lookupStaffIDs, sid)
+			}
+		}
+	}
+	staffByID := map[int]model.AdtySiteStaff{}
+	if len(lookupStaffIDs) > 0 {
+		var staffRows []model.AdtySiteStaff
+		if err := model.DB.Where("id IN ?", lookupStaffIDs).Find(&staffRows).Error; err == nil {
+			for _, st := range staffRows {
+				staffByID[st.Id] = st
+				if st.UserId > 0 {
+					lookupIDs = append(lookupIDs, st.UserId)
+				}
 			}
 		}
 	}
@@ -409,7 +429,17 @@ func GetAuditLogs(c *gin.Context) {
 	for i, entry := range logs {
 		views[i] = auditLogView{AuditLog: entry}
 		if uid := objectUserIDs[i]; uid > 0 {
+			views[i].ObjectUserId = uid
 			views[i].ObjectUsername = usernames[uid]
+		} else if sid := staffRecordIDs[i]; sid > 0 {
+			if st, ok := staffByID[sid]; ok {
+				views[i].ObjectUserId = st.UserId
+				if name := usernames[st.UserId]; name != "" {
+					views[i].ObjectUsername = name
+				} else {
+					views[i].ObjectUsername = st.Username
+				}
+			}
 		}
 	}
 	page.SetItems(views)

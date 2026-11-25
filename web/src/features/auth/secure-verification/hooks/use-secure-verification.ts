@@ -38,6 +38,12 @@ import type {
   VerificationRequirements,
 } from '../types'
 
+const UI_SUPPORTED_VERIFICATION_METHODS = new Set<string>([
+  '2fa',
+  'password',
+  'email_code',
+])
+
 function preferredVerificationMethod(
   methods: VerificationRequirements['methods'],
   isLogin: boolean
@@ -72,7 +78,9 @@ function verificationReducer(
     case 'loaded': {
       if (state.phase !== 'loading') return state
       const methods = action.requirements.methods.filter(
-        (option) => option.available
+        (option) =>
+          option.available &&
+          UI_SUPPORTED_VERIFICATION_METHODS.has(option.method)
       )
       const preferred = preferredVerificationMethod(
         methods,

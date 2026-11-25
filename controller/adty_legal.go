@@ -20,7 +20,12 @@ func GetAdtyLegal(c *gin.Context) {
 	lang := service.AdtyRequestLegalLang(c)
 
 	if site := service.AdtySiteForRequest(c); site != nil {
-		legal := service.AdtySiteLegalFor(site)
+		legal, err := service.AdtySiteLegalForWithError(site)
+		if err != nil {
+			common.SysError(common.LogText("failed to load legal docs for site %d: %s", site.Id, err.Error()))
+			common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Site legal documents are temporarily unavailable"))
+			return
+		}
 		var localized map[string]string
 		switch doc {
 		case "user-agreement":

@@ -343,8 +343,17 @@ func matchAdtyTopUpSelfFilter(userID int, item model.AdtyTopUpView, filter adtyT
 	if filter.OwnerSiteID != 0 && (item.Ext == nil || item.Ext.SiteId != filter.OwnerSiteID) {
 		return false
 	}
-	if filter.Business != "" && (item.Ext == nil || item.Ext.Business != filter.Business) {
-		return false
+	if filter.Business != "" {
+		effectiveBusiness := ""
+		if item.Ext != nil {
+			effectiveBusiness = item.Ext.Business
+			if effectiveBusiness == "" && item.Ext.Provider == model.AdtyVoucherProvider && item.Ext.Method == model.AdtyVoucherPurposeSiteMargin {
+				effectiveBusiness = model.AdtyBusinessOwnerMarginTopup
+			}
+		}
+		if effectiveBusiness != filter.Business {
+			return false
+		}
 	}
 	raw, err := common.Marshal(item)
 	if err != nil {

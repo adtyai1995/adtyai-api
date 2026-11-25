@@ -126,6 +126,13 @@ func normalizeAdtyProbeBaseURL(channelType int, baseURL, protocol string) string
 		return baseURL
 	}
 	path := strings.TrimSuffix(parsed.Path, "/")
+	if protocol == adtyTranslationProtocolAnthropic {
+		if path != "" && !strings.HasSuffix(path, "/v1") && !strings.HasSuffix(path, "/messages") {
+			parsed.Path = path + "/v1"
+			return parsed.String()
+		}
+		return baseURL
+	}
 	switch channelType {
 	case constant.ChannelTypeVolcEngine:
 		if !strings.HasSuffix(path, "/api/v3") &&

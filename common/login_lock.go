@@ -126,31 +126,59 @@ func recordLoginFailureScoped(key string) error {
 	loginFailuresMu.Lock()
 	defer loginFailuresMu.Unlock()
 	now := time.Now()
-	entry := loginFailures[key]
-	if now.After(entry.until) {
+	entry, exists := loginFailures[key]
+	if exists && now.After(entry.until) {
 		entry = loginFailure{}
+		exists = false
 	}
-	entry.count++
-	entry.until = now.Add(LoginLockWindow)
-	loginFailures[key] = entry
-	if len(loginFailures) > loginFailureSweepThreshold && (now.Sub(loginFailuresLastSweep) >= loginFailureSweepInterval || len(loginFailures) > maxLoginFailureEntries) {
+	if !exists && len(loginFailures) >= maxLoginFailureEntries {
 		loginFailuresLastSweep = now
 		for name, stored := range loginFailures {
 			if now.After(stored.until) {
 				delete(loginFailures, name)
 			}
 		}
-		if len(loginFailures) > maxLoginFailureEntries {
-			excess := len(loginFailures) - maxLoginFailureEntries
-			for name := range loginFailures {
-				if name == key {
-					continue
-				}
-				delete(loginFailures, name)
-				excess--
-				if excess <= 0 {
+		if len(loginFailures) >= maxLoginFailureEntries {
+			// Batch-evict unlocked entries only (preferring single-failure noise
+			// first) so random-username floods never evict active lockouts or
+			// force O(N) scans on every request.
+			targetSize := maxLoginFailureEntries - maxLoginFailureEntries/10
+			if targetSize < 0 {
+				targetSize = 0
+			}
+			for name, stored := range loginFailures {
+				if len(loginFailures) <= targetSize {
 					break
 				}
+				if stored.count == 1 && name != key {
+					delete(loginFailures, name)
+				}
+			}
+			if len(loginFailures) >= maxLoginFailureEntries {
+				for name, stored := range loginFailures {
+					if len(loginFailures) <= targetSize {
+						break
+					}
+					if stored.count < LoginLockLimit && name != key {
+						delete(loginFailures, name)
+					}
+				}
+			}
+		}
+		// If locked entries alone saturate capacity, fail closed rather than
+		// dropping an active lockout or growing memory unboundedly.
+		if len(loginFailures) >= maxLoginFailureEntries {
+			return ErrLoginLockUnavailable
+		}
+	}
+	entry.count++
+	entry.until = now.Add(LoginLockWindow)
+	loginFailures[key] = entry
+	if len(loginFailures) > loginFailureSweepThreshold && now.Sub(loginFailuresLastSweep) >= loginFailureSweepInterval {
+		loginFailuresLastSweep = now
+		for name, stored := range loginFailures {
+			if now.After(stored.until) {
+				delete(loginFailures, name)
 			}
 		}
 	}

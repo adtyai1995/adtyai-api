@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"io"
@@ -22,12 +22,12 @@ var adtyProbeDomainHTTPS = func(ctx context.Context, domain *model.AdtySiteDomai
 		}
 		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 		if err != nil {
-			return nil, fmt.Errorf("Domain DNS lookup failed")
+			return nil, common.NewMessage("Domain DNS lookup failed")
 		}
 		guard := &common.SSRFProtection{AllowPrivateIp: false, IpFilterMode: false}
 		for _, ip := range ips {
 			if !ip.IP.IsGlobalUnicast() || !guard.IsIPAccessAllowed(ip.IP) {
-				return nil, fmt.Errorf("Domain resolves to a restricted network")
+				return nil, common.NewMessage("Domain resolves to a restricted network")
 			}
 		}
 		var last error
@@ -39,7 +39,7 @@ var adtyProbeDomainHTTPS = func(ctx context.Context, domain *model.AdtySiteDomai
 			last = err
 		}
 		if last == nil {
-			last = fmt.Errorf("Domain has no addresses")
+			last = common.NewMessage("Domain has no addresses")
 		}
 		return nil, last
 	}}
@@ -55,7 +55,11 @@ var adtyProbeDomainHTTPS = func(ctx context.Context, domain *model.AdtySiteDomai
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("Domain HTTPS verification failed")
+		var msg *common.Message
+		if errors.As(err, &msg) {
+			return msg
+		}
+		return common.NewMessage("Domain HTTPS verification failed")
 	}
 	defer resp.Body.Close()
 	return checkAdtyDomainProbeResponse(resp, domain)
@@ -64,16 +68,16 @@ var adtyProbeDomainHTTPS = func(ctx context.Context, domain *model.AdtySiteDomai
 func checkAdtyDomainProbeResponse(resp *http.Response, domain *model.AdtySiteDomain) error {
 	if domain.DesiredState == "redirect_only" {
 		if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != strings.TrimRight(AdtySiteBaseURL(nil), "/")+"/" {
-			return fmt.Errorf("Closed website does not redirect to the main site")
+			return common.NewMessage("Closed website does not redirect to the main site")
 		}
 		return nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Domain returned HTTP %d", resp.StatusCode)
+		return common.NewMessage("Domain returned HTTP {{status}}", map[string]any{"status": resp.StatusCode})
 	}
 	var identity AdtyDomainProbeIdentity
 	if err := common.DecodeJson(io.LimitReader(resp.Body, 2048), &identity); err != nil || identity.SiteID != domain.SiteId || identity.Role != domain.Role || identity.Hostname != domain.Hostname {
-		return fmt.Errorf("Domain points to a different site or endpoint")
+		return common.NewMessage("Domain points to a different site or endpoint")
 	}
 	return nil
 }

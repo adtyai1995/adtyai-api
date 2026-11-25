@@ -149,6 +149,14 @@ func GetAdtyOwnerSite(c *gin.Context) {
 	if strings.TrimSpace(site.Brand) != "" {
 		_ = common.UnmarshalJsonStr(site.Brand, &brand)
 	}
+	brand.ThemeColor = ""
+	brand.Tagline = ""
+	legalDocs, err := service.AdtySiteLegalForWithError(site)
+	if err != nil {
+		common.SysError(common.LogText("failed to load legal docs for site %d: %s", site.Id, err.Error()))
+		common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Site legal documents are temporarily unavailable"))
+		return
+	}
 	prices, version, err := service.LoadAdtySitePricing(site.Id, 0)
 	if err != nil {
 		common.ApiError(c, err)
@@ -166,7 +174,7 @@ func GetAdtyOwnerSite(c *gin.Context) {
 		"cost_factor":           d.String(),
 		"custom_domain_enabled": cfg.CustomDomainEnabled,
 		"sender_domain_enabled": false, "brand": brand, "home_page_content": site.HomePageContent,
-		"legal_docs":         service.AdtySiteLegalFor(site),
+		"legal_docs":         legalDocs,
 		"bonus_methods":      service.AdtySiteBonusMethods(site),
 		"seo_index":          site.SeoIndex,
 		"close_requested_at": site.CloseRequestedAt, "close_execute_at": site.CloseExecuteAt,

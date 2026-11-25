@@ -1057,6 +1057,7 @@ func applyChannelUpstreamModelUpdates(
 			return err
 		}
 		channel.Models = locked.Models
+		channel.OtherSettings = locked.OtherSettings
 		if !modelsChanged {
 			return nil
 		}

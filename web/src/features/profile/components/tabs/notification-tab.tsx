@@ -126,7 +126,6 @@ export function NotificationTab({
   const [hasWebhookSecret, setHasWebhookSecret] = useState(false)
   const [hasGotifyToken, setHasGotifyToken] = useState(false)
   const [clearWebhookSecret, setClearWebhookSecret] = useState(false)
-  const [clearGotifyToken, setClearGotifyToken] = useState(false)
 
   // Update form field helper
   const updateField = useCallback(
@@ -144,7 +143,6 @@ export function NotificationTab({
     setHasWebhookSecret(flags.hasWebhookSecret)
     setHasGotifyToken(flags.hasGotifyToken)
     setClearWebhookSecret(false)
-    setClearGotifyToken(false)
     if (profile?.setting) {
       const next = normalizeUserSettings(profile.setting)
       setSettings({
@@ -167,22 +165,14 @@ export function NotificationTab({
       const { record_ip_log: _recordIpLog, ...notificationSettings } = settings
       const payload: UpdateUserSettingsRequest & {
         clear_webhook_secret?: boolean
-        clear_gotify_token?: boolean
       } = {
         ...notificationSettings,
         webhook_secret:
           notificationSettings.notify_type === 'webhook' && clearWebhookSecret
             ? ''
             : notificationSettings.webhook_secret,
-        gotify_token:
-          notificationSettings.notify_type === 'gotify' && clearGotifyToken
-            ? ''
-            : notificationSettings.gotify_token,
         ...(notificationSettings.notify_type === 'webhook' && clearWebhookSecret
           ? { clear_webhook_secret: true }
-          : {}),
-        ...(notificationSettings.notify_type === 'gotify' && clearGotifyToken
-          ? { clear_gotify_token: true }
           : {}),
       }
       const response = await updateUserSettings(payload)
@@ -378,7 +368,7 @@ export function NotificationTab({
                   <Label htmlFor='gotifyToken'>
                     {t('Gotify Application Token')}
                   </Label>
-                  {hasGotifyToken && !clearGotifyToken && (
+                  {hasGotifyToken && (
                     <Badge variant='secondary'>{t('Configured')}</Badge>
                   )}
                 </div>
@@ -386,12 +376,9 @@ export function NotificationTab({
                   id='gotifyToken'
                   autoComplete='new-password'
                   value={settings.gotify_token}
-                  onChange={(e) => {
-                    setClearGotifyToken(false)
-                    updateField('gotify_token', e.target.value)
-                  }}
+                  onChange={(e) => updateField('gotify_token', e.target.value)}
                   placeholder={
-                    hasGotifyToken && !clearGotifyToken
+                    hasGotifyToken
                       ? t('Leave empty to keep the current token')
                       : t('Enter application token')
                   }
@@ -401,28 +388,6 @@ export function NotificationTab({
                     ? t('Leave blank to keep the existing credential')
                     : t('Token obtained from your Gotify application')}
                 </p>
-                {hasGotifyToken && (
-                  <div className='flex items-center gap-2 pt-1'>
-                    <Checkbox
-                      id='clearGotifyToken'
-                      disabled={loading}
-                      checked={clearGotifyToken}
-                      onCheckedChange={(checked) => {
-                        const shouldClear = checked === true
-                        setClearGotifyToken(shouldClear)
-                        if (shouldClear) {
-                          updateField('gotify_token', '')
-                        }
-                      }}
-                    />
-                    <Label
-                      htmlFor='clearGotifyToken'
-                      className='cursor-pointer text-xs font-normal'
-                    >
-                      {t('Clear saved credential')}
-                    </Label>
-                  </div>
-                )}
               </div>
               <div className='space-y-1.5'>
                 <Label htmlFor='gotifyPriority'>{t('Message Priority')}</Label>

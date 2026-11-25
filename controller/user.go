@@ -2225,6 +2225,11 @@ func UpdateUserSetting(c *gin.Context) {
 
 	// 更新用户设置
 	if err := model.UpdateUserSetting(user.Id, settings); err != nil {
+		var msg *common.Message
+		if errors.As(err, &msg) {
+			common.ApiError(c, msg)
+			return
+		}
 		common.ApiErrorT(c, "Update failed")
 		return
 	}

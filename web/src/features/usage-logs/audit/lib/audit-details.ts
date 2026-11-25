@@ -36,6 +36,48 @@ const AUDIT_ROLE_NAMES: Record<number, string> = {
   [ROLE.SUPER_ADMIN]: 'root',
 }
 
+const USER_AUDIT_OBJECT_TYPES = new Set([
+  'user',
+  'admin.user',
+  'customer',
+  'site_customer',
+  'staff',
+  'site_staff',
+  'site.staff',
+])
+
+const POSITIVE_INTEGER_RE = /^[1-9]\d*$/
+
+export function formatAuditObjectUserIdentity(entry: AuditLog): string {
+  const objectType = entry.object_type?.trim().toLowerCase() ?? ''
+  if (!objectType || !USER_AUDIT_OBJECT_TYPES.has(objectType)) {
+    return ''
+  }
+  const objectId = entry.object_id?.trim() ?? ''
+  const resolvedUserId =
+    entry.object_user_id && entry.object_user_id > 0
+      ? entry.object_user_id
+      : objectId
+  const objectUsername = entry.object_username?.trim() ?? ''
+  const hasPositiveUserId =
+    (entry.object_user_id !== undefined && entry.object_user_id > 0) ||
+    POSITIVE_INTEGER_RE.test(objectId)
+  if (!hasPositiveUserId && !objectUsername) {
+    return ''
+  }
+  return formatUserIdentity(resolvedUserId, objectUsername)
+}
+
+export function formatAuditObject(entry: AuditLog): string {
+  const objectType = entry.object_type?.trim() ?? ''
+  const objectId = entry.object_id?.trim() ?? ''
+  const userIdentity = formatAuditObjectUserIdentity(entry)
+  if (objectType && userIdentity) {
+    return `${objectType} · ${userIdentity}`
+  }
+  return [objectType, objectId].filter(Boolean).join(' / ')
+}
+
 const TOKEN_AUDIT_OPERATIONS: Record<
   string,
   { labelKey: string; namedKey?: string }
@@ -505,26 +547,7 @@ export function buildAuditDetails(
     delete params.name
     delete params.username
   } else {
-    const objectType = entry.object_type?.trim().toLowerCase() ?? ''
-    const objectUsername =
-      (
-        entry as AuditLog & {
-          object_username?: string | null
-        }
-      ).object_username?.trim() ?? ''
-    if (
-      objectUsername &&
-      [
-        'user',
-        'customer',
-        'site_customer',
-        'staff',
-        'site_staff',
-        'site.staff',
-      ].includes(objectType)
-    ) {
-      target = formatUserIdentity(entry.object_id, objectUsername)
-    }
+    target = formatAuditObjectUserIdentity(entry)
   }
 
   const fields: AuditDetailField[] = []

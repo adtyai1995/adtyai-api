@@ -35,8 +35,8 @@ type AdtySiteBrand struct {
 	LogoURL            string `json:"logo_url"`
 	Title              string `json:"title"`
 	FaviconURL         string `json:"favicon_url"`
-	ThemeColor         string `json:"theme_color"`
-	Tagline            string `json:"tagline"`
+	ThemeColor         string `json:"theme_color,omitempty"`
+	Tagline            string `json:"tagline,omitempty"`
 	Notice             string `json:"notice"`
 	SupportContact     string `json:"support_contact"`
 	TawkPropertyID     string `json:"tawk_property_id"`
@@ -52,8 +52,8 @@ type AdtySiteBrandInput struct {
 	LogoURL            string `json:"logo_url"`
 	Title              string `json:"title"`
 	FaviconURL         string `json:"favicon_url"`
-	ThemeColor         string `json:"theme_color"`
-	Tagline            string `json:"tagline"`
+	ThemeColor         string `json:"theme_color,omitempty"`
+	Tagline            string `json:"tagline,omitempty"`
 	Notice             string `json:"notice"`
 	SupportContact     string `json:"support_contact"`
 	TawkPropertyID     string `json:"tawk_property_id"`
@@ -178,19 +178,29 @@ func validateAdtySiteOwnedAsset(siteID int, urlPath string, invalidErr error) er
 }
 
 func validateAdtySiteHomePageContent(rawHome string) error {
+	rawHome = strings.TrimSpace(rawHome)
 	if rawHome == "" {
 		return nil
 	}
 	if len(rawHome) > 200*1024 {
 		return common.NewMessage("Home page content is too long")
 	}
-	lower := strings.ToLower(rawHome)
-	for _, blocked := range []string{"javascript:", "vbscript:", "data:", "file:"} {
+	// Strip all Unicode whitespace, control, and format characters before
+	// checking dangerous URI prefixes so inputs like "java\tscript:..." or
+	// "\u200bjavascript:..." cannot bypass prefix validation.
+	compact := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, rawHome)
+	lower := strings.ToLower(compact)
+	for _, blocked := range []string{"javascript:", "vbscript:", "data:", "file:", "blob:"} {
 		if strings.HasPrefix(lower, blocked) {
 			return common.NewMessage("Home page URL must start with http:// or https://")
 		}
 	}
-	if strings.HasPrefix(rawHome, "//") {
+	if strings.HasPrefix(compact, "//") {
 		return common.NewMessage("Home page URL must start with http:// or https://")
 	}
 	if !strings.HasPrefix(rawHome, "<") && !strings.ContainsAny(rawHome, " \t\r\n") {

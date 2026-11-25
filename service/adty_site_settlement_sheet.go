@@ -607,7 +607,7 @@ func summarizeAdtySiteSettlementTx(tx *gorm.DB, siteID int, day string, start, e
 				if row.WalletKind == model.AdtySiteWalletMargin && row.Delta.IsPositive() {
 					sheet.EarningToMarginUSD = sheet.EarningToMarginUSD.Add(row.Delta)
 				}
-			case "commission_deduct":
+			case "commission_deduct", "commission_closed_payout_deduct":
 				if row.Delta.IsNegative() {
 					sheet.CommissionPaidUSD = sheet.CommissionPaidUSD.Add(row.Delta.Neg())
 				}

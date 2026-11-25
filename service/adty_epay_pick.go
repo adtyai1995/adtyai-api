@@ -44,7 +44,7 @@ func PickAdtyEpayChannel(method string, payCNY decimal.Decimal, device string, e
 		if len(allowed) > 0 && len(allowed[0]) > 0 && !slices.Contains(allowed[0], channel.Id) {
 			continue
 		}
-		if channel.Status != model.AdtyEpayStatusEnabled || exclude[channel.Id] {
+		if channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || exclude[channel.Id] {
 			continue
 		}
 		m := channel.MethodFor(method)

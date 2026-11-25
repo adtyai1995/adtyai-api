@@ -75,7 +75,7 @@ func AdtyPublicAnnouncementsForRequest(c *gin.Context) []AdtyPublicAnnouncement 
 		}
 		contentEn := ""
 		if head, ok := headByKey[adtyNotificationTranslationKey(row.Id)]; ok && strings.TrimSpace(head.English) != "" {
-			currentSrc := normalizeAdtyNotificationSourceContentWithDB(model.DB, row.Id, rawContent)
+			currentSrc := stripAdtyNotificationTranslationSuffix(rawContent, head.English)
 			if adtyTranslationHeadMatchesSource(head, currentSrc) {
 				eng := strings.TrimSpace(head.English)
 				if isHTML {

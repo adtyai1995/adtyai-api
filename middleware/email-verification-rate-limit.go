@@ -43,7 +43,7 @@ func redisEmailVerificationRateLimiter(c *gin.Context) {
 func memoryEmailVerificationRateLimiter(c *gin.Context) {
 	key := EmailVerificationRateLimitMark + ":" + c.ClientIP()
 
-	if !inMemoryRateLimiter.Request(key, EmailVerificationMaxRequests, EmailVerificationDuration) {
+	if !criticalInMemoryRateLimiter.Request(key, EmailVerificationMaxRequests, EmailVerificationDuration) {
 		common.ApiErrorStatus(c, http.StatusTooManyRequests, common.NewMessage("Please wait before requesting another verification code."))
 		c.Abort()
 		return
@@ -55,7 +55,7 @@ func memoryEmailVerificationRateLimiter(c *gin.Context) {
 func EmailVerificationRateLimit() gin.HandlerFunc {
 	// Keep the fallback ready before requests arrive so a concurrent Redis
 	// outage cannot race the in-memory limiter's first initialization.
-	inMemoryRateLimiter.Init(common.RateLimitKeyExpirationDuration)
+	initCriticalInMemoryRateLimiter()
 	return func(c *gin.Context) {
 		if common.RedisEnabled {
 			redisEmailVerificationRateLimiter(c)

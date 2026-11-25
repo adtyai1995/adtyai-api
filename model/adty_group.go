@@ -124,7 +124,7 @@ var AdtyContentLangs = []string{"zh-CN", "zh-TW", "en", "fr", "ja", "ko", "ru", 
 var adtyOfficialContentLangs = []string{"zh-CN", "en"}
 
 var (
-	ErrAdtyGroupNotFound     = errors.New("adty group not found")
+	ErrAdtyGroupNotFound     = common.NewMessage("Group not found")
 	ErrAdtyGroupTextRequired = errors.New("adty group text required")
 	errAdtyGroupIDExhausted  = errors.New("adty group id exhausted")
 	adtyGroupCreateAttempts  = 5

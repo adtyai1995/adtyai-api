@@ -123,6 +123,9 @@ export function NotificationEditor(props: {
     () => isPreservedLegacyNotification(props.row),
     [props.row]
   )
+  const isLegacyPrivateTarget =
+    isLegacyPreserved &&
+    (props.row?.audience === 'user' || props.row?.audience === 'team')
   const preservedLegacyIds = useMemo(
     () => resolveLegacyTargetIds(props.row),
     [props.row]
@@ -186,7 +189,9 @@ export function NotificationEditor(props: {
             (props.row.telegram_at ?? 0) > 0 ||
             Boolean(props.row.telegram_channel),
           telegram_channel:
-            props.mode === 'owner' || props.row.telegram_channel === '@private'
+            props.mode === 'owner' ||
+            isLegacyPrivateTarget ||
+            props.row.telegram_channel === '@private'
               ? ''
               : (props.row.telegram_channel ?? ''),
         }
@@ -218,7 +223,8 @@ export function NotificationEditor(props: {
     !isLegacyPreserved &&
     props.mode === 'root' &&
     targetAudiences.includes('site_users')
-  const canSpecifyTelegramChannel = props.mode === 'root'
+  const canSpecifyTelegramChannel =
+    props.mode === 'root' && !isLegacyPrivateTarget
 
   useDraftNavigation(form.formState.isDirty)
 

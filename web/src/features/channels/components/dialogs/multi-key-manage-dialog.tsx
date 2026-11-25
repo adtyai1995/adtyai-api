@@ -91,7 +91,6 @@ export function MultiKeyManageDialog({
   const [keys, setKeys] = useState<KeyStatus[]>([])
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
-  const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(0)
   const [enabledCount, setEnabledCount] = useState(0)
   const [manualDisabledCount, setManualDisabledCount] = useState(0)
@@ -131,7 +130,6 @@ export function MultiKeyManageDialog({
 
       if (response.success && response.data) {
         setKeys(response.data.keys || [])
-        setTotal(response.data.total || 0)
         setCurrentPage(response.data.page || 1)
         setPageSize(response.data.page_size || 10)
         setTotalPages(response.data.total_pages || 0)
@@ -231,6 +229,8 @@ export function MultiKeyManageDialog({
     return formatTimestamp(timestamp)
   }
 
+  const totalKeys = enabledCount + manualDisabledCount + autoDisabledCount
+
   if (!currentRow) return null
 
   return (
@@ -273,17 +273,17 @@ export function MultiKeyManageDialog({
             <StatisticsCard
               label={t('Enabled')}
               count={enabledCount}
-              total={total}
+              total={totalKeys}
             />
             <StatisticsCard
               label={t('Manual Disabled')}
               count={manualDisabledCount}
-              total={total}
+              total={totalKeys}
             />
             <StatisticsCard
               label={t('Auto Disabled')}
               count={autoDisabledCount}
-              total={total}
+              total={totalKeys}
             />
           </div>
 

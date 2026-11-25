@@ -57,7 +57,7 @@
 - 先写测试并确认失败，再实现并确认通过，然后提交。
 - 后端用 testify 的 require/assert。
 - （v2.5）我们写的、要用数据库的测试一律连 PostgreSQL，统一用各包的 `adtyTestDB(t)`（文件 `adty_testhelper_test.go`，任务 2.1 起）：
-  - 连接串读环境变量 `ADTY_TEST_PG_DSN`，没设就 `t.Skip` 并说明原因。从任务 2.1 起，check.sh 跑后端时要求它有值，CI 的 `test-backend` 作业使用 postgres:18 并设好它，所以门禁里这些测试不会被跳过。验收读取连接实例的 `server_version_num` 并记录，要求 180000 <= server_version_num < 190000，逐一核对实际连接及具名断言。
+  - 连接串读环境变量 `ADTY_TEST_PG_DSN`，没设就 `t.Skip` 并说明原因。按 `[R-30]`，GitHub Actions CI（`.github/workflows/ci.yml`）仅运行轻量编译与静态检查（后端 `go vet`/`go build`，前端 typecheck/build/i18n/lint/copyright/doc-refs），不连数据库跑测试；本地 PostgreSQL 18 测试与门禁由 `scripts/adty/check.sh` 执行（跑后端时要求 `ADTY_TEST_PG_DSN` 有值，因此门禁里数据库测试不会被跳过）。验收读取连接实例的 `server_version_num` 并记录，要求 180000 <= server_version_num < 190000，逐一核对实际连接及具名断言。
   - 每个测试建一个随机名字的 schema，连接时用 `search_path` 指向它，测试结束删掉。`go test` 会同时跑多个包，各测试互不干扰。
   - model 和 service 包已经有 TestMain（model/task_cas_test.go:19、service/task_billing_test.go:30），`adtyTestDB` 在单个测试里换库、用完换回，写法参照 service/text_quota_test.go:78-82。换库时调 `common.SetDatabaseTypes(PostgreSQL, PostgreSQL)` 并重跑列名初始化：上游的 `initCol` 未导出（model/main.go:43），在 `model/adty_testsupport.go` 加一个导出包装；恢复时把数据库类型和列名一起还原。
 - 上游自己的测试照旧用它们的内存 SQLite，我们改过的上游代码不能让它们失败（执行层决定 11 的例外）。钉住上游行为的特征测试（任务 1.1）也沿用上游包里现成的测试库。任务 1.6 的 `TestAdtyDeletedSchemaAbsent` 跑的是上游的完整迁移，也用内存 SQLite：删订阅时去掉的 SQLite 专用建表语句只在 SQLite 上执行，换成 PostgreSQL 就查不到它们回来没有；而且 P1 时 `adtyTestDB` 还没有。

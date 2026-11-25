@@ -25,8 +25,10 @@ import { RichContent } from '@/components/rich-content'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useStatus } from '@/hooks/use-status'
 import { toContentLang } from '@/lib/adty-lang'
 import { isHttpUrl, isLikelyHtml } from '@/lib/content-format'
+import { subsiteDocument } from '@/lib/subsite-document'
 
 import { getLegalDocument, type LegalDoc } from './api'
 
@@ -48,6 +50,10 @@ export function LegalDocument({
   pending = false,
 }: LegalDocumentProps) {
   const { t, i18n } = useTranslation()
+  const { status } = useStatus()
+  const isSubsite = Boolean(
+    subsiteDocument() || status?.adty_site || status?.data?.adty_site
+  )
   // adty: the text depends on the language, so a language switch refetches.
   const lang = toContentLang(i18n.resolvedLanguage || i18n.language)
   const { data, isLoading } = useQuery({
@@ -130,10 +136,16 @@ export function LegalDocument({
     )
   }
 
+  const htmlVariant = isSubsite ? 'subsite-isolated' : 'isolated'
+
   return (
     <PublicLayout showMainContainer={!contentIsHtml}>
       {contentIsHtml ? (
-        <RichContent mode='html' htmlVariant='isolated' content={rawContent} />
+        <RichContent
+          mode='html'
+          htmlVariant={htmlVariant}
+          content={rawContent}
+        />
       ) : (
         <div className='mx-auto max-w-[680px] space-y-8 py-10'>
           <h1 className='text-[32px] leading-tight font-extrabold tracking-[-0.025em]'>

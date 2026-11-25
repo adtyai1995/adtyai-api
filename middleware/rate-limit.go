@@ -37,6 +37,12 @@ return {1, count, ttl}
 `
 
 var inMemoryRateLimiter common.InMemoryRateLimiter
+var criticalInMemoryRateLimiter common.InMemoryRateLimiter
+
+func initCriticalInMemoryRateLimiter() {
+	criticalInMemoryRateLimiter.Init(common.RateLimitKeyExpirationDuration)
+	criticalInMemoryRateLimiter.SetFailClosedOnCap(true)
+}
 
 var defNext = func(c *gin.Context) {
 	c.Next()
@@ -125,12 +131,16 @@ func redisRateLimiter(c *gin.Context, maxRequestNum int, duration int64, mark st
 	}
 }
 
-func memoryRateLimiter(c *gin.Context, maxRequestNum int, duration int64, mark string) {
+func memoryRateLimiterWith(limiter *common.InMemoryRateLimiter, c *gin.Context, maxRequestNum int, duration int64, mark string) {
 	key := mark + c.ClientIP()
-	if !inMemoryRateLimiter.Request(key, maxRequestNum, duration) {
+	if !limiter.Request(key, maxRequestNum, duration) {
 		writeRateLimited(c, duration)
 		return
 	}
+}
+
+func memoryRateLimiter(c *gin.Context, maxRequestNum int, duration int64, mark string) {
+	memoryRateLimiterWith(&inMemoryRateLimiter, c, maxRequestNum, duration, mark)
 }
 
 // writeRateLimited rejects the request with 429 and a Retry-After hint so
@@ -146,15 +156,22 @@ func writeRateLimited(c *gin.Context, retryAfterSeconds int64) {
 }
 
 func rateLimitFactory(maxRequestNum int, duration int64, mark string) func(c *gin.Context) {
+	return rateLimitFactoryWith(&inMemoryRateLimiter, false, maxRequestNum, duration, mark)
+}
+
+func rateLimitFactoryWith(limiter *common.InMemoryRateLimiter, failClosed bool, maxRequestNum int, duration int64, mark string) func(c *gin.Context) {
 	if common.RedisEnabled {
 		return func(c *gin.Context) {
 			redisRateLimiter(c, maxRequestNum, duration, mark)
 		}
 	}
 	// It's safe to call multi times.
-	inMemoryRateLimiter.Init(common.RateLimitKeyExpirationDuration)
+	limiter.Init(common.RateLimitKeyExpirationDuration)
+	if failClosed {
+		limiter.SetFailClosedOnCap(true)
+	}
 	return func(c *gin.Context) {
-		memoryRateLimiter(c, maxRequestNum, duration, mark)
+		memoryRateLimiterWith(limiter, c, maxRequestNum, duration, mark)
 	}
 }
 
@@ -189,7 +206,7 @@ func GlobalAPIRateLimit() func(c *gin.Context) {
 
 func CriticalRateLimit() func(c *gin.Context) {
 	if common.CriticalRateLimitEnable {
-		return rateLimitFactory(common.CriticalRateLimitNum, common.CriticalRateLimitDuration, "CT")
+		return rateLimitFactoryWith(&criticalInMemoryRateLimiter, true, common.CriticalRateLimitNum, common.CriticalRateLimitDuration, "CT")
 	}
 	return defNext
 }
@@ -214,7 +231,9 @@ func UserCriticalRateLimit(scope string) func(c *gin.Context) {
 	if !common.CriticalRateLimitEnable {
 		return defNext
 	}
-	return userRateLimitFactory(
+	return userRateLimitFactoryWith(
+		&criticalInMemoryRateLimiter,
+		true,
 		common.CriticalRateLimitNum,
 		common.CriticalRateLimitDuration,
 		"UC:"+scope,
@@ -233,6 +252,10 @@ func UploadRateLimit() func(c *gin.Context) {
 // instead of client IP, making it resistant to proxy rotation attacks.
 // Must be used AFTER authentication middleware (UserAuth).
 func userRateLimitFactory(maxRequestNum int, duration int64, mark string) func(c *gin.Context) {
+	return userRateLimitFactoryWith(&inMemoryRateLimiter, false, maxRequestNum, duration, mark)
+}
+
+func userRateLimitFactoryWith(limiter *common.InMemoryRateLimiter, failClosed bool, maxRequestNum int, duration int64, mark string) func(c *gin.Context) {
 	if common.RedisEnabled {
 		return func(c *gin.Context) {
 			userID := c.GetInt("id")
@@ -245,7 +268,10 @@ func userRateLimitFactory(maxRequestNum int, duration int64, mark string) func(c
 		}
 	}
 	// It's safe to call multi times.
-	inMemoryRateLimiter.Init(common.RateLimitKeyExpirationDuration)
+	limiter.Init(common.RateLimitKeyExpirationDuration)
+	if failClosed {
+		limiter.SetFailClosedOnCap(true)
+	}
 	return func(c *gin.Context) {
 		userID := c.GetInt("id")
 		if userID == 0 {
@@ -254,7 +280,7 @@ func userRateLimitFactory(maxRequestNum int, duration int64, mark string) func(c
 			return
 		}
 		key := fmt.Sprintf("%s:user:%d", mark, userID)
-		if !inMemoryRateLimiter.Request(key, maxRequestNum, duration) {
+		if !limiter.Request(key, maxRequestNum, duration) {
 			writeRateLimited(c, duration)
 			return
 		}

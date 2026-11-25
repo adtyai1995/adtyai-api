@@ -618,6 +618,13 @@ func paySiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bo
 			reference = cleanProof
 		}
 		receiptKey := fmt.Sprintf("%x", sha256.Sum256([]byte(row.Method+"|"+row.Network+"|"+reference)))
+		var dupCount int64
+		if err := tx.Model(&model.AdtySiteInviteWithdrawal{}).Where("receipt_key = ? AND id <> ?", receiptKey, row.Id).Count(&dupCount).Error; err != nil {
+			return err
+		}
+		if dupCount > 0 {
+			return common.NewMessage("This payout reference was already used for another withdrawal")
+		}
 		var items []model.AdtySiteInviteWithdrawalItem
 		if err := tx.Where("withdrawal_id = ? AND status = ?", row.Id, model.AdtySiteInviteWithdrawItemFrozen).Find(&items).Error; err != nil {
 			return err
@@ -662,6 +669,9 @@ func paySiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bo
 			"status": model.AdtySiteInviteWithdrawPaid, "paid_at": time.Now().Unix(), "paid_by": ownerID,
 			"tx_id": txID, "proof_note": cleanProof, "receipt_key": receiptKey,
 		}).Error; err != nil {
+			if isAdtyUniqueConflictError(err) {
+				return common.NewMessage("This payout reference was already used for another withdrawal")
+			}
 			return err
 		}
 		var auditErr error

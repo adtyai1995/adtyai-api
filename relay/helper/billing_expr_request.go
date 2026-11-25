@@ -120,8 +120,7 @@ func cloneRequestInput(src billingexpr.RequestInput) billingexpr.RequestInput {
 }
 
 func isJSONContentType(contentType string) bool {
-	mediaType := common.NormalizedContentMediaType(contentType)
-	return mediaType == "" || mediaType == "application/json"
+	return common.IsJSONMediaType(common.NormalizedContentMediaType(contentType))
 }
 
 func cloneStringMap(src map[string]string) map[string]string {

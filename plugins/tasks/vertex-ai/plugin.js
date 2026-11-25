@@ -322,6 +322,11 @@ function aspect(size) {
   return !p || p[0] <= 0 || p[1] <= 0 ? "16:9" : p[1] > p[0] ? "9:16" : "16:9";
 }
 function assertSingleVideoCount(params) {
+  for (const forbidden of ["duration_seconds", "sample_count", "number_of_videos", "generate_audio"]) {
+    if (Object.prototype.hasOwnProperty.call(params, forbidden)) {
+      throw new Error(forbidden + " is not supported");
+    }
+  }
   for (const key of ["sampleCount", "numberOfVideos"]) {
     if (params[key] !== undefined && params[key] !== null && params[key] !== "") {
       const count = typeof params[key] === "boolean" || Array.isArray(params[key]) ? Number.NaN : Number(params[key]);

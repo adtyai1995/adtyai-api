@@ -19,6 +19,9 @@ func ValidateRequestURL(requestURL, baseURL string, allowedHosts []string) error
 	if err != nil || request.Scheme == "" || request.Host == "" {
 		return fmt.Errorf("plugin request URL must be absolute")
 	}
+	if !strings.EqualFold(request.Scheme, "http") && !strings.EqualFold(request.Scheme, "https") {
+		return fmt.Errorf("plugin request URL must use http or https")
+	}
 	if request.Fragment != "" {
 		return fmt.Errorf("plugin request URL must not contain a fragment")
 	}
@@ -47,6 +50,9 @@ func ValidateRequestURL(requestURL, baseURL string, allowedHosts []string) error
 		// the same way an explicit default port on the request URL does.
 		allowedURL, parseErr := url.Parse(request.Scheme + "://" + strings.TrimSpace(allowed))
 		if parseErr == nil && requestHost == canonicalHost(allowedURL) {
+			if strings.EqualFold(base.Scheme, "https") && !strings.EqualFold(request.Scheme, "https") {
+				return fmt.Errorf("plugin request must use HTTPS when the channel base URL uses HTTPS")
+			}
 			return nil
 		}
 	}

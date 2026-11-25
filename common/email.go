@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -36,19 +37,126 @@ func SanitizeOutboundError(err error, secrets ...string) error {
 	}
 	msg := outboundURLCredentialsRe.ReplaceAllString(err.Error(), "${1}[REDACTED]@")
 	for _, secret := range secrets {
-		s := strings.TrimSpace(secret)
-		if s == "" {
+		trimmed := strings.TrimSpace(secret)
+		if trimmed == "" {
 			continue
 		}
-		msg = strings.ReplaceAll(msg, s, "[REDACTED]")
-		msg = strings.ReplaceAll(msg, url.QueryEscape(s), "[REDACTED]")
-		msg = strings.ReplaceAll(msg, url.PathEscape(s), "[REDACTED]")
-		if len(s) >= 4 {
-			msg = strings.ReplaceAll(msg, base64.StdEncoding.EncodeToString([]byte(s)), "[REDACTED]")
-			msg = strings.ReplaceAll(msg, base64.RawStdEncoding.EncodeToString([]byte(s)), "[REDACTED]")
+		candidates := []string{secret}
+		if trimmed != secret {
+			candidates = append(candidates, trimmed)
+		}
+		for _, s := range candidates {
+			msg = strings.ReplaceAll(msg, s, "[REDACTED]")
+			msg = strings.ReplaceAll(msg, url.QueryEscape(s), "[REDACTED]")
+			msg = strings.ReplaceAll(msg, url.PathEscape(s), "[REDACTED]")
+			if len(s) >= 4 {
+				msg = strings.ReplaceAll(msg, base64.StdEncoding.EncodeToString([]byte(s)), "[REDACTED]")
+				msg = strings.ReplaceAll(msg, base64.RawStdEncoding.EncodeToString([]byte(s)), "[REDACTED]")
+			}
 		}
 	}
 	return errors.New(msg)
+}
+
+// MailErrorKind classifies outbound mail failures without retaining raw
+// provider or transport errors that could embed credentials.
+type MailErrorKind string
+
+const (
+	MailErrUnknown  MailErrorKind = "unknown"
+	MailErrAuth     MailErrorKind = "auth"
+	MailErrTLS      MailErrorKind = "tls"
+	MailErrTimeout  MailErrorKind = "timeout"
+	MailErrConnect  MailErrorKind = "connect"
+	MailErrRejected MailErrorKind = "rejected"
+)
+
+// SanitizedMailError holds a credential-scrubbed message plus a structured
+// failure kind so callers can map user-facing errors without unwrapping raw
+// transport or textproto errors.
+type SanitizedMailError struct {
+	Kind            MailErrorKind
+	Msg             string
+	DeliveryUnknown bool
+}
+
+func (e *SanitizedMailError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Msg
+}
+
+func (e *SanitizedMailError) Is(target error) bool {
+	return e != nil && e.DeliveryUnknown && target == ErrSMTPDeliveryUnknown
+}
+
+func classifySMTPErrorKind(err error) MailErrorKind {
+	if err == nil {
+		return MailErrUnknown
+	}
+	var tpErr *textproto.Error
+	if errors.As(err, &tpErr) {
+		switch tpErr.Code {
+		case 530, 534, 535, 538:
+			return MailErrAuth
+		default:
+			return MailErrRejected
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return MailErrTimeout
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return MailErrTimeout
+	}
+	var unknownAuth x509.UnknownAuthorityError
+	var hostErr x509.HostnameError
+	var certInvalid x509.CertificateInvalidError
+	if errors.As(err, &unknownAuth) || errors.As(err, &hostErr) || errors.As(err, &certInvalid) {
+		return MailErrTLS
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "tls:") || strings.Contains(lower, "x509:") || strings.Contains(lower, "starttls"):
+		return MailErrTLS
+	case strings.Contains(lower, "535") || strings.Contains(lower, "authentication") || strings.Contains(lower, "unauthorized"):
+		return MailErrAuth
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "timed out") || strings.Contains(lower, "deadline exceeded"):
+		return MailErrTimeout
+	case strings.Contains(lower, "connection refused") || strings.Contains(lower, "no such host") || strings.Contains(lower, "unreachable") || strings.Contains(lower, "eof"):
+		return MailErrConnect
+	default:
+		return MailErrUnknown
+	}
+}
+
+func sanitizeSMTPError(err error, account, token string, deliveryUnknown bool) error {
+	if err == nil {
+		return nil
+	}
+	var existing *SanitizedMailError
+	if errors.As(err, &existing) {
+		return err
+	}
+	kind := classifySMTPErrorKind(err)
+	secrets := []string{token}
+	if token != "" {
+		secrets = append(secrets, "\x00"+account+"\x00"+token)
+	}
+	sanitized := SanitizeOutboundError(err, secrets...)
+	return &SanitizedMailError{
+		Kind:            kind,
+		Msg:             sanitized.Error(),
+		DeliveryUnknown: deliveryUnknown || errors.Is(err, ErrSMTPDeliveryUnknown),
+	}
+}
+
+// SanitizeSMTPError classifies and scrubs an SMTP transport/auth error before
+// logging or returning it across package boundaries.
+func SanitizeSMTPError(err error, account, token string) error {
+	return sanitizeSMTPError(err, account, token, false)
 }
 
 // ErrSMTPDeliveryUnknown marks a lost acknowledgement after DATA was transmitted.
@@ -317,41 +425,41 @@ func SendSMTPEmailWithConfig(cfg SMTPTransportConfig, fromHeader, subject, recei
 	addr := net.JoinHostPort(snap.server, strconv.Itoa(snap.port))
 	client, err := newSMTPClient(addr, snap)
 	if err != nil {
-		return err
+		return sanitizeSMTPError(err, snap.account, snap.token, false)
 	}
 	defer client.Close()
 	if snap.account != "" && snap.token != "" {
 		if err = client.Auth(auth); err != nil {
-			return err
+			return sanitizeSMTPError(err, snap.account, snap.token, false)
 		}
 	}
 	if err = client.Mail(envelopeFrom); err != nil {
-		return err
+		return sanitizeSMTPError(err, snap.account, snap.token, false)
 	}
 	for _, rcpt := range to {
 		if err = client.Rcpt(rcpt); err != nil {
-			return err
+			return sanitizeSMTPError(err, snap.account, snap.token, false)
 		}
 	}
 	w, err := client.Data()
 	if err != nil {
-		return err
+		return sanitizeSMTPError(err, snap.account, snap.token, false)
 	}
 	_, err = w.Write(message)
 	if err != nil {
-		return err
+		return sanitizeSMTPError(err, snap.account, snap.token, false)
 	}
 	err = w.Close()
 	if err != nil {
 		var rejected *textproto.Error
 		if errors.As(err, &rejected) {
-			return err
+			return sanitizeSMTPError(err, snap.account, snap.token, false)
 		}
-		return errors.Join(ErrSMTPDeliveryUnknown, err)
+		return sanitizeSMTPError(errors.Join(ErrSMTPDeliveryUnknown, err), snap.account, snap.token, true)
 	}
 	err = client.Quit()
 	if err != nil {
-		SysError(LogText("SMTP QUIT failed after delivery acknowledgement: %v", err))
+		SysError(LogText("SMTP QUIT failed after delivery acknowledgement: %v", sanitizeSMTPError(err, snap.account, snap.token, false)))
 	}
 	return nil
 }

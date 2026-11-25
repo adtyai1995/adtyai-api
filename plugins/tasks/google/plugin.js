@@ -171,6 +171,11 @@ function imageInput(value, files) {
 }
 
 function assertSingleVideoCount(params) {
+  for (const forbidden of ["duration_seconds", "sample_count", "number_of_videos", "generate_audio"]) {
+    if (Object.prototype.hasOwnProperty.call(params, forbidden)) {
+      throw new Error(forbidden + " is not supported");
+    }
+  }
   for (const key of ["sampleCount", "numberOfVideos"]) {
     if (params[key] !== undefined && params[key] !== null && params[key] !== "") {
       const count = typeof params[key] === "boolean" || Array.isArray(params[key]) ? Number.NaN : Number(params[key]);
@@ -185,6 +190,8 @@ function converted(ctx) {
   const params = Object.assign({}, metadata);
   assertSingleVideoCount(params);
   if (req.duration !== undefined && req.duration !== null && req.duration !== "") params.durationSeconds = veoSeconds(req.duration);
+  else if (params.durationSeconds !== undefined && params.durationSeconds !== null && params.durationSeconds !== "")
+    params.durationSeconds = veoSeconds(params.durationSeconds);
   if (!params.resolution && req.size) params.resolution = resolutionForSize(req.size);
   if (!params.aspectRatio && req.size) params.aspectRatio = aspectForSize(req.size);
   if (params.resolution) params.resolution = String(params.resolution).toLowerCase();
@@ -281,15 +288,22 @@ export function parseSubmitResponse(ctx, resp) {
 
 function veoSeconds(value) {
   if (value === undefined || value === null || value === "") return 8;
-  const n = Number(value);
+  const n = typeof value === "boolean" || Array.isArray(value) ? Number.NaN : Number(value);
   if (n !== 4 && n !== 6 && n !== 8) throw new Error("seconds must be one of 4, 6, or 8");
   return n;
+}
+
+function resolveDuration(req) {
+  const metadata = req.metadata || {};
+  const raw = req.duration !== undefined && req.duration !== null && req.duration !== "" ? req.duration : metadata.durationSeconds;
+  return veoSeconds(raw);
 }
 
 export function extractUsage(ctx) {
   const req = ctx.requestBody || {};
   const metadata = req.metadata || {};
-  const seconds = veoSeconds(req.duration);
+  assertSingleVideoCount(metadata);
+  const seconds = resolveDuration(req);
   const resolution = String(metadata.resolution || resolutionForSize(req.size) || "720p").toLowerCase();
   return { seconds: seconds, resolution: resolution };
 }
@@ -371,11 +385,14 @@ export const protocols = {
       if (!prompt && images.length === 0) throw new Error("input is required");
       if (images.length && !imageInput(images[0])) throw new Error("input image must be a data URL or base64 value");
       const metadata = Object.assign({}, req.metadata || {});
+      assertSingleVideoCount(metadata);
       if (Object.prototype.hasOwnProperty.call(req, "resolution")) metadata.resolution = req.resolution;
       const requestBody = { model: model, prompt: prompt, metadata: metadata };
       if (images.length) requestBody.images = images;
       const rawSeconds = Object.prototype.hasOwnProperty.call(req, "seconds") ? req.seconds : req.duration;
       if (rawSeconds !== undefined) requestBody.duration = veoSeconds(rawSeconds);
+      else if (metadata.durationSeconds !== undefined && metadata.durationSeconds !== null && metadata.durationSeconds !== "")
+        requestBody.duration = veoSeconds(metadata.durationSeconds);
       if (Object.prototype.hasOwnProperty.call(req, "size")) requestBody.size = req.size;
       return { kind: "submit", model: model, action: images.length ? "image_to_video" : "text_to_video", requestBody: requestBody };
     },
@@ -469,9 +486,9 @@ protocols.openai_video = {
     }
     const seconds = req.seconds === undefined ? req.duration : req.seconds;
     if (seconds !== undefined) {
-      const n = Number(seconds);
-      if (n !== 4 && n !== 6 && n !== 8) throw new Error("seconds must be one of 4, 6, or 8");
-      req.duration = n;
+      req.duration = veoSeconds(seconds);
+    } else if (req.metadata && req.metadata.durationSeconds !== undefined && req.metadata.durationSeconds !== null && req.metadata.durationSeconds !== "") {
+      req.duration = veoSeconds(req.metadata.durationSeconds);
     }
     assertSingleVideoCount(plainObject(req.metadata) || {});
     const providedResolution = req.resolution !== undefined ? req.resolution : req.metadata && req.metadata.resolution;

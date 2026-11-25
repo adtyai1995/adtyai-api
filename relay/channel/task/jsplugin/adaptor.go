@@ -866,6 +866,7 @@ func (a *TaskAdaptor) doFetchDescriptor(pollCtx context.Context, baseURL, key, p
 	if err := channel.ApplyHeaderOverride(a.headerOverrideInfo(key), nil, req); err != nil {
 		return nil, err
 	}
+	usesChannelBase := pluginruntime.RequestUsesChannelBase(descriptor.URL, baseURL)
 	client, err := pluginOutboundClient(baseURL, proxy, descriptor.URL, a.channelSetting())
 	if err != nil {
 		return nil, err
@@ -878,6 +879,10 @@ func (a *TaskAdaptor) doFetchDescriptor(pollCtx context.Context, baseURL, key, p
 	queryClient.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		if strings.EqualFold(via[len(via)-1].URL.Scheme, "https") && !strings.EqualFold(next.URL.Scheme, "https") {
 			redirectPolicyErr = fmt.Errorf("task query redirect cannot downgrade HTTPS")
+			return redirectPolicyErr
+		}
+		if usesChannelBase && !pluginruntime.RequestUsesChannelBase(next.URL.String(), baseURL) {
+			redirectPolicyErr = fmt.Errorf("task query redirect cannot leave the channel origin")
 			return redirectPolicyErr
 		}
 		// Redirects use the same credential recipients as direct plugin

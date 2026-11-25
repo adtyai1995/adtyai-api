@@ -1929,6 +1929,15 @@ func CopyChannel(c *gin.Context) {
 
 	// insert
 	if err := clone.Insert(); err != nil {
+		if errors.Is(err, model.ErrAdtyGroupNotFound) {
+			writeChannelMutationError(c, err)
+			return
+		}
+		var msg *common.Message
+		if errors.As(err, &msg) {
+			common.ApiError(c, msg)
+			return
+		}
 		common.SysError(common.LogText("failed to clone channel: %s", err.Error()))
 		common.ApiErrorT(c, "Failed to copy channel. Please try again later")
 		return
