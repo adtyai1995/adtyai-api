@@ -24,6 +24,7 @@ import { useTranslation } from 'react-i18next'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatTimestamp } from '@/lib/format'
@@ -92,12 +93,12 @@ export function AuditLogPanel() {
   })
   const rows = Array.isArray(query.data?.items) ? query.data.items : []
   return (
-    <section className='flex flex-col gap-3 pt-4'>
-      <p className='text-muted-foreground max-w-2xl text-sm'>
-        {t(
-          'Who reviewed withdrawals, changed affiliates, adjusted commission or changed the withdrawal rate.'
-        )}
-      </p>
+    <ContentSection
+      title={t('Admin activity')}
+      description={t(
+        'Who reviewed withdrawals, changed affiliates, adjusted commission or changed the withdrawal rate.'
+      )}
+    >
       {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
       {query.isPending ? (
         <LoadingState />
@@ -187,6 +188,6 @@ export function AuditLogPanel() {
           />
         </>
       )}
-    </section>
+    </ContentSection>
   )
 }

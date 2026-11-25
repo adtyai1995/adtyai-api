@@ -42,6 +42,7 @@ import {
   type UsdtNetwork,
 } from '@/features/referral/lib/address'
 import { WITHDRAWAL_TARGET_LABELS } from '@/features/referral/lib/labels'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { getSelf } from '@/lib/api'
@@ -231,7 +232,8 @@ export function SiteReferralPanel() {
   useDraftNavigation(isDirty)
 
   const save = useMutation({
-    mutationFn: (payload: SiteMarketingUpdate) => saveOwnerSiteReferral(payload),
+    mutationFn: (payload: SiteMarketingUpdate) =>
+      saveOwnerSiteReferral(payload),
     onSuccess: async () => {
       await client.invalidateQueries({ queryKey: siteOwnerKeys.all })
       await client.invalidateQueries({
@@ -264,8 +266,7 @@ export function SiteReferralPanel() {
   const rateTrimmed = draft.rate_percent.trim()
   const rateMissing = rateTrimmed === ''
   const rateCleared = Boolean(saved.rate_configured) && rateMissing
-  const rateInvalid =
-    !rateMissing && !validSiteReferralRatePercent(rateTrimmed)
+  const rateInvalid = !rateMissing && !validSiteReferralRatePercent(rateTrimmed)
   const capMissing = draft.pending_coverage_cap.trim() === ''
   const obsMissing = draft.observation_days.trim() === ''
   const missingEnablePrerequisites = rateMissing || capMissing || obsMissing
@@ -296,11 +297,11 @@ export function SiteReferralPanel() {
 
   const hasValidationError = Boolean(
     rateCleared ||
-      rateInvalid ||
-      usdtChainError ||
-      minMissingError ||
-      feeMissingError ||
-      cnyMissingError
+    rateInvalid ||
+    usdtChainError ||
+    minMissingError ||
+    feeMissingError ||
+    cnyMissingError
   )
 
   const toggleMethod = (method: CashWithdrawMethod, checked: boolean) => {
@@ -342,265 +343,274 @@ export function SiteReferralPanel() {
   }
 
   return (
-    <form
-      className='flex max-w-3xl flex-col gap-6'
-      onSubmit={(event) => {
-        event.preventDefault()
-        if (disabled || hasValidationError || !isDirty) return
-        const payload = buildSiteReferralUpdate(
-          saved,
-          draft,
-          enabled,
-          methods,
-          networks
-        )
-        if (Object.keys(payload).length === 0) return
-        save.mutate(payload)
-      }}
-    >
-      <div className='flex items-center justify-between gap-4 rounded-lg border p-3'>
-        <div className='flex flex-col gap-0.5'>
-          <Label htmlFor='site-referral-enabled'>{t('Referral program')}</Label>
-          <span className='text-muted-foreground text-xs'>
-            {missingEnablePrerequisites
-              ? t(
-                  'Set the default commission rate, pending coverage cap, and freeze period before enabling.'
-                )
-              : t(
-                  'New orders use these terms. Zero freeze period makes fully covered commission available immediately.'
-                )}
-          </span>
-        </div>
-        <Switch
-          id='site-referral-enabled'
-          checked={enabled}
-          disabled={disabled || (missingEnablePrerequisites && !enabled)}
-          onCheckedChange={setEnabled}
-        />
-      </div>
-
-      <fieldset className='space-y-2'>
-        <legend className='text-sm font-medium'>
-          {t('Money (no built-in values)')}
-        </legend>
-        <div className='grid gap-4 sm:grid-cols-3'>
-          <div className='space-y-2'>
-            <Label htmlFor='site-policy-rate'>
-              {t('Default commission rate (%)')}
+    <SettingsSection title={t('Settings')}>
+      <form
+        className='flex max-w-3xl flex-col gap-6'
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (disabled || hasValidationError || !isDirty) return
+          const payload = buildSiteReferralUpdate(
+            saved,
+            draft,
+            enabled,
+            methods,
+            networks
+          )
+          if (Object.keys(payload).length === 0) return
+          save.mutate(payload)
+        }}
+      >
+        <div className='border-border flex items-center justify-between gap-4 border-b pb-4'>
+          <div className='flex flex-col gap-0.5'>
+            <Label htmlFor='site-referral-enabled'>
+              {t('Referral program')}
             </Label>
-            <Input
-              id='site-policy-rate'
-              disabled={disabled}
-              type='number'
-              min={0}
-              max={MAX_SITE_REFERRAL_RATE_PERCENT}
-              step='0.01'
-              value={draft.rate_percent}
-              placeholder={t('Not set')}
-              aria-invalid={rateInvalid || rateCleared}
-              onChange={(event) => set('rate_percent', event.target.value)}
-            />
-            {rateInvalid && (
-              <p role='alert' className='text-destructive text-xs'>
-                {t('Commission rate must be between 0% and 30%.')}
-              </p>
-            )}
-            {!rateInvalid && rateCleared && (
-              <p role='alert' className='text-destructive text-xs'>
-                {t(
-                  'Commission rate cannot be cleared once configured. Set it to 0% to disable commission.'
-                )}
-              </p>
-            )}
-            {!rateInvalid && !rateCleared && rateMissing && (
-              <p className='text-warning text-xs'>{t('Not set')}</p>
-            )}
-            {!rateInvalid && !rateMissing && (
-              <p className='text-muted-foreground text-xs'>
-                {t('Up to 30% for subsite invitations.')}
-              </p>
-            )}
+            <span className='text-muted-foreground text-xs'>
+              {missingEnablePrerequisites
+                ? t(
+                    'Set the default commission rate, pending coverage cap, and freeze period before enabling.'
+                  )
+                : t(
+                    'New orders use these terms. Zero freeze period makes fully covered commission available immediately.'
+                  )}
+            </span>
           </div>
-
-          <div className='space-y-2'>
-            <Label htmlFor='site-policy-pending_coverage_cap'>
-              {t('Pending coverage cap (USD)')}
-            </Label>
-            <Input
-              id='site-policy-pending_coverage_cap'
-              disabled={disabled}
-              type='number'
-              min={0}
-              step='0.01'
-              value={draft.pending_coverage_cap}
-              placeholder={t('Not set')}
-              onChange={(event) =>
-                set('pending_coverage_cap', event.target.value)
-              }
-            />
-            {capMissing && (
-              <p className='text-warning text-xs'>{t('Not set')}</p>
-            )}
-          </div>
-
-          <div className='space-y-2'>
-            <Label htmlFor='site-policy-min_usd'>
-              {t('Minimum withdrawal (USD)')}
-            </Label>
-            <Input
-              id='site-policy-min_usd'
-              disabled={disabled}
-              type='number'
-              min={0}
-              step='0.01'
-              value={draft.min_usd}
-              placeholder={t('Not set')}
-              aria-invalid={Boolean(minMissingError)}
-              onChange={(event) => set('min_usd', event.target.value)}
-            />
-            {minMissingError ? (
-              <p className='text-destructive text-xs'>{minMissingError}</p>
-            ) : (
-              draft.min_usd.trim() === '' && (
-                <p className='text-warning text-xs'>{t('Not set')}</p>
-              )
-            )}
-          </div>
-        </div>
-      </fieldset>
-
-      <div className='space-y-4 rounded-lg border p-4'>
-        <div className='space-y-1'>
-          <h3 className='text-sm font-medium'>
-            {t('Cash withdrawal methods')}
-          </h3>
-          <p className='text-muted-foreground text-xs'>
-            {t('Transfer to account balance is always enabled.')}
-          </p>
+          <Switch
+            id='site-referral-enabled'
+            checked={enabled}
+            disabled={disabled || (missingEnablePrerequisites && !enabled)}
+            onCheckedChange={setEnabled}
+          />
         </div>
 
-        <fieldset className='space-y-2'>
-          <legend className='sr-only'>{t('Cash withdrawal methods')}</legend>
-          <div className='flex flex-wrap gap-5'>
-            {CASH_WITHDRAW_METHODS.map((method) => (
-              <label
-                key={method}
-                className='flex items-center gap-2 text-sm font-medium'
-              >
-                <Checkbox
-                  disabled={disabled}
-                  checked={methods.includes(method)}
-                  onCheckedChange={(checked) =>
-                    toggleMethod(method, checked === true)
-                  }
-                />
-                {t(WITHDRAWAL_TARGET_LABELS[method])}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-
-        {usdtEnabled && (
-          <div className='bg-muted/30 space-y-4 rounded-md border p-3'>
-            <fieldset className='space-y-2'>
-              <legend className='text-sm font-medium'>
-                {t('Enabled chains')}
-              </legend>
-              <div className='flex flex-wrap gap-4'>
-                {USDT_NETWORKS.map((network) => (
-                  <label
-                    key={network}
-                    className='flex items-center gap-2 text-sm'
-                  >
-                    <Checkbox
-                      disabled={disabled}
-                      checked={networks.includes(network)}
-                      onCheckedChange={(checked) =>
-                        toggleNetwork(network, checked === true)
-                      }
-                    />
-                    {usdtNetworkLabel(network)}
-                  </label>
-                ))}
-              </div>
-              {usdtChainError && (
-                <p className='text-destructive text-xs'>{usdtChainError}</p>
-              )}
-            </fieldset>
-            <div className='max-w-xs space-y-2'>
-              <Label htmlFor='site-policy-fee_usd'>
-                {t('USDT withdrawal fee (USDT)')}
+        <fieldset className='space-y-3'>
+          <legend className='text-[15px] leading-snug font-semibold tracking-tight'>
+            {t('Money (no built-in values)')}
+          </legend>
+          <div className='grid gap-4 sm:grid-cols-3'>
+            <div className='space-y-2'>
+              <Label htmlFor='site-policy-rate'>
+                {t('Default commission rate (%)')}
               </Label>
               <Input
-                id='site-policy-fee_usd'
+                id='site-policy-rate'
                 disabled={disabled}
                 type='number'
                 min={0}
-                step='0.000001'
-                value={draft.fee_usd}
+                max={MAX_SITE_REFERRAL_RATE_PERCENT}
+                step='0.01'
+                value={draft.rate_percent}
                 placeholder={t('Not set')}
-                aria-invalid={Boolean(feeMissingError)}
-                onChange={(event) => set('fee_usd', event.target.value)}
+                aria-invalid={rateInvalid || rateCleared}
+                onChange={(event) => set('rate_percent', event.target.value)}
               />
-              {feeMissingError && (
-                <p className='text-destructive text-xs'>{feeMissingError}</p>
+              {rateInvalid && (
+                <p role='alert' className='text-destructive text-xs'>
+                  {t('Commission rate must be between 0% and 30%.')}
+                </p>
+              )}
+              {!rateInvalid && rateCleared && (
+                <p role='alert' className='text-destructive text-xs'>
+                  {t(
+                    'Commission rate cannot be cleared once configured. Set it to 0% to disable commission.'
+                  )}
+                </p>
+              )}
+              {!rateInvalid && !rateCleared && rateMissing && (
+                <p className='text-warning text-xs'>{t('Not set')}</p>
+              )}
+              {!rateInvalid && !rateMissing && (
+                <p className='text-muted-foreground text-xs'>
+                  {t('Up to 30% for subsite invitations.')}
+                </p>
+              )}
+            </div>
+
+            <div className='space-y-2'>
+              <Label htmlFor='site-policy-pending_coverage_cap'>
+                {t('Pending coverage cap (USD)')}
+              </Label>
+              <Input
+                id='site-policy-pending_coverage_cap'
+                disabled={disabled}
+                type='number'
+                min={0}
+                step='0.01'
+                value={draft.pending_coverage_cap}
+                placeholder={t('Not set')}
+                onChange={(event) =>
+                  set('pending_coverage_cap', event.target.value)
+                }
+              />
+              {capMissing && (
+                <p className='text-warning text-xs'>{t('Not set')}</p>
+              )}
+            </div>
+
+            <div className='space-y-2'>
+              <Label htmlFor='site-policy-min_usd'>
+                {t('Minimum withdrawal (USD)')}
+              </Label>
+              <Input
+                id='site-policy-min_usd'
+                disabled={disabled}
+                type='number'
+                min={0}
+                step='0.01'
+                value={draft.min_usd}
+                placeholder={t('Not set')}
+                aria-invalid={Boolean(minMissingError)}
+                onChange={(event) => set('min_usd', event.target.value)}
+              />
+              {minMissingError ? (
+                <p className='text-destructive text-xs'>{minMissingError}</p>
+              ) : (
+                draft.min_usd.trim() === '' && (
+                  <p className='text-warning text-xs'>{t('Not set')}</p>
+                )
               )}
             </div>
           </div>
-        )}
+        </fieldset>
 
-        {alipayEnabled && (
-          <div className='bg-muted/30 space-y-2 rounded-md border p-3'>
-            <Label htmlFor='site-policy-cny_rate'>
-              {t('CNY withdrawal rate (1 USD = ? CNY)')}
-            </Label>
-            <Input
-              id='site-policy-cny_rate'
-              disabled={disabled}
-              className='w-40'
-              type='number'
-              min={0}
-              step='0.0001'
-              value={draft.cny_rate}
-              placeholder={t('Not set')}
-              aria-invalid={Boolean(cnyMissingError)}
-              onChange={(event) => set('cny_rate', event.target.value)}
-            />
-            {cnyMissingError && (
-              <p className='text-destructive text-xs'>{cnyMissingError}</p>
-            )}
+        <div className='border-border space-y-4 border-t pt-5'>
+          <div className='space-y-1'>
+            <h3 className='text-[15px] leading-snug font-semibold tracking-tight'>
+              {t('Cash withdrawal methods')}
+            </h3>
+            <p className='text-dim text-[12.5px] leading-relaxed'>
+              {t('Transfer to account balance is always enabled.')}
+            </p>
           </div>
-        )}
-      </div>
 
-      <fieldset className='grid gap-4 sm:grid-cols-3'>
-        <legend className='mb-2 text-sm font-medium'>{t('Rules')}</legend>
-        {SITE_RULE_KEYS.map((key) => (
-          <div key={key} className='space-y-2'>
-            <Label htmlFor={`site-policy-${key}`}>{ruleLabels[key]}</Label>
-            <Input
-              id={`site-policy-${key}`}
-              disabled={disabled}
-              type='number'
-              min={ruleMin[key]}
-              step={1}
-              value={draft[key]}
-              placeholder={t('Not set')}
-              onChange={(event) => set(key, event.target.value)}
-            />
-          </div>
-        ))}
-      </fieldset>
+          <fieldset className='space-y-2'>
+            <legend className='sr-only'>{t('Cash withdrawal methods')}</legend>
+            <div className='flex flex-wrap gap-5'>
+              {CASH_WITHDRAW_METHODS.map((method) => (
+                <label
+                  key={method}
+                  className='flex items-center gap-2 text-sm font-medium'
+                >
+                  <Checkbox
+                    disabled={disabled}
+                    checked={methods.includes(method)}
+                    onCheckedChange={(checked) =>
+                      toggleMethod(method, checked === true)
+                    }
+                  />
+                  {t(WITHDRAWAL_TARGET_LABELS[method])}
+                </label>
+              ))}
+            </div>
+          </fieldset>
 
-      <div>
-        <Button
-          variant='brand'
-          type='submit'
-          disabled={disabled || hasValidationError || !isDirty}
-        >
-          {t('Save Changes')}
-        </Button>
-      </div>
-    </form>
+          {usdtEnabled && (
+            <div className='bg-muted space-y-4 rounded-[12px] p-4'>
+              <fieldset className='space-y-2'>
+                <legend className='text-sm font-medium'>
+                  {t('Enabled chains')}
+                </legend>
+                <div className='flex flex-wrap gap-4'>
+                  {USDT_NETWORKS.map((network) => (
+                    <label
+                      key={network}
+                      className='flex items-center gap-2 text-sm'
+                    >
+                      <Checkbox
+                        disabled={disabled}
+                        checked={networks.includes(network)}
+                        onCheckedChange={(checked) =>
+                          toggleNetwork(network, checked === true)
+                        }
+                      />
+                      {usdtNetworkLabel(network)}
+                    </label>
+                  ))}
+                </div>
+                {usdtChainError && (
+                  <p className='text-destructive text-xs'>{usdtChainError}</p>
+                )}
+              </fieldset>
+              <div className='space-y-2'>
+                <Label htmlFor='site-policy-fee_usd'>
+                  {t('USDT withdrawal fee (USDT)')}
+                </Label>
+                <Input
+                  id='site-policy-fee_usd'
+                  disabled={disabled}
+                  className='w-40 tabular-nums'
+                  type='number'
+                  min={0}
+                  step='0.000001'
+                  value={draft.fee_usd}
+                  placeholder={t('Not set')}
+                  aria-invalid={Boolean(feeMissingError)}
+                  onChange={(event) => set('fee_usd', event.target.value)}
+                />
+                {feeMissingError && (
+                  <p className='text-destructive text-xs'>{feeMissingError}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {alipayEnabled && (
+            <div className='bg-muted space-y-2 rounded-[12px] p-4'>
+              <Label htmlFor='site-policy-cny_rate'>
+                {t('CNY withdrawal rate (1 USD = ? CNY)')}
+              </Label>
+              <Input
+                id='site-policy-cny_rate'
+                disabled={disabled}
+                className='w-40 tabular-nums'
+                type='number'
+                min={0}
+                step='0.0001'
+                value={draft.cny_rate}
+                placeholder={t('Not set')}
+                aria-invalid={Boolean(cnyMissingError)}
+                onChange={(event) => set('cny_rate', event.target.value)}
+              />
+              {cnyMissingError && (
+                <p className='text-destructive text-xs'>{cnyMissingError}</p>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className='border-border border-t pt-5'>
+          <fieldset className='grid gap-4 sm:grid-cols-3'>
+            <legend className='mb-3 text-[15px] leading-snug font-semibold tracking-tight'>
+              {t('Rules')}
+            </legend>
+            {SITE_RULE_KEYS.map((key) => (
+              <div key={key} className='space-y-2'>
+                <Label htmlFor={`site-policy-${key}`}>{ruleLabels[key]}</Label>
+                <Input
+                  id={`site-policy-${key}`}
+                  disabled={disabled}
+                  type='number'
+                  min={ruleMin[key]}
+                  step={1}
+                  value={draft[key]}
+                  placeholder={t('Not set')}
+                  onChange={(event) => set(key, event.target.value)}
+                />
+              </div>
+            ))}
+          </fieldset>
+        </div>
+
+        <div>
+          <Button
+            variant='brand'
+            type='submit'
+            disabled={disabled || hasValidationError || !isDirty}
+          >
+            {t('Save Changes')}
+          </Button>
+        </div>
+      </form>
+    </SettingsSection>
   )
 }

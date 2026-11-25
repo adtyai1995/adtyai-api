@@ -153,7 +153,7 @@ function RoutingPolicyEditor(props: { config: PolicyConfig }) {
           onSave={submit}
           isSaving={mutation.isPending}
         />
-        <div className='min-w-0 space-y-4'>
+        <div className='flex min-w-0 flex-col gap-8'>
           <AffinitySettings />
           <FormField
             control={form.control}
@@ -314,7 +314,7 @@ function AffinitySettings() {
           keepMounted
         >
           <div className='space-y-4'>
-            <div className='grid gap-4 sm:grid-cols-2'>
+            <div className='grid max-w-2xl gap-4 sm:grid-cols-2'>
               {(
                 [
                   {
@@ -339,6 +339,7 @@ function AffinitySettings() {
                           type='number'
                           min={0}
                           step={1}
+                          className='sm:max-w-44'
                           {...safeNumberFieldProps(field)}
                         />
                       </FormControl>

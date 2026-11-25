@@ -30,6 +30,7 @@ import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -76,8 +77,7 @@ const INSTANCE_SKELETON_KEYS = [
 ]
 
 const STATUS_CLASS_NAME: Record<SystemInstanceStatus, string> = {
-  online:
-    'bg-success-soft text-success',
+  online: 'bg-success-soft text-success',
   stale: 'bg-warning-soft text-warning',
 }
 
@@ -238,37 +238,37 @@ function SystemInstancesList(props: SystemInstancesTableProps) {
   const { t, i18n } = useTranslation()
 
   return (
-    <div className='overflow-x-auto rounded-md border'>
-      <Table className='min-w-[1230px]'>
+    <div className='border-border bg-card overflow-x-auto rounded-[14px] border'>
+      <Table className='min-w-[1000px]'>
         <TableHeader>
           <TableRow className='bg-muted/40 hover:bg-muted/40'>
-            <TableHead className='h-9 min-w-[240px] px-4 text-xs'>
+            <TableHead className='h-9 min-w-[200px] px-4 text-xs'>
               {t('Instances')}
             </TableHead>
-            <TableHead className='h-9 w-[110px] text-xs'>
+            <TableHead className='h-9 w-[96px] text-xs'>
               {t('Status')}
             </TableHead>
-            <TableHead className='h-9 w-[100px] text-xs'>{t('Role')}</TableHead>
-            <TableHead className='h-9 w-[96px] text-xs'>{t('CPU')}</TableHead>
-            <TableHead className='h-9 w-[96px] text-xs'>
+            <TableHead className='h-9 w-[84px] text-xs'>{t('Role')}</TableHead>
+            <TableHead className='h-9 w-[88px] text-xs'>{t('CPU')}</TableHead>
+            <TableHead className='h-9 w-[88px] text-xs'>
               {t('Memory')}
             </TableHead>
-            <TableHead className='h-9 w-[96px] text-xs'>
+            <TableHead className='h-9 w-[88px] text-xs'>
               {t('Storage')}
             </TableHead>
-            <TableHead className='h-9 w-[100px] text-xs'>
+            <TableHead className='h-9 w-[96px] text-xs'>
               {t('Version')}
             </TableHead>
-            <TableHead className='h-9 w-[140px] text-xs'>
+            <TableHead className='h-9 w-[112px] text-xs'>
               {t('Runtime')}
             </TableHead>
-            <TableHead className='h-9 w-[170px] text-xs'>
+            <TableHead className='h-9 w-[150px] text-xs'>
               {t('Started')}
             </TableHead>
-            <TableHead className='h-9 w-[170px] text-xs'>
+            <TableHead className='h-9 w-[110px] text-xs'>
               {t('Last Seen')}
             </TableHead>
-            <TableHead className='h-9 w-[90px] pr-4 text-right text-xs'>
+            <TableHead className='h-9 w-[72px] pr-4 text-right text-xs'>
               {t('Actions')}
             </TableHead>
           </TableRow>
@@ -578,7 +578,7 @@ export function SystemInstancesPanel() {
   let instancesContent: ReactNode
   if (loading) {
     instancesContent = (
-      <div className='space-y-2 p-4 sm:p-5'>
+      <div className='space-y-2'>
         {INSTANCE_SKELETON_KEYS.map((key) => (
           <Skeleton key={key} className='h-9 w-full rounded-md' />
         ))}
@@ -601,7 +601,7 @@ export function SystemInstancesPanel() {
     )
   } else if (instances.length === 0) {
     instancesContent = (
-      <div className='px-4 py-10 text-center sm:px-5'>
+      <div className='border-border bg-card rounded-[14px] border px-4 py-10 text-center sm:px-5'>
         <div className='bg-muted mx-auto mb-3 flex size-10 items-center justify-center rounded-lg'>
           <ServerCog
             className='text-muted-foreground size-5'
@@ -615,40 +615,27 @@ export function SystemInstancesPanel() {
     )
   } else {
     instancesContent = (
-      <div className='p-4 sm:p-5'>
-        <SystemInstancesList
-          instances={instances}
-          deletingNodeName={deletingNodeName}
-          isDeletingInstance={
-            isMutatingInstance || deleteStaleInstancesMutation.isPending
-          }
-          onDeleteStaleInstance={setDeleteTarget}
-        />
-      </div>
+      <SystemInstancesList
+        instances={instances}
+        deletingNodeName={deletingNodeName}
+        isDeletingInstance={
+          isMutatingInstance || deleteStaleInstancesMutation.isPending
+        }
+        onDeleteStaleInstance={setDeleteTarget}
+      />
     )
   }
 
   return (
     <>
-      <section className='bg-card overflow-hidden rounded-lg border shadow-xs'>
-        <div className='flex flex-col gap-3 border-b px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5'>
-          <div className='min-w-0'>
-            <div className='flex items-center gap-2'>
-              <span className='bg-muted text-muted-foreground inline-flex size-7 items-center justify-center rounded-md'>
-                <ServerCog className='size-4' aria-hidden='true' />
-              </span>
-              <div className='min-w-0'>
-                <h3 className='text-sm font-semibold'>{t('Instances')}</h3>
-                <p className='text-muted-foreground mt-0.5 text-xs'>
-                  {t(
-                    'Nodes reporting from this deployment and their latest heartbeat.'
-                  )}
-                </p>
-              </div>
-            </div>
-          </div>
-          <div className='flex shrink-0 flex-wrap items-center gap-2 sm:justify-end'>
-            <span className='text-muted-foreground text-xs' aria-live='polite'>
+      <ContentSection
+        title={t('Instances')}
+        description={t(
+          'Nodes reporting from this deployment and their latest heartbeat.'
+        )}
+        actions={
+          <>
+            <span className='text-dim text-xs' aria-live='polite'>
               {t('Auto-refreshing every {{seconds}}s', {
                 seconds: INSTANCE_POLL_INTERVAL_MS / 1000,
               })}
@@ -694,11 +681,11 @@ export function SystemInstancesPanel() {
               />
               {refreshing ? t('Refreshing...') : t('Refresh')}
             </Button>
-          </div>
-        </div>
-
+          </>
+        }
+      >
         <div aria-busy={instancesQuery.isFetching}>{instancesContent}</div>
-      </section>
+      </ContentSection>
 
       <ConfirmDialog
         open={deleteAllConfirmOpen}

@@ -100,67 +100,79 @@ export function BonusPanel(props: { site: OwnerSite }) {
 
   return (
     <div className='flex flex-col gap-4'>
-      <p className='text-muted-foreground text-sm'>
+      <p className='text-dim max-w-[80ch] text-[13px] leading-relaxed'>
         {t(
           'Configure recharge bonus rates by payment method. Eligible customer recharges receive the configured bonus paid from your earnings.'
-        )}
+        )}{' '}
+        {t('A rate of 0.025 grants 2.5% of the recharge amount.')}
       </p>
       {rows.length === 0 && (
         <EmptyState
           className='min-h-24'
-          title={t('No payment methods are currently enabled on the main site.')}
+          title={t(
+            'No payment methods are currently enabled on the main site.'
+          )}
         />
       )}
-      {rows.map((row) => (
-        <div
-          key={row.method}
-          className='flex flex-col gap-3 border-b pb-4 last:border-b-0 last:pb-0'
-        >
-          <div className='flex items-center justify-between gap-4'>
-            <Label htmlFor={`bonus-method-${row.method}`}>
-              {t(METHOD_LABELS[row.method] ?? row.method)}
-            </Label>
-            <Switch
-              id={`bonus-method-${row.method}`}
-              checked={row.enabled}
-              disabled={closing}
-              onCheckedChange={(enabled) => update(row.method, { enabled })}
-            />
-          </div>
-          <div className='flex flex-col gap-1'>
-            <Label htmlFor={`bonus-rate-${row.method}`}>
-              {t('Recharge bonus rate')}
-            </Label>
-            <Input
-              id={`bonus-rate-${row.method}`}
-              inputMode='decimal'
-              autoComplete='off'
-              value={row.rate}
-              disabled={closing}
-              onChange={(event) =>
-                update(row.method, { rate: event.target.value })
-              }
-            />
-            <span className='text-muted-foreground text-sm'>
-              {t('A rate of 0.025 grants 2.5% of the recharge amount.')}
-            </span>
-          </div>
-          <Button
-            type='button'
-            variant='brand'
-            size='sm'
-            className='self-start'
-            disabled={
-              closing ||
-              save.isPending ||
-              savedByMethod.get(row.method) === rowValue(row)
-            }
-            onClick={() => save.mutate(row)}
-          >
-            {t('Save')}
-          </Button>
-        </div>
-      ))}
+      {rows.length > 0 && (
+        <ul className='border-border divide-border divide-y overflow-hidden rounded-[14px] border'>
+          {rows.map((row) => {
+            const unchanged = savedByMethod.get(row.method) === rowValue(row)
+            return (
+              <li
+                key={row.method}
+                className='grid items-center gap-x-6 gap-y-3 px-5 py-4 sm:grid-cols-[minmax(9rem,13rem)_minmax(0,1fr)_auto]'
+              >
+                <div className='flex items-center gap-3'>
+                  <Switch
+                    id={`bonus-method-${row.method}`}
+                    checked={row.enabled}
+                    disabled={closing}
+                    onCheckedChange={(enabled) =>
+                      update(row.method, { enabled })
+                    }
+                  />
+                  <Label
+                    htmlFor={`bonus-method-${row.method}`}
+                    className='text-[14px] font-semibold'
+                  >
+                    {t(METHOD_LABELS[row.method] ?? row.method)}
+                  </Label>
+                </div>
+                <div className='flex items-center gap-3'>
+                  <Label
+                    htmlFor={`bonus-rate-${row.method}`}
+                    className='text-dim shrink-0 text-[13px] font-normal'
+                  >
+                    {t('Recharge bonus rate')}
+                  </Label>
+                  <Input
+                    id={`bonus-rate-${row.method}`}
+                    className='w-32 font-mono tabular-nums'
+                    inputMode='decimal'
+                    autoComplete='off'
+                    value={row.rate}
+                    disabled={closing}
+                    onChange={(event) =>
+                      update(row.method, { rate: event.target.value })
+                    }
+                  />
+                </div>
+                <Button
+                  type='button'
+                  variant='brand'
+                  size='sm'
+                  className='justify-self-start sm:justify-self-end'
+                  disabled={closing || save.isPending || unchanged}
+                  onClick={() => save.mutate(row)}
+                >
+                  {t('Save')}
+                </Button>
+              </li>
+            )
+          })}
+        </ul>
+      )}
     </div>
   )
 }

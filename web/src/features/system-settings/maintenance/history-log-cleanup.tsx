@@ -226,16 +226,21 @@ export function HistoryLogCleanup() {
       className='flex min-w-0 flex-col gap-4'
     >
       <div>
-        <h4 id={titleId} className='font-medium'>
+        <h4
+          id={titleId}
+          className='text-[15px] leading-snug font-semibold tracking-tight'
+        >
           {t('Clean history logs')}
         </h4>
-        <p className='text-muted-foreground mt-1 text-xs'>
+        <p className='text-dim mt-1 text-[12.5px] leading-relaxed'>
           {t(
             'Deletes usage logs older than 90 days. Top-up, refund, and adjustment records stay.'
           )}
         </p>
       </div>
-      <DateTimePicker value={purgeDate} onChange={setPurgeDate} />
+      <div className='max-w-md'>
+        <DateTimePicker value={purgeDate} onChange={setPurgeDate} />
+      </div>
       <div className='flex flex-wrap gap-3'>
         {quickSelectOptions.map((option) => (
           <Button

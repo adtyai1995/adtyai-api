@@ -63,7 +63,12 @@ const settingsFormFieldClassName = cn(
   '[&_h4]:text-[15px]',
   '[&_h4]:font-semibold',
   '[&_h4]:tracking-tight',
-  '[&_[data-slot=separator]]:my-1'
+  '[&_[data-slot=separator]]:my-1',
+  // Keep standalone numeric fields proportional to their data instead of
+  // stretching across a 535px column, while leaving InputGroup controls intact.
+  '[&_input[type=number]:not([data-slot=input-group-control])]:sm:max-w-44',
+  '[&_input[inputmode=numeric]:not([data-slot=input-group-control])]:sm:max-w-44',
+  '[&_input[inputmode=decimal]:not([data-slot=input-group-control])]:sm:max-w-44'
 )
 
 export function SettingsFormGrid(props: SettingsFormGridProps) {

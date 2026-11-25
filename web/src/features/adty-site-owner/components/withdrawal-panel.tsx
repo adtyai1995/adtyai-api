@@ -24,6 +24,7 @@ import { toast } from 'sonner'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -38,6 +39,7 @@ import {
   usdtNetworkLabel,
   type UsdtNetwork,
 } from '@/features/referral/lib/address'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { useWithdrawalIntent } from '@/features/wallet/adty/use-withdrawal-intent'
 import { WithdrawalRecovery } from '@/features/wallet/adty/withdrawal-recovery'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
@@ -219,167 +221,168 @@ export function WithdrawalPanel({
   const historyRows = list.data?.items ?? []
 
   return (
-    <section
-      className='flex flex-col gap-4'
-      aria-label={t('Earnings wallet withdrawal')}
-    >
-      <div className='flex flex-col gap-1'>
-        <h2 className='text-sm font-medium'>
-          {t('Earnings wallet withdrawal')}
-        </h2>
-        <p className='text-muted-foreground text-sm'>
-          {t(
+    <div className='flex flex-col gap-8'>
+      <SettingsSection
+        title={t('Earnings wallet withdrawal')}
+        description={[
+          t(
             'This request freezes the site earnings wallet. Referral commission withdrawals stay on the Referral page.'
-          )}
-        </p>
-        <p className='text-muted-foreground text-sm'>
-          {t(
+          ),
+          t(
             'Customer invite commission withdrawals are reviewed on the Invite commission withdrawal tab.'
-          )}
-        </p>
-        <p className='text-muted-foreground text-sm'>
-          {t('Invite commission holds are not available for this withdrawal.')}
-        </p>
-      </div>
-      {rules.isError && (
-        <p className='text-destructive text-sm'>
-          {t('Could not load withdrawal rules')}
-        </p>
-      )}
-      {rules.data && !configured && (
-        <p className='text-muted-foreground text-sm'>
-          {t('Root has not set the withdrawal minimum, fee, or exchange rate.')}
-        </p>
-      )}
-      <WithdrawalRecovery
-        intent={intent}
-        busy={submit.isPending}
-        onReset={reset}
-        onRecovered={refresh}
-      />
-      {configured && !intent.saved?.accepted && (
-        <form
-          className='flex flex-col gap-4'
-          onChange={(event) => {
-            if (
-              !(
-                event.target instanceof HTMLInputElement &&
-                event.target.type === 'checkbox'
-              )
-            ) {
-              setConfirmedQuote('')
-            }
-          }}
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (!confirmed || !quote.data || !payeeReady) return
-            submit.mutate()
-          }}
-        >
-          <p className='text-muted-foreground text-sm tabular-nums'>
-            {t('Minimum {{min}} USD. Fee {{fee}} USD. Rate {{rate}}.', {
-              min: rules.data?.min_usd,
-              fee: rules.data?.fee_usd,
-              rate,
-            })}
+          ),
+          t('Invite commission holds are not available for this withdrawal.'),
+        ].join(' ')}
+        bodyClassName='flex flex-col gap-4'
+      >
+        {rules.isError && (
+          <p className='text-destructive text-sm'>
+            {t('Could not load withdrawal rules')}
           </p>
-          <div className='grid gap-4 sm:grid-cols-2'>
-            <div className='flex flex-col gap-2'>
-              <Label htmlFor='withdraw-amount'>{t('Amount USD')}</Label>
-              <Input
-                id='withdraw-amount'
-                inputMode='decimal'
-                value={amount}
-                onChange={(event) => setAmount(event.target.value)}
-                required
-              />
+        )}
+        {rules.data && !configured && (
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'Root has not set the withdrawal minimum, fee, or exchange rate.'
+            )}
+          </p>
+        )}
+        <WithdrawalRecovery
+          intent={intent}
+          busy={submit.isPending}
+          onReset={reset}
+          onRecovered={refresh}
+        />
+        {configured && !intent.saved?.accepted && (
+          <form
+            className='flex flex-col gap-4'
+            onChange={(event) => {
+              if (
+                !(
+                  event.target instanceof HTMLInputElement &&
+                  event.target.type === 'checkbox'
+                )
+              ) {
+                setConfirmedQuote('')
+              }
+            }}
+            onSubmit={(event) => {
+              event.preventDefault()
+              if (!confirmed || !quote.data || !payeeReady) return
+              submit.mutate()
+            }}
+          >
+            <p className='text-muted-foreground text-sm tabular-nums'>
+              {t('Minimum {{min}} USD. Fee {{fee}} USD. Rate {{rate}}.', {
+                min: rules.data?.min_usd,
+                fee: rules.data?.fee_usd,
+                rate,
+              })}
+            </p>
+            <div className='grid max-w-2xl gap-4 sm:grid-cols-2'>
+              <div className='flex flex-col gap-2'>
+                <Label htmlFor='withdraw-amount'>{t('Amount USD')}</Label>
+                <Input
+                  id='withdraw-amount'
+                  inputMode='decimal'
+                  value={amount}
+                  onChange={(event) => setAmount(event.target.value)}
+                  required
+                />
+              </div>
+              <div className='flex flex-col gap-2'>
+                <Label htmlFor='withdraw-network'>{t('Network')}</Label>
+                <NativeSelect
+                  id='withdraw-network'
+                  value={network}
+                  onChange={(event) =>
+                    setNetwork(event.target.value as UsdtNetwork)
+                  }
+                >
+                  {USDT_NETWORKS.map((item) => (
+                    <NativeSelectOption key={item} value={item}>
+                      {`USDT (${usdtNetworkLabel(item)})`}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+              </div>
+              <div className='flex flex-col gap-2 sm:col-span-2'>
+                <Label htmlFor='withdraw-account'>{t('USDT address')}</Label>
+                <Input
+                  id='withdraw-account'
+                  className='font-mono'
+                  value={accountNo}
+                  placeholder={t(ADDRESS_HINTS[network])}
+                  aria-invalid={addressInvalid}
+                  onChange={(event) => setAccountNo(event.target.value)}
+                  required
+                />
+                {addressInvalid ? (
+                  <p className='text-destructive text-xs' role='alert'>
+                    {t('The address does not match the {{network}} network', {
+                      network: usdtNetworkLabel(network),
+                    })}
+                  </p>
+                ) : (
+                  <p className='text-muted-foreground text-xs'>
+                    {t(
+                      'TRC20 addresses start with T; BEP20, Polygon, and X Layer addresses start with 0x.'
+                    )}
+                  </p>
+                )}
+              </div>
             </div>
-            <div className='flex flex-col gap-2'>
-              <Label htmlFor='withdraw-network'>{t('Network')}</Label>
-              <NativeSelect
-                id='withdraw-network'
-                value={network}
+            {quote.data && (
+              <p className='text-sm tabular-nums'>
+                <span className='text-dim'>{t('Payout amount')}</span>{' '}
+                <span className='font-display text-lg font-extrabold tracking-[-0.02em]'>
+                  {quote.data} USDT
+                </span>
+              </p>
+            )}
+            {quote.isError && (
+              <ErrorState onRetry={() => void quote.refetch()} />
+            )}
+            <label className='flex items-start gap-2 text-sm'>
+              <input
+                type='checkbox'
+                className='mt-1'
+                checked={confirmed}
                 onChange={(event) =>
-                  setNetwork(event.target.value as UsdtNetwork)
+                  setConfirmedQuote(event.target.checked ? quoteSignature : '')
+                }
+              />
+              <span>
+                {t(
+                  'I confirm the payee details before this request is frozen.'
+                )}{' '}
+                <span className='text-muted-foreground'>
+                  {t('A wrong network or address cannot be recovered.')}
+                </span>
+              </span>
+            </label>
+            <div>
+              <Button
+                variant='brand'
+                type='submit'
+                disabled={
+                  !confirmed || !quote.data || !payeeReady || submit.isPending
                 }
               >
-                {USDT_NETWORKS.map((item) => (
-                  <NativeSelectOption key={item} value={item}>
-                    {`USDT (${usdtNetworkLabel(item)})`}
-                  </NativeSelectOption>
-                ))}
-              </NativeSelect>
+                {t('Submit withdrawal')}
+              </Button>
             </div>
-            <div className='flex flex-col gap-2 sm:col-span-2'>
-              <Label htmlFor='withdraw-account'>{t('USDT address')}</Label>
-              <Input
-                id='withdraw-account'
-                className='font-mono'
-                value={accountNo}
-                placeholder={t(ADDRESS_HINTS[network])}
-                aria-invalid={addressInvalid}
-                onChange={(event) => setAccountNo(event.target.value)}
-                required
-              />
-              {addressInvalid ? (
-                <p className='text-destructive text-xs' role='alert'>
-                  {t('The address does not match the {{network}} network', {
-                    network: usdtNetworkLabel(network),
-                  })}
-                </p>
-              ) : (
-                <p className='text-muted-foreground text-xs'>
-                  {t(
-                    'TRC20 addresses start with T; BEP20, Polygon, and X Layer addresses start with 0x.'
-                  )}
-                </p>
-              )}
-            </div>
-          </div>
-          {quote.data && (
-            <p className='text-sm font-medium tabular-nums'>
-              {t('Payout amount')} · {quote.data} USDT
-            </p>
-          )}
-          {quote.isError && <ErrorState onRetry={() => void quote.refetch()} />}
-          <label className='flex items-start gap-2 text-sm'>
-            <input
-              type='checkbox'
-              className='mt-1'
-              checked={confirmed}
-              onChange={(event) =>
-                setConfirmedQuote(event.target.checked ? quoteSignature : '')
-              }
-            />
-            <span>
-              {t('I confirm the payee details before this request is frozen.')}{' '}
-              <span className='text-muted-foreground'>
-                {t('A wrong network or address cannot be recovered.')}
-              </span>
-            </span>
-          </label>
-          <div>
-            <Button
-              variant='brand'
-              type='submit'
-              disabled={
-                !confirmed || !quote.data || !payeeReady || submit.isPending
-              }
-            >
-              {t('Submit withdrawal')}
-            </Button>
-          </div>
-        </form>
-      )}
-      <section
-        className='flex flex-col gap-3'
-        aria-label={t('Withdrawal history')}
-      >
-        <div className='flex flex-wrap items-end gap-3'>
-          <div className='flex flex-col gap-1'>
-            <Label htmlFor='withdraw-number'>{t('Order number')}</Label>
+          </form>
+        )}
+      </SettingsSection>
+      <ContentSection
+        title={t('Withdrawal history')}
+        actions={
+          <>
             <Input
               id='withdraw-number'
+              aria-label={t('Order number')}
+              placeholder={t('Order number')}
               className='w-52'
               value={number}
               onChange={(event) => {
@@ -387,11 +390,9 @@ export function WithdrawalPanel({
                 setPage(1)
               }}
             />
-          </div>
-          <div className='flex flex-col gap-1'>
-            <Label htmlFor='withdraw-status-filter'>{t('Status')}</Label>
             <NativeSelect
               id='withdraw-status-filter'
+              aria-label={t('Status')}
               value={status}
               onChange={(event) => {
                 setStatus(event.target.value)
@@ -407,8 +408,9 @@ export function WithdrawalPanel({
                 )
               )}
             </NativeSelect>
-          </div>
-        </div>
+          </>
+        }
+      >
         {list.isPending && <LoadingState />}
         {list.isError && <ErrorState onRetry={() => void list.refetch()} />}
         {list.isSuccess && (
@@ -520,7 +522,7 @@ export function WithdrawalPanel({
             onPageChange={setPage}
           />
         )}
-      </section>
-    </section>
+      </ContentSection>
+    </div>
   )
 }

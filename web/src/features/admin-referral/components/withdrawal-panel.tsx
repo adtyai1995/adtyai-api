@@ -21,13 +21,13 @@ import { ExternalLink } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 
 import { CopyButton } from '@/components/copy-button'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -43,6 +43,7 @@ import {
   WITHDRAWAL_TARGET_LABELS,
 } from '@/features/referral/lib/labels'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
+import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestamp } from '@/lib/format'
 import { formatUserIdentity } from '@/lib/format-user-identity'
@@ -228,28 +229,34 @@ export function WithdrawalPanel(props: {
   }
 
   return (
-    <div className='flex flex-col gap-3'>
+    <ContentSection
+      title={t('Withdrawals')}
+      actions={
+        <NativeSelect
+          className='w-48'
+          aria-label={t('Status')}
+          value={status}
+          onChange={(event) => {
+            const changeStatus = props.onStatusChange ?? setOwnStatus
+            changeStatus(event.target.value)
+            setPage(1)
+          }}
+        >
+          {props.canReview && props.canPayout && (
+            <option value='actionable'>
+              {t('Awaiting review or payment')}
+            </option>
+          )}
+          <option value=''>{t('All statuses')}</option>
+          {Object.entries(WITHDRAWAL_STATUS_LABELS).map(([value, label]) => (
+            <option key={value} value={value}>
+              {t(label)}
+            </option>
+          ))}
+        </NativeSelect>
+      }
+    >
       {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
-      <NativeSelect
-        className='w-48'
-        aria-label={t('Status')}
-        value={status}
-        onChange={(event) => {
-          const changeStatus = props.onStatusChange ?? setOwnStatus
-          changeStatus(event.target.value)
-          setPage(1)
-        }}
-      >
-        {props.canReview && props.canPayout && (
-          <option value='actionable'>{t('Awaiting review or payment')}</option>
-        )}
-        <option value=''>{t('All statuses')}</option>
-        {Object.entries(WITHDRAWAL_STATUS_LABELS).map(([value, label]) => (
-          <option key={value} value={value}>
-            {t(label)}
-          </option>
-        ))}
-      </NativeSelect>
       <StaticDataTable
         tableClassName='min-w-[1000px]'
         tableProps={{ 'aria-label': t('Withdrawals') }}
@@ -542,6 +549,6 @@ export function WithdrawalPanel(props: {
           </div>
         )}
       </Dialog>
-    </div>
+    </ContentSection>
   )
 }

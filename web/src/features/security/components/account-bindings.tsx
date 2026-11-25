@@ -59,20 +59,17 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
 
   return (
     <>
-      <ul
-        aria-label={t('Account Bindings')}
-        className='grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3'
-      >
+      <ul aria-label={t('Account Bindings')} className='divide-border divide-y'>
         {bindings.map((binding) => {
           const actionLabel = binding.isBound ? t('Change') : t('Bind')
 
           return (
             <li
               key={binding.id}
-              className='flex min-w-0 items-center justify-between gap-2 rounded-lg border px-2.5 py-2'
+              className='flex min-w-0 items-center justify-between gap-3 py-1 first:pt-0 last:pb-0'
             >
-              <div className='flex min-w-0 items-center gap-2'>
-                <div className='bg-muted shrink-0 rounded-md p-1.5'>
+              <div className='flex min-w-0 items-center gap-3'>
+                <div className='bg-muted shrink-0 rounded-md p-2'>
                   <binding.icon className='h-4 w-4' />
                 </div>
                 <div className='min-w-0'>
@@ -99,7 +96,7 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
               <Button
                 variant='outline'
                 size='sm'
-                className='h-7 shrink-0 px-2.5 text-xs'
+                className='shrink-0'
                 onClick={binding.onBind}
                 disabled={dialogs.hasAnyOpen}
               >

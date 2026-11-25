@@ -136,13 +136,12 @@ export function MarketplacePluginCard(props: MarketplacePluginCardProps) {
         </div>
       )}
 
-      <div className='mt-auto border-t pt-2'>
+      <div className='mt-auto border-t pt-2.5'>
         <Button
           size='sm'
           variant={
-            props.installState.status === 'up_to_date' ? 'outline' : 'default'
+            props.installState.status === 'up_to_date' ? 'outline' : 'brand'
           }
-          className='w-full'
           onClick={props.onInstall}
         >
           <Download />

@@ -25,23 +25,15 @@ import { CopyButton } from '@/components/copy-button'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import {
-  NativeSelect,
-  NativeSelectOption,
-} from '@/components/ui/native-select'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { formatQuotaWithCurrency } from '@/lib/currency'
@@ -355,86 +347,78 @@ export function SiteDomainsCard(props: {
     ''
 
   return (
-    <div className='flex flex-col gap-4'>
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('Default access URLs')}</CardTitle>
-          <CardDescription>
-            {t(
-              'Primary platform-allocated website and API addresses for this subsite.'
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <dl className='grid gap-4 text-sm sm:grid-cols-2'>
-            <div className='flex flex-col gap-1.5 rounded-lg border p-3'>
-              <dt className='text-muted-foreground text-xs'>
-                {t('Website address')}
-              </dt>
-              <dd className='flex items-center justify-between gap-2 font-mono text-xs break-all'>
-                <span>https://{defaultHost}</span>
-                <CopyButton
-                  value={`https://${defaultHost}`}
-                  size='sm'
-                  variant='outline'
-                  aria-label={t('Copy link')}
-                />
-              </dd>
-            </div>
-            <div className='flex flex-col gap-1.5 rounded-lg border p-3'>
-              <dt className='text-muted-foreground text-xs'>
-                {t('API address')}
-              </dt>
-              <dd className='flex items-center justify-between gap-2 text-xs break-all'>
-                {apiHost ? (
-                  <>
-                    <span className='font-mono'>https://{apiHost}</span>
-                    <CopyButton
-                      value={`https://${apiHost}`}
-                      size='sm'
-                      variant='outline'
-                      aria-label={t('Copy link')}
-                    />
-                  </>
-                ) : (
-                  <span className='text-muted-foreground'>
-                    {t('Configure a custom API domain after opening')}
-                  </span>
-                )}
-              </dd>
-            </div>
-          </dl>
-        </CardContent>
-      </Card>
+    <div className='flex flex-col gap-8'>
+      <ContentSection
+        title={t('Default access URLs')}
+        description={t(
+          'Primary platform-allocated website and API addresses for this subsite.'
+        )}
+      >
+        <dl className='border-border bg-border grid gap-px overflow-hidden rounded-[14px] border text-sm sm:grid-cols-2'>
+          <div className='bg-card flex flex-col gap-1.5 px-5 py-4'>
+            <dt className='text-dim text-[12px] leading-none'>
+              {t('Website address')}
+            </dt>
+            <dd className='flex items-center justify-between gap-2 font-mono text-xs break-all'>
+              <span>https://{defaultHost}</span>
+              <CopyButton
+                value={`https://${defaultHost}`}
+                size='sm'
+                variant='outline'
+                aria-label={t('Copy link')}
+              />
+            </dd>
+          </div>
+          <div className='bg-card flex flex-col gap-1.5 px-5 py-4'>
+            <dt className='text-dim text-[12px] leading-none'>
+              {t('API address')}
+            </dt>
+            <dd className='flex items-center justify-between gap-2 text-xs break-all'>
+              {apiHost ? (
+                <>
+                  <span className='font-mono'>https://{apiHost}</span>
+                  <CopyButton
+                    value={`https://${apiHost}`}
+                    size='sm'
+                    variant='outline'
+                    aria-label={t('Copy link')}
+                  />
+                </>
+              ) : (
+                <span className='text-muted-foreground'>
+                  {t('Configure a custom API domain after opening')}
+                </span>
+              )}
+            </dd>
+          </div>
+        </dl>
+      </ContentSection>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('Custom domains')}</CardTitle>
-        </CardHeader>
-        <CardContent className='flex flex-col gap-2.5'>
-          {props.domains.length === 0 ? (
-            <EmptyState className='min-h-20' title={t('No data')} />
-          ) : (
-            props.domains.map((domain) => (
+      <ContentSection title={t('Custom domains')}>
+        {props.domains.length === 0 ? (
+          <EmptyState className='min-h-20' title={t('No data')} bordered />
+        ) : (
+          <div className='border-border divide-border bg-card divide-y overflow-hidden rounded-[14px] border'>
+            {props.domains.map((domain) => (
               <div
                 key={domain.id}
-                className='flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3'
+                className='flex flex-wrap items-center justify-between gap-2 px-5 py-3.5'
               >
                 <div className='min-w-0 flex-1 text-sm break-all'>
                   <div className='flex flex-wrap items-center gap-2'>
                     <span className='font-mono text-xs font-medium'>
                       {domain.hostname}
                     </span>
-                    <span className='text-muted-foreground text-xs'>
+                    <span className='text-dim text-xs'>
                       {domain.role === 'base_url'
                         ? t('API address')
                         : t('Website')}{' '}
-                      · {adminDomainStatusLabel(domain.status, t)} ·{' '}
-                      {t('SSL')}: {adminDomainSslLabel(domain.ssl_status ?? '', t)}
+                      · {adminDomainStatusLabel(domain.status, t)} · {t('SSL')}:{' '}
+                      {adminDomainSslLabel(domain.ssl_status ?? '', t)}
                     </span>
                   </div>
                   {domain.automation_state && (
-                    <p className='text-muted-foreground mt-0.5 text-xs'>
+                    <p className='text-dim mt-0.5 text-xs'>
                       {adminDomainAutomationLabel(domain.automation_state, t)}
                     </p>
                   )}
@@ -475,24 +459,21 @@ export function SiteDomainsCard(props: {
                     )}
                 </div>
               </div>
-            ))
-          )}
-        </CardContent>
-      </Card>
+            ))}
+          </div>
+        )}
+      </ContentSection>
 
       {props.senders.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>{t('Sender domain')}</CardTitle>
-            <CardDescription>
-              {t('Legacy Resend sender domains retained for cleanup.')}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className='flex flex-col gap-2.5'>
+        <ContentSection
+          title={t('Sender domain')}
+          description={t('Legacy Resend sender domains retained for cleanup.')}
+        >
+          <div className='border-border divide-border bg-card divide-y overflow-hidden rounded-[14px] border'>
             {props.senders.map((sender) => (
               <div
                 key={sender.domain}
-                className='flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3'
+                className='flex flex-wrap items-center justify-between gap-2 px-5 py-3.5'
               >
                 <div className='text-sm break-all'>
                   <span className='font-mono text-xs font-medium'>
@@ -505,7 +486,7 @@ export function SiteDomainsCard(props: {
                     </span>
                   )}
                   {Boolean(sender.retry_at) && (
-                    <span className='text-muted-foreground block text-xs'>
+                    <span className='text-dim block text-xs'>
                       {t('Next retry')} ·{' '}
                       {formatTimestampToDate(sender.retry_at ?? 0)}
                     </span>
@@ -525,8 +506,8 @@ export function SiteDomainsCard(props: {
                 )}
               </div>
             ))}
-          </CardContent>
-        </Card>
+          </div>
+        </ContentSection>
       )}
     </div>
   )
@@ -572,82 +553,86 @@ export function SiteBusinessStatsCard(props: {
     : []
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t('Business data')}</CardTitle>
-        {props.data && (
-          <CardDescription>
-            {props.data.stats.from} – {props.data.stats.to}
-          </CardDescription>
-        )}
-      </CardHeader>
-      <CardContent className='flex flex-col gap-4'>
+    <div className='flex flex-col gap-8'>
+      <ContentSection
+        title={t('Business data')}
+        description={
+          props.data
+            ? `${props.data.stats.from} – ${props.data.stats.to}`
+            : undefined
+        }
+      >
         {props.isError && <ErrorState onRetry={props.onRetry} />}
         {props.isPending && <LoadingState />}
         {props.data && (
-          <>
-            <dl className='grid gap-3 sm:grid-cols-4'>
-              {[
-                [t('Revenue'), `${totals?.revenue_usd ?? '0'} USD`],
-                [t('Earnings'), `${totals?.earning_usd ?? '0'} USD`],
-                [t('Top-up'), `${totals?.topup_usd ?? '0'} USD`],
-                [
-                  t('Withdrawn'),
-                  props.data.withdrawn_usd
-                    ? `${props.data.withdrawn_usd} USD`
-                    : '-',
-                ],
-              ].map(([label, value]) => (
-                <div key={label} className='bg-muted/40 rounded-lg border p-3'>
-                  <dt className='text-muted-foreground text-xs'>{label}</dt>
-                  <dd className='mt-1 text-base font-semibold tabular-nums'>
-                    {value}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-            {dimensions.map(({ label, rows }) => (
-              <div key={label} className='flex flex-col gap-2'>
-                <h4 className='text-xs font-medium tracking-wide'>{label}</h4>
-                <StaticDataTable
-                  tableProps={{ 'aria-label': label }}
-                  data={rows}
-                  getRowKey={(row) => row.key}
-                  emptyContent={
-                    <EmptyState className='min-h-16' title={t('No data')} />
-                  }
-                  columns={[
-                    { id: 'key', header: label, cell: (row) => row.key || '—' },
-                    {
-                      id: 'requests',
-                      header: t('Requests'),
-                      cell: (row) => (
-                        <span className='tabular-nums'>{row.requests}</span>
-                      ),
-                    },
-                    {
-                      id: 'quota',
-                      header: t('Quota'),
-                      cell: (row) => (
-                        <span className='tabular-nums'>{row.quota}</span>
-                      ),
-                    },
-                  ]}
-                />
+          <dl className='border-border bg-border grid grid-cols-2 gap-px overflow-hidden rounded-[14px] border lg:grid-cols-4'>
+            {[
+              [t('Revenue'), `${totals?.revenue_usd ?? '0'} USD`],
+              [t('Earnings'), `${totals?.earning_usd ?? '0'} USD`],
+              [t('Top-up'), `${totals?.topup_usd ?? '0'} USD`],
+              [
+                t('Withdrawn'),
+                props.data.withdrawn_usd
+                  ? `${props.data.withdrawn_usd} USD`
+                  : '-',
+              ],
+            ].map(([label, value]) => (
+              <div
+                key={label}
+                className='bg-card flex flex-col gap-2 px-5 py-4'
+              >
+                <dt className='text-dim text-[12px] leading-none'>{label}</dt>
+                <dd className='font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
+                  {value}
+                </dd>
               </div>
             ))}
-            {missing
-              .filter((row) => row.requests > 0)
-              .map((row) => (
-                <div key={row.label} className='text-muted-foreground text-sm'>
-                  <span>{row.label}</span> · {t('Requests')} {row.requests} ·{' '}
-                  {t('Quota')} {row.quota}
-                </div>
-              ))}
-          </>
+          </dl>
         )}
-      </CardContent>
-    </Card>
+      </ContentSection>
+
+      {props.data &&
+        dimensions.map(({ label, rows }) => (
+          <ContentSection key={label} title={label}>
+            <StaticDataTable
+              tableProps={{ 'aria-label': label }}
+              data={rows}
+              getRowKey={(row) => row.key}
+              emptyContent={
+                <EmptyState className='min-h-16' title={t('No data')} />
+              }
+              columns={[
+                { id: 'key', header: label, cell: (row) => row.key || '—' },
+                {
+                  id: 'requests',
+                  header: t('Requests'),
+                  cellClassName: 'tabular-nums',
+                  cell: (row) => row.requests,
+                },
+                {
+                  id: 'quota',
+                  header: t('Quota'),
+                  cellClassName: 'tabular-nums',
+                  cell: (row) => row.quota,
+                },
+              ]}
+            />
+          </ContentSection>
+        ))}
+
+      {props.data &&
+        missing
+          .filter((row) => row.requests > 0)
+          .map((row) => (
+            <p
+              key={row.label}
+              className='text-dim max-w-[80ch] text-[13px] leading-relaxed tabular-nums'
+            >
+              {row.label} · {t('Requests')} {row.requests} · {t('Quota')}{' '}
+              {row.quota}
+            </p>
+          ))}
+    </div>
   )
 }
 
@@ -718,113 +703,109 @@ export function SiteSupplyDiscountCard(props: { site: AdminSite }) {
   if (!isRoot) return null
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t('Per-site supply discount')}</CardTitle>
-        <CardDescription>
-          {t(
-            'Override the site level supply discount for this specific site. Leave empty to follow the site level supply discount.'
-          )}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form
-          className='flex max-w-xl flex-col gap-4'
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (!editable || !costFactorChanged || costFactorInvalid) return
-            save.mutate()
-          }}
-        >
-          <dl className='grid gap-3 text-sm sm:grid-cols-2'>
-            <div className='bg-muted/40 rounded-lg border p-3'>
-              <dt className='text-muted-foreground text-xs'>
-                {t('Effective cost factor')}
-              </dt>
-              <dd className='mt-1 font-semibold tabular-nums'>
-                {site.effective_cost_factor ||
-                  site.cost_factor ||
-                  site.tier_cost_factor ||
-                  t('Follow site level')}
-              </dd>
-            </div>
-            <div className='bg-muted/40 rounded-lg border p-3'>
-              <dt className='text-muted-foreground text-xs'>
-                {t('Site level')}
-              </dt>
-              <dd className='mt-1 font-medium tabular-nums'>
-                {site.tier_cost_factor || t('Follow site level')}
-              </dd>
-            </div>
-          </dl>
+    <SettingsSection
+      title={t('Per-site supply discount')}
+      description={t(
+        'Override the site level supply discount for this specific site. Leave empty to follow the site level supply discount.'
+      )}
+    >
+      <form
+        className='flex max-w-xl flex-col gap-5'
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (!editable || !costFactorChanged || costFactorInvalid) return
+          save.mutate()
+        }}
+      >
+        <dl className='border-border grid grid-cols-2 gap-4 border-b pb-4 text-sm'>
+          <div className='flex flex-col gap-1'>
+            <dt className='text-dim text-[12px] leading-none'>
+              {t('Effective cost factor')}
+            </dt>
+            <dd className='font-display text-[20px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
+              {site.effective_cost_factor ||
+                site.cost_factor ||
+                site.tier_cost_factor ||
+                t('Follow site level')}
+            </dd>
+          </div>
+          <div className='flex flex-col gap-1'>
+            <dt className='text-dim text-[12px] leading-none'>
+              {t('Site level')}
+            </dt>
+            <dd className='font-display text-[20px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
+              {site.tier_cost_factor || t('Follow site level')}
+            </dd>
+          </div>
+        </dl>
 
-          <div className='space-y-1.5'>
-            <Label htmlFor={`${fieldId}-cost-factor`}>{t('Cost factor')}</Label>
-            <Input
-              id={`${fieldId}-cost-factor`}
-              inputMode='decimal'
-              value={costFactor}
-              placeholder={t('Follow site level')}
-              disabled={!editable || save.isPending}
-              aria-invalid={costFactorInvalid}
-              onChange={(event) => setCostFactor(event.target.value)}
-            />
-            {costFactorInvalid ? (
-              <p className='text-destructive text-xs'>
-                {t('The cost factor must be greater than 0')}
-              </p>
-            ) : (
-              <p className='text-muted-foreground text-xs'>
-                {t(
-                  'Leave empty to follow the site level supply discount. The owner is notified when it changes.'
-                )}
-              </p>
+        <div className='space-y-1.5'>
+          <Label htmlFor={`${fieldId}-cost-factor`}>{t('Cost factor')}</Label>
+          <Input
+            id={`${fieldId}-cost-factor`}
+            className='sm:max-w-44'
+            inputMode='decimal'
+            value={costFactor}
+            placeholder={t('Follow site level')}
+            disabled={!editable || save.isPending}
+            aria-invalid={costFactorInvalid}
+            onChange={(event) => setCostFactor(event.target.value)}
+          />
+          {costFactorInvalid ? (
+            <p className='text-destructive text-xs'>
+              {t('The cost factor must be greater than 0')}
+            </p>
+          ) : (
+            <p className='text-dim text-[12.5px] leading-relaxed'>
+              {t(
+                'Leave empty to follow the site level supply discount. The owner is notified when it changes.'
+              )}
+            </p>
+          )}
+        </div>
+
+        <div className='space-y-1.5'>
+          <Label htmlFor={`${fieldId}-reason`}>
+            {t('Change note (optional)')}
+          </Label>
+          <Textarea
+            id={`${fieldId}-reason`}
+            rows={2}
+            disabled={!editable || save.isPending}
+            value={reason}
+            placeholder={t('Optional audit note for this update')}
+            onChange={(event) => setReason(event.target.value)}
+          />
+        </div>
+
+        {editable && (
+          <div className='flex flex-wrap items-center gap-2'>
+            <Button
+              type='submit'
+              variant='brand'
+              disabled={
+                save.isPending || !costFactorChanged || costFactorInvalid
+              }
+            >
+              {t('Save')}
+            </Button>
+            {(costFactorChanged || reason !== '') && (
+              <Button
+                type='button'
+                variant='outline'
+                disabled={save.isPending}
+                onClick={() => {
+                  setCostFactor(savedCostFactor)
+                  setReason('')
+                }}
+              >
+                {t('Reset')}
+              </Button>
             )}
           </div>
-
-          <div className='space-y-1.5'>
-            <Label htmlFor={`${fieldId}-reason`}>
-              {t('Change note (optional)')}
-            </Label>
-            <Textarea
-              id={`${fieldId}-reason`}
-              rows={2}
-              disabled={!editable || save.isPending}
-              value={reason}
-              placeholder={t('Optional audit note for this update')}
-              onChange={(event) => setReason(event.target.value)}
-            />
-          </div>
-
-          {editable && (
-            <div className='flex flex-wrap items-center gap-2'>
-              <Button
-                type='submit'
-                variant='brand'
-                disabled={
-                  save.isPending || !costFactorChanged || costFactorInvalid
-                }
-              >
-                {t('Save')}
-              </Button>
-              {(costFactorChanged || reason !== '') && (
-                <Button
-                  type='button'
-                  variant='outline'
-                  disabled={save.isPending}
-                  onClick={() => {
-                    setCostFactor(savedCostFactor)
-                    setReason('')
-                  }}
-                >
-                  {t('Reset')}
-                </Button>
-              )}
-            </div>
-          )}
-        </form>
-      </CardContent>
-    </Card>
+        )}
+      </form>
+    </SettingsSection>
   )
 }
 
@@ -884,16 +865,13 @@ export function SiteMarginPoliciesCard(props: {
   if (!isRoot) return null
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t('Margin coverage policies')}</CardTitle>
-        <CardDescription>
-          {t(
-            'Control whether this site may draw from its open margin cycle when available earnings are insufficient for top-up bonuses or referral commissions.'
-          )}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className='flex flex-col gap-3'>
+    <SettingsSection
+      title={t('Margin coverage policies')}
+      description={t(
+        'Control whether this site may draw from its open margin cycle when available earnings are insufficient for top-up bonuses or referral commissions.'
+      )}
+    >
+      <div className='flex max-w-2xl flex-col gap-3'>
         {bonusMarginFill.isPending && <LoadingState />}
         {bonusMarginFill.isError && (
           <ErrorState onRetry={() => void bonusMarginFill.refetch()} />
@@ -933,8 +911,8 @@ export function SiteMarginPoliciesCard(props: {
             }}
           />
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </SettingsSection>
   )
 }
 
@@ -951,62 +929,60 @@ export function SiteCustomersCard(props: { siteId: number }) {
     return '-'
   }
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t('Customers')}</CardTitle>
-      </CardHeader>
-      <CardContent className='flex flex-col gap-3'>
-        {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
-        {query.isPending ? (
-          <LoadingState />
-        ) : (
-          <>
-            <StaticDataTable
-              tableClassName='min-w-[640px]'
-              tableProps={{ 'aria-label': t('Customers') }}
-              data={query.data?.items ?? []}
-              getRowKey={(row) => String(row.id)}
-              emptyContent={
-                <EmptyState className='min-h-24' title={t('No data')} />
-              }
-              columns={[
-                {
-                  id: 'user',
-                  header: t('User'),
-                  cell: (row) => formatUserIdentity(row.id, row.username),
-                },
-                {
-                  id: 'email',
-                  header: t('Email'),
-                  cell: (row) => row.email || '-',
-                },
-                {
-                  id: 'quota',
-                  header: t('Balance'),
-                  cell: (row) => formatQuotaWithCurrency(row.quota),
-                },
-                {
-                  id: 'used',
-                  header: t('Used'),
-                  cell: (row) => formatQuotaWithCurrency(row.used_quota),
-                },
-                {
-                  id: 'risk',
-                  header: t('Risk'),
-                  cell: (row) => riskLabel(row.risk_flag),
-                },
-              ]}
-            />
-            <PageSwitcher
-              page={page}
-              total={query.data?.total ?? 0}
-              pageSize={SITE_ADMIN_PAGE_SIZE}
-              onPageChange={setPage}
-            />
-          </>
-        )}
-      </CardContent>
-    </Card>
+    <ContentSection title={t('Customers')}>
+      {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
+      {query.isPending ? (
+        <LoadingState />
+      ) : (
+        <>
+          <StaticDataTable
+            tableClassName='min-w-[640px]'
+            tableProps={{ 'aria-label': t('Customers') }}
+            data={query.data?.items ?? []}
+            getRowKey={(row) => String(row.id)}
+            emptyContent={
+              <EmptyState className='min-h-24' title={t('No data')} />
+            }
+            columns={[
+              {
+                id: 'user',
+                header: t('User'),
+                cellClassName: 'tabular-nums',
+                cell: (row) => formatUserIdentity(row.id, row.username),
+              },
+              {
+                id: 'email',
+                header: t('Email'),
+                cell: (row) => row.email || '-',
+              },
+              {
+                id: 'quota',
+                header: t('Balance'),
+                cellClassName: 'tabular-nums',
+                cell: (row) => formatQuotaWithCurrency(row.quota),
+              },
+              {
+                id: 'used',
+                header: t('Used'),
+                cellClassName: 'tabular-nums',
+                cell: (row) => formatQuotaWithCurrency(row.used_quota),
+              },
+              {
+                id: 'risk',
+                header: t('Risk'),
+                cell: (row) => riskLabel(row.risk_flag),
+              },
+            ]}
+          />
+          <PageSwitcher
+            page={page}
+            total={query.data?.total ?? 0}
+            pageSize={SITE_ADMIN_PAGE_SIZE}
+            onPageChange={setPage}
+          />
+        </>
+      )}
+    </ContentSection>
   )
 }
 
@@ -1044,180 +1020,172 @@ export function CloseMailCard(props: { siteId: number }) {
   }
   const data = query.data
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t('Closure notification delivery')}</CardTitle>
-      </CardHeader>
-      <CardContent className='flex flex-col gap-3'>
-        {query.isPending && <LoadingState />}
-        {data && (
-          <>
-            <div className='flex flex-wrap items-end gap-3'>
-              <div className='flex flex-col gap-1'>
-                <Label htmlFor={`close-mail-batch-${props.siteId}`}>
-                  {t('Notification batch')}
-                </Label>
-                <NativeSelect
-                  id={`close-mail-batch-${props.siteId}`}
-                  value={String(data.batch_id)}
-                  onChange={(event) => {
-                    setBatch(Number(event.target.value))
-                    setPage(1)
-                  }}
-                >
-                  {data.batches.map((b) => (
-                    <NativeSelectOption key={b.id} value={String(b.id)}>
-                      #{b.id} ·{' '}
-                      {b.execute_at > 0
-                        ? formatTimestampToDate(b.execute_at)
-                        : t('Unknown')}{' '}
-                      · {closeMailBatchStatusLabel(b.retry_status, t)}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
-              </div>
-              <div className='min-w-56 flex-1 space-y-1'>
-                <Label htmlFor={`close-mail-reason-${props.siteId}`}>
-                  {t('Reconciliation note')}
-                </Label>
-                <Input
-                  id={`close-mail-reason-${props.siteId}`}
-                  value={reason}
-                  onChange={(event) => setReason(event.target.value)}
-                />
-              </div>
-            </div>
-            {data.recipients.length === 0 ? (
-              <EmptyState className='min-h-16' title={t('No data')} />
-            ) : (
-              <div className='flex flex-col gap-2'>
-                {data.recipients.map((row) => (
-                  <div
-                    key={row.id}
-                    className='flex flex-wrap items-center justify-between gap-2 rounded-md border p-2.5 text-sm'
-                  >
-                    <div>
-                      <span>
-                        {row.email} ·{' '}
-                        {closeMailRecipientStatusLabel(row.status, t)} ·{' '}
-                        {t('Attempts')} {row.attempt_count} {row.last_error}
-                      </span>
-                      {row.attempts && row.attempts.length > 0 && (
-                        <details className='mt-1 text-xs'>
-                          <summary>{t('Delivery attempts')}</summary>
-                          <ul className='text-muted-foreground mt-1 space-y-0.5 pl-4'>
-                            {row.attempts.map((attempt) => (
-                              <li key={attempt.number}>
-                                #{attempt.number} · {attempt.provider} ·{' '}
-                                {closeMailRecipientStatusLabel(
-                                  attempt.outcome,
-                                  t
-                                )}{' '}
-                                · {formatTimestampToDate(attempt.started_at)}{' '}
-                                {attempt.provider_message_id}
-                              </li>
-                            ))}
-                          </ul>
-                        </details>
-                      )}
-                    </div>
-                    {(row.status === 'failed' || row.status === 'review') &&
-                      data.batches.find((b) => b.id === data.batch_id)
-                        ?.retry_status !== 'superseded' && (
-                        <div className='flex gap-1.5'>
-                          <Button
-                            type='button'
-                            size='sm'
-                            variant='outline'
-                            disabled={resolve.isPending || !reason.trim()}
-                            onClick={() =>
-                              resolve.mutate({ row, decision: 'retry' })
-                            }
-                          >
-                            {t('Retry')}
-                          </Button>
-                          <Button
-                            type='button'
-                            size='sm'
-                            variant='outline'
-                            disabled={resolve.isPending || !reason.trim()}
-                            onClick={() =>
-                              resolve.mutate({ row, decision: 'delivered' })
-                            }
-                          >
-                            {t('Confirm delivered')}
-                          </Button>
-                        </div>
-                      )}
-                  </div>
+    <ContentSection title={t('Closure notification delivery')}>
+      {query.isPending && <LoadingState />}
+      {data && (
+        <>
+          <div className='flex flex-wrap items-end gap-3'>
+            <div className='flex flex-col gap-1'>
+              <Label htmlFor={`close-mail-batch-${props.siteId}`}>
+                {t('Notification batch')}
+              </Label>
+              <NativeSelect
+                id={`close-mail-batch-${props.siteId}`}
+                value={String(data.batch_id)}
+                onChange={(event) => {
+                  setBatch(Number(event.target.value))
+                  setPage(1)
+                }}
+              >
+                {data.batches.map((b) => (
+                  <NativeSelectOption key={b.id} value={String(b.id)}>
+                    #{b.id} ·{' '}
+                    {b.execute_at > 0
+                      ? formatTimestampToDate(b.execute_at)
+                      : t('Unknown')}{' '}
+                    · {closeMailBatchStatusLabel(b.retry_status, t)}
+                  </NativeSelectOption>
                 ))}
-              </div>
-            )}
-            <PageSwitcher
-              page={page}
-              pageSize={20}
-              total={data.total}
-              onPageChange={setPage}
-            />
-          </>
-        )}
-      </CardContent>
-    </Card>
+              </NativeSelect>
+            </div>
+            <div className='max-w-md min-w-56 flex-1 space-y-1'>
+              <Label htmlFor={`close-mail-reason-${props.siteId}`}>
+                {t('Reconciliation note')}
+              </Label>
+              <Input
+                id={`close-mail-reason-${props.siteId}`}
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+              />
+            </div>
+          </div>
+          {data.recipients.length === 0 ? (
+            <EmptyState className='min-h-16' title={t('No data')} bordered />
+          ) : (
+            <div className='border-border divide-border bg-card divide-y overflow-hidden rounded-[14px] border'>
+              {data.recipients.map((row) => (
+                <div
+                  key={row.id}
+                  className='flex flex-wrap items-center justify-between gap-2 px-5 py-3 text-sm'
+                >
+                  <div>
+                    <span>
+                      {row.email} ·{' '}
+                      {closeMailRecipientStatusLabel(row.status, t)} ·{' '}
+                      {t('Attempts')} {row.attempt_count} {row.last_error}
+                    </span>
+                    {row.attempts && row.attempts.length > 0 && (
+                      <details className='mt-1 text-xs'>
+                        <summary>{t('Delivery attempts')}</summary>
+                        <ul className='text-muted-foreground mt-1 space-y-0.5 pl-4'>
+                          {row.attempts.map((attempt) => (
+                            <li key={attempt.number}>
+                              #{attempt.number} · {attempt.provider} ·{' '}
+                              {closeMailRecipientStatusLabel(
+                                attempt.outcome,
+                                t
+                              )}{' '}
+                              · {formatTimestampToDate(attempt.started_at)}{' '}
+                              {attempt.provider_message_id}
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                  </div>
+                  {(row.status === 'failed' || row.status === 'review') &&
+                    data.batches.find((b) => b.id === data.batch_id)
+                      ?.retry_status !== 'superseded' && (
+                      <div className='flex gap-1.5'>
+                        <Button
+                          type='button'
+                          size='sm'
+                          variant='outline'
+                          disabled={resolve.isPending || !reason.trim()}
+                          onClick={() =>
+                            resolve.mutate({ row, decision: 'retry' })
+                          }
+                        >
+                          {t('Retry')}
+                        </Button>
+                        <Button
+                          type='button'
+                          size='sm'
+                          variant='outline'
+                          disabled={resolve.isPending || !reason.trim()}
+                          onClick={() =>
+                            resolve.mutate({ row, decision: 'delivered' })
+                          }
+                        >
+                          {t('Confirm delivered')}
+                        </Button>
+                      </div>
+                    )}
+                </div>
+              ))}
+            </div>
+          )}
+          <PageSwitcher
+            page={page}
+            pageSize={20}
+            total={data.total}
+            onPageChange={setPage}
+          />
+        </>
+      )}
+    </ContentSection>
   )
 }
 
 export function SiteAuditCard(props: { audits: SiteAudit[] }) {
   const { t } = useTranslation()
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t('Audit trail')}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <StaticDataTable
-          tableClassName='min-w-[600px]'
-          tableProps={{ 'aria-label': t('Audit trail') }}
-          data={props.audits}
-          getRowKey={(row) => String(row.id)}
-          emptyContent={<EmptyState className='min-h-24' title={t('No data')} />}
-          columns={[
-            {
-              id: 'time',
-              header: t('Time'),
-              cell: (row) => formatTimestampToDate(row.created_at),
-            },
-            {
-              id: 'action',
-              header: t('Action'),
-              cell: (row) => (
-                <span className='text-xs'>
-                  {siteAuditActionLabel(row.action, t)}
-                </span>
-              ),
-            },
-            {
-              id: 'operator',
-              header: t('Operator'),
-              cell: (row) =>
-                formatUserIdentity(row.operator_id, row.operator_username),
-            },
-            {
-              id: 'change',
-              header: t('Change'),
-              cell: (row) => (
-                <span className='font-mono text-xs break-all'>
-                  {row.old_value || '-'} → {row.new_value || '-'}
-                </span>
-              ),
-            },
-            {
-              id: 'reason',
-              header: t('Reason'),
-              cell: (row) => row.reason || '-',
-            },
-          ]}
-        />
-      </CardContent>
-    </Card>
+    <ContentSection title={t('Audit trail')}>
+      <StaticDataTable
+        tableClassName='min-w-[600px]'
+        tableProps={{ 'aria-label': t('Audit trail') }}
+        data={props.audits}
+        getRowKey={(row) => String(row.id)}
+        emptyContent={<EmptyState className='min-h-24' title={t('No data')} />}
+        columns={[
+          {
+            id: 'time',
+            header: t('Time'),
+            cellClassName: 'whitespace-nowrap tabular-nums',
+            cell: (row) => formatTimestampToDate(row.created_at),
+          },
+          {
+            id: 'action',
+            header: t('Action'),
+            cell: (row) => (
+              <span className='text-xs'>
+                {siteAuditActionLabel(row.action, t)}
+              </span>
+            ),
+          },
+          {
+            id: 'operator',
+            header: t('Operator'),
+            cellClassName: 'tabular-nums',
+            cell: (row) =>
+              formatUserIdentity(row.operator_id, row.operator_username),
+          },
+          {
+            id: 'change',
+            header: t('Change'),
+            cell: (row) => (
+              <span className='font-mono text-xs break-all'>
+                {row.old_value || '-'} → {row.new_value || '-'}
+              </span>
+            ),
+          },
+          {
+            id: 'reason',
+            header: t('Reason'),
+            cell: (row) => row.reason || '-',
+          },
+        ]}
+      />
+    </ContentSection>
   )
 }

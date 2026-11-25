@@ -94,9 +94,14 @@ export function VoucherListTable(props: {
       header: t('Target site'),
       cell: (row) => {
         if (!row.target_site_id || row.target_site_id <= 0) return '—'
-        return props.formatTargetSite
+        const label = props.formatTargetSite
           ? props.formatTargetSite(row.target_site_id)
           : `#${row.target_site_id}`
+        return (
+          <span className='block max-w-[210px] truncate' title={label}>
+            {label}
+          </span>
+        )
       },
     })
   }
@@ -208,7 +213,7 @@ export function VoucherListTable(props: {
   return (
     <>
       <StaticDataTable
-        tableClassName='min-w-[880px]'
+        tableClassName='min-w-[820px]'
         tableProps={{ 'aria-label': props.label }}
         data={props.rows}
         getRowKey={(row) => String(row.id)}

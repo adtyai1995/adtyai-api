@@ -40,7 +40,6 @@ import { useMediaQuery } from '@/hooks'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import { SettingsPageTitleStatusPortal } from '../components/settings-page-context'
-import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
 import { GroupRatioForm } from './group-ratio-form'
 import { ModelRatioForm } from './model-ratio-form'
@@ -627,16 +626,16 @@ export function RatioSettingsCard({
   return (
     <>
       {visibleTabs.length === 1 ? (
-        <SettingsSection
-          title={t(titleKey)}
+        <div
+          aria-label={t(titleKey)}
           className={
             defaultTab === 'models' || defaultTab === 'unset-models'
-              ? 'min-h-0 flex-1'
-              : undefined
+              ? 'flex min-h-0 flex-1 flex-col'
+              : 'min-w-0'
           }
         >
           {renderTabContent(defaultTab)}
-        </SettingsSection>
+        </div>
       ) : (
         <Tabs defaultValue={defaultTab} className='h-full min-h-0 gap-6'>
           {/* The phone title row is too narrow for the tabs. */}
@@ -648,10 +647,9 @@ export function RatioSettingsCard({
             </SettingsPageTitleStatusPortal>
           )}
 
-          <SettingsSection
-            title={t(titleKey)}
-            className='flex min-h-0 flex-1 flex-col'
-            bodyClassName='flex min-h-0 flex-1 flex-col overflow-auto'
+          <div
+            aria-label={t(titleKey)}
+            className='flex min-h-0 flex-1 flex-col overflow-auto'
           >
             {visibleTabs.map((tab) => (
               <TabsContent
@@ -668,7 +666,7 @@ export function RatioSettingsCard({
                 {renderTabContent(tab)}
               </TabsContent>
             ))}
-          </SettingsSection>
+          </div>
         </Tabs>
       )}
 

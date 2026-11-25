@@ -145,7 +145,9 @@ export function SiteWalletLedger(props: {
   return (
     <section aria-label={props.label} className='flex flex-col gap-3'>
       <div className='flex flex-wrap items-center justify-between gap-2'>
-        <h3 className='text-sm font-medium'>{props.label}</h3>
+        <h3 className='text-[15px] leading-snug font-semibold tracking-tight'>
+          {props.label}
+        </h3>
         <NativeSelect
           aria-label={t('Wallet')}
           value={kind}

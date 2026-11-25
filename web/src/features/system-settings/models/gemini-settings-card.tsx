@@ -378,6 +378,8 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
                   <FormControl>
                     <Input
                       {...field}
+                      inputMode='decimal'
+                      className='sm:max-w-44'
                       value={String(field.value ?? '')}
                       onChange={(event) => field.onChange(event.target.value)}
                     />
@@ -393,7 +395,7 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
             />
 
             {!isAdapterEnabled && (
-              <p className='text-muted-foreground text-sm'>
+              <p className='text-dim text-[12.5px] leading-relaxed'>
                 {t(
                   'Gemini will continue to auto-detect thinking mode even with the adapter disabled. Enable this only when you need finer control over pricing and budgeting.'
                 )}

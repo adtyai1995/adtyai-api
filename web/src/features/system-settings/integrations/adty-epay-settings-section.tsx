@@ -23,8 +23,8 @@ import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 
+import { SettingsSwitchField } from '../components/settings-form-layout'
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
@@ -173,20 +173,7 @@ export function AdtyEpaySettingsSection(props: {
 
   return (
     <SettingsSection title={t('Alipay and WeChat Pay')}>
-      {props.inlineActions ? (
-        <div className='mb-4 flex justify-end'>
-          <Button
-            variant='brand'
-            type='button'
-            size='sm'
-            onClick={save}
-            disabled={updateOption.isPending}
-          >
-            <Save data-icon='inline-start' />
-            <span>{t('Save Changes')}</span>
-          </Button>
-        </div>
-      ) : (
+      {!props.inlineActions && (
         <SettingsPageFormActions
           onSave={save}
           isSaving={updateOption.isPending}
@@ -218,17 +205,28 @@ export function AdtyEpaySettingsSection(props: {
             )}
           </div>
         ))}
-        <div className='flex items-center justify-between gap-4 rounded-lg border p-3 sm:col-span-2'>
-          <Label htmlFor='adty-epay-probe'>
-            {t('Probe channels in maintenance')}
-          </Label>
-          <Switch
-            id='adty-epay-probe'
-            checked={probeEnabled}
-            onCheckedChange={setProbeEnabled}
-          />
-        </div>
+        <SettingsSwitchField
+          controlId='adty-epay-probe'
+          checked={probeEnabled}
+          onCheckedChange={setProbeEnabled}
+          label={t('Probe channels in maintenance')}
+          className='border-border border-t pt-4 sm:col-span-2'
+        />
       </div>
+      {props.inlineActions && (
+        <div className='mt-5 flex justify-start'>
+          <Button
+            variant='brand'
+            type='button'
+            size='sm'
+            onClick={save}
+            disabled={updateOption.isPending}
+          >
+            <Save data-icon='inline-start' />
+            <span>{t('Save Changes')}</span>
+          </Button>
+        </div>
+      )}
     </SettingsSection>
   )
 }

@@ -21,9 +21,9 @@ import { useTranslation } from 'react-i18next'
 
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
+import { SettingsSwitchField } from '../components/settings-form-layout'
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
@@ -252,23 +252,16 @@ export function AdtySiteSection(props: { defaultValues: AdtySiteDefaults }) {
             </div>
           )
         })}
-        <div className='flex items-center justify-between gap-4 rounded-lg border p-3 sm:col-span-2'>
-          <div className='space-y-1'>
-            <Label htmlFor='adty-site-refund-policy'>
-              {t('Show the refund policy')}
-            </Label>
-            <p className='text-dim text-[12.5px]'>
-              {t(
-                'Adds the refund policy page, its footer link and the sign-up consent.'
-              )}
-            </p>
-          </div>
-          <Switch
-            id='adty-site-refund-policy'
-            checked={refundPolicy}
-            onCheckedChange={setRefundPolicy}
-          />
-        </div>
+        <SettingsSwitchField
+          controlId='adty-site-refund-policy'
+          checked={refundPolicy}
+          onCheckedChange={setRefundPolicy}
+          label={t('Show the refund policy')}
+          description={t(
+            'Adds the refund policy page, its footer link and the sign-up consent.'
+          )}
+          className='border-border border-t pt-4 sm:col-span-2'
+        />
       </div>
     </SettingsSection>
   )

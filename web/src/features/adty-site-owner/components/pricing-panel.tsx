@@ -21,15 +21,9 @@ import { useTranslation } from 'react-i18next'
 
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
 import { formatTimestamp } from '@/lib/format'
 
@@ -135,37 +129,15 @@ export function PricingPanel(props: { site: OwnerSite }) {
         </Alert>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('Site-wide Retail Multiplier')}</CardTitle>
-          <CardDescription>
-            {t(
-              'Set a single retail multiplier for all models and billing groups on your subsite. Saving takes effect for new requests immediately.'
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className='flex flex-col gap-5'>
-          <dl className='grid gap-3 sm:grid-cols-2'>
-            <div className='bg-muted/40 rounded-lg border p-3.5'>
-              <dt className='text-muted-foreground text-xs'>
-                {t('Main Supply Discount')}
-              </dt>
-              <dd className='mt-1 text-lg font-semibold tabular-nums'>
-                {supplyDiscountText}x
-              </dd>
-            </div>
-            <div className='bg-muted/40 rounded-lg border p-3.5'>
-              <dt className='text-muted-foreground text-xs'>
-                {t('Effective Customer Multiplier')}
-              </dt>
-              <dd className='mt-1 text-lg font-semibold tabular-nums'>
-                {formatMultiplier(effectiveMultiplier)}x
-              </dd>
-            </div>
-          </dl>
-
+      <SettingsSection
+        title={t('Site-wide Retail Multiplier')}
+        description={t(
+          'Set a single retail multiplier for all models and billing groups on your subsite. Saving takes effect for new requests immediately.'
+        )}
+      >
+        <div className='grid gap-8 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]'>
           <form
-            className='flex max-w-md flex-col gap-3'
+            className='flex flex-col gap-3'
             onSubmit={(event) => {
               event.preventDefault()
               if (closing || !dirty || !valid || save.isPending) return
@@ -204,7 +176,47 @@ export function PricingPanel(props: { site: OwnerSite }) {
               )}
             </div>
 
-            <div className='bg-muted/40 space-y-1 rounded-lg border p-3 text-sm tabular-nums'>
+            <div className='flex flex-wrap gap-2 pt-1'>
+              <Button
+                type='submit'
+                variant='brand'
+                disabled={closing || !dirty || !valid || save.isPending}
+              >
+                {t('Save prices')}
+              </Button>
+              {dirty && (
+                <Button
+                  type='button'
+                  variant='outline'
+                  disabled={save.isPending}
+                  onClick={() => setRetailMultiplier(savedDefault)}
+                >
+                  {t('Reset')}
+                </Button>
+              )}
+            </div>
+          </form>
+
+          <div className='flex flex-col gap-4'>
+            <dl className='border-border bg-border grid grid-cols-2 gap-px overflow-hidden rounded-[14px] border'>
+              <div className='bg-card flex flex-col gap-2 px-5 py-4'>
+                <dt className='text-dim text-[12px] leading-none'>
+                  {t('Main Supply Discount')}
+                </dt>
+                <dd className='font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
+                  {supplyDiscountText}x
+                </dd>
+              </div>
+              <div className='bg-card flex flex-col gap-2 px-5 py-4'>
+                <dt className='text-dim text-[12px] leading-none'>
+                  {t('Effective Customer Multiplier')}
+                </dt>
+                <dd className='font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
+                  {formatMultiplier(effectiveMultiplier)}x
+                </dd>
+              </div>
+            </dl>
+            <div className='bg-muted space-y-1 rounded-[12px] px-4 py-3 text-sm tabular-nums'>
               <p className='text-muted-foreground text-xs font-medium'>
                 {t('Live pricing formula')}
               </p>
@@ -228,29 +240,9 @@ export function PricingPanel(props: { site: OwnerSite }) {
                 )}
               </p>
             </div>
-
-            <div className='flex flex-wrap gap-2 pt-1'>
-              <Button
-                type='submit'
-                variant='brand'
-                disabled={closing || !dirty || !valid || save.isPending}
-              >
-                {t('Save prices')}
-              </Button>
-              {dirty && (
-                <Button
-                  type='button'
-                  variant='outline'
-                  disabled={save.isPending}
-                  onClick={() => setRetailMultiplier(savedDefault)}
-                >
-                  {t('Reset')}
-                </Button>
-              )}
-            </div>
-          </form>
-        </CardContent>
-      </Card>
+          </div>
+        </div>
+      </SettingsSection>
 
       <PricingHistory />
     </div>

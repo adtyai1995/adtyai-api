@@ -23,6 +23,7 @@ import { useTranslation } from 'react-i18next'
 import { Badge } from '@/components/ui/badge'
 import { resolveLocalizedText } from '@/lib/localized-text'
 
+import { isStaleFactoryOverride } from '../lib/marketplace'
 import type { TaskPluginListItem } from '../types'
 import { PluginIcon } from './plugin-icon'
 import { PluginWebsiteLink } from './plugin-website-link'
@@ -55,6 +56,27 @@ function PluginCardComponent({ row }: { row: Row<TaskPluginListItem> }) {
   )
   const models = row.original.meta.models ?? []
   const hiddenModels = models.slice(MAX_VISIBLE_MODELS)
+  const factoryVersion = row.original.factory_meta?.version
+  const staleHint =
+    row.original.source === 'override_over_factory' &&
+    isStaleFactoryOverride(row.original)
+      ? t(
+          'Built-in is v{{factory}}; delete the custom version to return to it',
+          { factory: factoryVersion }
+        )
+      : undefined
+  let sourceBadge = <Badge>{t('Third-party')}</Badge>
+  if (row.original.source === 'factory') {
+    sourceBadge = <Badge variant='secondary'>{t('Factory')}</Badge>
+  } else if (row.original.source === 'override_over_factory') {
+    sourceBadge = (
+      <Badge>
+        {t('Custom (overrides factory {{version}})', {
+          version: factoryVersion,
+        })}
+      </Badge>
+    )
+  }
 
   const renderCell = (id: string) => {
     const cell = cells.find((c) => c.column.id === id)
@@ -95,7 +117,7 @@ function PluginCardComponent({ row }: { row: Row<TaskPluginListItem> }) {
 
       {/* Row 2: source, runtime, and plugin version badges wrap freely. */}
       <div className='flex flex-wrap items-center gap-1.5'>
-        {renderCell('source')}
+        {sourceBadge}
         {renderCell('runtime')}
         <Badge
           variant='secondary'
@@ -105,6 +127,10 @@ function PluginCardComponent({ row }: { row: Row<TaskPluginListItem> }) {
           {row.original.meta.version ? `v${row.original.meta.version}` : '—'}
         </Badge>
       </div>
+
+      {staleHint ? (
+        <p className='text-dim text-xs leading-relaxed'>{staleHint}</p>
+      ) : null}
 
       {description ? (
         <p className='text-muted-foreground line-clamp-2 text-xs'>

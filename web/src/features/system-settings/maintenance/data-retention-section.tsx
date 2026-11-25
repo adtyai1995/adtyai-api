@@ -21,9 +21,11 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { ContentSection } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { api } from '@/lib/api'
 import { formatTimestamp } from '@/lib/format'
 import { ROLE } from '@/lib/roles'
@@ -87,7 +89,11 @@ function RetentionGate(props: {
 }) {
   const { t } = useTranslation()
   if (!props.isRoot) {
-    return <p className='text-sm'>{t('Only Root can view and change data retention periods.')}</p>
+    return (
+      <p className='text-sm'>
+        {t('Only Root can view and change data retention periods.')}
+      </p>
+    )
   }
   if (props.isError) {
     return (
@@ -145,7 +151,9 @@ export function DataRetentionSection() {
     for (const category of settings.data.categories) {
       incoming[category.category] = {
         days:
-          category.retention_days != null ? String(category.retention_days) : '',
+          category.retention_days != null
+            ? String(category.retention_days)
+            : '',
         action: category.action || category.allowed_actions[0] || 'delete',
       }
     }
@@ -200,7 +208,9 @@ export function DataRetentionSection() {
         savedRef.current = nextSaved
       }
       toast.success(
-        t('Retention settings saved. Later cleanup runs will use the new periods.')
+        t(
+          'Retention settings saved. Later cleanup runs will use the new periods.'
+        )
       )
       await queryClient.invalidateQueries({ queryKey: ['adty-data-retention'] })
     },
@@ -210,7 +220,10 @@ export function DataRetentionSection() {
   })
 
   const categories = settings.data?.categories ?? []
-  const canSave = useMemo(() => isRoot && categories.length > 0, [categories.length, isRoot])
+  const canSave = useMemo(
+    () => isRoot && categories.length > 0,
+    [categories.length, isRoot]
+  )
 
   const saveCategory = (category: RetentionCategory) => {
     const draft = drafts[category.category]
@@ -241,181 +254,217 @@ export function DataRetentionSection() {
   }
 
   return (
-    <SettingsSection title={t('Data retention')}>
-      <p className='text-muted-foreground text-sm'>
-        {t(
-          'Root configures how long each data category is kept. Unconfigured categories are not auto-deleted. Changing a period only affects later cleanup runs and does not immediately delete historical data. Notification history cannot be given an automatic cleanup period.'
-        )}
-      </p>
-      <RetentionGate
-        isRoot={isRoot}
-        isError={settings.isError}
-        error={settings.error}
-      >
-        <div className='flex flex-col gap-5'>
-          {categories.map((category) => {
-            const draft = drafts[category.category] ?? {
-              days: '',
-              action: category.allowed_actions[0] || 'delete',
-            }
-            return (
-              <div
-                key={category.category}
-                className='flex flex-col gap-2 border-b pb-4 last:border-b-0'
-              >
-                <div className='flex flex-col gap-1'>
-                  <h4 className='font-medium'>{t(category.title)}</h4>
-                  <p className='text-dim text-[12.5px]'>{t(category.notes)}</p>
-                </div>
-                {!category.auto_cleanable ? (
-                  <p className='text-sm'>
-                    {t(
-                      'Permanent retention. Automatic cleanup tasks must not delete notification history. Only the user may manually delete their own deletable messages.'
-                    )}
-                  </p>
-                ) : (
-                  <div className='flex flex-wrap items-end gap-3'>
-                    <div className='flex min-w-40 flex-col gap-1'>
-                      <Label htmlFor={`retention-days-${category.category}`}>
-                        {t('Retention period (days)')}
-                      </Label>
-                      <Input
-                        id={`retention-days-${category.category}`}
-                        inputMode='numeric'
-                        placeholder={t('Not configured')}
-                        value={draft.days}
-                        onChange={(event) =>
-                          setDrafts((current) => ({
-                            ...current,
-                            [category.category]: {
-                              ...draft,
-                              days: event.target.value,
-                            },
-                          }))
-                        }
-                      />
-                    </div>
-                    {category.allowed_actions.length > 1 && (
-                      <div className='flex min-w-52 flex-col gap-1'>
-                        <Label htmlFor={`retention-action-${category.category}`}>
-                          {t('Action')}
+    <div className='flex min-w-0 flex-col gap-8'>
+      <SettingsSection title={t('Data retention')} bodyClassName='space-y-6'>
+        <p className='text-dim max-w-[80ch] text-[13px] leading-relaxed'>
+          {t(
+            'Root configures how long each data category is kept. Unconfigured categories are not auto-deleted. Changing a period only affects later cleanup runs and does not immediately delete historical data. Notification history cannot be given an automatic cleanup period.'
+          )}
+        </p>
+        <RetentionGate
+          isRoot={isRoot}
+          isError={settings.isError}
+          error={settings.error}
+        >
+          <div className='divide-border flex flex-col divide-y'>
+            {categories.map((category) => {
+              const draft = drafts[category.category] ?? {
+                days: '',
+                action: category.allowed_actions[0] || 'delete',
+              }
+              return (
+                <div
+                  key={category.category}
+                  className='flex flex-col gap-3 py-5 first:pt-0 last:pb-0'
+                >
+                  <div className='flex flex-col gap-1'>
+                    <h4 className='text-[15px] leading-snug font-semibold tracking-tight'>
+                      {t(category.title)}
+                    </h4>
+                    {category.notes ? (
+                      <p className='text-dim max-w-[80ch] text-[12.5px] leading-relaxed'>
+                        {t(category.notes)}
+                      </p>
+                    ) : null}
+                  </div>
+                  {!category.auto_cleanable ? (
+                    <p className='text-dim max-w-[80ch] text-[13px] leading-relaxed'>
+                      {t(
+                        'Permanent retention. Automatic cleanup tasks must not delete notification history. Only the user may manually delete their own deletable messages.'
+                      )}
+                    </p>
+                  ) : (
+                    <div className='flex flex-wrap items-end gap-3'>
+                      <div className='flex w-36 flex-col gap-1.5'>
+                        <Label
+                          htmlFor={`retention-days-${category.category}`}
+                          className='text-[13.5px] leading-snug font-semibold'
+                        >
+                          {t('Retention period (days)')}
                         </Label>
-                        <select
-                          id={`retention-action-${category.category}`}
-                          className='border-input bg-background h-9 rounded-md border px-3 text-sm'
-                          value={draft.action}
+                        <Input
+                          id={`retention-days-${category.category}`}
+                          inputMode='numeric'
+                          placeholder={t('Not configured')}
+                          className='tabular-nums'
+                          value={draft.days}
                           onChange={(event) =>
                             setDrafts((current) => ({
                               ...current,
                               [category.category]: {
                                 ...draft,
-                                action: event.target.value,
+                                days: event.target.value,
                               },
                             }))
                           }
-                        >
-                          {category.allowed_actions.map((action) => (
-                            <option key={action} value={action}>
-                              {t(ACTION_LABELS[action] ?? action)}
-                            </option>
-                          ))}
-                        </select>
+                        />
                       </div>
-                    )}
-                    <Button
-                      variant='brand'
-                      type='button'
-                      onClick={() => saveCategory(category)}
-                      disabled={!canSave || save.isPending}
-                    >
-                      {t('Save')}
-                    </Button>
-                  </div>
-                )}
-                {category.min_retention_days ? (
-                  <p className='text-dim text-[12.5px]'>
-                    {(() => {
-                      let floorKey =
-                        'Automatic cleanup keeps a {{days}}-day safety floor.'
-                      if (category.category === 'api_usage_logs') {
-                        floorKey =
-                          'Usage-log cleanup keeps a {{days}}-day safety floor.'
-                      } else if (category.category === 'support_tickets') {
-                        floorKey =
-                          'Support-ticket cleanup keeps a {{days}}-day safety floor.'
-                      }
-                      return t(floorKey, {
-                        days: category.min_retention_days,
-                      })
-                    })()}
-                  </p>
-                ) : null}
-                {!category.configured && category.auto_cleanable ? (
-                  <p className='text-dim text-[12.5px]'>
-                    {t('Not configured: the official cleanup task will not delete this category.')}
-                  </p>
-                ) : null}
-              </div>
-            )
-          })}
-          <section
-            aria-label={t('Recent cleanup runs')}
-            className='flex flex-col gap-2'
-          >
-            <h4 className='font-medium'>{t('Recent cleanup runs')}</h4>
-            {runs.isError && (
-              <p className='text-destructive text-sm'>
-                {getServerErrorMessage(runs.error, t('Failed to load data'))}
-              </p>
-            )}
-            {runs.data?.length === 0 && (
-              <p className='text-muted-foreground text-sm'>
-                {t('No cleanup has run yet.')}
-              </p>
-            )}
-            {(runs.data ?? []).map((run) => {
-              const runItems = Array.isArray(run.items) ? run.items : []
-              const categoryTitle = (category: string) =>
-                t(
-                  categories.find((item) => item.category === category)
-                    ?.title ?? category
-                )
-              return (
-                <div
-                  key={run.id}
-                  className='flex flex-col gap-1 rounded-lg border p-3 text-sm'
-                >
-                  <p className='tabular-nums'>
-                    {formatTimestamp(run.started_at)} ·{' '}
-                    {run.trigger === 'manual'
-                      ? t('Started manually')
-                      : t('Scheduled')}
-                  </p>
-                  {runItems.length === 0 ? (
-                    <p className='text-muted-foreground'>
-                      {t('Nothing was due for cleanup.')}
+                      {category.allowed_actions.length > 1 && (
+                        <div className='flex min-w-52 flex-col gap-1.5'>
+                          <Label
+                            htmlFor={`retention-action-${category.category}`}
+                            className='text-[13.5px] leading-snug font-semibold'
+                          >
+                            {t('Action')}
+                          </Label>
+                          <NativeSelect
+                            id={`retention-action-${category.category}`}
+                            value={draft.action}
+                            onChange={(event) =>
+                              setDrafts((current) => ({
+                                ...current,
+                                [category.category]: {
+                                  ...draft,
+                                  action: event.target.value,
+                                },
+                              }))
+                            }
+                          >
+                            {category.allowed_actions.map((action) => (
+                              <NativeSelectOption key={action} value={action}>
+                                {t(ACTION_LABELS[action] ?? action)}
+                              </NativeSelectOption>
+                            ))}
+                          </NativeSelect>
+                        </div>
+                      )}
+                      <Button
+                        variant='brand'
+                        type='button'
+                        size='sm'
+                        onClick={() => saveCategory(category)}
+                        disabled={!canSave || save.isPending}
+                      >
+                        {t('Save')}
+                      </Button>
+                    </div>
+                  )}
+                  {(category.min_retention_days ||
+                    (!category.configured && category.auto_cleanable)) && (
+                    <p className='text-dim max-w-[80ch] text-[12.5px] leading-relaxed'>
+                      {category.min_retention_days
+                        ? (() => {
+                            let floorKey =
+                              'Automatic cleanup keeps a {{days}}-day safety floor.'
+                            if (category.category === 'api_usage_logs') {
+                              floorKey =
+                                'Usage-log cleanup keeps a {{days}}-day safety floor.'
+                            } else if (
+                              category.category === 'support_tickets'
+                            ) {
+                              floorKey =
+                                'Support-ticket cleanup keeps a {{days}}-day safety floor.'
+                            }
+                            return t(floorKey, {
+                              days: category.min_retention_days,
+                            })
+                          })()
+                        : null}
+                      {category.min_retention_days &&
+                      !category.configured &&
+                      category.auto_cleanable
+                        ? ' '
+                        : null}
+                      {!category.configured && category.auto_cleanable
+                        ? t(
+                            'Not configured: the official cleanup task will not delete this category.'
+                          )
+                        : null}
                     </p>
-                  ) : (
-                    <ul className='text-muted-foreground flex flex-col gap-0.5 tabular-nums'>
-                      {runItems.map((item) => (
-                        <li key={item.id}>
-                          {categoryTitle(item.category)}:{' '}
-                          {t('deleted {{deleted}}, de-identified {{deidentified}}, failed {{failed}}', {
-                            deleted: item.delete_count,
-                            deidentified: item.deidentify_count,
-                            failed: item.failure_count,
-                          })}
-                          {item.skip_reason ? ` · ${t(item.skip_reason)}` : ''}
-                        </li>
-                      ))}
-                    </ul>
                   )}
                 </div>
               )
             })}
-          </section>
-        </div>
-      </RetentionGate>
-    </SettingsSection>
+          </div>
+        </RetentionGate>
+      </SettingsSection>
+
+      {isRoot && !settings.isError && (
+        <ContentSection
+          title={t('Recent cleanup runs')}
+          aria-label={t('Recent cleanup runs')}
+        >
+          {runs.isError && (
+            <p className='text-destructive text-sm'>
+              {getServerErrorMessage(runs.error, t('Failed to load data'))}
+            </p>
+          )}
+          {runs.data?.length === 0 && (
+            <p className='text-dim text-[13px]'>
+              {t('No cleanup has run yet.')}
+            </p>
+          )}
+          {(runs.data?.length ?? 0) > 0 && (
+            <div className='border-border bg-card divide-border divide-y overflow-hidden rounded-[14px] border'>
+              {(runs.data ?? []).map((run) => {
+                const runItems = Array.isArray(run.items) ? run.items : []
+                const categoryTitle = (category: string) =>
+                  t(
+                    categories.find((item) => item.category === category)
+                      ?.title ?? category
+                  )
+                return (
+                  <div
+                    key={run.id}
+                    className='flex flex-col gap-1.5 px-5 py-4 text-sm'
+                  >
+                    <p className='font-medium tabular-nums'>
+                      {formatTimestamp(run.started_at)} ·{' '}
+                      {run.trigger === 'manual'
+                        ? t('Started manually')
+                        : t('Scheduled')}
+                    </p>
+                    {runItems.length === 0 ? (
+                      <p className='text-dim text-[13px]'>
+                        {t('Nothing was due for cleanup.')}
+                      </p>
+                    ) : (
+                      <ul className='text-dim flex flex-col gap-0.5 text-[13px] tabular-nums'>
+                        {runItems.map((item) => (
+                          <li key={item.id}>
+                            {categoryTitle(item.category)}:{' '}
+                            {t(
+                              'deleted {{deleted}}, de-identified {{deidentified}}, failed {{failed}}',
+                              {
+                                deleted: item.delete_count,
+                                deidentified: item.deidentify_count,
+                                failed: item.failure_count,
+                              }
+                            )}
+                            {item.skip_reason
+                              ? ` · ${t(item.skip_reason)}`
+                              : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </ContentSection>
+      )}
+    </div>
   )
 }

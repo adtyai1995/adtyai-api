@@ -97,7 +97,7 @@ export function MarketplacePanel() {
     <>
       <div className='h-full space-y-4 overflow-y-auto'>
         <div className='flex flex-wrap items-center justify-between gap-2'>
-          <p className='text-muted-foreground text-sm'>
+          <p className='text-dim max-w-[80ch] text-[13px] leading-relaxed'>
             {t(
               'Plugin indexes are fetched by your browser. Installing runs the same review and admission pipeline as a manual upload.'
             )}
@@ -126,7 +126,7 @@ export function MarketplacePanel() {
         {sourcesQuery.isLoading && <Skeleton className='h-24 w-full' />}
 
         {!sourcesQuery.isLoading && sources.length === 0 && (
-          <Empty className='border'>
+          <Empty className='rounded-[14px] border'>
             <EmptyHeader>
               <EmptyTitle>{t('No marketplace sources configured.')}</EmptyTitle>
               <EmptyDescription>

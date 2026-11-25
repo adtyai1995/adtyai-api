@@ -123,7 +123,10 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
   }
 
   return (
-    <SettingsSection title={t('Log Maintenance')} className='gap-6'>
+    <SettingsSection
+      title={t('Log Maintenance')}
+      bodyClassName='flex flex-col gap-6'
+    >
       <Form {...form}>
         <SettingsForm onSubmit={form.handleSubmit(onSubmit)}>
           <SettingsPageFormActions

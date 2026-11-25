@@ -22,10 +22,10 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SiteWalletLedger } from '@/features/adty-ledger/site-wallet-ledger'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { handleServerError } from '@/lib/handle-server-error'
 import { getServerErrorMessage } from '@/lib/server-error-message'
@@ -69,57 +69,53 @@ function MarginVoucherRedeemCard() {
   })
 
   return (
-    <Card>
-      <CardContent className='flex flex-col gap-3 py-4'>
-        <div className='flex flex-col gap-1'>
-          <h2 className='text-sm font-medium'>{t('Margin recharge code')}</h2>
-          <p className='text-muted-foreground text-sm'>
-            {t(
-              'Redeem a platform-issued margin recharge code to credit your site margin wallet directly.'
-            )}
-          </p>
+    <SettingsSection
+      title={t('Margin recharge code')}
+      description={t(
+        'Redeem a platform-issued margin recharge code to credit your site margin wallet directly.'
+      )}
+      bodyClassName='flex flex-col gap-3'
+    >
+      <form
+        className='flex max-w-xl flex-col gap-2 sm:flex-row sm:items-end'
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (redeem.isPending || code.trim() === '') return
+          redeem.mutate(code)
+        }}
+      >
+        <div className='flex flex-1 flex-col gap-1'>
+          <Label htmlFor='owner-margin-voucher-code'>
+            {t('Recharge code')}
+          </Label>
+          <Input
+            id='owner-margin-voucher-code'
+            value={code}
+            autoComplete='off'
+            placeholder={t('Enter margin recharge code')}
+            onChange={(event) => setCode(event.target.value)}
+          />
         </div>
-        <form
-          className='flex flex-col gap-2 sm:flex-row sm:items-end'
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (redeem.isPending || code.trim() === '') return
-            redeem.mutate(code)
-          }}
+        <Button
+          type='submit'
+          variant='brand'
+          disabled={redeem.isPending || code.trim() === ''}
         >
-          <div className='flex flex-1 flex-col gap-1'>
-            <Label htmlFor='owner-margin-voucher-code'>
-              {t('Recharge code')}
-            </Label>
-            <Input
-              id='owner-margin-voucher-code'
-              value={code}
-              autoComplete='off'
-              placeholder={t('Enter margin recharge code')}
-              onChange={(event) => setCode(event.target.value)}
-            />
-          </div>
-          <Button
-            type='submit'
-            variant='brand'
-            disabled={redeem.isPending || code.trim() === ''}
-          >
-            {t('Redeem margin recharge code')}
-          </Button>
-        </form>
-        {error && (
-          <p role='alert' className='text-destructive text-sm'>
-            {error}
-          </p>
-        )}
-        {redeemed && (
-          <p className='text-sm tabular-nums'>
-            {t('Redeemed as order {{trade}}', { trade: redeemed.trade_no })} ·{' '}
-            {redeemed.amount_usd} USD
-          </p>
-        )}
-      </CardContent>
-    </Card>
+          {t('Redeem margin recharge code')}
+        </Button>
+      </form>
+      {error && (
+        <p role='alert' className='text-destructive text-sm'>
+          {error}
+        </p>
+      )}
+      {redeemed && (
+        <p className='text-sm tabular-nums'>
+          {t('Redeemed as order {{trade}}', { trade: redeemed.trade_no })} ·{' '}
+          {redeemed.amount_usd} USD
+        </p>
+      )}
+    </SettingsSection>
   )
 }
 
@@ -134,7 +130,7 @@ export function WalletsPanel(props: {
 }) {
   const { t } = useTranslation()
   return (
-    <div className='flex flex-col gap-6'>
+    <div className='flex flex-col gap-8'>
       <OwnerWalletBalances />
       <MarginVoucherRedeemCard />
       <section id='margin'>

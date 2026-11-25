@@ -1070,75 +1070,70 @@ export function SettlementSheetLines({
         </CardHeader>
       </Card>
 
-      <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-4'>
-        <Card size='sm'>
-          <CardHeader className='gap-1'>
-            <CardDescription className='text-xs font-medium'>
-              {t('Customer consumption')}
-            </CardDescription>
-            <CardTitle
-              className={cn(
-                'text-xl font-semibold tracking-tight tabular-nums',
-                consumptionNegative && 'text-destructive'
-              )}
-              data-negative={consumptionNegative ? 'true' : undefined}
-            >
-              {money(activeSheet.consumption_usd)}
-            </CardTitle>
-          </CardHeader>
-        </Card>
+      <dl
+        aria-label={t('Settlement sheet')}
+        className='border-border bg-border grid grid-cols-2 gap-px overflow-hidden rounded-[14px] border lg:grid-cols-4'
+      >
+        <div className='bg-card flex flex-col gap-2 px-5 py-4'>
+          <dt className='text-dim text-[12px] leading-none'>
+            {t('Customer consumption')}
+          </dt>
+          <dd
+            className={cn(
+              'font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums',
+              consumptionNegative && 'text-destructive'
+            )}
+            data-negative={consumptionNegative ? 'true' : undefined}
+          >
+            {money(activeSheet.consumption_usd)}
+          </dd>
+        </div>
 
-        <Card size='sm'>
-          <CardHeader className='gap-1'>
-            <CardDescription className='text-xs font-medium'>
-              {t('Supply cost')}
-            </CardDescription>
-            <CardTitle
-              className={cn(
-                'text-xl font-semibold tracking-tight tabular-nums',
-                supplyCostNegative && 'text-destructive'
-              )}
-              data-negative={supplyCostNegative ? 'true' : undefined}
-            >
-              {money(activeSheet.supply_cost_usd)}
-            </CardTitle>
-          </CardHeader>
-        </Card>
+        <div className='bg-card flex flex-col gap-2 px-5 py-4'>
+          <dt className='text-dim text-[12px] leading-none'>
+            {t('Supply cost')}
+          </dt>
+          <dd
+            className={cn(
+              'font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums',
+              supplyCostNegative && 'text-destructive'
+            )}
+            data-negative={supplyCostNegative ? 'true' : undefined}
+          >
+            {money(activeSheet.supply_cost_usd)}
+          </dd>
+        </div>
 
-        <Card size='sm'>
-          <CardHeader className='gap-1'>
-            <CardDescription className='text-xs font-medium'>
-              {t('Settlement spread')}
-            </CardDescription>
-            <CardTitle
-              className={cn(
-                'text-xl font-semibold tracking-tight tabular-nums',
-                spreadNegative && 'text-destructive'
-              )}
-              data-negative={spreadNegative ? 'true' : undefined}
-            >
-              {money(activeSheet.spread_usd)}
-            </CardTitle>
-          </CardHeader>
-        </Card>
+        <div className='bg-card flex flex-col gap-2 px-5 py-4'>
+          <dt className='text-dim text-[12px] leading-none'>
+            {t('Settlement spread')}
+          </dt>
+          <dd
+            className={cn(
+              'font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums',
+              spreadNegative && 'text-destructive'
+            )}
+            data-negative={spreadNegative ? 'true' : undefined}
+          >
+            {money(activeSheet.spread_usd)}
+          </dd>
+        </div>
 
-        <Card size='sm'>
-          <CardHeader className='gap-1'>
-            <CardDescription className='text-xs font-medium'>
-              {t('Earnings change')}
-            </CardDescription>
-            <CardTitle
-              className={cn(
-                'text-xl font-semibold tracking-tight tabular-nums',
-                getEarningsTextTone(activeSheet.earnings_delta_usd)
-              )}
-              data-negative={earningsNegative ? 'true' : undefined}
-            >
-              {money(activeSheet.earnings_delta_usd)}
-            </CardTitle>
-          </CardHeader>
-        </Card>
-      </div>
+        <div className='bg-card flex flex-col gap-2 px-5 py-4'>
+          <dt className='text-dim text-[12px] leading-none'>
+            {t('Earnings change')}
+          </dt>
+          <dd
+            className={cn(
+              'font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums',
+              getEarningsTextTone(activeSheet.earnings_delta_usd)
+            )}
+            data-negative={earningsNegative ? 'true' : undefined}
+          >
+            {money(activeSheet.earnings_delta_usd)}
+          </dd>
+        </div>
+      </dl>
 
       <div className='grid gap-4 lg:grid-cols-2'>
         {regularSections.map((section) => (

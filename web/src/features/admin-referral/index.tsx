@@ -66,7 +66,7 @@ function WithdrawalWork(
     return ''
   })
   return (
-    <>
+    <div className='flex flex-col gap-8'>
       <WithdrawalPanel
         key={`platform-${status}`}
         {...props}
@@ -80,7 +80,7 @@ function WithdrawalWork(
         canReview={canReview}
         canPay={canPayout}
       />
-    </>
+    </div>
   )
 }
 
@@ -132,7 +132,7 @@ export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
           {t('Affiliates, commissions and withdrawal review.')}
         </SectionPageLayout.Description>
         <SectionPageLayout.Content>
-          <div className='flex flex-col gap-4'>
+          <div className='flex flex-col gap-6'>
             {overview.isError && (
               <ErrorState onRetry={() => void overview.refetch()} />
             )}
@@ -239,7 +239,7 @@ export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
                   </Button>
                 )}
               </div>
-              <TabsContent value='withdrawals'>
+              <TabsContent value='withdrawals' className='pt-2'>
                 <WithdrawalWork
                   key={`${canReview}-${canPayout}-${initialStatus ?? ''}`}
                   initialStatus={initialStatus}
@@ -247,7 +247,7 @@ export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
                   canPayout={canPayout}
                 />
               </TabsContent>
-              <TabsContent value='affiliates'>
+              <TabsContent value='affiliates' className='pt-2'>
                 <AffiliatePanel
                   canAdjust={canAdjust}
                   onViewCommissions={(row) => {
@@ -260,7 +260,7 @@ export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
                   }}
                 />
               </TabsContent>
-              <TabsContent value='commissions' className='pt-3'>
+              <TabsContent value='commissions' className='pt-2'>
                 <CommissionsPanel
                   affiliateFilter={commissionFilterAffiliate}
                   onClearAffiliateFilter={() =>
@@ -268,11 +268,11 @@ export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
                   }
                 />
               </TabsContent>
-              <TabsContent value='audit-logs'>
+              <TabsContent value='audit-logs' className='pt-2'>
                 <AuditLogPanel />
               </TabsContent>
               {canReadSettings && (
-                <TabsContent value='settings' keepMounted>
+                <TabsContent value='settings' keepMounted className='pt-2'>
                   {settingsVisited && <SettingsPanel canWrite={canSettings} />}
                 </TabsContent>
               )}

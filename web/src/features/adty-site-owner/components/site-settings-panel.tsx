@@ -136,20 +136,35 @@ function BrandCard(props: { site: OwnerSite }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [brand, setBrand] = useState<SiteBrand>(props.site.brand)
-  const [acknowledged,setAcknowledged] = useState<{previous: SiteBrand; current: SiteBrand} | null>(null)
-  const observed = acknowledged?.previous === props.site.brand ? acknowledged.current : props.site.brand
-  const edits = useRef<Partial<Record<keyof SiteBrand,number>>>({})
+  const [acknowledged, setAcknowledged] = useState<{
+    previous: SiteBrand
+    current: SiteBrand
+  } | null>(null)
+  const observed =
+    acknowledged?.previous === props.site.brand
+      ? acknowledged.current
+      : props.site.brand
+  const edits = useRef<Partial<Record<keyof SiteBrand, number>>>({})
   const editBrand = (patch: Partial<SiteBrand>) => {
-    for (const key of Object.keys(patch) as (keyof SiteBrand)[]) edits.current[key] = (edits.current[key] ?? 0) + 1
-    setBrand(current => ({...current, ...patch}))
+    for (const key of Object.keys(patch) as (keyof SiteBrand)[]) {
+      edits.current[key] = (edits.current[key] ?? 0) + 1
+    }
+    setBrand((current) => ({ ...current, ...patch }))
   }
-  const [baseline,setBaseline]=useState(props.site.brand)
-  const changed=(Object.keys(brand) as (keyof SiteBrand)[]).filter(key=>(brand[key]??'')!==(baseline[key]??''))
-  const conflicts=changed.filter(key=>baseline[key]!==observed[key] && brand[key]!==observed[key])
-  useDraftNavigation(changed.length>0)
-  useEffect(()=>{
-    if (!changed.length) {setBrand(observed);setBaseline(observed)}
-  },[observed,changed.length])
+  const [baseline, setBaseline] = useState(props.site.brand)
+  const changed = (Object.keys(brand) as (keyof SiteBrand)[]).filter(
+    (key) => (brand[key] ?? '') !== (baseline[key] ?? '')
+  )
+  const conflicts = changed.filter(
+    (key) => baseline[key] !== observed[key] && brand[key] !== observed[key]
+  )
+  useDraftNavigation(changed.length > 0)
+  useEffect(() => {
+    if (!changed.length) {
+      setBrand(observed)
+      setBaseline(observed)
+    }
+  }, [observed, changed.length])
   const upload = useMutation({
     mutationFn: async (input: {
       key: 'logo_url' | 'favicon_url'
@@ -174,32 +189,50 @@ function BrandCard(props: { site: OwnerSite }) {
     },
     onSuccess: ({ key, url, faviconUrl }) => {
       edits.current[key] = (edits.current[key] ?? 0) + 1
-      if (faviconUrl) edits.current.favicon_url = (edits.current.favicon_url ?? 0) + 1
-      setBrand(prev => ({ ...prev, [key]: url, ...(key === 'logo_url' && faviconUrl && !prev.favicon_url ? { favicon_url: faviconUrl } : {}) }))
+      if (faviconUrl) {
+        edits.current.favicon_url = (edits.current.favicon_url ?? 0) + 1
+      }
+      setBrand((prev) => ({
+        ...prev,
+        [key]: url,
+        ...(key === 'logo_url' && faviconUrl && !prev.favicon_url
+          ? { favicon_url: faviconUrl }
+          : {}),
+      }))
     },
     onError: (err) => handleServerError(err),
   })
   const save = useMutation({
-    mutationFn: (_submitted: typeof edits.current) => saveOwnerSite({
-      brand: Object.fromEntries(changed.map(key=>[key,brand[key]??''])),
-      expected_brand:Object.fromEntries(changed.map(key=>[key,baseline[key]??''])),
-    }),
+    mutationFn: (_submitted: typeof edits.current) =>
+      saveOwnerSite({
+        brand: Object.fromEntries(
+          changed.map((key) => [key, brand[key] ?? ''])
+        ),
+        expected_brand: Object.fromEntries(
+          changed.map((key) => [key, baseline[key] ?? ''])
+        ),
+      }),
     onSuccess: (updated, submitted) => {
-      queryClient.setQueryData(siteOwnerKeys.site,updated)
-      setAcknowledged({previous:props.site.brand,current:updated.brand})
+      queryClient.setQueryData(siteOwnerKeys.site, updated)
+      setAcknowledged({ previous: props.site.brand, current: updated.brand })
       setBaseline(updated.brand)
-      setBrand(current => ({
+      setBrand((current) => ({
         ...updated.brand,
-        ...Object.fromEntries((Object.keys(edits.current) as (keyof SiteBrand)[])
-          .filter(key => edits.current[key] !== submitted[key])
-          .map(key => [key,current[key]])),
+        ...Object.fromEntries(
+          (Object.keys(edits.current) as (keyof SiteBrand)[])
+            .filter((key) => edits.current[key] !== submitted[key])
+            .map((key) => [key, current[key]])
+        ),
       }))
       toast.success(t('Saved successfully'))
       void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
       void queryClient.invalidateQueries({ queryKey: adtySiteQueryKey })
       void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
     },
-    onError: (err) => {handleServerError(err);void queryClient.invalidateQueries({queryKey:siteOwnerKeys.all})},
+    onError: (err) => {
+      handleServerError(err)
+      void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
+    },
   })
   const field = (
     key: keyof typeof BRAND_LIMITS,
@@ -302,39 +335,59 @@ function BrandCard(props: { site: OwnerSite }) {
       <CardHeader>
         <CardTitle>{t('Brand')}</CardTitle>
       </CardHeader>
-      <CardContent className='grid gap-3'>
-        {conflicts.length>0 && <div role="alert">
-          {conflicts.map(key=><p key={key}>{brandFieldLabels[key] ?? key} · {t('Current value')}: {observed[key]} · {t('Previous value')}: {baseline[key]}</p>)}
-          <Button type='button' variant="outline" onClick={()=>{
-            setBrand({...observed,...Object.fromEntries(changed.map(key=>[key,brand[key]]))})
-            setBaseline(observed)
-          }}>{t('Keep my changes')}</Button>
-        </div>}
-        {field('name', t('Site name'))}
-        {field('title', t('Website title'))}
-        {field('notice', t('Notice'), true)}
-        {field(
-          'wallet_notice',
-          t('Wallet notice'),
-          true,
-          t('Displayed on the customer wallet page')
+      <CardContent className='grid gap-4'>
+        {conflicts.length > 0 && (
+          <div role='alert'>
+            {conflicts.map((key) => (
+              <p key={key}>
+                {brandFieldLabels[key] ?? key} · {t('Current value')}:{' '}
+                {observed[key]} · {t('Previous value')}: {baseline[key]}
+              </p>
+            ))}
+            <Button
+              type='button'
+              variant='outline'
+              onClick={() => {
+                setBrand({
+                  ...observed,
+                  ...Object.fromEntries(
+                    changed.map((key) => [key, brand[key]])
+                  ),
+                })
+                setBaseline(observed)
+              }}
+            >
+              {t('Keep my changes')}
+            </Button>
+          </div>
         )}
-        {field(
-          'voucher_purchase_url',
-          t('Voucher purchase link'),
-          false,
-          t('External http(s) link where customers can buy redemption codes')
-        )}
-        {field('support_contact', t('Support contact'))}
-        <div className='grid gap-3 sm:grid-cols-2'>
+        <div className='grid gap-x-6 gap-y-4 lg:grid-cols-2'>
+          {field('name', t('Site name'))}
+          {field('title', t('Website title'))}
+          {field('notice', t('Notice'), true)}
+          {field(
+            'wallet_notice',
+            t('Wallet notice'),
+            true,
+            t('Displayed on the customer wallet page')
+          )}
+          {field(
+            'voucher_purchase_url',
+            t('Voucher purchase link'),
+            false,
+            t('External http(s) link where customers can buy redemption codes')
+          )}
+          {field('support_contact', t('Support contact'))}
           {field('tawk_property_id', t('Tawk.to property ID'))}
           {field('tawk_widget_id', t('Tawk.to widget ID'))}
         </div>
-        <p className='text-muted-foreground text-xs'>
+        <p className='text-muted-foreground -mt-1 text-xs'>
           {t('Live chat appears when both Tawk.to IDs are set.')}
         </p>
-        {imageField('logo_url', t('Logo'), t('Remove logo'))}
-        {imageField('favicon_url', t('Favicon'), t('Remove favicon'))}
+        <div className='grid gap-x-6 gap-y-4 border-t pt-4 lg:grid-cols-2'>
+          {imageField('logo_url', t('Logo'), t('Remove logo'))}
+          {imageField('favicon_url', t('Favicon'), t('Remove favicon'))}
+        </div>
         <p className='text-muted-foreground text-xs'>
           {t('Brand text is shown as plain text.')}
         </p>
@@ -348,7 +401,7 @@ function BrandCard(props: { site: OwnerSite }) {
               conflicts.length > 0 ||
               voucherUrlInvalid
             }
-            onClick={() => save.mutate({...edits.current})}
+            onClick={() => save.mutate({ ...edits.current })}
           >
             {t('Save brand')}
           </Button>
@@ -368,9 +421,7 @@ function DomainsCard(props: { site: OwnerSite }) {
   const domains = props.site.domains ?? []
   const customSiteDomain = domains.find(
     (d) =>
-      d.managed_by !== 'platform' &&
-      d.role === 'site' &&
-      d.status !== 'removed'
+      d.managed_by !== 'platform' && d.role === 'site' && d.status !== 'removed'
   )
   const customApiDomain = domains.find(
     (d) =>
@@ -438,7 +489,7 @@ function DomainsCard(props: { site: OwnerSite }) {
         <CardTitle>{t('Custom domains')}</CardTitle>
       </CardHeader>
       <CardContent className='grid gap-4'>
-        <div className='grid gap-3 rounded-lg border bg-muted/30 p-3 sm:grid-cols-2'>
+        <div className='bg-muted/30 grid gap-3 rounded-lg border p-3 sm:grid-cols-2'>
           <div className='space-y-1'>
             <p className='text-muted-foreground text-xs font-medium'>
               {t('Platform site address')}
@@ -472,11 +523,9 @@ function DomainsCard(props: { site: OwnerSite }) {
         ) : (
           <>
             {(cnameTarget || mainlandTarget) && (
-              <div className='space-y-2.5 rounded-lg border bg-muted/40 p-3'>
+              <div className='bg-muted/40 space-y-2.5 rounded-lg border p-3'>
                 <div className='space-y-0.5'>
-                  <p className='text-sm font-medium'>
-                    {t('DNS CNAME target')}
-                  </p>
+                  <p className='text-sm font-medium'>{t('DNS CNAME target')}</p>
                   <p className='text-muted-foreground text-xs'>
                     {t(
                       'Add a CNAME record for both your site domain and API domain pointing to the target below.'
@@ -519,7 +568,9 @@ function DomainsCard(props: { site: OwnerSite }) {
             {domains.length > 0 && (
               <div className='grid gap-2.5'>
                 {domains.map((domain) => {
-                  const verifyRecords = parseVerifyRecords(domain.verify_records)
+                  const verifyRecords = parseVerifyRecords(
+                    domain.verify_records
+                  )
                   return (
                     <div
                       key={domain.id}
@@ -624,9 +675,9 @@ function DomainsCard(props: { site: OwnerSite }) {
             )}
 
             {bothEmpty && (
-              <div className='space-y-3 rounded-lg border p-4'>
+              <div className='border-border space-y-3 border-t pt-4'>
                 <div className='space-y-0.5'>
-                  <p className='text-sm font-medium'>
+                  <p className='text-sm font-semibold'>
                     {t('Bind custom domains')}
                   </p>
                   <p className='text-muted-foreground text-xs'>
@@ -692,7 +743,7 @@ function DomainsCard(props: { site: OwnerSite }) {
             )}
 
             {missingRole && (
-              <div className='space-y-3 rounded-lg border p-4'>
+              <div className='border-border space-y-3 border-t pt-4'>
                 <p className='text-muted-foreground text-xs'>
                   {missingRole === 'base_url'
                     ? t(
@@ -733,11 +784,9 @@ function DomainsCard(props: { site: OwnerSite }) {
                     disabled={
                       closing ||
                       addSingleMissing.isPending ||
-                      !(
-                        missingRole === 'base_url'
-                          ? apiHostname.trim()
-                          : siteHostname.trim()
-                      )
+                      !(missingRole === 'base_url'
+                        ? apiHostname.trim()
+                        : siteHostname.trim())
                     }
                     onClick={() =>
                       addSingleMissing.mutate({
@@ -841,21 +890,23 @@ function CloseRequestCard(props: { site: OwnerSite }) {
             {t('Close requested')}
           </p>
         ) : (
-          <>
+          <div className='flex max-w-2xl flex-col gap-3'>
             <Label htmlFor='close-reason'>{t('Reason')}</Label>
             <Textarea
               id='close-reason'
               value={reason}
               onChange={(event) => setReason(event.target.value)}
             />
-            <Button
-              variant='destructive'
-              disabled={reason.trim() === '' || request.isPending}
-              onClick={() => request.mutate()}
-            >
-              {t('Request to close this site')}
-            </Button>
-          </>
+            <div>
+              <Button
+                variant='destructive'
+                disabled={reason.trim() === '' || request.isPending}
+                onClick={() => request.mutate()}
+              >
+                {t('Request to close this site')}
+              </Button>
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>
@@ -948,7 +999,7 @@ function HomePageCard(props: { site: OwnerSite }) {
 /** Site settings: brand, custom home page, legal docs, custom domains and SEO (task 11.6). */
 export function SiteSettingsPanel(props: { site: OwnerSite }) {
   return (
-    <div className='grid gap-4'>
+    <div className='flex flex-col gap-6'>
       <BrandCard site={props.site} />
       <HomePageCard site={props.site} />
       <SiteLegalCard site={props.site} />

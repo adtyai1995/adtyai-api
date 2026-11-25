@@ -24,6 +24,7 @@ import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
@@ -63,65 +64,71 @@ export function SiteReferralCapPanel() {
   })
   if (!isRoot) return null
   return (
-    <section className='flex flex-col gap-3'>
-      <h2 className='text-sm font-medium'>{t('Batch registration review')}</h2>
-      <p className='text-muted-foreground text-sm'>
-        {t('Same-IP binds at this count enter review.')}
-      </p>
-      {batch.isError && <ErrorState onRetry={() => void batch.refetch()} />}
-      {batch.data && !batch.data.configured && (
-        <p className='text-sm'>{t('Not configured')}</p>
-      )}
-      {batch.data?.configured && (
-        <p className='text-sm tabular-nums'>
-          {batch.data.threshold} / {batch.data.window_hours}
-        </p>
-      )}
-      <div className='flex flex-col gap-1'>
-        <Label htmlFor='site-batch-threshold'>{t('Count')}</Label>
-        <Input
-          id='site-batch-threshold'
-          value={batchThreshold}
-          inputMode='numeric'
-          autoComplete='off'
-          onChange={(event) => setBatchThreshold(event.target.value)}
-        />
+    <SettingsSection
+      title={t('Batch registration review')}
+      description={t('Same-IP binds at this count enter review.')}
+    >
+      <div className='flex flex-col gap-5'>
+        {batch.isError && <ErrorState onRetry={() => void batch.refetch()} />}
+        {batch.data && (
+          <p className='text-dim text-[13px] tabular-nums'>
+            {batch.data.configured
+              ? `${batch.data.threshold} / ${batch.data.window_hours}`
+              : t('Not configured')}
+          </p>
+        )}
+        <div className='grid max-w-md gap-4 sm:grid-cols-2'>
+          <div className='flex flex-col gap-1.5'>
+            <Label htmlFor='site-batch-threshold'>{t('Count')}</Label>
+            <Input
+              id='site-batch-threshold'
+              className='sm:max-w-44'
+              value={batchThreshold}
+              inputMode='numeric'
+              autoComplete='off'
+              onChange={(event) => setBatchThreshold(event.target.value)}
+            />
+          </div>
+          <div className='flex flex-col gap-1.5'>
+            <Label htmlFor='site-batch-window'>{t('Window hours')}</Label>
+            <Input
+              id='site-batch-window'
+              className='sm:max-w-44'
+              value={batchWindow}
+              inputMode='numeric'
+              autoComplete='off'
+              onChange={(event) => setBatchWindow(event.target.value)}
+            />
+          </div>
+        </div>
+        <div className='flex flex-wrap items-center gap-2'>
+          <Button
+            type='button'
+            variant='brand'
+            disabled={
+              saveBatch.isPending ||
+              !batch.isSuccess ||
+              !batchThreshold.trim() ||
+              !batchWindow.trim() ||
+              (batchThreshold.trim() === batch.data?.threshold &&
+                batchWindow.trim() === batch.data?.window_hours)
+            }
+            onClick={() => saveBatch.mutate(false)}
+          >
+            {t('Save')}
+          </Button>
+          {batch.isSuccess && batch.data.configured && (
+            <Button
+              type='button'
+              variant='outline'
+              disabled={saveBatch.isPending}
+              onClick={() => saveBatch.mutate(true)}
+            >
+              {t('Disable rule')}
+            </Button>
+          )}
+        </div>
       </div>
-      <div className='flex flex-col gap-1'>
-        <Label htmlFor='site-batch-window'>{t('Window hours')}</Label>
-        <Input
-          id='site-batch-window'
-          value={batchWindow}
-          inputMode='numeric'
-          autoComplete='off'
-          onChange={(event) => setBatchWindow(event.target.value)}
-        />
-      </div>
-      <Button
-        type='button'
-        variant='outline'
-        disabled={
-          saveBatch.isPending ||
-          !batch.isSuccess ||
-          !batchThreshold.trim() ||
-          !batchWindow.trim() ||
-          (batchThreshold.trim() === batch.data?.threshold &&
-            batchWindow.trim() === batch.data?.window_hours)
-        }
-        onClick={() => saveBatch.mutate(false)}
-      >
-        {t('Save')}
-      </Button>
-      {batch.isSuccess && batch.data.configured && (
-        <Button
-          type='button'
-          variant='outline'
-          disabled={saveBatch.isPending}
-          onClick={() => saveBatch.mutate(true)}
-        >
-          {t('Disable rule')}
-        </Button>
-      )}
-    </section>
+    </SettingsSection>
   )
 }

@@ -37,10 +37,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import {
-  NativeSelect,
-  NativeSelectOption,
-} from '@/components/ui/native-select'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import {
   Table,
   TableBody,
@@ -109,7 +106,7 @@ function SortHeader(props: {
       type='button'
       variant='ghost'
       size='sm'
-      className='-ml-2 h-7 px-2'
+      className='-ml-1 h-7 gap-1 px-1 text-[13px]'
       onClick={() => props.onSort(props.sortKey)}
     >
       {props.label}
@@ -248,43 +245,43 @@ export function SitesPanel(props: {
   }
 
   return (
-    <div className='flex flex-col gap-4'>
+    <div className='flex flex-col gap-6'>
       {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
 
       {/* KPI Summary Strip */}
       <dl
         aria-label={t('Subsite summary')}
-        className='grid gap-3 sm:grid-cols-2 lg:grid-cols-4'
+        className='border-border bg-border grid grid-cols-2 gap-px overflow-hidden rounded-[14px] border lg:grid-cols-4'
       >
-        <div className='bg-card rounded-xl border p-4'>
-          <dt className='text-muted-foreground text-xs font-medium'>
+        <div className='bg-card flex flex-col gap-2 px-5 py-4'>
+          <dt className='text-dim text-[12px] leading-none'>
             {t('Total sites')}
           </dt>
-          <dd className='mt-1.5 text-2xl font-semibold tabular-nums'>
+          <dd className='font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
             {overviewQuery.isSuccess ? formatNumber(totalCount, locale) : '—'}
           </dd>
         </div>
-        <div className='bg-card rounded-xl border p-4'>
-          <dt className='text-muted-foreground text-xs font-medium'>
+        <div className='bg-card flex flex-col gap-2 px-5 py-4'>
+          <dt className='text-dim text-[12px] leading-none'>
             {t('Active sites')}
           </dt>
-          <dd className='text-success mt-1.5 text-2xl font-semibold tabular-nums'>
+          <dd className='font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
             {overviewQuery.isSuccess ? formatNumber(activeCount, locale) : '—'}
           </dd>
         </div>
-        <div className='bg-card rounded-xl border p-4'>
-          <dt className='text-muted-foreground text-xs font-medium'>
+        <div className='bg-card flex flex-col gap-2 px-5 py-4'>
+          <dt className='text-dim text-[12px] leading-none'>
             {t('Closing sites')}
           </dt>
-          <dd className='text-warning mt-1.5 text-2xl font-semibold tabular-nums'>
+          <dd className='font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
             {overviewQuery.isSuccess ? formatNumber(closingCount, locale) : '—'}
           </dd>
         </div>
-        <div className='bg-card rounded-xl border p-4'>
-          <dt className='text-muted-foreground text-xs font-medium'>
+        <div className='bg-card flex flex-col gap-2 px-5 py-4'>
+          <dt className='text-dim text-[12px] leading-none'>
             {t('Closed sites')}
           </dt>
-          <dd className='text-muted-foreground mt-1.5 text-2xl font-semibold tabular-nums'>
+          <dd className='font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
             {overviewQuery.isSuccess ? formatNumber(closedCount, locale) : '—'}
           </dd>
         </div>
@@ -348,7 +345,9 @@ export function SitesPanel(props: {
               setPage(1)
             }}
           >
-            <NativeSelectOption value=''>{t('All statuses')}</NativeSelectOption>
+            <NativeSelectOption value=''>
+              {t('All statuses')}
+            </NativeSelectOption>
             {STATUSES.map((item) => (
               <NativeSelectOption key={item} value={item}>
                 {statusLabels[item]}
@@ -392,7 +391,7 @@ export function SitesPanel(props: {
       <div className='border-border bg-card w-full min-w-0 overflow-x-auto overflow-y-hidden rounded-[14px] border'>
         <Table
           withContainer={false}
-          className='w-max min-w-full'
+          className='min-w-[960px] text-[13px] [&_td]:px-2 [&_th]:px-2'
           aria-label={t('Reseller sites')}
         >
           <TableHeader>
@@ -494,11 +493,11 @@ export function SitesPanel(props: {
                         row.owner_username
                       )}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className='whitespace-normal'>
                       <div className='flex flex-col gap-0.5'>
                         <SiteStatusBadge status={row.status} />
                         {row.close_requested_at > 0 && (
-                          <span className='text-muted-foreground text-xs'>
+                          <span className='text-muted-foreground max-w-[108px] text-[11px] leading-tight'>
                             {t('Close requested')}:{' '}
                             {formatTimestampToDate(row.close_requested_at)}
                           </span>
@@ -526,15 +525,16 @@ export function SitesPanel(props: {
                     <TableCell className='text-right tabular-nums'>
                       {row.growth_pct == null ? '-' : `${row.growth_pct}%`}
                     </TableCell>
-                    <TableCell className='whitespace-nowrap'>
+                    <TableCell className='max-w-[92px] text-xs leading-tight whitespace-normal tabular-nums'>
                       {formatTimestampToDate(row.created_at)}
                     </TableCell>
                     <TableCell className='text-right'>
-                      <div className='flex items-center justify-end gap-1.5'>
+                      <div className='flex items-center justify-end gap-1'>
                         <Button
                           type='button'
                           size='sm'
                           variant='outline'
+                          className='h-7 gap-1 px-2 text-xs'
                           onClick={() => props.onOpenSite(row)}
                         >
                           <Settings2 className='size-3.5' aria-hidden />
@@ -545,6 +545,7 @@ export function SitesPanel(props: {
                             type='button'
                             size='sm'
                             variant='destructive'
+                            className='h-7 gap-1 px-2 text-xs'
                             onClick={() => {
                               setDeleteReason('')
                               setDeletingSite(row)

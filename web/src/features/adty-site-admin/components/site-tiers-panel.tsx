@@ -25,6 +25,7 @@ import { StaticDataTable } from '@/components/data-table/static/static-data-tabl
 import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
@@ -178,16 +179,12 @@ export function SiteTiersPanel() {
   }
 
   return (
-    <section className='flex flex-col gap-3'>
-      <div className='flex flex-wrap items-start justify-between gap-3'>
-        <div className='flex flex-col gap-1'>
-          <h2 className='text-sm font-medium'>{t('Site levels')}</h2>
-          <p className='text-muted-foreground text-sm'>
-            {t(
-              'Automatic sites get the highest enabled level whose cumulative net customer top-up principal threshold is met. Levels cannot be deleted; disable a level instead.'
-            )}
-          </p>
-        </div>
+    <ContentSection
+      title={t('Site levels')}
+      description={t(
+        'Automatic sites get the highest enabled level whose cumulative net customer top-up principal threshold is met. Levels cannot be deleted; disable a level instead.'
+      )}
+      actions={
         <Button
           type='button'
           variant='outline'
@@ -195,7 +192,8 @@ export function SiteTiersPanel() {
         >
           {t('Add level')}
         </Button>
-      </div>
+      }
+    >
       {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
       {query.isPending ? (
         <LoadingState />
@@ -353,6 +351,6 @@ export function SiteTiersPanel() {
           ),
         })}
       </Dialog>
-    </section>
+    </ContentSection>
   )
 }

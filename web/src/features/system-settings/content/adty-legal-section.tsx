@@ -174,15 +174,18 @@ function LegalEditor(props: { defaultValues: AdtyLegalDefaults }) {
   }
 
   return (
-    <SettingsSection title={t('Multilingual Legal Pages')}>
+    <SettingsSection
+      title={t('Multilingual Legal Pages')}
+      bodyClassName='space-y-5'
+    >
       <SettingsPageFormActions onSave={save} isSaving={saving} />
-      <p className='text-muted-foreground max-w-3xl text-sm'>
+      <p className='text-dim max-w-[80ch] text-[13px] leading-relaxed'>
         {t(
           'Readers see the text in their language, falling back to English or Simplified Chinese when empty. Filling in the user agreement or privacy policy automatically enables sign-up consent and footer links. The refund policy is shown only when enabled in site settings.'
         )}
       </p>
       <div className='max-w-3xl space-y-4'>
-        <div className='space-y-2'>
+        <div className='max-w-xs space-y-2'>
           <Label htmlFor='adty-legal-doc'>{t('Document')}</Label>
           <NativeSelect
             id='adty-legal-doc'

@@ -41,6 +41,7 @@ import { toast } from 'sonner'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -1218,200 +1219,207 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
   }
 
   return (
-    <SettingsSection
-      title={t('Channel Status Monitor')}
-      description={t(
-        'Configure built-in scheduled health probes with a primary probe model per group for Overview and Channel Status pages'
-      )}
-    >
-      <div className='space-y-5'>
-        <Card className='bg-muted/20 rounded-[14px] py-0 shadow-none'>
-          <CardContent className='flex flex-col gap-4 p-4'>
-            <div className='flex flex-wrap items-center justify-between gap-3'>
-              <SettingsSwitchField
-                checked={isEnabled}
-                onCheckedChange={handleToggleEnabled}
-                label={t('Enable Channel Status Monitor')}
-                description={t(
-                  "Periodically probe each group's primary model and display 24h channel health across Overview and Channel Status pages"
-                )}
-                className='flex-1 py-0'
-              />
-              <div className='flex flex-wrap items-center gap-2'>
-                <Button
-                  type='button'
-                  variant='outline'
-                  size='sm'
-                  onClick={() => void handleProbeNow()}
-                  disabled={probingAll || saving}
-                >
-                  {probingAll ? (
-                    <Loader2
-                      className='size-4 animate-spin'
-                      aria-hidden='true'
-                    />
-                  ) : (
-                    <Activity className='size-4' aria-hidden='true' />
-                  )}
-                  {probingAll ? t('Probing...') : t('Probe Now')}
-                </Button>
-                <Button
-                  type='button'
-                  variant='outline'
-                  size='sm'
-                  onClick={handleOpenAddGroup}
-                >
-                  <Plus className='size-4' aria-hidden='true' />
-                  {t('Add Group')}
-                </Button>
-                {unaddedAdminGroups.length > 0 && (
-                  <Button
-                    type='button'
-                    variant='outline'
-                    size='sm'
-                    onClick={handleAddAllGroups}
-                  >
-                    <Layers className='size-4' aria-hidden='true' />
-                    {t('Add all groups')}
-                  </Button>
-                )}
-                <Button
-                  type='button'
-                  variant='brand'
-                  size='sm'
-                  onClick={handleSaveAll}
-                  disabled={!hasChanges || saving || updateOption.isPending}
-                >
-                  <Save className='size-4' aria-hidden='true' />
-                  {saving ? t('Saving...') : t('Save Settings')}
-                </Button>
-              </div>
-            </div>
+    <div className='flex min-w-0 flex-col gap-8'>
+      <SettingsSection
+        title={t('Channel Status Monitor')}
+        description={t(
+          'Configure built-in scheduled health probes with a primary probe model per group for Overview and Channel Status pages'
+        )}
+        bodyClassName='space-y-5'
+      >
+        <SettingsSwitchField
+          checked={isEnabled}
+          onCheckedChange={handleToggleEnabled}
+          label={t('Enable Channel Status Monitor')}
+          description={t(
+            "Periodically probe each group's primary model and display 24h channel health across Overview and Channel Status pages"
+          )}
+          className='py-0'
+        />
 
-            <div className='border-border/60 grid gap-4 border-t pt-3 sm:grid-cols-3'>
-              <div className='space-y-1.5'>
-                <Label
-                  htmlFor='model-probe-interval-minutes'
-                  className='flex items-center gap-1.5 text-xs font-semibold'
-                >
-                  <Clock className='text-muted-foreground size-3.5' />
-                  {t('Probe Interval (minutes)')}
-                </Label>
-                <Input
-                  id='model-probe-interval-minutes'
-                  type='number'
-                  min={MIN_INTERVAL_MINUTES}
-                  max={MAX_INTERVAL_MINUTES}
-                  step={1}
-                  value={intervalInput}
-                  onChange={(e) => {
-                    setIntervalInput(e.target.value)
-                    setIntervalDirty(true)
-                  }}
-                  className='max-w-44 font-mono text-sm'
-                />
-                <p className='text-muted-foreground text-xs'>
-                  {t(
-                    'Interval between automatic probe cycles ({{min}}–{{max}} min)',
-                    {
-                      min: MIN_INTERVAL_MINUTES,
-                      max: MAX_INTERVAL_MINUTES,
-                    }
-                  )}
-                </p>
-              </div>
+        <div className='border-border grid max-w-4xl gap-5 border-t pt-5 sm:grid-cols-3'>
+          <div className='space-y-1.5'>
+            <Label
+              htmlFor='model-probe-interval-minutes'
+              className='flex items-center gap-1.5 text-[13.5px] leading-snug font-semibold'
+            >
+              <Clock className='text-muted-foreground size-3.5' />
+              {t('Probe Interval (minutes)')}
+            </Label>
+            <Input
+              id='model-probe-interval-minutes'
+              type='number'
+              min={MIN_INTERVAL_MINUTES}
+              max={MAX_INTERVAL_MINUTES}
+              step={1}
+              value={intervalInput}
+              onChange={(e) => {
+                setIntervalInput(e.target.value)
+                setIntervalDirty(true)
+              }}
+              className='tabular-nums sm:max-w-40'
+            />
+            <p className='text-dim text-[12.5px] leading-relaxed'>
+              {t(
+                'Interval between automatic probe cycles ({{min}}–{{max}} min)',
+                {
+                  min: MIN_INTERVAL_MINUTES,
+                  max: MAX_INTERVAL_MINUTES,
+                }
+              )}
+            </p>
+          </div>
 
-              <div className='space-y-1.5'>
-                <Label
-                  htmlFor='image-probe-interval-minutes'
-                  className='flex items-center gap-1.5 text-xs font-semibold'
-                >
-                  <ImageIcon className='text-muted-foreground size-3.5' />
-                  {t('Image Probe Interval (minutes)')}
-                </Label>
-                <Input
-                  id='image-probe-interval-minutes'
-                  type='number'
-                  min={MIN_IMAGE_INTERVAL_MINUTES}
-                  max={MAX_IMAGE_INTERVAL_MINUTES}
-                  step={1}
-                  value={imageIntervalInput}
-                  onChange={(e) => {
-                    setImageIntervalInput(e.target.value)
-                    setImageIntervalDirty(true)
-                  }}
-                  className='max-w-44 font-mono text-sm'
-                />
-                <p className='text-muted-foreground text-xs'>
-                  {t(
-                    'Image models run real minimal image generation probes on this longer interval to control cost ({{min}}–{{max}} min)',
-                    {
-                      min: MIN_IMAGE_INTERVAL_MINUTES,
-                      max: MAX_IMAGE_INTERVAL_MINUTES,
-                    }
-                  )}
-                </p>
-              </div>
+          <div className='space-y-1.5'>
+            <Label
+              htmlFor='image-probe-interval-minutes'
+              className='flex items-center gap-1.5 text-[13.5px] leading-snug font-semibold'
+            >
+              <ImageIcon className='text-muted-foreground size-3.5' />
+              {t('Image Probe Interval (minutes)')}
+            </Label>
+            <Input
+              id='image-probe-interval-minutes'
+              type='number'
+              min={MIN_IMAGE_INTERVAL_MINUTES}
+              max={MAX_IMAGE_INTERVAL_MINUTES}
+              step={1}
+              value={imageIntervalInput}
+              onChange={(e) => {
+                setImageIntervalInput(e.target.value)
+                setImageIntervalDirty(true)
+              }}
+              className='tabular-nums sm:max-w-40'
+            />
+            <p className='text-dim text-[12.5px] leading-relaxed'>
+              {t(
+                'Image models run real minimal image generation probes on this longer interval to control cost ({{min}}–{{max}} min)',
+                {
+                  min: MIN_IMAGE_INTERVAL_MINUTES,
+                  max: MAX_IMAGE_INTERVAL_MINUTES,
+                }
+              )}
+            </p>
+          </div>
 
-              <div className='space-y-1.5'>
-                <Label
-                  htmlFor='model-probe-timeout-seconds'
-                  className='flex items-center gap-1.5 text-xs font-semibold'
-                >
-                  <Timer className='text-muted-foreground size-3.5' />
-                  {t('Probe Timeout (seconds)')}
-                </Label>
-                <Input
-                  id='model-probe-timeout-seconds'
-                  type='number'
-                  min={MIN_TIMEOUT_SECONDS}
-                  max={MAX_TIMEOUT_SECONDS}
-                  step={1}
-                  value={timeoutInput}
-                  onChange={(e) => {
-                    setTimeoutInput(e.target.value)
-                    setTimeoutDirty(true)
-                  }}
-                  className='max-w-44 font-mono text-sm'
-                />
-                <p className='text-muted-foreground text-xs'>
-                  {t('Per-model probe request timeout ({{min}}–{{max}} sec)', {
-                    min: MIN_TIMEOUT_SECONDS,
-                    max: MAX_TIMEOUT_SECONDS,
-                  })}
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+          <div className='space-y-1.5'>
+            <Label
+              htmlFor='model-probe-timeout-seconds'
+              className='flex items-center gap-1.5 text-[13.5px] leading-snug font-semibold'
+            >
+              <Timer className='text-muted-foreground size-3.5' />
+              {t('Probe Timeout (seconds)')}
+            </Label>
+            <Input
+              id='model-probe-timeout-seconds'
+              type='number'
+              min={MIN_TIMEOUT_SECONDS}
+              max={MAX_TIMEOUT_SECONDS}
+              step={1}
+              value={timeoutInput}
+              onChange={(e) => {
+                setTimeoutInput(e.target.value)
+                setTimeoutDirty(true)
+              }}
+              className='tabular-nums sm:max-w-40'
+            />
+            <p className='text-dim text-[12.5px] leading-relaxed'>
+              {t('Per-model probe request timeout ({{min}}–{{max}} sec)', {
+                min: MIN_TIMEOUT_SECONDS,
+                max: MAX_TIMEOUT_SECONDS,
+              })}
+            </p>
+          </div>
+        </div>
 
-        {groups.length === 0 ? (
-          <EmptyState
-            bordered
-            title={t('No monitored groups configured')}
-            description={t(
-              'Click "Add Group" to select system groups and a primary probe model for built-in channel health probing.'
+        <div className='flex flex-wrap items-center gap-2 pt-1'>
+          <Button
+            type='button'
+            variant='brand'
+            size='sm'
+            onClick={handleSaveAll}
+            disabled={!hasChanges || saving || updateOption.isPending}
+          >
+            <Save className='size-4' aria-hidden='true' />
+            {saving ? t('Saving...') : t('Save Settings')}
+          </Button>
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            onClick={() => void handleProbeNow()}
+            disabled={probingAll || saving}
+          >
+            {probingAll ? (
+              <Loader2 className='size-4 animate-spin' aria-hidden='true' />
+            ) : (
+              <Activity className='size-4' aria-hidden='true' />
             )}
-            action={
-              <div className='flex flex-wrap items-center justify-center gap-2'>
-                <Button type='button' size='sm' onClick={handleOpenAddGroup}>
-                  <Plus className='size-4' />
-                  {t('Add Group')}
-                </Button>
-                {unaddedAdminGroups.length > 0 && (
+            {probingAll ? t('Probing...') : t('Probe Now')}
+          </Button>
+        </div>
+      </SettingsSection>
+
+      <ContentSection
+        title={t('Groups')}
+        actions={
+          <>
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              onClick={handleOpenAddGroup}
+            >
+              <Plus className='size-4' aria-hidden='true' />
+              {t('Add Group')}
+            </Button>
+            {unaddedAdminGroups.length > 0 && (
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                onClick={handleAddAllGroups}
+              >
+                <Layers className='size-4' aria-hidden='true' />
+                {t('Add all groups')}
+              </Button>
+            )}
+          </>
+        }
+      >
+        {groups.length === 0 ? (
+          <div className='border-border bg-card rounded-[14px] border'>
+            <EmptyState
+              title={t('No monitored groups configured')}
+              description={t(
+                'Click "Add Group" to select system groups and a primary probe model for built-in channel health probing.'
+              )}
+              action={
+                <div className='flex flex-wrap items-center justify-center gap-2'>
                   <Button
                     type='button'
-                    variant='outline'
+                    variant='brand'
                     size='sm'
-                    onClick={handleAddAllGroups}
+                    onClick={handleOpenAddGroup}
                   >
-                    <Layers className='size-4' />
-                    {t('Add all groups')}
+                    <Plus className='size-4' />
+                    {t('Add Group')}
                   </Button>
-                )}
-              </div>
-            }
-          />
+                  {unaddedAdminGroups.length > 0 && (
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={handleAddAllGroups}
+                    >
+                      <Layers className='size-4' />
+                      {t('Add all groups')}
+                    </Button>
+                  )}
+                </div>
+              }
+            />
+          </div>
         ) : (
           <div className='space-y-3'>
             {groups.map((group) => (
@@ -1444,7 +1452,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
             ))}
           </div>
         )}
-      </div>
+      </ContentSection>
 
       <Dialog
         open={showAddGroupDialog}
@@ -1496,6 +1504,6 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
         destructive
         handleConfirm={handleConfirmDelete}
       />
-    </SettingsSection>
+    </div>
   )
 }

@@ -49,14 +49,14 @@ export function AmountOptionsVisualEditor({
     })
 
     return parsed
-      .filter((item) => typeof item === 'number' || !isNaN(Number(item)))
+      .filter((item) => typeof item === 'number' || !Number.isNaN(Number(item)))
       .map(Number)
       .sort((a, b) => a - b)
   }, [value, t])
 
   const handleAdd = () => {
-    const amount = parseFloat(newAmount)
-    if (isNaN(amount) || amount <= 0) {
+    const amount = Number.parseFloat(newAmount)
+    if (Number.isNaN(amount) || amount <= 0) {
       return
     }
 
@@ -93,12 +93,12 @@ export function AmountOptionsVisualEditor({
   return (
     <div className='space-y-4'>
       <div>
-        <p className='text-muted-foreground mb-3 text-sm'>
+        <p className='text-dim mb-3 text-[12.5px] leading-relaxed'>
           {t('Preset recharge amounts displayed to users')}
         </p>
 
         {amounts.length === 0 ? (
-          <div className='text-muted-foreground rounded-lg border border-dashed p-6 text-center text-sm'>
+          <div className='bg-muted/30 text-dim rounded-xl px-4 py-5 text-center text-sm'>
             {t(
               'No amount options configured. Add amounts below to get started.'
             )}
@@ -109,10 +109,10 @@ export function AmountOptionsVisualEditor({
               <StatusBadge
                 key={amount}
                 variant='neutral'
-                className='text-base'
+                className='text-sm'
                 copyable={false}
               >
-                <span className='font-mono'>${amount}</span>
+                <span className='font-mono tabular-nums'>${amount}</span>
                 <Button
                   type='button'
                   variant='ghost'
@@ -133,8 +133,8 @@ export function AmountOptionsVisualEditor({
         )}
       </div>
 
-      <div className='flex flex-col gap-2 sm:flex-row sm:items-end'>
-        <div className='flex-1'>
+      <div className='flex flex-wrap items-end gap-2'>
+        <div className='w-full sm:w-44'>
           <Label htmlFor='new-amount' className='mb-2 block'>
             {t('Add new amount')}
           </Label>
@@ -156,8 +156,7 @@ export function AmountOptionsVisualEditor({
             e.stopPropagation()
             handleAdd()
           }}
-          disabled={!newAmount || parseFloat(newAmount) <= 0}
-          className='w-full sm:w-auto'
+          disabled={!newAmount || Number.parseFloat(newAmount) <= 0}
         >
           <Plus className='h-4 w-4 sm:mr-2' />
           <span className='sm:inline'>{t('Add')}</span>

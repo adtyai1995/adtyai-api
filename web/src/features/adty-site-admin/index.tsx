@@ -98,7 +98,7 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
                 </TabsTrigger>
               ))}
             </TabsList>
-            <TabsContent value='sites' className='min-w-0'>
+            <TabsContent value='sites' className='min-w-0 pt-2'>
               <SitesPanel
                 onOpenSite={(site) =>
                   void navigate({
@@ -114,14 +114,14 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
                 }
               />
             </TabsContent>
-            <TabsContent value='overview'>
+            <TabsContent value='overview' className='flex flex-col gap-8 pt-2'>
               <OverviewPanel />
               <BusinessTimezonePanel />
             </TabsContent>
-            <TabsContent value='reviews'>
+            <TabsContent value='reviews' className='pt-2'>
               <ReviewsPanel />
             </TabsContent>
-            <TabsContent value='settings' className='flex flex-col gap-5'>
+            <TabsContent value='settings' className='flex flex-col gap-8 pt-2'>
               <SettingsPanel
                 section='supply'
                 canWrite={canSettings}
@@ -135,7 +135,7 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
               />
               <SiteTiersPanel />
             </TabsContent>
-            <TabsContent value='domains' className='flex flex-col gap-5'>
+            <TabsContent value='domains' className='flex flex-col gap-8 pt-2'>
               <SettingsPanel
                 section='domains'
                 canWrite={canSettings}
@@ -143,7 +143,7 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
               />
               {canAdmin(user, ADTY_PERMISSIONS.SITE_READ) && <UsagePanel />}
             </TabsContent>
-            <TabsContent value='policies' className='flex flex-col gap-5'>
+            <TabsContent value='policies' className='flex flex-col gap-8 pt-2'>
               <SettingsPanel
                 section='policies'
                 canWrite={canSettings}
@@ -151,11 +151,14 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
               />
               <SiteReferralCapPanel />
             </TabsContent>
-            <TabsContent value='withdrawals'>
+            <TabsContent
+              value='withdrawals'
+              className='flex flex-col gap-8 pt-2'
+            >
               <WithdrawRulesPanel />
               <SiteWithdrawalsPanel />
             </TabsContent>
-            <TabsContent value='vouchers'>
+            <TabsContent value='vouchers' className='pt-2'>
               <SiteMarginVoucherPanel />
             </TabsContent>
           </Tabs>

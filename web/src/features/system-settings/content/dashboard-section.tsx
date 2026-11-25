@@ -139,7 +139,7 @@ export function DashboardSection({ defaultValues }: DashboardSectionProps) {
             )}
           />
 
-          <div className='grid gap-6 sm:grid-cols-2'>
+          <div className='grid max-w-3xl gap-6 sm:grid-cols-2'>
             <FormField
               control={form.control}
               name='DataExportInterval'
@@ -197,7 +197,7 @@ export function DashboardSection({ defaultValues }: DashboardSectionProps) {
                   <FormDescription>
                     {t(
                       'UI granularity only &mdash; data is still aggregated hourly'
-                    )}
+                    ).replaceAll('&mdash;', '—')}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

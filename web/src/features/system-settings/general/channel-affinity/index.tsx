@@ -32,6 +32,7 @@ import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { JsonCodeEditor } from '@/components/json-code-editor'
+import { ContentSection } from '@/components/layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -42,7 +43,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Label } from '@/components/ui/label'
-import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
@@ -178,91 +178,96 @@ export function ChannelAffinitySection(props: Props) {
 
   return (
     <>
-      <section
+      <ContentSection
         aria-label={t('Session rules')}
-        className='bg-card min-w-0 overflow-hidden rounded-xl border'
-      >
-        <div className='flex flex-col gap-1.5 px-4 pt-5 sm:px-5'>
-          <div className='flex items-center gap-2'>
-            <h3 className='text-base font-semibold'>{t('Session rules')}</h3>
+        title={
+          <span className='inline-flex items-center gap-2'>
+            <span>{t('Session rules')}</span>
             <Badge variant='secondary' className='tabular-nums'>
               {rules.length}
             </Badge>
-          </div>
-          <p className='text-muted-foreground text-sm'>
-            {t('How a session is identified and which channel it keeps.')}
-          </p>
-        </div>
+          </span>
+        }
+        description={t(
+          'How a session is identified and which channel it keeps.'
+        )}
+        actions={
+          <>
+            <Button
+              variant='outline'
+              size='sm'
+              onClick={handleFillTemplates}
+              disabled={editMode === 'json'}
+            >
+              <FileText aria-hidden='true' data-icon='inline-start' />
+              {t('Fill Templates')}
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant='brand'
+                    size='sm'
+                    disabled={editMode === 'json'}
+                  />
+                }
+              >
+                <Plus aria-hidden='true' data-icon='inline-start' />
+                {t('Add Rule')}
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align='end'>
+                <DropdownMenuGroup>
+                  <DropdownMenuItem
+                    onClick={() => {
+                      setEditingRule(null)
+                      setRuleTemplateKey(null)
+                      setRuleEditorOpen(true)
+                    }}
+                  >
+                    {t('Blank Rule')}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => {
+                      setEditingRule(null)
+                      setRuleTemplateKey('codexCli')
+                      setRuleEditorOpen(true)
+                    }}
+                  >
+                    Codex CLI
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => {
+                      setEditingRule(null)
+                      setRuleTemplateKey('claudeCli')
+                      setRuleEditorOpen(true)
+                    }}
+                  >
+                    Claude CLI
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        }
+      >
         <Tabs
           value={editMode}
           onValueChange={(value) => {
             if (value === 'json') switchToJsonMode()
             else switchToVisualMode()
           }}
-          className='gap-0'
+          className='gap-3'
         >
-          <div className='flex flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-5'>
-            <TabsList aria-label={t('Rule editor mode')}>
-              <TabsTrigger value='visual' className='px-3'>
-                <ListFilter aria-hidden='true' />
-                {t('Visual')}
-              </TabsTrigger>
-              <TabsTrigger value='json' className='px-3'>
-                <Braces aria-hidden='true' />
-                JSON
-              </TabsTrigger>
-            </TabsList>
-            <div className='flex flex-wrap items-center gap-2'>
-              <Button
-                variant='outline'
-                onClick={handleFillTemplates}
-                disabled={editMode === 'json'}
-              >
-                <FileText aria-hidden='true' data-icon='inline-start' />
-                {t('Fill Templates')}
-              </Button>
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  render={<Button disabled={editMode === 'json'} />}
-                >
-                  <Plus aria-hidden='true' data-icon='inline-start' />
-                  {t('Add Rule')}
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align='end'>
-                  <DropdownMenuGroup>
-                    <DropdownMenuItem
-                      onClick={() => {
-                        setEditingRule(null)
-                        setRuleTemplateKey(null)
-                        setRuleEditorOpen(true)
-                      }}
-                    >
-                      {t('Blank Rule')}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => {
-                        setEditingRule(null)
-                        setRuleTemplateKey('codexCli')
-                        setRuleEditorOpen(true)
-                      }}
-                    >
-                      Codex CLI
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => {
-                        setEditingRule(null)
-                        setRuleTemplateKey('claudeCli')
-                        setRuleEditorOpen(true)
-                      }}
-                    >
-                      Claude CLI
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          </div>
-          <Separator />
+          <TabsList aria-label={t('Rule editor mode')} className='w-fit'>
+            <TabsTrigger value='visual' className='px-3'>
+              <ListFilter aria-hidden='true' />
+              {t('Visual')}
+            </TabsTrigger>
+            <TabsTrigger value='json' className='px-3'>
+              <Braces aria-hidden='true' />
+              JSON
+            </TabsTrigger>
+          </TabsList>
           <TabsContent value='visual' className='min-w-0'>
             <SessionRulesTable
               rules={rules}
@@ -281,7 +286,7 @@ export function ChannelAffinitySection(props: Props) {
             />
           </TabsContent>
           <TabsContent value='json' className='min-w-0'>
-            <div className='grid gap-2 p-4 sm:p-5'>
+            <div className='border-border bg-card grid gap-2 rounded-[14px] border p-5'>
               <Label htmlFor='channel-affinity-rules-json'>
                 {t('Rules JSON')}
               </Label>
@@ -297,8 +302,8 @@ export function ChannelAffinitySection(props: Props) {
             </div>
           </TabsContent>
         </Tabs>
-        <Separator />
-        <div className='bg-muted/25 flex flex-col gap-2 px-4 py-3 sm:px-5'>
+
+        <div className='border-border bg-muted/25 flex flex-col gap-2 rounded-[14px] border px-4 py-3 sm:px-5'>
           <div className='flex flex-wrap items-center justify-between gap-3'>
             <div
               role='status'
@@ -357,7 +362,7 @@ export function ChannelAffinitySection(props: Props) {
             )}
           </p>
         </div>
-      </section>
+      </ContentSection>
 
       {deletingRule !== null && (
         <ConfirmDialog

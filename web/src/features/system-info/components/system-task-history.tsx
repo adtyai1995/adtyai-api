@@ -29,6 +29,7 @@ import {
 } from '@/components/data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -119,13 +120,10 @@ export function SystemTaskHistory(props: { activeRefreshAt: number }) {
   })
 
   return (
-    <div className='space-y-3'>
-      <div>
-        <h4 className='text-sm font-medium'>{t('Task History')}</h4>
-        <p className='text-muted-foreground mt-0.5 text-xs'>
-          {t('Recently completed or failed system task runs.')}
-        </p>
-      </div>
+    <ContentSection
+      title={t('Task History')}
+      description={t('Recently completed or failed system task runs.')}
+    >
       <DataTableToolbar
         table={table}
         hideViewOptions
@@ -235,6 +233,6 @@ export function SystemTaskHistory(props: { activeRefreshAt: number }) {
         confirmText={cleanupMutation.isPending ? t('Deleting...') : t('Delete')}
         handleConfirm={() => cleanupMutation.mutate()}
       />
-    </div>
+    </ContentSection>
   )
 }

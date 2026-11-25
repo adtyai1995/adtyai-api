@@ -135,79 +135,102 @@ function NoticeTemplateRow(props: { row: NoticeTemplate }) {
     draft.content_en.trim() === ''
 
   return (
-    <fieldset className='space-y-3 border-t pt-4' disabled={save.isPending}>
-      <legend className='text-sm font-medium'>
-        {noticeTemplateKeyLabel(props.row.key, t)}
-        <span className='text-muted-foreground ml-2 font-normal'>
-          {noticeTemplateCategoryLabel(props.row.category, t)}
-          {props.row.revision ? ` · v${props.row.revision}` : ''}
-        </span>
-      </legend>
-      <div className='grid gap-3 md:grid-cols-2'>
-        <div className='space-y-1'>
-          <Label htmlFor={`${base}-title-zh`}>{t('Chinese title')}</Label>
-          <Input
-            id={`${base}-title-zh`}
-            value={draft.title_zh}
-            onChange={(event) =>
-              setDraft((current) => ({
-                ...current,
-                title_zh: event.target.value,
-              }))
-            }
-          />
+    <div className='py-6 first:pt-0 last:pb-0'>
+      <fieldset className='space-y-4' disabled={save.isPending}>
+        <legend className='text-[15px] leading-snug font-semibold tracking-tight'>
+          {noticeTemplateKeyLabel(props.row.key, t)}
+          <span className='text-dim ml-2 text-[12.5px] font-normal'>
+            {noticeTemplateCategoryLabel(props.row.category, t)}
+            {props.row.revision ? ` · v${props.row.revision}` : ''}
+          </span>
+        </legend>
+        <div className='grid gap-4 md:grid-cols-2'>
+          <div className='space-y-1.5'>
+            <Label
+              htmlFor={`${base}-title-zh`}
+              className='text-[13.5px] leading-snug font-semibold'
+            >
+              {t('Chinese title')}
+            </Label>
+            <Input
+              id={`${base}-title-zh`}
+              value={draft.title_zh}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  title_zh: event.target.value,
+                }))
+              }
+            />
+          </div>
+          <div className='space-y-1.5'>
+            <Label
+              htmlFor={`${base}-title-en`}
+              className='text-[13.5px] leading-snug font-semibold'
+            >
+              {t('English title')}
+            </Label>
+            <Input
+              id={`${base}-title-en`}
+              value={draft.title_en}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  title_en: event.target.value,
+                }))
+              }
+            />
+          </div>
         </div>
-        <div className='space-y-1'>
-          <Label htmlFor={`${base}-title-en`}>{t('English title')}</Label>
-          <Input
-            id={`${base}-title-en`}
-            value={draft.title_en}
-            onChange={(event) =>
-              setDraft((current) => ({
-                ...current,
-                title_en: event.target.value,
-              }))
-            }
-          />
+        <div className='grid gap-4 md:grid-cols-2'>
+          <div className='space-y-1.5'>
+            <Label
+              htmlFor={`${base}-body-zh`}
+              className='text-[13.5px] leading-snug font-semibold'
+            >
+              {t('Chinese body')}
+            </Label>
+            <Textarea
+              id={`${base}-body-zh`}
+              value={draft.content_zh}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  content_zh: event.target.value,
+                }))
+              }
+            />
+          </div>
+          <div className='space-y-1.5'>
+            <Label
+              htmlFor={`${base}-body-en`}
+              className='text-[13.5px] leading-snug font-semibold'
+            >
+              {t('English body')}
+            </Label>
+            <Textarea
+              id={`${base}-body-en`}
+              value={draft.content_en}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  content_en: event.target.value,
+                }))
+              }
+            />
+          </div>
         </div>
-      </div>
-      <div className='grid gap-3 md:grid-cols-2'>
-        <div className='space-y-1'>
-          <Label htmlFor={`${base}-body-zh`}>{t('Chinese body')}</Label>
-          <Textarea
-            id={`${base}-body-zh`}
-            value={draft.content_zh}
-            onChange={(event) =>
-              setDraft((current) => ({
-                ...current,
-                content_zh: event.target.value,
-              }))
-            }
-          />
-        </div>
-        <div className='space-y-1'>
-          <Label htmlFor={`${base}-body-en`}>{t('English body')}</Label>
-          <Textarea
-            id={`${base}-body-en`}
-            value={draft.content_en}
-            onChange={(event) =>
-              setDraft((current) => ({
-                ...current,
-                content_en: event.target.value,
-              }))
-            }
-          />
-        </div>
-      </div>
-      <Button
-        type='button'
-        size='sm'
-        disabled={unchanged || incomplete || save.isPending}
-        onClick={() => save.mutate()}
-      >
-        {t('Save template')}
-      </Button>
-    </fieldset>
+        <Button
+          variant='brand'
+          type='button'
+          size='sm'
+          disabled={unchanged || incomplete || save.isPending}
+          onClick={() => save.mutate()}
+        >
+          {t('Save template')}
+        </Button>
+      </fieldset>
+    </div>
   )
 }
 
@@ -232,16 +255,24 @@ export function NoticeTemplatesEditor() {
       description={t(
         'Root maintains the Chinese and English text of fixed system notices. Placeholders must match in both languages. A sent notice uses Chinese first, then English.'
       )}
+      bodyClassName='space-y-6'
     >
+      <p className='text-dim max-w-[80ch] text-[13px] leading-relaxed'>
+        {t(
+          'Root maintains the Chinese and English text of fixed system notices. Placeholders must match in both languages. A sent notice uses Chinese first, then English.'
+        )}
+      </p>
       {!isRoot && (
-        <p className='text-sm'>{t('Only Root can edit fixed notice templates.')}</p>
+        <p className='text-sm'>
+          {t('Only Root can edit fixed notice templates.')}
+        </p>
       )}
       {isRoot && templates.isPending && <LoadingState />}
       {isRoot && templates.isError && (
         <ErrorState onRetry={() => void templates.refetch()} />
       )}
       {isRoot && templates.isSuccess && (
-        <div className='space-y-4'>
+        <div className='divide-border divide-y'>
           {templates.data.map((row) => (
             <NoticeTemplateRow
               key={`${row.key}:${row.revision ?? 0}:${row.updated_at ?? 0}`}

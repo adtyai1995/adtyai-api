@@ -21,8 +21,10 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatUserIdentity } from '@/lib/format-user-identity'
@@ -112,82 +114,104 @@ export function ReviewsPanel() {
   }
 
   return (
-    <div className='flex flex-col gap-6'>
+    <div className='flex flex-col gap-8'>
       {(flagged.isError || reports.isError) && <ErrorState onRetry={retry} />}
-      <section className='flex flex-col gap-2'>
-        <h3 className='text-sm font-medium'>{t('Risk')}</h3>
-        {flaggedRows.length === 0 ? (
-          <EmptyState className='min-h-24' title={t('No data')} />
-        ) : (
-          <ul className='flex flex-col gap-2'>
-            {flaggedRows.map((row) => (
-              <li
-                key={`${row.site_id}-${row.user_id}`}
-                className='flex flex-wrap items-center justify-between gap-2 rounded-md border p-2.5 text-sm'
-              >
-                <div className='flex min-w-0 flex-col gap-0.5'>
-                  <span className='font-medium'>
-                    {formatUserIdentity(row.user_id, row.username)}
-                  </span>
-                  <span className='text-muted-foreground text-xs'>
-                    {row.risk_reason || riskLabel(row.risk_flag)}
-                  </span>
-                </div>
+      <ContentSection title={t('Risk')}>
+        <StaticDataTable
+          tableProps={{ 'aria-label': t('Risk') }}
+          data={flaggedRows}
+          getRowKey={(row) => `${row.site_id}-${row.user_id}`}
+          emptyContent={
+            <EmptyState className='min-h-24' title={t('No data')} />
+          }
+          columns={[
+            {
+              id: 'user',
+              header: t('User'),
+              cellClassName: 'tabular-nums font-medium',
+              cell: (row) => formatUserIdentity(row.user_id, row.username),
+            },
+            {
+              id: 'reason',
+              header: t('Reason'),
+              cell: (row) => (
+                <span className='text-dim text-[13px]'>
+                  {row.risk_reason || riskLabel(row.risk_flag)}
+                </span>
+              ),
+            },
+            {
+              id: 'actions',
+              header: t('Actions'),
+              className: 'text-right',
+              cellClassName: 'text-right',
+              cell: (row) => (
                 <Button
                   size='sm'
+                  variant='brand'
                   onClick={() => review.mutate(row.user_id)}
                   disabled={row.reviewed || review.isPending}
                 >
                   {t('Review this customer')}
                 </Button>
-              </li>
-            ))}
-          </ul>
-        )}
+              ),
+            },
+          ]}
+        />
         <PageSwitcher
           page={flaggedPage}
           total={flagged.data?.total ?? 0}
           pageSize={SITE_ADMIN_PAGE_SIZE}
           onPageChange={setFlaggedPage}
         />
-      </section>
-      <section className='flex flex-col gap-2'>
-        <h3 className='text-sm font-medium'>{t('Reports')}</h3>
-        {reportRows.length === 0 ? (
-          <EmptyState className='min-h-24' title={t('No data')} />
-        ) : (
-          <ul className='flex flex-col gap-2'>
-            {reportRows.map((row) => (
-              <li
-                key={row.id}
-                className='flex flex-wrap items-center justify-between gap-2 rounded-md border p-2.5 text-sm'
-              >
-                <div className='flex min-w-0 flex-col gap-0.5'>
-                  <span className='font-medium'>
-                    {formatUserIdentity(row.user_id, row.username)}
-                  </span>
-                  <span className='text-muted-foreground text-xs'>
-                    {row.reason}
-                  </span>
-                </div>
+      </ContentSection>
+      <ContentSection title={t('Reports')}>
+        <StaticDataTable
+          tableProps={{ 'aria-label': t('Reports') }}
+          data={reportRows}
+          getRowKey={(row) => String(row.id)}
+          emptyContent={
+            <EmptyState className='min-h-24' title={t('No data')} />
+          }
+          columns={[
+            {
+              id: 'user',
+              header: t('User'),
+              cellClassName: 'tabular-nums font-medium',
+              cell: (row) => formatUserIdentity(row.user_id, row.username),
+            },
+            {
+              id: 'reason',
+              header: t('Reason'),
+              cell: (row) => (
+                <span className='text-dim text-[13px]'>{row.reason}</span>
+              ),
+            },
+            {
+              id: 'actions',
+              header: t('Actions'),
+              className: 'text-right',
+              cellClassName: 'text-right',
+              cell: (row) => (
                 <Button
                   size='sm'
+                  variant='brand'
                   onClick={() => resolve.mutate(row.id)}
                   disabled={resolve.isPending}
                 >
                   {t('Resolve report')}
                 </Button>
-              </li>
-            ))}
-          </ul>
-        )}
+              ),
+            },
+          ]}
+        />
         <PageSwitcher
           page={reportsPage}
           total={reports.data?.total ?? 0}
           pageSize={SITE_ADMIN_PAGE_SIZE}
           onPageChange={setReportsPage}
         />
-      </section>
+      </ContentSection>
     </div>
   )
 }

@@ -22,8 +22,8 @@ import { useTranslation } from 'react-i18next'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 import { getResellerUsage, siteAdminKeys } from '../api'
 
@@ -41,58 +41,56 @@ export function UsagePanel() {
   if (!usage) return null
 
   return (
-    <div className='flex max-w-3xl flex-col gap-4'>
+    <ContentSection
+      title={t('Turnstile widgets')}
+      description={
+        usage.unassigned_domains > 0
+          ? t(
+              '{{count}} custom domains have no widget; sign-up and sign-in on them are verified on the platform subdomain.',
+              { count: usage.unassigned_domains }
+            )
+          : undefined
+      }
+    >
       {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('Turnstile widgets')}</CardTitle>
-        </CardHeader>
-        <CardContent className='grid gap-2 text-sm'>
-          {usage.widget_slots_low && (
-            <Alert variant='destructive'>
-              <AlertDescription>
-                {t(
-                  'Only {{count}} Turnstile domain slots are left. Add another widget before they run out.',
-                  { count: usage.widget_slots_left }
-                )}
-              </AlertDescription>
-            </Alert>
-          )}
-          <StaticDataTable
-            tableProps={{ 'aria-label': t('Turnstile widgets') }}
-            data={usage.widgets}
-            getRowKey={(row) => row.id}
-            emptyContent={
-              <EmptyState
-                className='min-h-16'
-                title={t('No widgets configured')}
-              />
-            }
-            columns={[
-              {
-                id: 'id',
-                header: t('Widget'),
-                cell: (row) => (
-                  <span className='font-mono text-xs'>{row.id}</span>
-                ),
-              },
-              {
-                id: 'used',
-                header: t('Domains'),
-                cell: (row) => `${row.used} / ${row.limit}`,
-              },
-            ]}
-          />
-          {usage.unassigned_domains > 0 && (
-            <p className='text-muted-foreground text-xs'>
-              {t(
-                '{{count}} custom domains have no widget; sign-up and sign-in on them are verified on the platform subdomain.',
-                { count: usage.unassigned_domains }
-              )}
-            </p>
-          )}
-        </CardContent>
-      </Card>
-    </div>
+      {usage.widget_slots_low && (
+        <Alert variant='destructive'>
+          <AlertDescription>
+            {t(
+              'Only {{count}} Turnstile domain slots are left. Add another widget before they run out.',
+              { count: usage.widget_slots_left }
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+      <div className='max-w-3xl'>
+        <StaticDataTable
+          tableProps={{ 'aria-label': t('Turnstile widgets') }}
+          data={usage.widgets}
+          getRowKey={(row) => row.id}
+          emptyContent={
+            <EmptyState
+              className='min-h-16'
+              title={t('No widgets configured')}
+            />
+          }
+          columns={[
+            {
+              id: 'id',
+              header: t('Widget'),
+              cell: (row) => (
+                <span className='font-mono text-xs'>{row.id}</span>
+              ),
+            },
+            {
+              id: 'used',
+              header: t('Domains'),
+              cellClassName: 'tabular-nums',
+              cell: (row) => `${row.used} / ${row.limit}`,
+            },
+          ]}
+        />
+      </div>
+    </ContentSection>
   )
 }

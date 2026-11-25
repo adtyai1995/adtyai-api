@@ -103,16 +103,18 @@ export function RequestChecksSection({
   }
 
   return (
-    <SettingsSection title={t('Request checks')}>
-      <p className='text-muted-foreground text-sm'>
-        {t('Source: global settings. Changes take effect after saving.')}
-      </p>
-      <h3 className='text-sm font-medium'>{t('Request text filtering')}</h3>
-      <p className='text-muted-foreground text-sm'>
-        {t(
-          'Checks text extracted from supported requests against keywords, ignoring case. A match rejects the request before upstream processing and does not affect channel health. Images, audio and generated responses are not checked.'
-        )}
-      </p>
+    <SettingsSection title={t('Request checks')} bodyClassName='space-y-5'>
+      <div className='space-y-1.5'>
+        <h4 className='text-[15px] leading-snug font-semibold tracking-tight'>
+          {t('Request text filtering')}
+        </h4>
+        <p className='text-dim max-w-[80ch] text-[13px] leading-relaxed'>
+          {t('Source: global settings. Changes take effect after saving.')}{' '}
+          {t(
+            'Checks text extracted from supported requests against keywords, ignoring case. A match rejects the request before upstream processing and does not affect channel health. Images, audio and generated responses are not checked.'
+          )}
+        </p>
+      </div>
       <Form {...form}>
         <SettingsForm onSubmit={form.handleSubmit(onSubmit)}>
           <SettingsPageFormActions

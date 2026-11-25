@@ -28,15 +28,9 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
@@ -46,6 +40,7 @@ import {
 } from '@/features/adty-ledger/voucher-labels'
 import { siteAdminKeys } from '@/features/adty-site-admin/api'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -198,323 +193,310 @@ export function VoucherAdminPanel() {
   const isBatchReplay = replayedCount > 1
 
   return (
-    <div className='flex flex-col gap-5'>
-      <div className='grid gap-5 lg:grid-cols-2'>
-        <Card>
-          <CardHeader>
-            <CardTitle>{t('Main-site issuance limit')}</CardTitle>
-            <CardDescription>
-              {t(
-                'Main-site user codes and site margin codes are both counted against this limit. Codes cannot be issued until it is set.'
-              )}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className='flex flex-col gap-4'>
-            {issuance.isPending && <LoadingState />}
-            {issuance.isError && (
-              <ErrorState onRetry={() => void issuance.refetch()} />
-            )}
-            {issuance.data && (
-              <dl className='grid grid-cols-3 gap-3 text-sm'>
-                <div className='bg-muted/40 border-border rounded-lg border p-3'>
-                  <dt className='text-muted-foreground text-xs'>
-                    {t('Limit')}
-                  </dt>
-                  <dd className='mt-1 font-semibold tabular-nums'>
-                    ${issuance.data.limit_usd}
-                  </dd>
-                </div>
-                <div className='bg-muted/40 border-border rounded-lg border p-3'>
-                  <dt className='text-muted-foreground text-xs'>
-                    {t('Held by unredeemed codes')}
-                  </dt>
-                  <dd className='mt-1 font-semibold tabular-nums'>
-                    ${issuance.data.frozen_usd}
-                  </dd>
-                </div>
-                <div className='bg-muted/40 border-border rounded-lg border p-3'>
-                  <dt className='text-muted-foreground text-xs'>
-                    {t('Redeemed')}
-                  </dt>
-                  <dd className='mt-1 font-semibold tabular-nums'>
-                    ${issuance.data.spent_usd}
-                  </dd>
-                </div>
-              </dl>
-            )}
-            <form
-              className='flex flex-wrap items-end gap-2'
-              onSubmit={(event) => {
-                event.preventDefault()
-                if (limit.trim() === '' || saveLimit.isPending) return
-                saveLimit.mutate()
-              }}
+    <div className='flex flex-col gap-8'>
+      {issuance.isPending && <LoadingState />}
+      {issuance.isError && (
+        <ErrorState onRetry={() => void issuance.refetch()} />
+      )}
+      {issuance.data && (
+        <dl
+          aria-label={t('Main-site issuance limit')}
+          className='border-border bg-border grid grid-cols-1 gap-px overflow-hidden rounded-[14px] border sm:grid-cols-3'
+        >
+          <div className='bg-card flex flex-col gap-2 px-5 py-4'>
+            <dt className='text-dim text-[12px] leading-none'>{t('Limit')}</dt>
+            <dd className='font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
+              ${issuance.data.limit_usd}
+            </dd>
+          </div>
+          <div className='bg-card flex flex-col gap-2 px-5 py-4'>
+            <dt className='text-dim text-[12px] leading-none'>
+              {t('Held by unredeemed codes')}
+            </dt>
+            <dd className='font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
+              ${issuance.data.frozen_usd}
+            </dd>
+          </div>
+          <div className='bg-card flex flex-col gap-2 px-5 py-4'>
+            <dt className='text-dim text-[12px] leading-none'>
+              {t('Redeemed')}
+            </dt>
+            <dd className='font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
+              ${issuance.data.spent_usd}
+            </dd>
+          </div>
+        </dl>
+      )}
+
+      <div className='grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]'>
+        <SettingsSection
+          title={t('Main-site issuance limit')}
+          description={t(
+            'Main-site user codes and site margin codes are both counted against this limit. Codes cannot be issued until it is set.'
+          )}
+        >
+          <form
+            className='flex flex-wrap items-end gap-2.5'
+            onSubmit={(event) => {
+              event.preventDefault()
+              if (limit.trim() === '' || saveLimit.isPending) return
+              saveLimit.mutate()
+            }}
+          >
+            <div className='flex flex-col gap-1.5'>
+              <Label htmlFor='voucher-limit'>{t('New limit (USD)')}</Label>
+              <Input
+                id='voucher-limit'
+                className='w-44'
+                inputMode='decimal'
+                placeholder='1000.00'
+                value={limit}
+                onChange={(event) => setLimit(event.target.value)}
+              />
+            </div>
+            <Button
+              type='submit'
+              variant='outline'
+              disabled={saveLimit.isPending || limit.trim() === ''}
             >
-              <div className='flex min-w-[180px] flex-1 flex-col gap-1.5'>
-                <Label htmlFor='voucher-limit'>{t('New limit (USD)')}</Label>
-                <Input
-                  id='voucher-limit'
-                  inputMode='decimal'
-                  placeholder='1000.00'
-                  value={limit}
-                  onChange={(event) => setLimit(event.target.value)}
-                />
-              </div>
-              <Button
-                type='submit'
-                variant='outline'
-                disabled={saveLimit.isPending || limit.trim() === ''}
-              >
-                {t('Save')}
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
+              {t('Save')}
+            </Button>
+          </form>
+        </SettingsSection>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>{t('Issue main-site user redemption codes')}</CardTitle>
-            <CardDescription>
-              {t(
-                'Only main-site users can redeem these codes in their wallet. Generate 1 to 100 codes per batch; plaintext codes are shown once.'
-              )}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form
-              className='flex flex-col gap-3.5'
-              onSubmit={(event) => {
-                event.preventDefault()
-                const trimmedAmount = amount.trim()
-                const trimmedReason = reason.trim()
-                if (
-                  issue.isPending ||
-                  reconciled !== null ||
-                  !batchSummary.valid ||
-                  trimmedReason === ''
-                ) {
-                  return
+        <SettingsSection
+          title={t('Issue main-site user redemption codes')}
+          description={t(
+            'Only main-site users can redeem these codes in their wallet. Generate 1 to 100 codes per batch; plaintext codes are shown once.'
+          )}
+        >
+          <form
+            className='flex flex-col gap-4'
+            onSubmit={(event) => {
+              event.preventDefault()
+              const trimmedAmount = amount.trim()
+              const trimmedReason = reason.trim()
+              if (
+                issue.isPending ||
+                reconciled !== null ||
+                !batchSummary.valid ||
+                trimmedReason === ''
+              ) {
+                return
+              }
+              const signature = `main_user:0:${trimmedAmount}:${batchSummary.count}:${trimmedReason}`
+              if (intentRef.current?.signature !== signature) {
+                intentRef.current = {
+                  signature,
+                  key: createVoucherBatchIntentKey(),
                 }
-                const signature = `main_user:0:${trimmedAmount}:${batchSummary.count}:${trimmedReason}`
-                if (intentRef.current?.signature !== signature) {
-                  intentRef.current = {
-                    signature,
-                    key: createVoucherBatchIntentKey(),
-                  }
-                }
-                issue.mutate({
-                  amountUsd: trimmedAmount,
-                  count: batchSummary.count,
-                  reason: trimmedReason,
-                  intentKey: intentRef.current.key,
-                })
-              }}
-            >
-              <div className='grid gap-3 sm:grid-cols-2'>
-                <div className='flex flex-col gap-1.5'>
-                  <Label htmlFor='main-voucher-amount'>
-                    {t('Amount (USD)')}
-                  </Label>
-                  <Input
-                    id='main-voucher-amount'
-                    inputMode='decimal'
-                    placeholder='10.00'
-                    value={amount}
-                    onChange={(event) => {
-                      setAmount(event.target.value)
-                      setReconciled(null)
-                    }}
-                  />
-                </div>
-                <div className='flex flex-col gap-1.5'>
-                  <Label htmlFor='main-voucher-count'>
-                    {t('Quantity (1-100)')}
-                  </Label>
-                  <Input
-                    id='main-voucher-count'
-                    type='number'
-                    inputMode='numeric'
-                    min={VOUCHER_BATCH_MIN_COUNT}
-                    max={VOUCHER_BATCH_MAX_COUNT}
-                    step={1}
-                    value={countRaw}
-                    onChange={(event) => {
-                      setCountRaw(event.target.value)
-                      setReconciled(null)
-                    }}
-                  />
-                </div>
-              </div>
-
-              <div className='bg-muted/40 border-border flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs'>
-                <span className='text-muted-foreground'>
-                  {t('Batch total preview')}
-                </span>
-                {batchSummary.valid ? (
-                  <span className='font-semibold tabular-nums'>
-                    {t('{{count}} × ${{unit}} = ${{total}} USD', {
-                      count: batchSummary.count,
-                      unit: batchSummary.unitAmountUsd,
-                      total: batchSummary.totalAmountUsd,
-                    })}
-                  </span>
-                ) : (
-                  <span className='text-muted-foreground'>
-                    {!batchSummary.validCount
-                      ? t('Quantity must be an integer between 1 and 100')
-                      : t('Enter a positive USD amount')}
-                  </span>
-                )}
-              </div>
-
+              }
+              issue.mutate({
+                amountUsd: trimmedAmount,
+                count: batchSummary.count,
+                reason: trimmedReason,
+                intentKey: intentRef.current.key,
+              })
+            }}
+          >
+            <div className='flex flex-wrap gap-4'>
               <div className='flex flex-col gap-1.5'>
-                <Label htmlFor='main-voucher-reason'>{t('Reason')}</Label>
+                <Label htmlFor='main-voucher-amount'>{t('Amount (USD)')}</Label>
                 <Input
-                  id='main-voucher-reason'
-                  placeholder={t('e.g. Activity / Compensation')}
-                  value={reason}
+                  id='main-voucher-amount'
+                  className='w-40'
+                  inputMode='decimal'
+                  placeholder='10.00'
+                  value={amount}
                   onChange={(event) => {
-                    setReason(event.target.value)
+                    setAmount(event.target.value)
                     setReconciled(null)
                   }}
                 />
               </div>
-
-              <div className='flex flex-wrap items-center gap-2'>
-                <Button
-                  type='submit'
-                  variant='brand'
-                  disabled={
-                    issue.isPending ||
-                    reconciled !== null ||
-                    !batchSummary.valid ||
-                    reason.trim() === ''
-                  }
-                >
-                  {batchSummary.count > 1
-                    ? t('Issue {{count}} codes', { count: batchSummary.count })
-                    : t('Issue code')}
-                </Button>
-                {batchResult && (
-                  <Button
-                    type='button'
-                    variant='outline'
-                    onClick={() => setResultOpen(true)}
-                  >
-                    {t('View last generated codes')}
-                  </Button>
-                )}
+              <div className='flex flex-col gap-1.5'>
+                <Label htmlFor='main-voucher-count'>
+                  {t('Quantity (1-100)')}
+                </Label>
+                <Input
+                  id='main-voucher-count'
+                  className='w-32'
+                  type='number'
+                  inputMode='numeric'
+                  min={VOUCHER_BATCH_MIN_COUNT}
+                  max={VOUCHER_BATCH_MAX_COUNT}
+                  step={1}
+                  value={countRaw}
+                  onChange={(event) => {
+                    setCountRaw(event.target.value)
+                    setReconciled(null)
+                  }}
+                />
               </div>
+            </div>
 
-              {reconciled && (
-                <div
-                  data-testid='voucher-reconcile-banner'
-                  className='border-border bg-muted/40 flex flex-col gap-2 rounded-md border p-3 text-sm'
+            <div className='bg-muted/50 flex max-w-md flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs'>
+              <span className='text-dim'>{t('Batch total preview')}</span>
+              {batchSummary.valid ? (
+                <span className='font-semibold tabular-nums'>
+                  {t('{{count}} × ${{unit}} = ${{total}} USD', {
+                    count: batchSummary.count,
+                    unit: batchSummary.unitAmountUsd,
+                    total: batchSummary.totalAmountUsd,
+                  })}
+                </span>
+              ) : (
+                <span className='text-dim'>
+                  {!batchSummary.validCount
+                    ? t('Quantity must be an integer between 1 and 100')
+                    : t('Enter a positive USD amount')}
+                </span>
+              )}
+            </div>
+
+            <div className='flex max-w-md flex-col gap-1.5'>
+              <Label htmlFor='main-voucher-reason'>{t('Reason')}</Label>
+              <Input
+                id='main-voucher-reason'
+                placeholder={t('e.g. Activity / Compensation')}
+                value={reason}
+                onChange={(event) => {
+                  setReason(event.target.value)
+                  setReconciled(null)
+                }}
+              />
+            </div>
+
+            <div className='flex flex-wrap items-center gap-2'>
+              <Button
+                type='submit'
+                variant='brand'
+                disabled={
+                  issue.isPending ||
+                  reconciled !== null ||
+                  !batchSummary.valid ||
+                  reason.trim() === ''
+                }
+              >
+                {batchSummary.count > 1
+                  ? t('Issue {{count}} codes', { count: batchSummary.count })
+                  : t('Issue code')}
+              </Button>
+              {batchResult && (
+                <Button
+                  type='button'
+                  variant='outline'
+                  onClick={() => setResultOpen(true)}
                 >
-                  {isBatchReplay ? (
-                    <>
-                      <p>
-                        {reconciled.batch_no
-                          ? t(
-                              'Previous issuance request already created batch {{batchNo}} ({{count}} codes). Full codes are shown once. Filter by this batch number in the list below to manage or cancel them.',
-                              {
-                                batchNo: reconciled.batch_no,
-                                count: replayedCount,
-                              }
-                            )
-                          : t(
-                              'Previous issuance request already created {{count}} codes. Full codes are shown once. Manage or cancel them in the list below.',
-                              { count: replayedCount }
-                            )}
-                      </p>
-                      <div className='flex flex-wrap gap-2'>
-                        {reconciled.batch_no && (
+                  {t('View last generated codes')}
+                </Button>
+              )}
+            </div>
+
+            {reconciled && (
+              <div
+                data-testid='voucher-reconcile-banner'
+                className='bg-muted/50 flex flex-col gap-2 rounded-lg p-3 text-sm'
+              >
+                {isBatchReplay ? (
+                  <>
+                    <p>
+                      {reconciled.batch_no
+                        ? t(
+                            'Previous issuance request already created batch {{batchNo}} ({{count}} codes). Full codes are shown once. Filter by this batch number in the list below to manage or cancel them.',
+                            {
+                              batchNo: reconciled.batch_no,
+                              count: replayedCount,
+                            }
+                          )
+                        : t(
+                            'Previous issuance request already created {{count}} codes. Full codes are shown once. Manage or cancel them in the list below.',
+                            { count: replayedCount }
+                          )}
+                    </p>
+                    <div className='flex flex-wrap gap-2'>
+                      {reconciled.batch_no && (
+                        <Button
+                          type='button'
+                          size='sm'
+                          variant='outline'
+                          onClick={() => {
+                            setBatchNoFilter(reconciled.batch_no ?? '')
+                            setPage(1)
+                          }}
+                        >
+                          {t('Filter this batch')}
+                        </Button>
+                      )}
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='outline'
+                        onClick={() => {
+                          intentRef.current = null
+                          setReconciled(null)
+                        }}
+                      >
+                        {t('Prepare replacement batch')}
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p>
+                      {t(
+                        'Previous issuance request already created code #{{id}} (tail {{tail}}). Full codes are shown once.',
+                        {
+                          id: reconciled.id,
+                          tail: reconciled.code_tail,
+                        }
+                      )}
+                    </p>
+                    <div className='flex flex-wrap gap-2'>
+                      {reconciled.id > 0 &&
+                        (!reconciled.status ||
+                          reconciled.status === 'pending' ||
+                          reconciled.status === 'frozen') && (
                           <Button
                             type='button'
                             size='sm'
                             variant='outline'
-                            onClick={() => {
-                              setBatchNoFilter(reconciled.batch_no ?? '')
-                              setPage(1)
-                            }}
+                            disabled={change.isPending}
+                            onClick={() =>
+                              change.mutate({
+                                kind: 'cancel',
+                                id: reconciled.id,
+                              })
+                            }
                           >
-                            {t('Filter this batch')}
+                            {t('Cancel code and replace')}
                           </Button>
                         )}
-                        <Button
-                          type='button'
-                          size='sm'
-                          variant='outline'
-                          onClick={() => {
-                            intentRef.current = null
-                            setReconciled(null)
-                          }}
-                        >
-                          {t('Prepare replacement batch')}
-                        </Button>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <p>
-                        {t(
-                          'Previous issuance request already created code #{{id}} (tail {{tail}}). Full codes are shown once.',
-                          {
-                            id: reconciled.id,
-                            tail: reconciled.code_tail,
-                          }
-                        )}
-                      </p>
-                      <div className='flex flex-wrap gap-2'>
-                        {reconciled.id > 0 &&
-                          (!reconciled.status ||
-                            reconciled.status === 'pending' ||
-                            reconciled.status === 'frozen') && (
-                            <Button
-                              type='button'
-                              size='sm'
-                              variant='outline'
-                              disabled={change.isPending}
-                              onClick={() =>
-                                change.mutate({
-                                  kind: 'cancel',
-                                  id: reconciled.id,
-                                })
-                              }
-                            >
-                              {t('Cancel code and replace')}
-                            </Button>
-                          )}
-                        <Button
-                          type='button'
-                          size='sm'
-                          variant='outline'
-                          onClick={() => {
-                            intentRef.current = null
-                            setReconciled(null)
-                          }}
-                        >
-                          {t('Prepare replacement code')}
-                        </Button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-            </form>
-          </CardContent>
-        </Card>
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='outline'
+                        onClick={() => {
+                          intentRef.current = null
+                          setReconciled(null)
+                        }}
+                      >
+                        {t('Prepare replacement code')}
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </form>
+        </SettingsSection>
       </div>
 
-      <Card>
-        <CardHeader className='flex flex-row flex-wrap items-center justify-between gap-3 space-y-0'>
-          <div className='flex flex-col gap-1'>
-            <CardTitle>{t('Main-site user redemption codes')}</CardTitle>
-            <CardDescription>
-              {t('Showing only main-site user redemption codes.')}
-            </CardDescription>
-          </div>
-          <div className='flex flex-wrap items-center gap-2'>
+      <ContentSection
+        title={t('Main-site user redemption codes')}
+        description={t('Showing only main-site user redemption codes.')}
+        actions={
+          <>
             <Input
               aria-label={t('Batch number')}
               placeholder={t('Filter by batch number')}
@@ -555,35 +537,34 @@ export function VoucherAdminPanel() {
               />
               {t('Refresh')}
             </Button>
-          </div>
-        </CardHeader>
-        <CardContent className='flex flex-col gap-4'>
-          {list.isError && <ErrorState onRetry={() => void list.refetch()} />}
-          {list.isPending ? (
-            <LoadingState />
-          ) : (
-            <>
-              <VoucherListTable
-                label={t('Main-site user redemption codes')}
-                rows={rows}
-                busy={change.isPending}
-                onFreeze={(voucher) =>
-                  change.mutate({ kind: 'freeze', id: voucher.id })
-                }
-                onCancel={(voucher) =>
-                  change.mutate({ kind: 'cancel', id: voucher.id })
-                }
-              />
-              <PageSwitcher
-                page={page}
-                total={Number(list.data?.total) || 0}
-                pageSize={PAGE_SIZE}
-                onPageChange={setPage}
-              />
-            </>
-          )}
-        </CardContent>
-      </Card>
+          </>
+        }
+      >
+        {list.isError && <ErrorState onRetry={() => void list.refetch()} />}
+        {list.isPending ? (
+          <LoadingState />
+        ) : (
+          <>
+            <VoucherListTable
+              label={t('Main-site user redemption codes')}
+              rows={rows}
+              busy={change.isPending}
+              onFreeze={(voucher) =>
+                change.mutate({ kind: 'freeze', id: voucher.id })
+              }
+              onCancel={(voucher) =>
+                change.mutate({ kind: 'cancel', id: voucher.id })
+              }
+            />
+            <PageSwitcher
+              page={page}
+              total={Number(list.data?.total) || 0}
+              pageSize={PAGE_SIZE}
+              onPageChange={setPage}
+            />
+          </>
+        )}
+      </ContentSection>
 
       <VoucherBatchResultDialog
         batch={batchResult}

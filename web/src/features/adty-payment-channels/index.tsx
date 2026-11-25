@@ -26,11 +26,10 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { SectionPageLayout } from '@/components/layout/components/section-page-layout'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
-import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
@@ -191,202 +190,228 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
     onError: (error) => handleServerError(error),
   })
 
-  const inner = (
-    <>
-      <div className='flex flex-col gap-3'>
-        {isRoot && (
-          <Button
-            className='self-start'
-            size='sm'
-            onClick={() => {
-              setEditing(null)
-              setDrawerOpen(true)
-            }}
-          >
-            <Plus className='mr-2 h-4 w-4' />
-            {t('Add payment channel')}
-          </Button>
-        )}
-        {(() => {
-          let content: ReactNode
-          if (query.isLoading) {
-            content = (
-              <div className='text-muted-foreground flex min-h-32 items-center justify-center text-sm'>
-                {t('Loading payment channels...')}
-              </div>
-            )
-          } else if (query.isError) {
-            content = (
-              <ErrorState
-                className='min-h-32'
-                title={t('Failed to load payment channels')}
-                onRetry={() => void query.refetch()}
-              />
-            )
-          } else {
-            content = (
-              <StaticDataTable
-                tableClassName='min-w-[1000px]'
-                tableProps={{ 'aria-label': t('Payment channels') }}
-                data={query.data ?? []}
-                getRowKey={(row) => String(row.id)}
-                emptyContent={
-                  <EmptyState
-                    className='min-h-32'
-                    title={t('No payment channels yet')}
-                  />
-                }
-                columns={[
-                  {
-                    id: 'name',
-                    header: t('Name'),
-                    cell: (row) => row.name,
-                  },
-                  {
-                    id: 'sign_type',
-                    header: t('Signature type'),
-                    cell: (row) => {
-                      const signType = row.sign_type === 'RSA' ? 'RSA' : 'MD5'
-                      return (
-                        <StatusBadge
-                          label={signType}
-                          variant={signType === 'RSA' ? 'info' : 'neutral'}
-                          copyable={false}
-                        />
-                      )
-                    },
-                  },
-                  {
-                    id: 'methods',
-                    header: t('Methods'),
-                    cell: (row) =>
-                      row.methods
-                        .filter((m) => m.enabled)
-                        .map(
-                          (m) =>
-                            `${paymentMethodLabel(m.method, t)}${m.return_type ? ` (${paymentReturnTypeLabel(m.return_type, t)})` : ''}`
-                        )
-                        .join(', ') || '-',
-                  },
-                  {
-                    id: 'priority',
-                    header: t('Priority / weight'),
-                    cell: (row) => `${row.priority} / ${row.weight}`,
-                  },
-                  {
-                    id: 'mode',
-                    header: t('Order mode'),
-                    cell: (row) => paymentOrderModeLabel(row.order_mode, t),
-                  },
-                  {
-                    id: 'status',
-                    header: t('Status'),
-                    cell: (row) => (
-                      <StatusBadge
-                        label={`${paymentChannelStatusLabel(row.status, t)}${row.status_reason ? ` · ${paymentStatusReasonLabel(row.status_reason, t)}` : ''}`}
-                        variant={STATUS_VARIANT[row.status]}
-                        copyable={false}
-                      />
-                    ),
-                  },
-                  {
-                    id: 'unpaid',
-                    header: t('Unpaid in a row'),
-                    cell: (row) => row.unpaid_streak,
-                  },
-                  {
-                    id: 'today',
-                    header: t('Today'),
-                    cell: (row) =>
-                      Object.entries(row.today_cny)
-                        .map(
-                          ([method, sum]) =>
-                            `${paymentMethodLabel(method, t)} ¥${sum}`
-                        )
-                        .join(' / ') || '-',
-                  },
-                  {
-                    id: 'actions',
-                    header: t('Actions'),
-                    className: 'text-right',
-                    cellClassName: 'text-right',
-                    cell: (row) => (
-                      <div className='flex justify-end gap-1'>
-                        {canOperate &&
-                          row.status !== 'revoked' &&
-                          row.order_mode === 'api' && (
-                            <Button
-                              size='sm'
-                              variant='outline'
-                              disabled={test.isPending}
-                              onClick={() => test.mutate(row.id)}
-                            >
-                              {t('Test order')}
-                            </Button>
-                          )}
-                        {canOperate && row.status !== 'revoked' && (
-                          <Button
-                            size='sm'
-                            variant='outline'
-                            disabled={status.isPending}
-                            onClick={() =>
-                              status.mutate({
-                                id: row.id,
-                                status:
-                                  row.status === 'enabled'
-                                    ? 'disabled'
-                                    : 'enabled',
-                              })
-                            }
-                          >
-                            {row.status === 'enabled'
-                              ? t('Disable')
-                              : t('Enable')}
-                          </Button>
-                        )}
-                        {isRoot && (
-                          <>
-                            {row.status !== 'revoked' && (
-                              <>
-                                <Button
-                                  size='sm'
-                                  variant='ghost'
-                                  onClick={() => {
-                                    setEditing(row)
-                                    setDrawerOpen(true)
-                                  }}
-                                >
-                                  {t('Edit')}
-                                </Button>
-                                <Button
-                                  size='sm'
-                                  variant='ghost'
-                                  disabled={revoke.isPending}
-                                  onClick={() => setRevoking(row)}
-                                >
-                                  {t('Revoke credentials')}
-                                </Button>
-                              </>
-                            )}
-                            <Button
-                              size='sm'
-                              variant='ghost'
-                              onClick={() => setDeleting(row)}
-                            >
-                              {t('Delete')}
-                            </Button>
-                          </>
-                        )}
-                      </div>
-                    ),
-                  },
-                ]}
-              />
-            )
-          }
-          return content
-        })()}
+  const addChannelButton = isRoot ? (
+    <Button
+      type='button'
+      size='sm'
+      variant='brand'
+      onClick={() => {
+        setEditing(null)
+        setDrawerOpen(true)
+      }}
+    >
+      <Plus className='size-4' aria-hidden='true' />
+      {t('Add payment channel')}
+    </Button>
+  ) : null
+
+  let tableContent: ReactNode
+  if (query.isLoading) {
+    tableContent = (
+      <div className='text-muted-foreground flex min-h-32 items-center justify-center text-sm'>
+        {t('Loading payment channels...')}
       </div>
+    )
+  } else if (query.isError) {
+    tableContent = (
+      <ErrorState
+        className='min-h-32'
+        title={t('Failed to load payment channels')}
+        onRetry={() => void query.refetch()}
+      />
+    )
+  } else {
+    tableContent = (
+      <StaticDataTable
+        tableClassName='min-w-[820px] text-[13px] [&_td]:px-2 [&_th]:px-2'
+        tableProps={{ 'aria-label': t('Payment channels') }}
+        data={query.data ?? []}
+        getRowKey={(row) => String(row.id)}
+        emptyContent={
+          <EmptyState
+            className='min-h-32'
+            title={t('No payment channels yet')}
+          />
+        }
+        columns={[
+          {
+            id: 'name',
+            header: t('Name'),
+            cellClassName: 'font-medium',
+            cell: (row) => row.name,
+          },
+          {
+            id: 'sign_type',
+            header: t('Signature type'),
+            cell: (row) => {
+              const signType = row.sign_type === 'RSA' ? 'RSA' : 'MD5'
+              return (
+                <StatusBadge
+                  label={signType}
+                  variant={signType === 'RSA' ? 'info' : 'neutral'}
+                  copyable={false}
+                />
+              )
+            },
+          },
+          {
+            id: 'methods',
+            header: t('Methods'),
+            cellClassName: 'whitespace-normal',
+            cell: (row) => {
+              const enabledMethods = row.methods.filter((m) => m.enabled)
+              if (enabledMethods.length === 0) return '-'
+              return (
+                <div className='flex flex-col gap-0.5 text-xs leading-snug'>
+                  {enabledMethods.map((m) => (
+                    <span key={m.method} className='whitespace-nowrap'>
+                      {paymentMethodLabel(m.method, t)}
+                      {m.return_type
+                        ? ` (${paymentReturnTypeLabel(m.return_type, t)})`
+                        : ''}
+                    </span>
+                  ))}
+                </div>
+              )
+            },
+          },
+          {
+            id: 'priority',
+            header: t('Priority / weight'),
+            cellClassName: 'tabular-nums',
+            cell: (row) => `${row.priority} / ${row.weight}`,
+          },
+          {
+            id: 'mode',
+            header: t('Order mode'),
+            cell: (row) => paymentOrderModeLabel(row.order_mode, t),
+          },
+          {
+            id: 'status',
+            header: t('Status'),
+            cellClassName: 'whitespace-normal',
+            cell: (row) => (
+              <div className='flex flex-col gap-0.5'>
+                <StatusBadge
+                  label={paymentChannelStatusLabel(row.status, t)}
+                  variant={STATUS_VARIANT[row.status]}
+                  copyable={false}
+                />
+                {row.status_reason && (
+                  <span className='text-muted-foreground max-w-[120px] text-[11px] leading-tight'>
+                    {paymentStatusReasonLabel(row.status_reason, t)}
+                  </span>
+                )}
+              </div>
+            ),
+          },
+          {
+            id: 'unpaid',
+            header: t('Unpaid in a row'),
+            cellClassName: 'tabular-nums',
+            cell: (row) => row.unpaid_streak,
+          },
+          {
+            id: 'today',
+            header: t('Today'),
+            cellClassName: 'whitespace-normal tabular-nums',
+            cell: (row) => {
+              const entries = Object.entries(row.today_cny)
+              if (entries.length === 0) return '-'
+              return (
+                <div className='flex flex-col gap-0.5 text-xs leading-snug'>
+                  {entries.map(([method, sum]) => (
+                    <span key={method} className='whitespace-nowrap'>
+                      {paymentMethodLabel(method, t)} ¥{sum}
+                    </span>
+                  ))}
+                </div>
+              )
+            },
+          },
+          {
+            id: 'actions',
+            header: t('Actions'),
+            className: 'text-right',
+            cellClassName: 'text-right',
+            cell: (row) => (
+              <div className='flex items-center justify-end gap-1 whitespace-nowrap'>
+                {canOperate &&
+                  row.status !== 'revoked' &&
+                  row.order_mode === 'api' && (
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      className='h-7 px-2 text-xs'
+                      disabled={test.isPending}
+                      onClick={() => test.mutate(row.id)}
+                    >
+                      {t('Test order')}
+                    </Button>
+                  )}
+                {canOperate && row.status !== 'revoked' && (
+                  <Button
+                    size='sm'
+                    variant='outline'
+                    className='h-7 px-2 text-xs'
+                    disabled={status.isPending}
+                    onClick={() =>
+                      status.mutate({
+                        id: row.id,
+                        status:
+                          row.status === 'enabled' ? 'disabled' : 'enabled',
+                      })
+                    }
+                  >
+                    {row.status === 'enabled' ? t('Disable') : t('Enable')}
+                  </Button>
+                )}
+                {isRoot && (
+                  <>
+                    {row.status !== 'revoked' && (
+                      <>
+                        <Button
+                          size='sm'
+                          variant='ghost'
+                          className='h-7 px-2 text-xs'
+                          onClick={() => {
+                            setEditing(row)
+                            setDrawerOpen(true)
+                          }}
+                        >
+                          {t('Edit')}
+                        </Button>
+                        <Button
+                          size='sm'
+                          variant='ghost'
+                          className='h-7 px-2 text-xs'
+                          disabled={revoke.isPending}
+                          onClick={() => setRevoking(row)}
+                        >
+                          {t('Revoke credentials')}
+                        </Button>
+                      </>
+                    )}
+                    <Button
+                      size='sm'
+                      variant='ghost'
+                      className='h-7 px-2 text-xs'
+                      onClick={() => setDeleting(row)}
+                    >
+                      {t('Delete')}
+                    </Button>
+                  </>
+                )}
+              </div>
+            ),
+          },
+        ]}
+      />
+    )
+  }
+
+  const dialogs = (
+    <>
       {isRoot && (
         <ChannelDrawer
           open={drawerOpen}
@@ -423,25 +448,40 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
 
   if (props.embedded) {
     return (
-      <SettingsSection
-        title={t('Payment channels')}
-        description={t(
-          'Configure one or more Epay gateways (gateway URL, merchant ID, merchant key, Alipay/WeChat method settings, limits, priority and order tests).'
-        )}
-      >
-        {inner}
-      </SettingsSection>
+      <>
+        <ContentSection
+          title={t('Payment channels')}
+          description={t(
+            'Configure one or more Epay gateways (gateway URL, merchant ID, merchant key, Alipay/WeChat method settings, limits, priority and order tests).'
+          )}
+          actions={addChannelButton}
+        >
+          {tableContent}
+        </ContentSection>
+        {dialogs}
+      </>
     )
   }
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>{t('Payment channels')}</SectionPageLayout.Title>
-      <SectionPageLayout.Content>
-        <Card>
-          <CardContent className='py-4'>{inner}</CardContent>
-        </Card>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+    <>
+      <SectionPageLayout>
+        <SectionPageLayout.Title>
+          {t('Payment channels')}
+        </SectionPageLayout.Title>
+        <SectionPageLayout.Description>
+          {t(
+            'Configure one or more Epay gateways (gateway URL, merchant ID, merchant key, Alipay/WeChat method settings, limits, priority and order tests).'
+          )}
+        </SectionPageLayout.Description>
+        {addChannelButton && (
+          <SectionPageLayout.Actions>
+            {addChannelButton}
+          </SectionPageLayout.Actions>
+        )}
+        <SectionPageLayout.Content>{tableContent}</SectionPageLayout.Content>
+      </SectionPageLayout>
+      {dialogs}
+    </>
   )
 }

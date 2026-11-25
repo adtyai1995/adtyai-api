@@ -25,9 +25,9 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 import { CHAIN_NAMES } from '@/features/wallet/adty/lib/methods'
 
+import { SettingsSwitchField } from '../components/settings-form-layout'
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
@@ -188,20 +188,7 @@ export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
 
   return (
     <SettingsSection title={t('USDT (BEpusdt)')}>
-      {props.inlineActions ? (
-        <div className='mb-4 flex justify-end'>
-          <Button
-            variant='brand'
-            type='button'
-            size='sm'
-            onClick={save}
-            disabled={updateOption.isPending}
-          >
-            <Save data-icon='inline-start' />
-            <span>{t('Save Changes')}</span>
-          </Button>
-        </div>
-      ) : (
+      {!props.inlineActions && (
         <SettingsPageFormActions
           onSave={save}
           isSaving={updateOption.isPending}
@@ -215,15 +202,14 @@ export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
             )}
           </AlertDescription>
         </Alert>
-        <div className='flex items-center justify-between gap-4 rounded-lg border p-3'>
-          <Label htmlFor='bepusdt-enabled'>{t('Enable USDT payments')}</Label>
-          <Switch
-            id='bepusdt-enabled'
-            checked={enabled}
-            onCheckedChange={setEnabled}
-          />
-        </div>
-        <div className='space-y-2'>
+        <SettingsSwitchField
+          controlId='bepusdt-enabled'
+          checked={enabled}
+          onCheckedChange={setEnabled}
+          label={t('Enable USDT payments')}
+          className='py-1'
+        />
+        <div className='max-w-xl space-y-2'>
           <Label htmlFor='bepusdt-base-url'>{t('Gateway address')}</Label>
           <Input
             id='bepusdt-base-url'
@@ -232,7 +218,7 @@ export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
             onChange={(event) => setBaseUrl(event.target.value)}
           />
         </div>
-        <div className='space-y-2'>
+        <div className='max-w-xl space-y-2'>
           <Label htmlFor='bepusdt-secret'>{t('API token')}</Label>
           <Input
             id='bepusdt-secret'
@@ -285,6 +271,20 @@ export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
           )}
         </div>
       </div>
+      {props.inlineActions && (
+        <div className='mt-5 flex justify-start'>
+          <Button
+            variant='brand'
+            type='button'
+            size='sm'
+            onClick={save}
+            disabled={updateOption.isPending}
+          >
+            <Save data-icon='inline-start' />
+            <span>{t('Save Changes')}</span>
+          </Button>
+        </div>
+      )}
     </SettingsSection>
   )
 }

@@ -72,8 +72,8 @@ export function Security() {
     )
   } else {
     content = (
-      <div className='grid gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.46fr)] xl:items-start'>
-        <div className='min-w-0 space-y-4 sm:space-y-5'>
+      <div className='grid gap-6 sm:gap-8 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.46fr)] xl:items-start'>
+        <div className='min-w-0 space-y-8'>
           <section
             aria-labelledby='security-authentication'
             className='space-y-3'
@@ -93,8 +93,8 @@ export function Security() {
             <TitledCard
               title={t('Account Bindings')}
               icon={<Link2 className='size-4' />}
-              headerClassName='px-3 py-2.5 !pb-2.5 sm:px-4 sm:py-2.5 sm:!pb-2.5'
-              contentClassName='p-3 sm:p-3'
+              headerClassName='px-4 py-3 !pb-3 sm:px-5 sm:py-3 sm:!pb-3'
+              contentClassName='px-4 py-3 sm:px-5 sm:py-3.5'
               titleClassName='text-sm sm:text-sm'
               iconClassName='size-7 sm:size-7'
               disableHoverEffect
@@ -124,7 +124,7 @@ export function Security() {
         </div>
         <aside
           aria-labelledby='security-verification'
-          className='min-w-0 space-y-4 sm:space-y-6 xl:sticky xl:top-0'
+          className='min-w-0 space-y-8 xl:sticky xl:top-0'
         >
           <div className='space-y-3'>
             <h3

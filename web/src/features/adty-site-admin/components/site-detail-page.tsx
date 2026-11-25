@@ -28,18 +28,12 @@ import { ErrorState } from '@/components/error-state'
 import { SectionPageLayout } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { QuickMarginVoucherDialog } from '@/features/adty-voucher/quick-margin-voucher-dialog'
 import { DraftNavigationProvider } from '@/features/system-settings/components/draft-navigation-provider'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber, formatTimestampToDate } from '@/lib/format'
@@ -206,54 +200,52 @@ export function SiteDetailPage(props: { siteId: number }) {
 
             {site && (
               <>
-                <dl className='grid gap-3 sm:grid-cols-2 lg:grid-cols-5'>
-                  <div className='bg-card rounded-xl border p-3.5'>
-                    <dt className='text-muted-foreground text-xs'>
+                <dl className='border-border bg-border grid grid-cols-2 gap-px overflow-hidden rounded-[14px] border lg:grid-cols-5'>
+                  <div className='bg-card flex flex-col gap-1.5 px-4 py-3.5'>
+                    <dt className='text-dim text-[12px] leading-none'>
                       {t('Owner')}
                     </dt>
-                    <dd className='mt-1 truncate text-sm font-medium'>
+                    <dd className='truncate text-sm font-semibold'>
                       {formatUserIdentity(
                         site.owner_user_id,
                         site.owner_username
                       )}
                     </dd>
                   </div>
-                  <div className='bg-card rounded-xl border p-3.5'>
-                    <dt className='text-muted-foreground text-xs'>
+                  <div className='bg-card flex flex-col gap-1.5 px-4 py-3.5'>
+                    <dt className='text-dim text-[12px] leading-none'>
                       {t('Customers')}
                     </dt>
-                    <dd className='mt-1 text-sm font-semibold tabular-nums'>
+                    <dd className='font-display text-[20px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
                       {formatNumber(site.customers, locale)}
                     </dd>
                   </div>
-                  <div className='bg-card rounded-xl border p-3.5'>
-                    <dt className='text-muted-foreground text-xs'>
+                  <div className='bg-card flex flex-col gap-1.5 px-4 py-3.5'>
+                    <dt className='text-dim text-[12px] leading-none'>
                       {t('Effective cost factor')}
                     </dt>
-                    <dd className='mt-1 text-sm font-semibold tabular-nums'>
+                    <dd className='font-display text-[20px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
                       {site.effective_cost_factor ||
                         site.cost_factor ||
                         site.tier_cost_factor ||
                         t('Follow site level')}
                     </dd>
                   </div>
-                  <div className='bg-card rounded-xl border p-3.5'>
-                    <dt className='text-muted-foreground text-xs'>
+                  <div className='bg-card flex flex-col gap-1.5 px-4 py-3.5'>
+                    <dt className='text-dim text-[12px] leading-none'>
                       {t('Site level')}
                     </dt>
-                    <dd className='mt-1 text-sm font-medium'>
+                    <dd className='truncate text-sm font-semibold'>
                       {site.tier_code
                         ? `${site.tier_code} (${site.tier_mode === 'manual' ? t('Pinned') : t('Automatic')})`
                         : t('Automatic')}
                     </dd>
                   </div>
-                  <div className='bg-card rounded-xl border p-3.5'>
-                    <dt className='text-muted-foreground text-xs'>
-                      {site.close_execute_at > 0
-                        ? t('Closes on')
-                        : t('Opened')}
+                  <div className='bg-card col-span-2 flex flex-col gap-1.5 px-4 py-3.5 lg:col-span-1'>
+                    <dt className='text-dim text-[12px] leading-none'>
+                      {site.close_execute_at > 0 ? t('Closes on') : t('Opened')}
                     </dt>
-                    <dd className='mt-1 text-sm font-medium tabular-nums'>
+                    <dd className='text-sm font-semibold tabular-nums'>
                       {site.close_execute_at > 0
                         ? formatTimestampToDate(site.close_execute_at)
                         : formatTimestampToDate(site.created_at)}
@@ -322,11 +314,11 @@ export function SiteDetailPage(props: { siteId: number }) {
                     )}
                   </TabsList>
 
-                  <TabsContent value='basic'>
+                  <TabsContent value='basic' className='pt-2'>
                     <SiteBasicBrandForm key={site.id} site={site} />
                   </TabsContent>
 
-                  <TabsContent value='domains'>
+                  <TabsContent value='domains' className='pt-2'>
                     <SiteDomainsCard
                       site={site}
                       siteStatus={site.status}
@@ -335,7 +327,10 @@ export function SiteDetailPage(props: { siteId: number }) {
                     />
                   </TabsContent>
 
-                  <TabsContent value='business' className='flex flex-col gap-5'>
+                  <TabsContent
+                    value='business'
+                    className='flex flex-col gap-8 pt-2'
+                  >
                     <SiteBusinessStatsCard
                       data={statsQuery.data}
                       isPending={statsQuery.isPending}
@@ -345,18 +340,14 @@ export function SiteDetailPage(props: { siteId: number }) {
                   </TabsContent>
 
                   {isRoot && (
-                    <TabsContent value='tier' className='flex flex-col gap-5'>
-                      <Card>
-                        <CardHeader>
-                          <CardTitle>{t('Level & Supply')}</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <SiteTierControl
-                            key={`${site.id}:${site.tier_mode}:${site.tier_code}`}
-                            site={site}
-                          />
-                        </CardContent>
-                      </Card>
+                    <TabsContent
+                      value='tier'
+                      className='flex flex-col gap-8 pt-2'
+                    >
+                      <SiteTierControl
+                        key={`${site.id}:${site.tier_mode}:${site.tier_code}`}
+                        site={site}
+                      />
                       <SiteSupplyDiscountCard
                         key={`${site.id}:${site.cost_factor ?? ''}`}
                         site={site}
@@ -371,11 +362,12 @@ export function SiteDetailPage(props: { siteId: number }) {
                   {isRoot && (
                     <TabsContent
                       value='wallets'
-                      className='flex flex-col gap-5'
+                      className='flex flex-col gap-8 pt-2'
                     >
-                      <Card>
-                        <CardHeader className='flex flex-row flex-wrap items-center justify-between gap-2 space-y-0'>
-                          <CardTitle>{t('Wallets & Finance')}</CardTitle>
+                      <SiteFundPanel
+                        siteId={site.id}
+                        siteStatus={site.status}
+                        actions={
                           <Button
                             type='button'
                             size='sm'
@@ -386,20 +378,14 @@ export function SiteDetailPage(props: { siteId: number }) {
                             <Ticket className='size-3.5' aria-hidden='true' />
                             {t('Issue margin recharge code')}
                           </Button>
-                        </CardHeader>
-                        <CardContent>
-                          <SiteFundPanel
-                            siteId={site.id}
-                            siteStatus={site.status}
-                          />
-                        </CardContent>
-                      </Card>
+                        }
+                      />
                     </TabsContent>
                   )}
 
                   <TabsContent
                     value='customers'
-                    className='flex flex-col gap-5'
+                    className='flex flex-col gap-8 pt-2'
                   >
                     <SiteCustomersCard siteId={site.id} />
                     {isRoot &&
@@ -411,53 +397,45 @@ export function SiteDetailPage(props: { siteId: number }) {
                   </TabsContent>
 
                   {isRoot && (
-                    <TabsContent value='danger' className='flex flex-col gap-5'>
+                    <TabsContent
+                      value='danger'
+                      className='flex flex-col gap-6 pt-2'
+                    >
                       {site.status !== 'closed' &&
                         site.status !== 'deleting' && (
-                        <Card className='border-warning/40'>
-                          <CardHeader>
-                            <CardTitle className='flex items-center gap-2'>
-                              <AlertTriangle
-                                className='text-warning size-4'
-                                aria-hidden
-                              />
-                              {site.status === 'closing'
+                          <SettingsSection
+                            className='border-warning/40'
+                            title={
+                              site.status === 'closing'
                                 ? t('Reschedule closure')
-                                : t('Close site')}
-                            </CardTitle>
-                            <CardDescription>
-                              {t(
-                                'Closing a site migrates its customers to the main site, stops API domains, and preserves settled earnings.'
-                              )}
-                            </CardDescription>
-                          </CardHeader>
-                          <CardContent>
+                                : t('Close site')
+                            }
+                            description={t(
+                              'Closing a site migrates its customers to the main site, stops API domains, and preserves settled earnings.'
+                            )}
+                          >
                             <Button
                               type='button'
                               variant='destructive'
                               onClick={() => setClosing(true)}
                             >
+                              <AlertTriangle className='size-4' aria-hidden />
                               {site.status === 'closing'
                                 ? t('Reschedule closure')
                                 : t('Close site')}
                             </Button>
-                          </CardContent>
-                        </Card>
-                      )}
+                          </SettingsSection>
+                        )}
 
-                      <Card className='border-destructive/40'>
-                        <CardHeader>
-                          <CardTitle className='text-destructive flex items-center gap-2'>
-                            <Trash2 className='size-4' aria-hidden />
-                            {t('Delete site')}
-                          </CardTitle>
-                          <CardDescription>
-                            {t(
-                              'Zero-data sites are permanently deleted. Already-closed sites are archived and hidden from the default list. Active sites with customers or financial records must be closed first.'
-                            )}
-                          </CardDescription>
-                        </CardHeader>
-                        <CardContent className='flex flex-col gap-3'>
+                      <SettingsSection
+                        className='border-destructive/40'
+                        title={t('Delete site')}
+                        titleProps={{ className: 'text-destructive' }}
+                        description={t(
+                          'Zero-data sites are permanently deleted. Already-closed sites are archived and hidden from the default list. Active sites with customers or financial records must be closed first.'
+                        )}
+                      >
+                        <div className='flex flex-col gap-4'>
                           <div className='max-w-lg space-y-1.5'>
                             <Label htmlFor={`${fieldId}-delete-reason`}>
                               {t('Reason (optional)')}
@@ -485,8 +463,8 @@ export function SiteDetailPage(props: { siteId: number }) {
                               {t('Delete site')}
                             </Button>
                           </div>
-                        </CardContent>
-                      </Card>
+                        </div>
+                      </SettingsSection>
                     </TabsContent>
                   )}
                 </Tabs>
@@ -496,7 +474,9 @@ export function SiteDetailPage(props: { siteId: number }) {
                     <QuickMarginVoucherDialog
                       siteId={site.id}
                       siteLabel={
-                        brand.name ? `${brand.name} · ${displayHost}` : displayHost
+                        brand.name
+                          ? `${brand.name} · ${displayHost}`
+                          : displayHost
                       }
                       ownerLabel={formatUserIdentity(
                         site.owner_user_id,

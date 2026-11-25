@@ -397,7 +397,7 @@ export const ToolPriceSettings = memo(function ToolPriceSettings({
         </div>
       )}
 
-      <div className='flex justify-end'>
+      <div className='flex justify-start'>
         <Button
           variant='brand'
           onClick={handleSave}

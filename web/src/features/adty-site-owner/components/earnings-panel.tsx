@@ -118,8 +118,10 @@ export function EarningsPanel() {
     <div className='flex flex-col gap-4'>
       {lines.isError && <ErrorState onRetry={() => void lines.refetch()} />}
       <div className='flex flex-col gap-1'>
-        <h2 className='text-sm font-medium'>{t('Request earnings')}</h2>
-        <p className='text-muted-foreground text-sm'>
+        <h3 className='text-[15px] leading-snug font-semibold tracking-tight [word-break:keep-all]'>
+          {t('Request earnings')}
+        </h3>
+        <p className='text-dim max-w-[80ch] text-[12.5px] leading-relaxed'>
           {t(
             'Each request shows the model and billing group. Upstream channel names are not shown.'
           )}

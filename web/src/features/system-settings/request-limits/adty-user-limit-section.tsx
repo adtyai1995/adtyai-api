@@ -19,11 +19,10 @@ For commercial licensing, please contact support@quantumnous.com
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 
+import { SettingsSwitchField } from '../components/settings-form-layout'
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
@@ -114,47 +113,41 @@ export function AdtyUserLimitSection(props: {
   }
 
   return (
-    <SettingsSection title={t('Per-user limits')}>
+    <SettingsSection title={t('Per-user limits')} bodyClassName='space-y-5'>
       <SettingsPageFormActions
         onSave={save}
         isSaving={updateOption.isPending}
       />
-      <div className='flex max-w-2xl flex-col gap-5'>
-        <Alert>
-          <AlertDescription>
-            {t(
-              'Defaults for every user; 0 means no limit. A user can have their own values in the user editor. TPM is counted after each request finishes, so large requests started in the same minute are not stopped.'
-            )}
-          </AlertDescription>
-        </Alert>
-        <div className='flex items-center justify-between gap-4 rounded-lg border p-3'>
-          <Label htmlFor='adty-limit-enabled'>
-            {t('Enable per-user limits')}
-          </Label>
-          <Switch
-            id='adty-limit-enabled'
-            checked={enabled}
-            onCheckedChange={setEnabled}
-          />
-        </div>
-        <div className='grid gap-4 sm:grid-cols-3'>
-          {NUMBER_KEYS.map((key) => (
-            <div key={key} className='space-y-2'>
-              <Label htmlFor={`adty-limit-${key}`}>{labels[key]}</Label>
-              <Input
-                id={`adty-limit-${key}`}
-                type='number'
-                min={0}
-                step={1}
-                value={drafts[key]}
-                aria-invalid={invalid.includes(key)}
-                onChange={(event) =>
-                  setDrafts((prev) => ({ ...prev, [key]: event.target.value }))
-                }
-              />
-            </div>
-          ))}
-        </div>
+      <p className='text-dim max-w-[80ch] text-[13px] leading-relaxed'>
+        {t(
+          'Defaults for every user; 0 means no limit. A user can have their own values in the user editor. TPM is counted after each request finishes, so large requests started in the same minute are not stopped.'
+        )}
+      </p>
+      <SettingsSwitchField
+        controlId='adty-limit-enabled'
+        checked={enabled}
+        onCheckedChange={setEnabled}
+        label={t('Enable per-user limits')}
+        className='py-1'
+      />
+      <div className='grid max-w-2xl gap-4 sm:grid-cols-3'>
+        {NUMBER_KEYS.map((key) => (
+          <div key={key} className='space-y-2'>
+            <Label htmlFor={`adty-limit-${key}`}>{labels[key]}</Label>
+            <Input
+              id={`adty-limit-${key}`}
+              type='number'
+              min={0}
+              step={1}
+              className='sm:max-w-44'
+              value={drafts[key]}
+              aria-invalid={invalid.includes(key)}
+              onChange={(event) =>
+                setDrafts((prev) => ({ ...prev, [key]: event.target.value }))
+              }
+            />
+          </div>
+        ))}
       </div>
     </SettingsSection>
   )

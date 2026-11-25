@@ -70,24 +70,26 @@ export function SessionRulesTable(props: SessionRulesTableProps) {
 
   if (props.rules.length === 0) {
     return (
-      <EmptyState
-        icon={ListFilter}
-        title={t('No rules yet')}
-        description={t('Fill a CLI template or add a blank rule.')}
-        className='min-h-56'
-        action={
-          <Button variant='outline' onClick={props.onFillTemplates}>
-            <FileText aria-hidden='true' />
-            {t('Fill Templates')}
-          </Button>
-        }
-      />
+      <div className='border-border bg-card rounded-[14px] border'>
+        <EmptyState
+          icon={ListFilter}
+          title={t('No rules yet')}
+          description={t('Fill a CLI template or add a blank rule.')}
+          className='min-h-56'
+          action={
+            <Button variant='outline' onClick={props.onFillTemplates}>
+              <FileText aria-hidden='true' />
+              {t('Fill Templates')}
+            </Button>
+          }
+        />
+      </div>
     )
   }
 
   return (
     <StaticDataTable
-      className='focus-visible:outline-ring overflow-x-auto rounded-none border-0 focus-visible:-outline-offset-2'
+      className='focus-visible:outline-ring overflow-x-auto focus-visible:-outline-offset-2'
       containerProps={{
         role: 'region',
         'aria-label': t('Session rules table'),

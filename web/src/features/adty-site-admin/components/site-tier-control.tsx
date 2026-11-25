@@ -24,12 +24,14 @@ import { toast } from 'sonner'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { formatTimestamp } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
@@ -72,8 +74,7 @@ export function SiteTierControl(props: { site: AdminSite }) {
   const current = pinned ? (props.site.tier_code ?? '') : AUTOMATIC
   const [choice, setChoice] = useState(current)
   const [historyPage, setHistoryPage] = useState(1)
-  const [adjustMode, setAdjustMode] =
-    useState<TierPrincipalAdjustMode>('delta')
+  const [adjustMode, setAdjustMode] = useState<TierPrincipalAdjustMode>('delta')
   const [adjustAmount, setAdjustAmount] = useState('')
   const [adjustReason, setAdjustReason] = useState('')
   const adjustIntentRef = useRef<{ payload: string; key: string } | null>(null)
@@ -157,237 +158,232 @@ export function SiteTierControl(props: { site: AdminSite }) {
     : []
 
   return (
-    <section className='flex flex-col gap-4'>
-      <div className='flex flex-col gap-2'>
-        <h3 className='text-sm font-medium'>{t('Site level')}</h3>
-        <p className='text-muted-foreground text-sm'>
-          {currentName
+    <div className='flex flex-col gap-8'>
+      <SettingsSection
+        title={t('Site level')}
+        description={`${
+          currentName
             ? `${t('Current level')}: ${currentName}`
-            : t('No level yet; default terms apply.')}{' '}
-          ·{' '}
-          {pinned
-            ? t('Pinned by Root')
-            : t('Evaluated automatically every hour')}
-        </p>
-        {tiers.isError && <ErrorState onRetry={() => void tiers.refetch()} />}
-        <div className='flex flex-wrap items-end gap-2'>
-          <div className='flex flex-col gap-1'>
-            <Label htmlFor={`site-tier-${props.site.id}`}>
-              {t('Level assignment')}
-            </Label>
-            <NativeSelect
-              id={`site-tier-${props.site.id}`}
-              value={choice}
-              disabled={isSiteLocked || save.isPending}
-              onChange={(event) => setChoice(event.target.value)}
-            >
-              <NativeSelectOption value={AUTOMATIC}>
-                {t('Automatic (by thresholds)')}
-              </NativeSelectOption>
-              {enabled.map((tier) => (
-                <NativeSelectOption key={tier.code} value={tier.code}>
-                  {t('Pin to {{name}}', { name: tier.name })}
+            : t('No level yet; default terms apply.')
+        } · ${
+          pinned ? t('Pinned by Root') : t('Evaluated automatically every hour')
+        }`}
+      >
+        <div className='flex flex-col gap-3'>
+          {tiers.isError && <ErrorState onRetry={() => void tiers.refetch()} />}
+          <div className='flex flex-wrap items-end gap-2'>
+            <div className='flex flex-col gap-1.5'>
+              <Label htmlFor={`site-tier-${props.site.id}`}>
+                {t('Level assignment')}
+              </Label>
+              <NativeSelect
+                id={`site-tier-${props.site.id}`}
+                value={choice}
+                disabled={isSiteLocked || save.isPending}
+                onChange={(event) => setChoice(event.target.value)}
+              >
+                <NativeSelectOption value={AUTOMATIC}>
+                  {t('Automatic (by thresholds)')}
                 </NativeSelectOption>
-              ))}
-            </NativeSelect>
+                {enabled.map((tier) => (
+                  <NativeSelectOption key={tier.code} value={tier.code}>
+                    {t('Pin to {{name}}', { name: tier.name })}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </div>
+            <Button
+              type='button'
+              variant='brand'
+              disabled={isSiteLocked || save.isPending || choice === current}
+              onClick={() => {
+                if (!isSiteLocked) save.mutate()
+              }}
+            >
+              {t('Save')}
+            </Button>
           </div>
-          <Button
-            type='button'
-            variant='outline'
-            disabled={isSiteLocked || save.isPending || choice === current}
-            onClick={() => {
-              if (!isSiteLocked) save.mutate()
-            }}
-          >
-            {t('Save')}
-          </Button>
-        </div>
-        <p className='text-muted-foreground text-xs'>
-          {isSiteLocked
-            ? t('Site is closed')
-            : t(
-                'Switching to automatic immediately matches the site to its qualifying level based on cumulative net customer top-up principal.'
-              )}
-        </p>
-      </div>
-
-      <div className='border-border flex flex-col gap-3 rounded-md border p-3'>
-        <div className='flex flex-col gap-1'>
-          <h4 className='text-sm font-medium'>
-            {t('Tier cumulative customer recharge')}
-          </h4>
-          <p className='text-muted-foreground text-xs'>
-            {t(
-              'Excludes all site-owner recharges (margin top-ups, owner self-use API top-ups, and manual balance credits). Root can adjust this figure for offline large transfers without modifying any wallet balance.'
-            )}
+          <p className='text-dim max-w-[80ch] text-[12.5px] leading-relaxed'>
+            {isSiteLocked
+              ? t('Site is closed')
+              : t(
+                  'Switching to automatic immediately matches the site to its qualifying level based on cumulative net customer top-up principal.'
+                )}
           </p>
         </div>
-        {principal.isPending && <LoadingState />}
-        {principal.isError && (
-          <ErrorState onRetry={() => void principal.refetch()} />
-        )}
-        {principal.isSuccess && (
-          <dl className='grid grid-cols-1 gap-2 text-sm sm:grid-cols-3'>
-            <div className='bg-muted/40 rounded p-2'>
-              <dt className='text-muted-foreground text-xs'>
-                {t('Online customer net recharge')}
-              </dt>
-              <dd className='font-medium tabular-nums'>
-                {principal.data.online_principal_usd} USD
-              </dd>
-            </div>
-            <div className='bg-muted/40 rounded p-2'>
-              <dt className='text-muted-foreground text-xs'>
-                {t('Platform manual adjustment')}
-              </dt>
-              <dd className='font-medium tabular-nums'>
-                {principal.data.adjustment_usd} USD
-              </dd>
-            </div>
-            <div className='bg-muted/40 rounded p-2'>
-              <dt className='text-muted-foreground text-xs'>
-                {t('Effective tier total')}
-              </dt>
-              <dd className='font-semibold tabular-nums'>
-                {principal.data.effective_principal_usd} USD
-              </dd>
-            </div>
-          </dl>
-        )}
+      </SettingsSection>
 
-        {!isSiteLocked && (
-          <div className='flex flex-col gap-2'>
-            <div className='grid gap-2 sm:grid-cols-3'>
+      <SettingsSection
+        title={t('Tier cumulative customer recharge')}
+        description={t(
+          'Excludes all site-owner recharges (margin top-ups, owner self-use API top-ups, and manual balance credits). Root can adjust this figure for offline large transfers without modifying any wallet balance.'
+        )}
+      >
+        <div className='flex flex-col gap-5'>
+          {principal.isPending && <LoadingState />}
+          {principal.isError && (
+            <ErrorState onRetry={() => void principal.refetch()} />
+          )}
+          {principal.isSuccess && (
+            <dl className='border-border grid grid-cols-1 gap-4 border-b pb-5 sm:grid-cols-3'>
               <div className='flex flex-col gap-1'>
-                <Label htmlFor={`tier-principal-mode-${props.site.id}`}>
-                  {t('Adjustment mode')}
-                </Label>
-                <NativeSelect
-                  id={`tier-principal-mode-${props.site.id}`}
-                  value={adjustMode}
-                  onChange={(event) =>
-                    setAdjustMode(
-                      event.target.value as TierPrincipalAdjustMode
-                    )
-                  }
+                <dt className='text-dim text-[12px] leading-none'>
+                  {t('Online customer net recharge')}
+                </dt>
+                <dd className='font-display text-[20px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
+                  {principal.data.online_principal_usd} USD
+                </dd>
+              </div>
+              <div className='flex flex-col gap-1'>
+                <dt className='text-dim text-[12px] leading-none'>
+                  {t('Platform manual adjustment')}
+                </dt>
+                <dd className='font-display text-[20px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
+                  {principal.data.adjustment_usd} USD
+                </dd>
+              </div>
+              <div className='flex flex-col gap-1'>
+                <dt className='text-dim text-[12px] leading-none'>
+                  {t('Effective tier total')}
+                </dt>
+                <dd className='font-display text-[20px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
+                  {principal.data.effective_principal_usd} USD
+                </dd>
+              </div>
+            </dl>
+          )}
+
+          {!isSiteLocked && (
+            <div className='flex max-w-3xl flex-col gap-4'>
+              <div className='grid gap-4 sm:grid-cols-[auto_11rem_minmax(0,1fr)]'>
+                <div className='flex flex-col gap-1.5'>
+                  <Label htmlFor={`tier-principal-mode-${props.site.id}`}>
+                    {t('Adjustment mode')}
+                  </Label>
+                  <NativeSelect
+                    id={`tier-principal-mode-${props.site.id}`}
+                    value={adjustMode}
+                    onChange={(event) =>
+                      setAdjustMode(
+                        event.target.value as TierPrincipalAdjustMode
+                      )
+                    }
+                  >
+                    <NativeSelectOption value='delta'>
+                      {t('Add or subtract (USD)')}
+                    </NativeSelectOption>
+                    <NativeSelectOption value='set_total'>
+                      {t('Set target total (USD)')}
+                    </NativeSelectOption>
+                  </NativeSelect>
+                </div>
+                <div className='flex flex-col gap-1.5'>
+                  <Label htmlFor={`tier-principal-amount-${props.site.id}`}>
+                    {adjustMode === 'delta'
+                      ? t('Delta amount (USD)')
+                      : t('Target effective total (USD)')}
+                  </Label>
+                  <Input
+                    id={`tier-principal-amount-${props.site.id}`}
+                    inputMode='decimal'
+                    autoComplete='off'
+                    placeholder={adjustMode === 'delta' ? '50000' : '100000'}
+                    value={adjustAmount}
+                    onChange={(event) => setAdjustAmount(event.target.value)}
+                  />
+                </div>
+                <div className='flex flex-col gap-1.5'>
+                  <Label htmlFor={`tier-principal-reason-${props.site.id}`}>
+                    {t('Reason')}
+                  </Label>
+                  <Input
+                    id={`tier-principal-reason-${props.site.id}`}
+                    maxLength={500}
+                    value={adjustReason}
+                    onChange={(event) => setAdjustReason(event.target.value)}
+                  />
+                </div>
+              </div>
+              <div>
+                <Button
+                  type='button'
+                  variant='brand'
+                  disabled={!canAdjust}
+                  onClick={() => adjust.mutate()}
                 >
-                  <NativeSelectOption value='delta'>
-                    {t('Add or subtract (USD)')}
-                  </NativeSelectOption>
-                  <NativeSelectOption value='set_total'>
-                    {t('Set target total (USD)')}
-                  </NativeSelectOption>
-                </NativeSelect>
-              </div>
-              <div className='flex flex-col gap-1'>
-                <Label htmlFor={`tier-principal-amount-${props.site.id}`}>
-                  {adjustMode === 'delta'
-                    ? t('Delta amount (USD)')
-                    : t('Target effective total (USD)')}
-                </Label>
-                <Input
-                  id={`tier-principal-amount-${props.site.id}`}
-                  inputMode='decimal'
-                  autoComplete='off'
-                  placeholder={adjustMode === 'delta' ? '50000' : '100000'}
-                  value={adjustAmount}
-                  onChange={(event) => setAdjustAmount(event.target.value)}
-                />
-              </div>
-              <div className='flex flex-col gap-1'>
-                <Label htmlFor={`tier-principal-reason-${props.site.id}`}>
-                  {t('Reason')}
-                </Label>
-                <Input
-                  id={`tier-principal-reason-${props.site.id}`}
-                  maxLength={500}
-                  value={adjustReason}
-                  onChange={(event) => setAdjustReason(event.target.value)}
-                />
+                  {t('Adjust tier recharge')}
+                </Button>
               </div>
             </div>
-            <div>
-              <Button
-                type='button'
-                variant='outline'
-                disabled={!canAdjust}
-                onClick={() => adjust.mutate()}
-              >
-                {t('Adjust tier recharge')}
-              </Button>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
+      </SettingsSection>
 
-        {principal.isSuccess && (
-          <div className='flex flex-col gap-2'>
-            <h5 className='text-muted-foreground text-xs font-medium'>
-              {t('Manual adjustment history')}
-            </h5>
-            <StaticDataTable
-              tableProps={{ 'aria-label': t('Manual adjustment history') }}
-              data={historyRows}
-              getRowKey={(row: TierPrincipalAdjustment) => String(row.id)}
-              emptyContent={
-                <EmptyState className='min-h-16' title={t('No data')} />
-              }
-              columns={[
-                {
-                  id: 'time',
-                  header: t('Time'),
-                  cell: (row: TierPrincipalAdjustment) =>
-                    formatTimestamp(row.created_at),
-                },
-                {
-                  id: 'mode',
-                  header: t('Adjustment mode'),
-                  cell: (row: TierPrincipalAdjustment) =>
-                    row.mode === 'set_total'
-                      ? t('Set target total (USD)')
-                      : t('Add or subtract (USD)'),
-                },
-                {
-                  id: 'delta',
-                  header: t('Delta amount (USD)'),
-                  cell: (row: TierPrincipalAdjustment) => (
-                    <span className='tabular-nums'>{row.delta_usd}</span>
-                  ),
-                },
-                {
-                  id: 'effective',
-                  header: t('Effective tier total'),
-                  cell: (row: TierPrincipalAdjustment) => (
-                    <span className='tabular-nums'>
-                      {row.effective_after_usd}
-                    </span>
-                  ),
-                },
-                {
-                  id: 'tier',
-                  header: t('Site level'),
-                  cell: (row: TierPrincipalAdjustment) =>
-                    row.tier_before === row.tier_after
-                      ? row.tier_after || '—'
-                      : `${row.tier_before || '—'} → ${row.tier_after || '—'}`,
-                },
-                {
-                  id: 'reason',
-                  header: t('Reason'),
-                  cell: (row: TierPrincipalAdjustment) => (
-                    <span className='break-words'>{row.reason}</span>
-                  ),
-                },
-              ]}
-            />
-            <PageSwitcher
-              page={historyPage}
-              total={Number(principal.data.total) || 0}
-              pageSize={HISTORY_PAGE_SIZE}
-              onPageChange={setHistoryPage}
-            />
-          </div>
-        )}
-      </div>
-    </section>
+      {principal.isSuccess && (
+        <ContentSection title={t('Manual adjustment history')}>
+          <StaticDataTable
+            tableProps={{ 'aria-label': t('Manual adjustment history') }}
+            data={historyRows}
+            getRowKey={(row: TierPrincipalAdjustment) => String(row.id)}
+            emptyContent={
+              <EmptyState className='min-h-16' title={t('No data')} />
+            }
+            columns={[
+              {
+                id: 'time',
+                header: t('Time'),
+                cell: (row: TierPrincipalAdjustment) =>
+                  formatTimestamp(row.created_at),
+              },
+              {
+                id: 'mode',
+                header: t('Adjustment mode'),
+                cell: (row: TierPrincipalAdjustment) =>
+                  row.mode === 'set_total'
+                    ? t('Set target total (USD)')
+                    : t('Add or subtract (USD)'),
+              },
+              {
+                id: 'delta',
+                header: t('Delta amount (USD)'),
+                cell: (row: TierPrincipalAdjustment) => (
+                  <span className='tabular-nums'>{row.delta_usd}</span>
+                ),
+              },
+              {
+                id: 'effective',
+                header: t('Effective tier total'),
+                cell: (row: TierPrincipalAdjustment) => (
+                  <span className='tabular-nums'>
+                    {row.effective_after_usd}
+                  </span>
+                ),
+              },
+              {
+                id: 'tier',
+                header: t('Site level'),
+                cell: (row: TierPrincipalAdjustment) =>
+                  row.tier_before === row.tier_after
+                    ? row.tier_after || '—'
+                    : `${row.tier_before || '—'} → ${row.tier_after || '—'}`,
+              },
+              {
+                id: 'reason',
+                header: t('Reason'),
+                cell: (row: TierPrincipalAdjustment) => (
+                  <span className='break-words'>{row.reason}</span>
+                ),
+              },
+            ]}
+          />
+          <PageSwitcher
+            page={historyPage}
+            total={Number(principal.data.total) || 0}
+            pageSize={HISTORY_PAGE_SIZE}
+            onPageChange={setHistoryPage}
+          />
+        </ContentSection>
+      )}
+    </div>
   )
 }

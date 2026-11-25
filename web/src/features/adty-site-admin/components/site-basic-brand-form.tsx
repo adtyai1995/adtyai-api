@@ -24,17 +24,11 @@ import { toast } from 'sonner'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -55,7 +49,11 @@ import {
   serializeSiteVisibility,
   validSiteVisibility,
 } from '../lib/site-visibility'
-import { isValidOptionalHttpUrl, parseSiteBrand, siteNotice } from '../lib/sites'
+import {
+  isValidOptionalHttpUrl,
+  parseSiteBrand,
+  siteNotice,
+} from '../lib/sites'
 import type { AdminSite, AdminSiteBrand } from '../types'
 import { SiteVisibilityEditor } from './site-visibility-editor'
 
@@ -96,7 +94,9 @@ function readAllowedGroups(raw?: string): string {
   try {
     const parsed: unknown = JSON.parse(raw)
     if (Array.isArray(parsed)) {
-      return parsed.filter((id): id is string => typeof id === 'string').join(', ')
+      return parsed
+        .filter((id): id is string => typeof id === 'string')
+        .join(', ')
     }
   } catch {
     return raw
@@ -104,7 +104,9 @@ function readAllowedGroups(raw?: string): string {
   return raw
 }
 
-function brandSnapshot(brand: AdminSiteBrand): Record<EditableBrandKey, string> {
+function brandSnapshot(
+  brand: AdminSiteBrand
+): Record<EditableBrandKey, string> {
   return {
     name: brand.name ?? '',
     title: brand.title ?? '',
@@ -170,7 +172,9 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
         : current
     )
     setContactInfo((current) =>
-      current === (prev.contact_info ?? '') ? (site.contact_info ?? '') : current
+      current === (prev.contact_info ?? '')
+        ? (site.contact_info ?? '')
+        : current
     )
     setSeoIndex((current) =>
       current === Boolean(prev.seo_index) ? Boolean(site.seo_index) : current
@@ -355,7 +359,7 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
 
   return (
     <form
-      className='flex flex-col gap-5'
+      className='flex flex-col gap-6'
       onSubmit={(event) => {
         event.preventDefault()
         if (!editable || !hasChanges || voucherUrlInvalid) {
@@ -388,16 +392,13 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
       )}
 
       {isRoot && site.status === 'pending' && (
-        <Card>
-          <CardHeader>
-            <CardTitle>{t('Pending site application')}</CardTitle>
-            <CardDescription>
-              {t(
-                'Approve or reject this pending site application. Optionally enter a review note.'
-              )}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className='flex flex-wrap gap-2'>
+        <SettingsSection
+          title={t('Pending site application')}
+          description={t(
+            'Approve or reject this pending site application. Optionally enter a review note.'
+          )}
+        >
+          <div className='flex flex-wrap gap-2'>
             <Button
               type='button'
               variant='brand'
@@ -414,21 +415,18 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
             >
               {t('Reject')}
             </Button>
-          </CardContent>
-        </Card>
+          </div>
+        </SettingsSection>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('Brand & Customer Display')}</CardTitle>
-          <CardDescription>
-            {t(
-              'Configure public brand identity, wallet notice, voucher purchase link, and live chat widget.'
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className='grid gap-4'>
-          <div className='grid gap-4 sm:grid-cols-2'>
+      <SettingsSection
+        title={t('Brand & Customer Display')}
+        description={t(
+          'Configure public brand identity, wallet notice, voucher purchase link, and live chat widget.'
+        )}
+      >
+        <div className='grid gap-5'>
+          <div className='grid max-w-3xl gap-4 sm:grid-cols-2'>
             <div className='space-y-1.5'>
               <Label htmlFor={`${fieldId}-name`}>{t('Site name')}</Label>
               <Input
@@ -527,7 +525,7 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
             </p>
           </div>
 
-          <div className='space-y-1.5'>
+          <div className='max-w-xl space-y-1.5'>
             <Label htmlFor={`${fieldId}-voucher-url`}>
               {t('Voucher purchase link')}
             </Label>
@@ -559,7 +557,7 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
             )}
           </div>
 
-          <div className='grid gap-4 sm:grid-cols-2'>
+          <div className='grid max-w-3xl gap-4 sm:grid-cols-2'>
             <div className='space-y-1.5'>
               <Label htmlFor={`${fieldId}-tawk-property`}>
                 {t('Tawk.to property ID')}
@@ -595,20 +593,19 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
               />
             </div>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </SettingsSection>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('Custom Home Page')}</CardTitle>
-          <CardDescription>
-            {t(
-              'Enter Markdown, HTML, or an http:// or https:// URL (embedded as an iframe). Setting custom home page content replaces the default homepage and hides default status info.'
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className='space-y-2'>
-          <Label htmlFor={`${fieldId}-home-page`}>{t('Home page content')}</Label>
+      <SettingsSection
+        title={t('Custom Home Page')}
+        description={t(
+          'Enter Markdown, HTML, or an http:// or https:// URL (embedded as an iframe). Setting custom home page content replaces the default homepage and hides default status info.'
+        )}
+      >
+        <div className='space-y-2'>
+          <Label htmlFor={`${fieldId}-home-page`}>
+            {t('Home page content')}
+          </Label>
           <Textarea
             id={`${fieldId}-home-page`}
             rows={6}
@@ -620,49 +617,48 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
             )}
             onChange={(event) => setHomePageContent(event.target.value)}
           />
-        </CardContent>
-      </Card>
+        </div>
+      </SettingsSection>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('Operations & Visibility')}</CardTitle>
-          <CardDescription>
-            {t(
-              'Manage owner contact, search engine indexing, allowed billing groups, and customer data visibility.'
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className='grid gap-4'>
-          <div className='space-y-1.5'>
-            <Label htmlFor={`${fieldId}-contact`}>{t('Owner contact')}</Label>
-            <Input
-              id={`${fieldId}-contact`}
-              disabled={!editable || busy}
-              value={contactInfo}
-              placeholder={t('Telegram, WeChat, or email for operations')}
-              onChange={(event) => setContactInfo(event.target.value)}
-            />
+      <SettingsSection
+        title={t('Operations & Visibility')}
+        description={t(
+          'Manage owner contact, search engine indexing, allowed billing groups, and customer data visibility.'
+        )}
+      >
+        <div className='grid max-w-3xl gap-5'>
+          <div className='grid gap-4 sm:grid-cols-2'>
+            <div className='space-y-1.5'>
+              <Label htmlFor={`${fieldId}-contact`}>{t('Owner contact')}</Label>
+              <Input
+                id={`${fieldId}-contact`}
+                disabled={!editable || busy}
+                value={contactInfo}
+                placeholder={t('Telegram, WeChat, or email for operations')}
+                onChange={(event) => setContactInfo(event.target.value)}
+              />
+            </div>
+
+            <div className='space-y-1.5'>
+              <Label htmlFor={`${fieldId}-allowed-groups`}>
+                {t('Allowed groups')}
+              </Label>
+              <Input
+                id={`${fieldId}-allowed-groups`}
+                value={allowedGroups}
+                placeholder={t('Every live billing group')}
+                disabled={!editable || busy}
+                onChange={(event) => setAllowedGroups(event.target.value)}
+              />
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'Leave empty to allow every live billing group. Separate group IDs with commas.'
+                )}
+              </p>
+            </div>
           </div>
 
-          <div className='space-y-1.5'>
-            <Label htmlFor={`${fieldId}-allowed-groups`}>
-              {t('Allowed groups')}
-            </Label>
-            <Input
-              id={`${fieldId}-allowed-groups`}
-              value={allowedGroups}
-              placeholder={t('Every live billing group')}
-              disabled={!editable || busy}
-              onChange={(event) => setAllowedGroups(event.target.value)}
-            />
-            <p className='text-muted-foreground text-xs'>
-              {t(
-                'Leave empty to allow every live billing group. Separate group IDs with commas.'
-              )}
-            </p>
-          </div>
-
-          <div className='flex items-center justify-between gap-4 rounded-md border p-3'>
+          <div className='border-border flex items-center justify-between gap-4 border-t pt-4'>
             <div className='space-y-0.5'>
               <Label htmlFor={`${fieldId}-seo`}>
                 {t('Let search engines index this site')}
@@ -681,20 +677,22 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
             />
           </div>
 
-          <SiteVisibilityEditor
-            value={visibility}
-            onChange={setVisibility}
-            disabled={!editable || busy || !visibilityValid}
-          />
-          {!visibilityValid && (
-            <p role='alert' className='text-destructive text-sm'>
-              {t(
-                'Saved site visibility settings are invalid. Reload or repair the saved settings before editing this site.'
-              )}
-            </p>
-          )}
+          <div className='border-border border-t pt-4'>
+            <SiteVisibilityEditor
+              value={visibility}
+              onChange={setVisibility}
+              disabled={!editable || busy || !visibilityValid}
+            />
+            {!visibilityValid && (
+              <p role='alert' className='text-destructive mt-2 text-sm'>
+                {t(
+                  'Saved site visibility settings are invalid. Reload or repair the saved settings before editing this site.'
+                )}
+              </p>
+            )}
+          </div>
 
-          <div className='space-y-1.5'>
+          <div className='border-border space-y-1.5 border-t pt-4'>
             <Label htmlFor={`${fieldId}-reason`}>
               {t('Change note (optional)')}
             </Label>
@@ -731,8 +729,8 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
               )}
             </div>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </SettingsSection>
 
       <ConfirmDialog
         open={takingDown}

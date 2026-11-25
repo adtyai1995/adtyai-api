@@ -55,12 +55,10 @@ const STATUS_VARIANT: Record<SystemTaskStatus, 'secondary' | 'destructive'> = {
 }
 
 const STATUS_CLASS_NAME: Record<SystemTaskStatus, string> = {
-  pending:
-    'bg-warning-soft text-warning',
+  pending: 'bg-warning-soft text-warning',
   running:
     'bg-sky-50 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300 [&_span]:bg-sky-500',
-  succeeded:
-    'bg-success-soft text-success',
+  succeeded: 'bg-success-soft text-success',
   failed: '',
   cancelled: 'text-muted-foreground',
 }
@@ -175,7 +173,10 @@ export function SystemTasksTable(props: SystemTasksTableProps) {
                 )}
               </TableCell>
               <TableCell
-                className='text-destructive max-w-[220px] truncate py-3 pr-4 align-middle text-xs'
+                className={cn(
+                  'max-w-[220px] truncate py-3 pr-4 align-middle text-xs',
+                  task.error ? 'text-destructive' : 'text-muted-foreground'
+                )}
                 title={task.error || undefined}
               >
                 {task.error || '-'}

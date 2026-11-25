@@ -27,6 +27,7 @@ import * as z from 'zod'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { StaticRowActions } from '@/components/data-table/static/static-row-actions'
 import { Dialog } from '@/components/dialog'
+import { ContentSection } from '@/components/layout'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -230,11 +231,21 @@ export function FAQSection({ enabled, data }: FAQSectionProps) {
   }
 
   return (
-    <SettingsSection title={t('FAQ')}>
-      <div className='space-y-4'>
-        <div className='flex flex-wrap items-center justify-between gap-2'>
-          <div className='flex flex-wrap items-center gap-2'>
-            <Button onClick={handleAdd} size='sm'>
+    <div className='flex min-w-0 flex-col gap-8'>
+      <SettingsSection title={t('FAQ')}>
+        <SettingsSwitchField
+          checked={isEnabled}
+          onCheckedChange={handleToggleEnabled}
+          label={t('Enabled')}
+          className='py-0'
+        />
+      </SettingsSection>
+
+      <ContentSection
+        title={t('Frequently asked questions')}
+        actions={
+          <>
+            <Button variant='brand' onClick={handleAdd} size='sm'>
               <Plus className='mr-2 h-4 w-4' />
               {t('Add FAQ')}
             </Button>
@@ -251,21 +262,15 @@ export function FAQSection({ enabled, data }: FAQSectionProps) {
             <Button
               onClick={handleSaveAll}
               size='sm'
-              variant='secondary'
+              variant='outline'
               disabled={!hasChanges || updateOption.isPending}
             >
               <Save className='mr-2 h-4 w-4' />
               {updateOption.isPending ? t('Saving...') : t('Save Settings')}
             </Button>
-          </div>
-          <SettingsSwitchField
-            checked={isEnabled}
-            onCheckedChange={handleToggleEnabled}
-            label={t('Enabled')}
-            className='py-0'
-          />
-        </div>
-
+          </>
+        }
+      >
         <StaticDataTable
           data={faqList}
           getRowKey={(faq) => faq.id}
@@ -318,7 +323,7 @@ export function FAQSection({ enabled, data }: FAQSectionProps) {
             },
           ]}
         />
-      </div>
+      </ContentSection>
 
       <Dialog
         open={showDialog}
@@ -414,6 +419,6 @@ export function FAQSection({ enabled, data }: FAQSectionProps) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </SettingsSection>
+    </div>
   )
 }

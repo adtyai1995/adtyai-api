@@ -63,6 +63,7 @@ export function TextField(props: {
   type?: 'text' | 'number'
   required?: boolean
   placeholder?: string
+  inputClassName?: string
   children?: ReactNode
 }) {
   const { t } = useTranslation()
@@ -74,6 +75,7 @@ export function TextField(props: {
         id={id}
         type={props.type ?? 'text'}
         step={props.type === 'number' ? 'any' : undefined}
+        className={props.inputClassName}
         value={props.value}
         disabled={props.disabled}
         placeholder={props.placeholder}

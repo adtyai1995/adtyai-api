@@ -20,6 +20,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { siteWalletKindLabel } from '@/features/adty-ledger/site-wallet-labels'
 import { SiteWalletLedger } from '@/features/adty-ledger/site-wallet-ledger'
@@ -43,15 +44,12 @@ export function OwnerWalletBalances() {
     (wallet) => wallet.kind !== 'operating'
   )
   return (
-    <section className='flex flex-col gap-3'>
-      <div className='flex flex-col gap-1'>
-        <h2 className='text-sm font-medium'>{t('Wallets')}</h2>
-        <p className='text-muted-foreground text-sm'>
-          {t(
-            'Frozen amounts are held for redemption codes, commission or withdrawals and cannot be used until released.'
-          )}
-        </p>
-      </div>
+    <ContentSection
+      title={t('Wallets')}
+      description={t(
+        'Frozen amounts are held for redemption codes, commission or withdrawals and cannot be used until released.'
+      )}
+    >
       {wallets.isPending && <LoadingState />}
       {wallets.isError && (
         <ErrorState
@@ -107,7 +105,7 @@ export function OwnerWalletBalances() {
           })}
         />
       )}
-    </section>
+    </ContentSection>
   )
 }
 

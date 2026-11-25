@@ -67,7 +67,7 @@ export function AnnouncementsSection({ enabled }: AnnouncementsSectionProps) {
   }
 
   return (
-    <>
+    <div className='flex min-w-0 flex-col gap-8'>
       <SettingsSection title={t('Announcements')}>
         <SettingsSwitchField
           checked={isEnabled}
@@ -76,9 +76,10 @@ export function AnnouncementsSection({ enabled }: AnnouncementsSectionProps) {
           description={t(
             'When disabled, published announcements are hidden from the public dashboard.'
           )}
+          className='py-0'
         />
       </SettingsSection>
       <NotificationManager mode='root' />
-    </>
+    </div>
   )
 }

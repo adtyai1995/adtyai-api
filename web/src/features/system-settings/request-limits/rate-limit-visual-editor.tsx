@@ -122,9 +122,9 @@ export function RateLimitVisualEditor({
 
   return (
     <div className='space-y-4'>
-      <div className='flex items-center gap-4'>
-        <div className='relative flex-1'>
-          <Search className='text-muted-foreground absolute top-2.5 left-2.5 h-4 w-4' />
+      <div className='flex flex-wrap items-center justify-between gap-3'>
+        <div className='relative w-full max-w-sm'>
+          <Search className='text-muted-foreground absolute top-2 left-2.5 h-4 w-4' />
           <Input
             placeholder={t('Search group names...')}
             value={searchText}
@@ -132,7 +132,7 @@ export function RateLimitVisualEditor({
             className='pl-9'
           />
         </div>
-        <Button onClick={handleAdd}>
+        <Button type='button' variant='brand' size='sm' onClick={handleAdd}>
           <Plus className='mr-2 h-4 w-4' />
           {t('Add group')}
         </Button>

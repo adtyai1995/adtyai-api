@@ -48,7 +48,7 @@ export function OwnerStatGrid(props: { items: OwnerStat[]; label: string }) {
           <span
             data-negative={item.negative ? 'true' : undefined}
             className={cn(
-              'font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums',
+              'font-display text-[19px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums sm:text-[22px]',
               item.negative && 'text-destructive'
             )}
           >

@@ -83,9 +83,9 @@ export const GroupRatioForm = memo(function GroupRatioForm({
   )
 
   return (
-    <div className='space-y-6'>
+    <div className='flex flex-col gap-6'>
       <div className='flex flex-wrap items-center justify-between gap-3'>
-        <p className='text-muted-foreground text-sm'>
+        <p className='text-dim max-w-[80ch] text-[13px] leading-relaxed'>
           {t('Manage pricing ratios and descriptions for your groups.')}
         </p>
         <div className='flex shrink-0 gap-2'>

@@ -51,6 +51,7 @@ export function RetrySection() {
                   min={0}
                   max={99}
                   step={1}
+                  className='sm:max-w-44'
                   {...safeNumberFieldProps(field)}
                 />
               </FormControl>
@@ -70,6 +71,7 @@ export function RetrySection() {
               <FormControl>
                 <Input
                   {...field}
+                  className='max-w-md'
                   placeholder={t('e.g. 401, 403, 429, 500-599')}
                 />
               </FormControl>

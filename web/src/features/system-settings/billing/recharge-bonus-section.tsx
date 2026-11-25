@@ -17,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Gift } from 'lucide-react'
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -28,7 +27,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
-import { TitledCard } from '@/components/ui/titled-card'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { adtyTopupQueryKeys } from '@/features/wallet/adty/api'
 import { PaymentMethodIcon } from '@/features/wallet/adty/components/payment-logos'
 import { api } from '@/lib/api'
@@ -177,103 +176,108 @@ export function RechargeBonusSection() {
   let bodyContent: React.ReactNode
   if (query.isPending) {
     bodyContent = (
-      <div className='space-y-3'>
-        <Skeleton className='h-14 w-full' />
-        <Skeleton className='h-14 w-full' />
-        <Skeleton className='h-14 w-full' />
+      <div className='space-y-3 p-5 sm:p-6'>
+        <Skeleton className='h-12 w-full' />
+        <Skeleton className='h-12 w-full' />
+        <Skeleton className='h-12 w-full' />
       </div>
     )
   } else if (query.isError) {
     bodyContent = (
-      <ErrorState
-        className='min-h-32'
-        title={t('Failed to load')}
-        onRetry={() => void query.refetch()}
-      />
+      <div className='p-5 sm:p-6'>
+        <ErrorState
+          className='min-h-32'
+          title={t('Failed to load')}
+          onRetry={() => void query.refetch()}
+        />
+      </div>
     )
   } else {
-    bodyContent = MAIN_BONUS_METHODS.map((item) => {
-      const draft = drafts[item.key] ?? { enabled: false, rate: '' }
-      const percentHint = formatBonusRatePercent(draft.rate)
-      const isSavingThis = savingMethod === item.key && mutation.isPending
-      return (
-        <div
-          key={item.key}
-          className='flex flex-col gap-3 rounded-lg border p-3.5 sm:flex-row sm:items-center sm:justify-between'
-        >
-          <div className='flex items-center gap-3'>
-            <Switch
-              id={`main-bonus-switch-${item.key}`}
-              checked={draft.enabled}
-              onCheckedChange={(checked) =>
-                setDrafts((prev) => ({
-                  ...prev,
-                  [item.key]: {
-                    enabled: checked,
-                    rate: prev[item.key]?.rate ?? '',
-                  },
-                }))
-              }
-            />
-            <PaymentMethodIcon method={item.key} className='size-6 shrink-0' />
-            <Label
-              htmlFor={`main-bonus-switch-${item.key}`}
-              className='min-w-24 font-medium'
+    bodyContent = (
+      <div className='divide-border divide-y'>
+        {MAIN_BONUS_METHODS.map((item) => {
+          const draft = drafts[item.key] ?? { enabled: false, rate: '' }
+          const percentHint = formatBonusRatePercent(draft.rate)
+          const isSavingThis = savingMethod === item.key && mutation.isPending
+          return (
+            <div
+              key={item.key}
+              className='flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6'
             >
-              {t(item.labelKey)}
-            </Label>
-          </div>
-          <div className='flex flex-wrap items-center gap-2.5'>
-            <div className='flex items-center gap-2'>
-              <Input
-                type='text'
-                inputMode='decimal'
-                aria-label={`${t(item.labelKey)} ${t('Bonus rate')}`}
-                placeholder='0.025'
-                className='w-32 font-mono text-xs tabular-nums'
-                value={draft.rate}
-                onChange={(event) =>
-                  setDrafts((prev) => ({
-                    ...prev,
-                    [item.key]: {
-                      enabled: prev[item.key]?.enabled ?? false,
-                      rate: event.target.value,
-                    },
-                  }))
-                }
-              />
-              {percentHint && (
-                <span className='text-muted-foreground min-w-16 font-mono text-xs tabular-nums'>
-                  {percentHint}
-                </span>
-              )}
+              <div className='flex items-center gap-3'>
+                <Switch
+                  id={`main-bonus-switch-${item.key}`}
+                  checked={draft.enabled}
+                  onCheckedChange={(checked) =>
+                    setDrafts((prev) => ({
+                      ...prev,
+                      [item.key]: {
+                        enabled: checked,
+                        rate: prev[item.key]?.rate ?? '',
+                      },
+                    }))
+                  }
+                />
+                <PaymentMethodIcon
+                  method={item.key}
+                  className='size-6 shrink-0'
+                />
+                <Label
+                  htmlFor={`main-bonus-switch-${item.key}`}
+                  className='min-w-24 font-medium'
+                >
+                  {t(item.labelKey)}
+                </Label>
+              </div>
+              <div className='flex flex-wrap items-center gap-2.5'>
+                <div className='flex items-center gap-2'>
+                  <Input
+                    type='text'
+                    inputMode='decimal'
+                    aria-label={`${t(item.labelKey)} ${t('Bonus rate')}`}
+                    placeholder='0.025'
+                    className='w-32 font-mono text-xs tabular-nums'
+                    value={draft.rate}
+                    onChange={(event) =>
+                      setDrafts((prev) => ({
+                        ...prev,
+                        [item.key]: {
+                          enabled: prev[item.key]?.enabled ?? false,
+                          rate: event.target.value,
+                        },
+                      }))
+                    }
+                  />
+                  <span className='text-dim w-16 font-mono text-xs tabular-nums'>
+                    {percentHint}
+                  </span>
+                </div>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={isSavingThis}
+                  onClick={() => handleSave(item.key)}
+                >
+                  {t('Save')}
+                </Button>
+              </div>
             </div>
-            <Button
-              type='button'
-              size='sm'
-              variant='outline'
-              disabled={isSavingThis}
-              onClick={() => handleSave(item.key)}
-            >
-              {t('Save')}
-            </Button>
-          </div>
-        </div>
-      )
-    })
+          )
+        })}
+      </div>
+    )
   }
 
   return (
-    <TitledCard
-      icon={<Gift className='size-4' />}
+    <SettingsSection
       title={t('Payment Method Recharge Bonus')}
       description={t(
         'Configure main-site recharge bonus rates (0 to 1, e.g. 0.025 for 2.5%) for Alipay, WeChat Pay, and USDT. Bonus credits do not earn referral commissions.'
       )}
-      disableHoverEffect
-      contentClassName='space-y-3'
+      bodyClassName='p-0 sm:p-0'
     >
       {bodyContent}
-    </TitledCard>
+    </SettingsSection>
   )
 }

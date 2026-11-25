@@ -17,10 +17,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { ListChecks, RefreshCw } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -56,108 +57,89 @@ export function SystemTasksPanel() {
   const hasActiveTasks = activeTasks.length > 0
 
   return (
-    <section className='bg-card overflow-hidden rounded-lg border shadow-xs'>
-      <div className='flex flex-col gap-3 border-b px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5'>
-        <div className='min-w-0'>
-          <div className='flex items-center gap-2'>
-            <span className='bg-muted text-muted-foreground inline-flex size-7 items-center justify-center rounded-md'>
-              <ListChecks className='size-4' aria-hidden='true' />
-            </span>
-            <div className='min-w-0'>
-              <h3 className='text-sm font-semibold'>{t('System Tasks')}</h3>
-              <p className='text-muted-foreground mt-0.5 text-xs'>
-                {t(
-                  'Recent maintenance tasks running across instances and their execution status.'
-                )}
-              </p>
-            </div>
-          </div>
-        </div>
-        <div className='flex shrink-0 items-center gap-3'>
-          <span
-            className='text-muted-foreground inline-flex items-center gap-1.5 text-xs'
-            aria-live='polite'
-          >
-            <span
-              className={cn(
-                'size-1.5 rounded-full',
-                hasActiveTasks ? 'bg-success' : 'bg-muted-foreground/40'
-              )}
-              aria-hidden='true'
-            />
-            {hasActiveTasks
-              ? t('Auto-refreshing every {{seconds}}s', {
-                  seconds: ACTIVE_POLL_INTERVAL_MS / 1000,
-                })
-              : t('Live refresh pauses when no task is running')}
+    <div className='flex flex-col gap-8'>
+      <ContentSection
+        title={
+          <span className='inline-flex items-center gap-2'>
+            <span>{t('Active Tasks')}</span>
+            <Badge variant='outline' className='tabular-nums'>
+              {activeTasks.length}
+            </Badge>
           </span>
-          <Button
-            type='button'
-            variant='outline'
-            size='sm'
-            onClick={() => void tasksQuery.refetch()}
-            disabled={tasksQuery.isFetching}
-            aria-label={t('Refresh')}
-          >
-            <RefreshCw
-              data-icon='inline-start'
-              className={cn('size-3.5', refreshing && 'animate-spin')}
-              aria-hidden='true'
-            />
-            {refreshing ? t('Refreshing...') : t('Refresh')}
-          </Button>
-        </div>
-      </div>
-
-      <div aria-busy={tasksQuery.isFetching}>
-        {loading && (
-          <div className='space-y-2 p-4 sm:p-5'>
-            <Skeleton className='h-9 w-full rounded-md' />
-            <Skeleton className='h-9 w-full rounded-md' />
-            <Skeleton className='h-9 w-full rounded-md' />
-            <Skeleton className='h-9 w-full rounded-md' />
-          </div>
-        )}
-        {!loading && tasksQuery.isError && (
-          <ErrorState
-            title={t('We could not load system tasks.')}
-            description={
-              tasksQuery.error instanceof Error
-                ? tasksQuery.error.message
-                : undefined
-            }
-            onRetry={() => {
-              void tasksQuery.refetch()
-            }}
-            className='min-h-[260px]'
-          />
-        )}
-        {!loading && !tasksQuery.isError && (
-          <div className='space-y-4 p-4 sm:p-5'>
-            <div>
-              <div className='mb-2 flex items-center justify-between gap-3'>
-                <div>
-                  <h4 className='text-sm font-medium'>{t('Active Tasks')}</h4>
-                  <p className='text-muted-foreground mt-0.5 text-xs'>
-                    {t('Tasks currently pending or running.')}
-                  </p>
-                </div>
-                <Badge variant='outline'>{activeTasks.length}</Badge>
-              </div>
-              {activeTasks.length > 0 ? (
-                <SystemTasksTable tasks={activeTasks} />
-              ) : (
-                <div className='text-muted-foreground rounded-md border border-dashed px-4 py-6 text-center text-sm'>
-                  {t('No active system tasks.')}
-                </div>
-              )}
+        }
+        description={t('Tasks currently pending or running.')}
+        actions={
+          <>
+            <span
+              className='text-dim inline-flex items-center gap-1.5 text-xs'
+              aria-live='polite'
+            >
+              <span
+                className={cn(
+                  'size-1.5 rounded-full',
+                  hasActiveTasks ? 'bg-success' : 'bg-muted-foreground/40'
+                )}
+                aria-hidden='true'
+              />
+              {hasActiveTasks
+                ? t('Auto-refreshing every {{seconds}}s', {
+                    seconds: ACTIVE_POLL_INTERVAL_MS / 1000,
+                  })
+                : t('Live refresh pauses when no task is running')}
+            </span>
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              onClick={() => void tasksQuery.refetch()}
+              disabled={tasksQuery.isFetching}
+              aria-label={t('Refresh')}
+            >
+              <RefreshCw
+                data-icon='inline-start'
+                className={cn('size-3.5', refreshing && 'animate-spin')}
+                aria-hidden='true'
+              />
+              {refreshing ? t('Refreshing...') : t('Refresh')}
+            </Button>
+          </>
+        }
+      >
+        <div aria-busy={tasksQuery.isFetching}>
+          {loading && (
+            <div className='space-y-2'>
+              <Skeleton className='h-9 w-full rounded-md' />
+              <Skeleton className='h-9 w-full rounded-md' />
+              <Skeleton className='h-9 w-full rounded-md' />
             </div>
-          </div>
-        )}
-      </div>
-      <div className='p-4 pt-0 sm:p-5 sm:pt-0'>
-        <SystemTaskHistory activeRefreshAt={tasksQuery.dataUpdatedAt} />
-      </div>
-    </section>
+          )}
+          {!loading && tasksQuery.isError && (
+            <ErrorState
+              title={t('We could not load system tasks.')}
+              description={
+                tasksQuery.error instanceof Error
+                  ? tasksQuery.error.message
+                  : undefined
+              }
+              onRetry={() => {
+                void tasksQuery.refetch()
+              }}
+              className='min-h-[200px]'
+            />
+          )}
+          {!loading &&
+            !tasksQuery.isError &&
+            (activeTasks.length > 0 ? (
+              <SystemTasksTable tasks={activeTasks} />
+            ) : (
+              <div className='border-border text-dim rounded-[14px] border border-dashed px-4 py-6 text-center text-sm'>
+                {t('No active system tasks.')}
+              </div>
+            ))}
+        </div>
+      </ContentSection>
+
+      <SystemTaskHistory activeRefreshAt={tasksQuery.dataUpdatedAt} />
+    </div>
   )
 }

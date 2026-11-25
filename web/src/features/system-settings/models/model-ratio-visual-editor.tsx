@@ -845,7 +845,7 @@ const ModelRatioVisualEditorComponent = forwardRef<
           />
 
           {!hasRows ? (
-            <div className='text-muted-foreground rounded-lg border border-dashed p-8 text-center'>
+            <div className='border-border bg-card text-muted-foreground rounded-[14px] border p-8 text-center'>
               {emptyStateText}
             </div>
           ) : (
@@ -926,7 +926,7 @@ const ModelRatioVisualEditorComponent = forwardRef<
               className='h-full min-h-0'
             />
           ) : (
-            <div className='bg-card text-muted-foreground flex h-full min-h-0 flex-col items-center justify-center gap-3 rounded-xl border border-dashed p-6 text-center'>
+            <div className='border-border bg-muted/25 text-muted-foreground flex h-full min-h-0 flex-col items-center justify-center gap-3 rounded-[14px] border p-6 text-center'>
               <div className='text-foreground text-base font-medium'>
                 {t('Select a model to edit pricing')}
               </div>

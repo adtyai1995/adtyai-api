@@ -22,16 +22,18 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
-import { Switch } from '@/components/ui/switch'
+import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
 import { SecureVerificationDialog } from '@/features/auth/secure-verification/components/secure-verification-dialog'
 import { useSecureVerification } from '@/features/auth/secure-verification/hooks/use-secure-verification'
+import { SettingsSwitchField } from '@/features/system-settings/components/settings-form-layout'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { api } from '@/lib/api'
 import { formatTimestamp } from '@/lib/format'
 import {
@@ -390,8 +392,7 @@ export function TranslationAdminPanel() {
             ? t('English is not ready')
             : body.data.notice
         setResult(
-          body.data?.english ||
-            `${body.data?.source || source}\n${noticeText}`
+          body.data?.english || `${body.data?.source || source}\n${noticeText}`
         )
         await refresh()
       })
@@ -428,10 +429,7 @@ export function TranslationAdminPanel() {
         !data.notice || data.notice === '英文译文未就绪'
           ? t('English is not ready')
           : data.notice
-      setResult(
-        data.english ||
-          `${data.source || source}\n${noticeText}`
-      )
+      setResult(data.english || `${data.source || source}\n${noticeText}`)
       await refresh()
     } catch (cause) {
       setError(getServerErrorMessage(cause, t('Failed to save')))
@@ -520,11 +518,17 @@ export function TranslationAdminPanel() {
   const set = (patch: Partial<Draft>) =>
     setDraft((current) => ({ ...current, ...patch }))
   const numberField = (key: (typeof NUMBER_FIELDS)[number], label: string) => (
-    <div className='flex flex-col gap-1'>
-      <Label htmlFor={`translator-${key}`}>{label}</Label>
+    <div className='flex flex-col gap-1.5'>
+      <Label
+        htmlFor={`translator-${key}`}
+        className='text-[13.5px] leading-snug font-semibold'
+      >
+        {label}
+      </Label>
       <Input
         id={`translator-${key}`}
         inputMode='numeric'
+        className='tabular-nums sm:max-w-40'
         value={draft[key]}
         onChange={(event) => set({ [key]: event.target.value })}
       />
@@ -533,18 +537,19 @@ export function TranslationAdminPanel() {
 
   const tasks = tasksQuery.data ?? []
   const glossaryTerms = glossaryQuery.data ?? []
+  const showSections = !config.isPending && !config.isError
 
   return (
-    <Card>
-      <CardContent className='flex flex-col gap-4 py-4'>
-        <div className='flex flex-col gap-1'>
-          <h2 className='text-sm font-medium'>{t('System translation')}</h2>
-          <p className='text-muted-foreground text-sm'>
-            {t(
-              'Chinese stays available when English is not ready. Customers are not charged.'
-            )}
-          </p>
-        </div>
+    <div className='flex min-w-0 flex-col gap-8'>
+      <SettingsSection
+        title={t('System translation')}
+        bodyClassName='space-y-6'
+      >
+        <p className='text-dim max-w-[80ch] text-[13px] leading-relaxed'>
+          {t(
+            'Chinese stays available when English is not ready. Customers are not charged.'
+          )}
+        </p>
         <ConfigGate
           isPending={config.isPending}
           isError={config.isError}
@@ -556,59 +561,73 @@ export function TranslationAdminPanel() {
             void glossaryQuery.refetch()
           }}
         >
-          <div className='flex flex-col gap-4'>
-            <dl className='text-muted-foreground grid gap-x-4 gap-y-1 text-sm sm:grid-cols-3'>
-              <div>
-                <dt>{t('Saved')}</dt>
-                <dd className='text-foreground tabular-nums'>
-                  {time(config.data?.saved_at)}
-                </dd>
-              </div>
-              <div>
-                <dt>{t('Last test passed')}</dt>
-                <dd className='text-foreground tabular-nums'>
-                  {time(config.data?.tested_at)}
-                </dd>
-              </div>
-              <div>
-                <dt>{t('Last translation')}</dt>
-                <dd className='text-foreground tabular-nums'>
-                  {time(config.data?.translated_at)}
-                </dd>
-              </div>
-            </dl>
-            <section
-              aria-label={t('Today')}
-              className='flex flex-col gap-1 text-sm'
-            >
-              <h3 className='font-medium'>{t('Today (UTC)')}</h3>
-              {usage.isError && (
-                <p className='text-muted-foreground'>
-                  {t('Failed to load data')}
-                </p>
-              )}
-              {usage.data && (
-                <p className='text-muted-foreground tabular-nums'>
-                  {t('Calls')} {usage.data.calls ?? 0} · {t('Failures')}{' '}
-                  {usage.data.failures ?? 0} · {t('Average latency')}{' '}
-                  {usage.data.calls
-                    ? Math.round(
-                        (usage.data.latency_ms ?? 0) / usage.data.calls
-                      )
-                    : 0}{' '}
-                  ms
-                  {usage.data.cost_usd
-                    ? ` · ${t('Estimated cost')} $${usage.data.cost_usd}`
-                    : ''}
-                  {draft.daily_quota !== '0'
-                    ? ` · ${t('Daily limit')} ${draft.daily_quota}`
-                    : ''}
-                </p>
-              )}
-            </section>
-            <div className='grid gap-3 sm:grid-cols-2'>
-              <div className='flex flex-col gap-1'>
-                <Label htmlFor='translator-mode'>{t('Translator')}</Label>
+          <div className='flex flex-col gap-6'>
+            <div className='bg-muted/40 flex flex-col gap-4 rounded-xl p-4'>
+              <dl className='grid gap-x-6 gap-y-2 text-sm sm:grid-cols-3'>
+                <div>
+                  <dt className='text-dim text-[12px]'>{t('Saved')}</dt>
+                  <dd className='mt-0.5 font-medium tabular-nums'>
+                    {time(config.data?.saved_at)}
+                  </dd>
+                </div>
+                <div>
+                  <dt className='text-dim text-[12px]'>
+                    {t('Last test passed')}
+                  </dt>
+                  <dd className='mt-0.5 font-medium tabular-nums'>
+                    {time(config.data?.tested_at)}
+                  </dd>
+                </div>
+                <div>
+                  <dt className='text-dim text-[12px]'>
+                    {t('Last translation')}
+                  </dt>
+                  <dd className='mt-0.5 font-medium tabular-nums'>
+                    {time(config.data?.translated_at)}
+                  </dd>
+                </div>
+              </dl>
+              <section
+                aria-label={t('Today')}
+                className='border-border flex flex-col gap-1 border-t pt-3 text-sm'
+              >
+                <h4 className='text-[13.5px] font-semibold'>
+                  {t('Today (UTC)')}
+                </h4>
+                {usage.isError && (
+                  <p className='text-dim text-[13px]'>
+                    {t('Failed to load data')}
+                  </p>
+                )}
+                {usage.data && (
+                  <p className='text-dim text-[13px] tabular-nums'>
+                    {t('Calls')} {usage.data.calls ?? 0} · {t('Failures')}{' '}
+                    {usage.data.failures ?? 0} · {t('Average latency')}{' '}
+                    {usage.data.calls
+                      ? Math.round(
+                          (usage.data.latency_ms ?? 0) / usage.data.calls
+                        )
+                      : 0}{' '}
+                    ms
+                    {usage.data.cost_usd
+                      ? ` · ${t('Estimated cost')} $${usage.data.cost_usd}`
+                      : ''}
+                    {draft.daily_quota !== '0'
+                      ? ` · ${t('Daily limit')} ${draft.daily_quota}`
+                      : ''}
+                  </p>
+                )}
+              </section>
+            </div>
+
+            <div className='grid max-w-3xl gap-x-6 gap-y-4 sm:grid-cols-2'>
+              <div className='flex flex-col gap-1.5'>
+                <Label
+                  htmlFor='translator-mode'
+                  className='text-[13.5px] leading-snug font-semibold'
+                >
+                  {t('Translator')}
+                </Label>
                 <NativeSelect
                   id='translator-mode'
                   value={draft.mode}
@@ -623,8 +642,13 @@ export function TranslationAdminPanel() {
                 </NativeSelect>
               </div>
               {independent && (
-                <div className='flex flex-col gap-1'>
-                  <Label htmlFor='translator-protocol'>{t('Protocol')}</Label>
+                <div className='flex flex-col gap-1.5'>
+                  <Label
+                    htmlFor='translator-protocol'
+                    className='text-[13.5px] leading-snug font-semibold'
+                  >
+                    {t('Protocol')}
+                  </Label>
                   <NativeSelect
                     id='translator-protocol'
                     value={draft.protocol}
@@ -640,8 +664,11 @@ export function TranslationAdminPanel() {
                 </div>
               )}
               {independent && (
-                <div className='flex flex-col gap-1 sm:col-span-2'>
-                  <Label htmlFor='translator-base-url'>
+                <div className='flex max-w-xl flex-col gap-1.5 sm:col-span-2'>
+                  <Label
+                    htmlFor='translator-base-url'
+                    className='text-[13.5px] leading-snug font-semibold'
+                  >
                     {t('API address (https)')}
                   </Label>
                   <Input
@@ -652,8 +679,13 @@ export function TranslationAdminPanel() {
                 </div>
               )}
               {independent && (
-                <div className='flex flex-col gap-1 sm:col-span-2'>
-                  <Label htmlFor='translator-token'>{t('API key')}</Label>
+                <div className='flex max-w-xl flex-col gap-1.5 sm:col-span-2'>
+                  <Label
+                    htmlFor='translator-token'
+                    className='text-[13.5px] leading-snug font-semibold'
+                  >
+                    {t('API key')}
+                  </Label>
                   <Input
                     id='translator-token'
                     type='password'
@@ -670,16 +702,26 @@ export function TranslationAdminPanel() {
                   />
                 </div>
               )}
-              <div className='flex flex-col gap-1'>
-                <Label htmlFor='translator-model'>{t('Model')}</Label>
+              <div className='flex flex-col gap-1.5'>
+                <Label
+                  htmlFor='translator-model'
+                  className='text-[13.5px] leading-snug font-semibold'
+                >
+                  {t('Model')}
+                </Label>
                 <Input
                   id='translator-model'
                   value={draft.model_name}
                   onChange={(event) => set({ model_name: event.target.value })}
                 />
               </div>
-              <div className='flex flex-col gap-1'>
-                <Label htmlFor='translator-backup'>{t('Backup model')}</Label>
+              <div className='flex flex-col gap-1.5'>
+                <Label
+                  htmlFor='translator-backup'
+                  className='text-[13.5px] leading-snug font-semibold'
+                >
+                  {t('Backup model')}
+                </Label>
                 <Input
                   id='translator-backup'
                   value={draft.backup_model}
@@ -688,6 +730,9 @@ export function TranslationAdminPanel() {
                   }
                 />
               </div>
+            </div>
+
+            <div className='grid max-w-3xl gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3'>
               {numberField('timeout_sec', t('Timeout (seconds, 0 = default)'))}
               {numberField('concurrency', t('Concurrent calls (0 = no limit)'))}
               {numberField('max_chars', t('Maximum characters (0 = no limit)'))}
@@ -697,16 +742,15 @@ export function TranslationAdminPanel() {
                 t('Retries with the backup model (0 = none)')
               )}
             </div>
-            <div className='flex items-center justify-between gap-4 rounded-lg border p-3'>
-              <Label htmlFor='translator-enabled'>
-                {t('Use this translator')}
-              </Label>
-              <Switch
-                id='translator-enabled'
-                checked={draft.enabled}
-                onCheckedChange={(value) => set({ enabled: value })}
-              />
-            </div>
+
+            <SettingsSwitchField
+              controlId='translator-enabled'
+              checked={draft.enabled}
+              onCheckedChange={(value) => set({ enabled: value })}
+              label={t('Use this translator')}
+              className='max-w-3xl py-1'
+            />
+
             <div className='flex flex-wrap gap-2'>
               <Button
                 variant='brand'
@@ -725,20 +769,37 @@ export function TranslationAdminPanel() {
                 {t('Test connection')}
               </Button>
             </div>
-            <div className='flex flex-col gap-2'>
-              <Label htmlFor='translator-object-key'>{t('Object key')}</Label>
-              <Input
-                id='translator-object-key'
-                placeholder='notice:manual'
-                value={objectKey}
-                onChange={(event) => setObjectKey(event.target.value)}
-              />
-              <Label htmlFor='translator-source'>{t('Chinese source')}</Label>
-              <Textarea
-                id='translator-source'
-                value={source}
-                onChange={(event) => setSource(event.target.value)}
-              />
+
+            <Separator />
+
+            <div className='flex max-w-3xl flex-col gap-4'>
+              <div className='flex max-w-sm flex-col gap-1.5'>
+                <Label
+                  htmlFor='translator-object-key'
+                  className='text-[13.5px] leading-snug font-semibold'
+                >
+                  {t('Object key')}
+                </Label>
+                <Input
+                  id='translator-object-key'
+                  placeholder='notice:manual'
+                  value={objectKey}
+                  onChange={(event) => setObjectKey(event.target.value)}
+                />
+              </div>
+              <div className='flex flex-col gap-1.5'>
+                <Label
+                  htmlFor='translator-source'
+                  className='text-[13.5px] leading-snug font-semibold'
+                >
+                  {t('Chinese source')}
+                </Label>
+                <Textarea
+                  id='translator-source'
+                  value={source}
+                  onChange={(event) => setSource(event.target.value)}
+                />
+              </div>
               <div className='flex flex-wrap gap-2'>
                 <Button
                   type='button'
@@ -766,197 +827,210 @@ export function TranslationAdminPanel() {
               )}
             </div>
 
-            {tasks.length > 0 && (
-              <section
-                aria-label={t('Translation tasks')}
-                className='flex flex-col gap-2 rounded-lg border p-3 text-sm'
+            {error && <p className='text-destructive text-sm'>{error}</p>}
+          </div>
+        </ConfigGate>
+      </SettingsSection>
+
+      {showSections && tasks.length > 0 && (
+        <ContentSection
+          title={t('Translation tasks')}
+          aria-label={t('Translation tasks')}
+        >
+          <div className='border-border bg-card divide-border divide-y overflow-hidden rounded-[14px] border text-sm'>
+            {tasks.map((task) => (
+              <div
+                key={`${task.object_key}-${task.version}`}
+                className='flex flex-col gap-2 px-5 py-4'
               >
-                <h3 className='font-medium'>{t('Translation tasks')}</h3>
-                <div className='flex flex-col gap-2'>
-                  {tasks.map((task) => (
-                    <div
-                      key={`${task.object_key}-${task.version}`}
-                      className='flex flex-col gap-2 rounded border p-2'
-                    >
-                      <div className='flex flex-wrap items-center justify-between gap-2'>
-                        <span className='font-mono text-xs'>
-                          {task.object_key} (v{task.version}) ·{' '}
-                          {translationTaskStatusLabel(task.status, t)}
-                        </span>
-                        <div className='flex flex-wrap gap-2'>
-                          {task.status === 'failed' && (
-                            <Button
-                              type='button'
-                              size='sm'
-                              variant='outline'
-                              disabled={pending}
-                              onClick={() =>
-                                void retryTask(task.object_key, task.version)
-                              }
-                            >
-                              {t('Retry task')}
-                            </Button>
-                          )}
-                          <Button
-                            type='button'
-                            size='sm'
-                            variant='outline'
-                            disabled={pending}
-                            onClick={() => {
-                              setEditingTaskKey(task.object_key)
-                              setEditingEnglish(task.english || '')
-                            }}
-                          >
-                            {t('Edit translation')}
-                          </Button>
-                        </div>
-                      </div>
-                      <p className='text-muted-foreground text-xs'>
-                        {task.source}
-                      </p>
-                      {task.english && <p className='text-xs'>{task.english}</p>}
-                    </div>
-                  ))}
-                </div>
-                {editingTaskKey && (
-                  <div className='flex flex-col gap-2 pt-2'>
-                    <Label htmlFor='translator-manual-english'>
-                      {t('Manual English override')} ({editingTaskKey})
-                    </Label>
-                    <Textarea
-                      id='translator-manual-english'
-                      value={editingEnglish}
-                      onChange={(event) =>
-                        setEditingEnglish(event.target.value)
-                      }
-                    />
+                <div className='flex flex-wrap items-center justify-between gap-2'>
+                  <span className='font-mono text-xs'>
+                    {task.object_key} (v{task.version}) ·{' '}
+                    {translationTaskStatusLabel(task.status, t)}
+                  </span>
+                  <div className='flex flex-wrap gap-2'>
+                    {task.status === 'failed' && (
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='outline'
+                        disabled={pending}
+                        onClick={() =>
+                          void retryTask(task.object_key, task.version)
+                        }
+                      >
+                        {t('Retry task')}
+                      </Button>
+                    )}
                     <Button
                       type='button'
                       size='sm'
                       variant='outline'
-                      disabled={pending || editingEnglish.trim() === ''}
-                      onClick={() => void saveManualTranslation()}
+                      disabled={pending}
+                      onClick={() => {
+                        setEditingTaskKey(task.object_key)
+                        setEditingEnglish(task.english || '')
+                      }}
                     >
-                      {t('Save translation')}
+                      {t('Edit translation')}
                     </Button>
                   </div>
-                )}
-              </section>
-            )}
-
-            <section
-              aria-label={t('Glossary')}
-              className='flex flex-col gap-3 rounded-lg border p-3 text-sm'
-            >
-              <h3 className='font-medium'>{t('Glossary')}</h3>
-              <div className='grid gap-2 sm:grid-cols-3'>
-                <div className='flex flex-col gap-1'>
-                  <Label htmlFor='glossary-source'>{t('Source term')}</Label>
-                  <Input
-                    id='glossary-source'
-                    value={glossaryDraft.source}
-                    onChange={(event) =>
-                      setGlossaryDraft((cur) => ({
-                        ...cur,
-                        source: event.target.value,
-                      }))
-                    }
-                  />
                 </div>
-                <div className='flex flex-col gap-1'>
-                  <Label htmlFor='glossary-target'>{t('Target term')}</Label>
-                  <Input
-                    id='glossary-target'
-                    value={glossaryDraft.target}
-                    onChange={(event) =>
-                      setGlossaryDraft((cur) => ({
-                        ...cur,
-                        target: event.target.value,
-                      }))
-                    }
-                  />
-                </div>
-                <div className='flex flex-col gap-1'>
-                  <Label htmlFor='glossary-locale'>
-                    {t('Glossary locale')}
-                  </Label>
-                  <NativeSelect
-                    id='glossary-locale'
-                    value={glossaryDraft.locale}
-                    onChange={(event) =>
-                      setGlossaryDraft((cur) => ({
-                        ...cur,
-                        locale: event.target.value,
-                      }))
-                    }
-                  >
-                    <NativeSelectOption value='en'>en</NativeSelectOption>
-                    <NativeSelectOption value='zh-CN'>zh-CN</NativeSelectOption>
-                  </NativeSelect>
-                </div>
+                <p className='text-dim text-xs'>{task.source}</p>
+                {task.english && <p className='text-xs'>{task.english}</p>}
               </div>
-              <div className='flex flex-wrap gap-2'>
-                <Button
-                  type='button'
-                  variant='outline'
-                  disabled={
-                    pending ||
-                    glossaryDraft.source.trim() === '' ||
-                    glossaryDraft.target.trim() === ''
-                  }
-                  onClick={() => void saveGlossaryTerm()}
+            ))}
+            {editingTaskKey && (
+              <div className='bg-muted/30 flex flex-col gap-3 px-5 py-4'>
+                <Label
+                  htmlFor='translator-manual-english'
+                  className='text-[13.5px] leading-snug font-semibold'
                 >
-                  {t('Save term')}
-                </Button>
-              </div>
-              {glossaryTerms.length > 0 && (
-                <div className='flex flex-col gap-2'>
-                  {glossaryTerms.map((term) => (
-                    <div
-                      key={term.id}
-                      className='flex flex-wrap items-center justify-between gap-2 rounded border p-2'
-                    >
-                      <span>
-                        {term.source} → {term.target} ({term.locale})
-                      </span>
-                      <div className='flex gap-2'>
-                        <Button
-                          type='button'
-                          size='sm'
-                          variant='outline'
-                          disabled={pending}
-                          onClick={() =>
-                            setGlossaryDraft({
-                              id: term.id,
-                              source: term.source,
-                              locale: term.locale,
-                              target: term.target,
-                            })
-                          }
-                        >
-                          {t('Edit term')}
-                        </Button>
-                        <Button
-                          type='button'
-                          size='sm'
-                          variant='outline'
-                          disabled={pending}
-                          onClick={() => void deleteGlossaryTerm(term.id)}
-                        >
-                          {t('Delete term')}
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
+                  {t('Manual English override')} ({editingTaskKey})
+                </Label>
+                <Textarea
+                  id='translator-manual-english'
+                  value={editingEnglish}
+                  onChange={(event) => setEditingEnglish(event.target.value)}
+                />
+                <div className='flex justify-start'>
+                  <Button
+                    variant='brand'
+                    type='button'
+                    size='sm'
+                    disabled={pending || editingEnglish.trim() === ''}
+                    onClick={() => void saveManualTranslation()}
+                  >
+                    {t('Save translation')}
+                  </Button>
                 </div>
-              )}
-            </section>
-
-            {error && <p className='text-destructive text-sm'>{error}</p>}
+              </div>
+            )}
           </div>
-        </ConfigGate>
-        <SecureVerificationDialog {...verification.dialogProps} />
-      </CardContent>
-    </Card>
+        </ContentSection>
+      )}
+
+      {showSections && (
+        <ContentSection title={t('Glossary')} aria-label={t('Glossary')}>
+          <div className='flex flex-col gap-4'>
+            <div className='flex flex-wrap items-end gap-3'>
+              <div className='flex w-full flex-col gap-1.5 sm:w-56'>
+                <Label
+                  htmlFor='glossary-source'
+                  className='text-[13.5px] leading-snug font-semibold'
+                >
+                  {t('Source term')}
+                </Label>
+                <Input
+                  id='glossary-source'
+                  value={glossaryDraft.source}
+                  onChange={(event) =>
+                    setGlossaryDraft((cur) => ({
+                      ...cur,
+                      source: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <div className='flex w-full flex-col gap-1.5 sm:w-56'>
+                <Label
+                  htmlFor='glossary-target'
+                  className='text-[13.5px] leading-snug font-semibold'
+                >
+                  {t('Target term')}
+                </Label>
+                <Input
+                  id='glossary-target'
+                  value={glossaryDraft.target}
+                  onChange={(event) =>
+                    setGlossaryDraft((cur) => ({
+                      ...cur,
+                      target: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <div className='flex w-32 flex-col gap-1.5'>
+                <Label
+                  htmlFor='glossary-locale'
+                  className='text-[13.5px] leading-snug font-semibold'
+                >
+                  {t('Glossary locale')}
+                </Label>
+                <NativeSelect
+                  id='glossary-locale'
+                  value={glossaryDraft.locale}
+                  onChange={(event) =>
+                    setGlossaryDraft((cur) => ({
+                      ...cur,
+                      locale: event.target.value,
+                    }))
+                  }
+                >
+                  <NativeSelectOption value='en'>en</NativeSelectOption>
+                  <NativeSelectOption value='zh-CN'>zh-CN</NativeSelectOption>
+                </NativeSelect>
+              </div>
+              <Button
+                variant='brand'
+                type='button'
+                size='sm'
+                disabled={
+                  pending ||
+                  glossaryDraft.source.trim() === '' ||
+                  glossaryDraft.target.trim() === ''
+                }
+                onClick={() => void saveGlossaryTerm()}
+              >
+                {t('Save term')}
+              </Button>
+            </div>
+            {glossaryTerms.length > 0 && (
+              <div className='border-border bg-card divide-border divide-y overflow-hidden rounded-[14px] border text-sm'>
+                {glossaryTerms.map((term) => (
+                  <div
+                    key={term.id}
+                    className='flex flex-wrap items-center justify-between gap-2 px-5 py-3'
+                  >
+                    <span>
+                      {term.source} → {term.target} ({term.locale})
+                    </span>
+                    <div className='flex gap-2'>
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='outline'
+                        disabled={pending}
+                        onClick={() =>
+                          setGlossaryDraft({
+                            id: term.id,
+                            source: term.source,
+                            locale: term.locale,
+                            target: term.target,
+                          })
+                        }
+                      >
+                        {t('Edit term')}
+                      </Button>
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='outline'
+                        disabled={pending}
+                        onClick={() => void deleteGlossaryTerm(term.id)}
+                      >
+                        {t('Delete term')}
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </ContentSection>
+      )}
+
+      <SecureVerificationDialog {...verification.dialogProps} />
+    </div>
   )
 }

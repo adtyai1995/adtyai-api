@@ -23,10 +23,10 @@ import { SectionPageLayout } from '@/components/layout'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { CreateTeamForm } from '@/features/adty-site-admin/components/create-team-form'
 import { FundReviewPanel } from '@/features/adty-site-admin/components/site-fund-panel'
-import { TeamRegistrationLinksPanel } from '@/features/adty-team-registration'
 
 import { TeamDetailSheet } from './components/team-detail-sheet'
 import { TeamListPanel } from './components/team-list-panel'
+import { TeamRegistrationLinksSection } from './components/team-registration-links-section'
 
 const tabListClassName =
   'border-border h-auto flex-wrap justify-start gap-x-6 gap-y-1 rounded-none border-b p-0 [--tab-underline:var(--brand)] group-data-horizontal/tabs:h-auto'
@@ -61,19 +61,19 @@ export function RootTeamAdmin() {
               {t('Team fund anomalies')}
             </TabsTrigger>
           </TabsList>
-          <TabsContent value='teams' className='min-w-0'>
+          <TabsContent value='teams' className='min-w-0 pt-2'>
             <TeamListPanel
               scope='root'
               onOpenTeam={(team) => setOpenTeam(team.id)}
             />
           </TabsContent>
-          <TabsContent value='create' className='max-w-xl'>
+          <TabsContent value='create' className='pt-2'>
             <CreateTeamForm />
           </TabsContent>
-          <TabsContent value='registrations'>
-            <TeamRegistrationLinksPanel actor='root' />
+          <TabsContent value='registrations' className='pt-2'>
+            <TeamRegistrationLinksSection actor='root' />
           </TabsContent>
-          <TabsContent value='anomalies'>
+          <TabsContent value='anomalies' className='pt-2'>
             <FundReviewPanel siteId={0} />
           </TabsContent>
         </Tabs>
@@ -91,12 +91,12 @@ export function RootTeamAdmin() {
 export function OwnerTeamAdmin() {
   const [openTeam, setOpenTeam] = useState<number | null>(null)
   return (
-    <div className='flex flex-col gap-5'>
+    <div className='flex flex-col gap-8'>
       <TeamListPanel
         scope='owner'
         onOpenTeam={(team) => setOpenTeam(team.id)}
       />
-      <TeamRegistrationLinksPanel actor='owner' />
+      <TeamRegistrationLinksSection actor='owner' />
       <TeamDetailSheet
         scope='owner'
         teamId={openTeam}

@@ -381,12 +381,12 @@ export function CommissionWithdrawalPanel(
     >
       <div className='flex flex-wrap items-start justify-between gap-3'>
         <div className='flex flex-col gap-1'>
-          <h2 className='text-sm font-medium'>
+          <h3 className='text-[15px] leading-snug font-semibold tracking-tight [word-break:keep-all]'>
             {props.closed
               ? t('Closed-site commission withdrawals')
               : t('Invite commission withdrawal')}
-          </h2>
-          <p className='text-muted-foreground text-sm'>
+          </h3>
+          <p className='text-dim max-w-[80ch] text-[12.5px] leading-relaxed'>
             {props.closed
               ? t('Process withdrawals for closed sites.')
               : t(
@@ -415,7 +415,9 @@ export function CommissionWithdrawalPanel(
             <NativeSelectOption value='actionable'>
               {t('Awaiting review or payment')}
             </NativeSelectOption>
-            <NativeSelectOption value=''>{t('All statuses')}</NativeSelectOption>
+            <NativeSelectOption value=''>
+              {t('All statuses')}
+            </NativeSelectOption>
             {WITHDRAWAL_STATUS_OPTIONS.map((value) => (
               <NativeSelectOption key={value} value={value}>
                 {t(statusLabel(value))}
@@ -569,7 +571,9 @@ export function CommissionWithdrawalPanel(
                       )}
                       {row.status === 'paid' && row.proof_note && (
                         <div className='text-muted-foreground flex items-center gap-1.5 text-xs'>
-                          {row.proof_note.startsWith('/api/referral-assets/') ? (
+                          {row.proof_note.startsWith(
+                            '/api/referral-assets/'
+                          ) ? (
                             <a
                               href={row.proof_note}
                               target='_blank'
@@ -579,7 +583,9 @@ export function CommissionWithdrawalPanel(
                               {t('Payment proof')}
                             </a>
                           ) : (
-                            <span className='break-words'>{row.proof_note}</span>
+                            <span className='break-words'>
+                              {row.proof_note}
+                            </span>
                           )}
                         </div>
                       )}

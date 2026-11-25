@@ -24,10 +24,10 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { StaticDataTable } from '@/components/data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatTimestamp } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -95,146 +95,137 @@ function NotificationManagement(props: {
     onError: (error) => handleServerError(error),
   })
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>
-          {t(
-            props.mode === 'root'
-              ? 'Targeted notifications'
-              : 'Site announcements'
-          )}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className='flex flex-col gap-3'>
-        <div>
-          <Button size='sm' onClick={() => setEditing({ row: null })}>
-            {t('New notification')}
-          </Button>
-        </div>
-        {query.isLoading && <LoadingState />}
-        {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
-        {query.isSuccess && (
-          <>
-            <StaticDataTable
-              tableClassName='min-w-[640px]'
-              tableProps={{ 'aria-label': t('Published notifications') }}
-              data={query.data.items ?? []}
-              getRowKey={(row) => String(row.id)}
-              emptyContent={
-                <EmptyState
-                  className='min-h-24'
-                  title={t('No notifications yet')}
-                />
-              }
-              columns={[
-                {
-                  id: 'title',
-                  header: t('Title'),
-                  cell: (row) => (
-                    <span className='block max-w-64 truncate' title={row.title}>
-                      {row.title}
-                    </span>
-                  ),
-                },
-                {
-                  id: 'kind',
-                  header: t('Notification type'),
-                  cell: (row) => t(notificationKindLabels[row.kind]),
-                },
-                {
-                  id: 'recipients',
-                  header: t('Recipients'),
-                  cell: (row) => formatNotificationRecipients(row, t),
-                },
-                {
-                  id: 'publisher',
-                  header: t('Publisher'),
-                  cell: (row) => row.publisher_name,
-                },
-                {
-                  id: 'published',
-                  header: t('Published at'),
-                  cell: (row) => formatTimestamp(row.published_at),
-                },
-                {
-                  id: 'status',
-                  header: t('Status'),
-                  cell: (row) => {
-                    if (row.status === 'draft') {
-                      return (
-                        <StatusBadge label={t('Draft')} variant='warning' />
-                      )
-                    }
-                    if (row.status === 'withdrawn') {
-                      return (
-                        <StatusBadge
-                          label={t('Withdrawn notification')}
-                          variant='neutral'
-                        />
-                      )
-                    }
+    <ContentSection
+      title={t(
+        props.mode === 'root' ? 'Targeted notifications' : 'Site announcements'
+      )}
+      actions={
+        <Button size='sm' onClick={() => setEditing({ row: null })}>
+          {t('New notification')}
+        </Button>
+      }
+    >
+      {query.isLoading && <LoadingState />}
+      {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
+      {query.isSuccess && (
+        <>
+          <StaticDataTable
+            tableClassName='min-w-[640px]'
+            tableProps={{ 'aria-label': t('Published notifications') }}
+            data={query.data.items ?? []}
+            getRowKey={(row) => String(row.id)}
+            emptyContent={
+              <EmptyState
+                className='min-h-24'
+                title={t('No notifications yet')}
+              />
+            }
+            columns={[
+              {
+                id: 'title',
+                header: t('Title'),
+                cell: (row) => (
+                  <span className='block max-w-64 truncate' title={row.title}>
+                    {row.title}
+                  </span>
+                ),
+              },
+              {
+                id: 'kind',
+                header: t('Notification type'),
+                cell: (row) => t(notificationKindLabels[row.kind]),
+              },
+              {
+                id: 'recipients',
+                header: t('Recipients'),
+                cell: (row) => formatNotificationRecipients(row, t),
+              },
+              {
+                id: 'publisher',
+                header: t('Publisher'),
+                cell: (row) => row.publisher_name,
+              },
+              {
+                id: 'published',
+                header: t('Published at'),
+                cell: (row) => formatTimestamp(row.published_at),
+              },
+              {
+                id: 'status',
+                header: t('Status'),
+                cell: (row) => {
+                  if (row.status === 'draft') {
+                    return <StatusBadge label={t('Draft')} variant='warning' />
+                  }
+                  if (row.status === 'withdrawn') {
                     return (
-                      <StatusBadge label={t('Published')} variant='success' />
+                      <StatusBadge
+                        label={t('Withdrawn notification')}
+                        variant='neutral'
+                      />
                     )
-                  },
+                  }
+                  return (
+                    <StatusBadge label={t('Published')} variant='success' />
+                  )
                 },
-                {
-                  id: 'actions',
-                  header: t('Actions'),
-                  cell: (row) =>
-                    row.status !== 'withdrawn' && (
-                      <div className='flex gap-2'>
-                        <Button
-                          size='sm'
-                          variant='outline'
-                          onClick={() => setEditing({ row })}
-                        >
-                          {t('Edit')}
-                        </Button>
-                        <Button
-                          size='sm'
-                          variant='outline'
-                          onClick={() => setWithdrawing(row)}
-                        >
-                          {t('Withdraw notification')}
-                        </Button>
-                      </div>
-                    ),
-                },
-              ]}
-            />
-            <PageSwitcher
-              page={page}
-              pageSize={20}
-              total={query.data.total}
-              onPageChange={setPage}
-            />
-          </>
-        )}
-        {editing && (
-          <NotificationEditor
-            {...props}
-            row={editing.row}
-            onClose={() => setEditing(null)}
+              },
+              {
+                id: 'actions',
+                header: t('Actions'),
+                cell: (row) =>
+                  row.status !== 'withdrawn' && (
+                    <div className='flex gap-2'>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        onClick={() => setEditing({ row })}
+                      >
+                        {t('Edit')}
+                      </Button>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        onClick={() => setWithdrawing(row)}
+                      >
+                        {t('Withdraw notification')}
+                      </Button>
+                    </div>
+                  ),
+              },
+            ]}
           />
-        )}
-        <ConfirmDialog
-          open={!!withdrawing}
-          onOpenChange={(open) => {
-            if (!open && !withdraw.isPending) setWithdrawing(null)
-          }}
-          title={t('Withdraw notification')}
-          desc={t(
-            'Recipients will no longer see this notification. Read records are retained.'
-          )}
-          destructive
-          isLoading={withdraw.isPending}
-          handleConfirm={() => {
-            if (withdrawing) withdraw.mutate(withdrawing)
-          }}
+          <PageSwitcher
+            page={page}
+            pageSize={20}
+            total={query.data.total}
+            onPageChange={setPage}
+          />
+        </>
+      )}
+      {editing && (
+        <NotificationEditor
+          {...props}
+          row={editing.row}
+          onClose={() => setEditing(null)}
         />
-      </CardContent>
-    </Card>
+      )}
+      <ConfirmDialog
+        open={!!withdrawing}
+        onOpenChange={(open) => {
+          if (!open && !withdraw.isPending) setWithdrawing(null)
+        }}
+        title={t('Withdraw notification')}
+        desc={t(
+          'Recipients will no longer see this notification. Read records are retained.'
+        )}
+        destructive
+        isLoading={withdraw.isPending}
+        handleConfirm={() => {
+          if (withdrawing) withdraw.mutate(withdrawing)
+        }}
+      />
+    </ContentSection>
   )
 }
 

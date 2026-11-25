@@ -137,10 +137,13 @@ export function ServerLogFiles() {
       className='flex min-w-0 flex-col gap-4'
     >
       <div>
-        <h4 id={titleId} className='font-medium'>
+        <h4
+          id={titleId}
+          className='text-[15px] leading-snug font-semibold tracking-tight'
+        >
           {t('Server Log Management')}
         </h4>
-        <p className='text-muted-foreground mt-1 text-xs'>
+        <p className='text-dim mt-1 text-[12.5px] leading-relaxed'>
           {t(
             'Manage server log files. Log files accumulate over time; regular cleanup is recommended to free disk space.'
           )}
@@ -150,39 +153,35 @@ export function ServerLogFiles() {
       {serverLogInfo !== null &&
         (serverLogInfo.enabled ? (
           <div className='space-y-4'>
-            <div className='rounded-lg border p-4'>
-              <div className='grid grid-cols-2 gap-2 text-sm md:grid-cols-4'>
-                <div>
-                  <span className='text-muted-foreground'>
-                    {t('Log Directory')}:
-                  </span>{' '}
-                  <span className='font-mono text-xs'>
-                    {serverLogInfo.log_dir}
-                  </span>
-                </div>
-                <div>
-                  <span className='text-muted-foreground'>
-                    {t('Log File Count')}:
-                  </span>{' '}
+            <dl className='bg-muted/40 grid grid-cols-2 gap-4 rounded-xl px-4 py-3.5 text-sm md:grid-cols-4'>
+              <div className='min-w-0'>
+                <dt className='text-dim text-[12px]'>{t('Log Directory')}</dt>
+                <dd className='mt-1 truncate font-mono text-xs'>
+                  {serverLogInfo.log_dir}
+                </dd>
+              </div>
+              <div>
+                <dt className='text-dim text-[12px]'>{t('Log File Count')}</dt>
+                <dd className='mt-1 font-medium tabular-nums'>
                   {serverLogInfo.file_count}
-                </div>
-                <div>
-                  <span className='text-muted-foreground'>
-                    {t('Total Log Size')}:
-                  </span>{' '}
+                </dd>
+              </div>
+              <div>
+                <dt className='text-dim text-[12px]'>{t('Total Log Size')}</dt>
+                <dd className='mt-1 font-medium tabular-nums'>
                   {formatBytes(serverLogInfo.total_size)}
-                </div>
-                {serverLogInfo.oldest_time && serverLogInfo.newest_time && (
-                  <div>
-                    <span className='text-muted-foreground'>
-                      {t('Date Range')}:
-                    </span>{' '}
+                </dd>
+              </div>
+              {serverLogInfo.oldest_time && serverLogInfo.newest_time && (
+                <div>
+                  <dt className='text-dim text-[12px]'>{t('Date Range')}</dt>
+                  <dd className='mt-1 text-xs font-medium tabular-nums'>
                     {dayjs(serverLogInfo.oldest_time).format('YYYY-MM-DD')} ~{' '}
                     {dayjs(serverLogInfo.newest_time).format('YYYY-MM-DD')}
-                  </div>
-                )}
-              </div>
-            </div>
+                  </dd>
+                </div>
+              )}
+            </dl>
 
             <div className='flex flex-wrap items-end gap-3'>
               <div className='grid gap-1.5'>

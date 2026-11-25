@@ -25,13 +25,6 @@ import { ErrorState } from '@/components/error-state'
 import { PasswordInput } from '@/components/password-input'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -39,6 +32,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import type { SiteOwnerAction } from '@/features/auth/secure-verification'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
 import { handleServerError } from '@/lib/handle-server-error'
 
@@ -233,7 +227,9 @@ export function SiteMailPanel(props: { site: OwnerSite }) {
         Boolean(draft.resend_api_key.trim()) ||
         (savedConfig.resend_api_key_configured && !draft.clear_resend_api_key)
       if (!hasResendKey) {
-        setValidationError(t('Configure a Resend API key before enabling Resend'))
+        setValidationError(
+          t('Configure a Resend API key before enabling Resend')
+        )
         return
       }
     }
@@ -274,502 +270,486 @@ export function SiteMailPanel(props: { site: OwnerSite }) {
 
   return (
     <div className='flex flex-col gap-6'>
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('Email configuration')}</CardTitle>
-          <CardDescription>
-            {t(
-              'Only the selected method sends email. The other method keeps its settings.'
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form
-            onSubmit={handleSave}
-            autoComplete='off'
-            className='flex flex-col gap-6'
-          >
-            <div className='space-y-3'>
-              <Label>{t('Email sending method')}</Label>
-              <RadioGroup
-                value={draft.provider}
-                onValueChange={(value) =>
-                  updateDraft({ provider: value as SiteMailProvider })
-                }
-                disabled={disabled}
-                className='grid-cols-1 gap-3 sm:grid-cols-3'
+      <SettingsSection
+        title={t('Email configuration')}
+        description={t(
+          'Only the selected method sends email. The other method keeps its settings.'
+        )}
+      >
+        <form
+          onSubmit={handleSave}
+          autoComplete='off'
+          className='flex max-w-3xl flex-col gap-6'
+        >
+          <div className='space-y-3'>
+            <Label>{t('Email sending method')}</Label>
+            <RadioGroup
+              value={draft.provider}
+              onValueChange={(value) =>
+                updateDraft({ provider: value as SiteMailProvider })
+              }
+              disabled={disabled}
+              className='grid-cols-1 gap-3 sm:grid-cols-3'
+            >
+              <Label
+                className='flex cursor-pointer items-center gap-3 rounded-lg border p-4'
+                htmlFor='site-mail-provider-platform'
               >
-                <Label
-                  className='flex cursor-pointer items-center gap-3 rounded-lg border p-4'
-                  htmlFor='site-mail-provider-platform'
-                >
-                  <RadioGroupItem
-                    value='platform'
-                    id='site-mail-provider-platform'
-                  />
-                  {t('Platform default')}
-                </Label>
-                <Label
-                  className='flex cursor-pointer items-center gap-3 rounded-lg border p-4'
-                  htmlFor='site-mail-provider-smtp'
-                >
-                  <RadioGroupItem value='smtp' id='site-mail-provider-smtp' />
-                  {t('SMTP')}
-                </Label>
-                <Label
-                  className='flex cursor-pointer items-center gap-3 rounded-lg border p-4'
-                  htmlFor='site-mail-provider-resend'
-                >
-                  <RadioGroupItem
-                    value='resend'
-                    id='site-mail-provider-resend'
-                  />
-                  {t('Resend API')}
-                </Label>
-              </RadioGroup>
-            </div>
+                <RadioGroupItem
+                  value='platform'
+                  id='site-mail-provider-platform'
+                />
+                {t('Platform default')}
+              </Label>
+              <Label
+                className='flex cursor-pointer items-center gap-3 rounded-lg border p-4'
+                htmlFor='site-mail-provider-smtp'
+              >
+                <RadioGroupItem value='smtp' id='site-mail-provider-smtp' />
+                {t('SMTP')}
+              </Label>
+              <Label
+                className='flex cursor-pointer items-center gap-3 rounded-lg border p-4'
+                htmlFor='site-mail-provider-resend'
+              >
+                <RadioGroupItem value='resend' id='site-mail-provider-resend' />
+                {t('Resend API')}
+              </Label>
+            </RadioGroup>
+          </div>
 
-            {draft.provider === 'platform' && (
+          {draft.provider === 'platform' && (
+            <div className='space-y-2'>
+              <Label htmlFor='site-mail-platform-sender-name'>
+                {t('Sender display name')}
+              </Label>
+              <Input
+                id='site-mail-platform-sender-name'
+                autoComplete='off'
+                maxLength={128}
+                disabled={disabled}
+                placeholder={fallbackSenderName}
+                value={draft.sender_name}
+                onChange={(event) =>
+                  updateDraft({ sender_name: event.target.value })
+                }
+              />
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'Uses the platform mail transport with your site display name. Leave blank to use your site name.'
+                )}
+              </p>
+            </div>
+          )}
+
+          {draft.provider === 'smtp' && (
+            <div className='flex flex-col gap-6'>
               <div className='space-y-2'>
-                <Label htmlFor='site-mail-platform-sender-name'>
-                  {t('Sender display name')}
-                </Label>
+                <Label htmlFor='site-mail-smtp-server'>{t('SMTP Host')}</Label>
                 <Input
-                  id='site-mail-platform-sender-name'
+                  id='site-mail-smtp-server'
                   autoComplete='off'
-                  maxLength={128}
                   disabled={disabled}
-                  placeholder={fallbackSenderName}
-                  value={draft.sender_name}
+                  placeholder='smtp.example.com'
+                  value={draft.smtp_server}
                   onChange={(event) =>
-                    updateDraft({ sender_name: event.target.value })
+                    updateDraft({ smtp_server: event.target.value })
                   }
                 />
                 <p className='text-muted-foreground text-xs'>
-                  {t(
-                    'Uses the platform mail transport with your site display name. Leave blank to use your site name.'
-                  )}
+                  {t('Hostname or IP of your SMTP provider')}
                 </p>
               </div>
-            )}
 
-            {draft.provider === 'smtp' && (
-              <div className='flex flex-col gap-6'>
+              <div className='grid gap-6 md:grid-cols-2'>
                 <div className='space-y-2'>
-                  <Label htmlFor='site-mail-smtp-server'>
-                    {t('SMTP Host')}
-                  </Label>
+                  <Label htmlFor='site-mail-smtp-port'>{t('Port')}</Label>
                   <Input
-                    id='site-mail-smtp-server'
+                    id='site-mail-smtp-port'
+                    className='w-36 tabular-nums'
                     autoComplete='off'
+                    type='number'
+                    min={1}
+                    max={65535}
                     disabled={disabled}
-                    placeholder='smtp.example.com'
-                    value={draft.smtp_server}
+                    placeholder='587'
+                    value={draft.smtp_port}
                     onChange={(event) =>
-                      updateDraft({ smtp_server: event.target.value })
+                      updateDraft({ smtp_port: event.target.value })
                     }
                   />
                   <p className='text-muted-foreground text-xs'>
-                    {t('Hostname or IP of your SMTP provider')}
+                    {t('Common ports include 25, 465, and 587')}
                   </p>
                 </div>
 
-                <div className='grid gap-6 md:grid-cols-2'>
-                  <div className='space-y-2'>
-                    <Label htmlFor='site-mail-smtp-port'>{t('Port')}</Label>
-                    <Input
-                      id='site-mail-smtp-port'
-                      autoComplete='off'
-                      type='number'
-                      min={1}
-                      max={65535}
-                      disabled={disabled}
-                      placeholder='587'
-                      value={draft.smtp_port}
-                      onChange={(event) =>
-                        updateDraft({ smtp_port: event.target.value })
-                      }
-                    />
-                    <p className='text-muted-foreground text-xs'>
-                      {t('Common ports include 25, 465, and 587')}
-                    </p>
-                  </div>
-
-                  <div className='space-y-2'>
-                    <Label>{t('SMTP encryption')}</Label>
-                    <RadioGroup
-                      value={getSmtpSecurityMode(draft)}
-                      onValueChange={(value) => {
-                        const mode = value as SmtpSecurityMode
-                        updateDraft({
-                          smtp_ssl_enabled: mode === 'ssl_tls',
-                          smtp_starttls_enabled: mode === 'starttls',
-                        })
-                      }}
-                      disabled={disabled}
-                      className='gap-3'
-                    >
-                      <div className='flex items-center gap-2'>
-                        <RadioGroupItem
-                          value='none'
-                          id='site-smtp-security-none'
-                        />
-                        <Label
-                          htmlFor='site-smtp-security-none'
-                          className='cursor-pointer font-normal'
-                        >
-                          {t('No encryption')}
-                        </Label>
-                      </div>
-                      <div className='flex items-center gap-2'>
-                        <RadioGroupItem
-                          value='ssl_tls'
-                          id='site-smtp-security-ssl-tls'
-                        />
-                        <Label
-                          htmlFor='site-smtp-security-ssl-tls'
-                          className='cursor-pointer font-normal'
-                        >
-                          {t('SSL/TLS')}
-                        </Label>
-                      </div>
-                      <div className='flex items-center gap-2'>
-                        <RadioGroupItem
-                          value='starttls'
-                          id='site-smtp-security-starttls'
-                        />
-                        <Label
-                          htmlFor='site-smtp-security-starttls'
-                          className='cursor-pointer font-normal'
-                        >
-                          {t('STARTTLS')}
-                        </Label>
-                      </div>
-                    </RadioGroup>
-                    <p className='text-muted-foreground text-xs'>
-                      {t('Choose one SMTP transport security mode')}
-                    </p>
-                  </div>
-
-                  <div className='flex items-center justify-between gap-4 rounded-lg border p-4'>
-                    <div className='space-y-1'>
-                      <Label htmlFor='site-mail-smtp-skip-verify'>
-                        {t('Skip SMTP TLS certificate verification')}
+                <div className='space-y-2'>
+                  <Label>{t('SMTP encryption')}</Label>
+                  <RadioGroup
+                    value={getSmtpSecurityMode(draft)}
+                    onValueChange={(value) => {
+                      const mode = value as SmtpSecurityMode
+                      updateDraft({
+                        smtp_ssl_enabled: mode === 'ssl_tls',
+                        smtp_starttls_enabled: mode === 'starttls',
+                      })
+                    }}
+                    disabled={disabled}
+                    className='gap-3'
+                  >
+                    <div className='flex items-center gap-2'>
+                      <RadioGroupItem
+                        value='none'
+                        id='site-smtp-security-none'
+                      />
+                      <Label
+                        htmlFor='site-smtp-security-none'
+                        className='cursor-pointer font-normal'
+                      >
+                        {t('No encryption')}
                       </Label>
-                      <p className='text-muted-foreground text-xs'>
-                        {t(
-                          'Allow self-signed or hostname-mismatched SMTP certificates'
-                        )}
-                      </p>
                     </div>
-                    <Switch
-                      id='site-mail-smtp-skip-verify'
-                      disabled={disabled}
-                      checked={draft.smtp_insecure_skip_verify}
-                      onCheckedChange={(checked) =>
-                        updateDraft({ smtp_insecure_skip_verify: checked })
-                      }
-                    />
-                  </div>
-
-                  <div className='flex items-center justify-between gap-4 rounded-lg border p-4'>
-                    <div className='space-y-1'>
-                      <Label htmlFor='site-mail-smtp-force-login'>
-                        {t('Force AUTH LOGIN')}
+                    <div className='flex items-center gap-2'>
+                      <RadioGroupItem
+                        value='ssl_tls'
+                        id='site-smtp-security-ssl-tls'
+                      />
+                      <Label
+                        htmlFor='site-smtp-security-ssl-tls'
+                        className='cursor-pointer font-normal'
+                      >
+                        {t('SSL/TLS')}
                       </Label>
-                      <p className='text-muted-foreground text-xs'>
-                        {t('Force SMTP authentication using AUTH LOGIN method')}
-                      </p>
                     </div>
-                    <Switch
-                      id='site-mail-smtp-force-login'
-                      disabled={disabled}
-                      checked={draft.smtp_force_auth_login}
-                      onCheckedChange={(checked) =>
-                        updateDraft({ smtp_force_auth_login: checked })
-                      }
-                    />
-                  </div>
+                    <div className='flex items-center gap-2'>
+                      <RadioGroupItem
+                        value='starttls'
+                        id='site-smtp-security-starttls'
+                      />
+                      <Label
+                        htmlFor='site-smtp-security-starttls'
+                        className='cursor-pointer font-normal'
+                      >
+                        {t('STARTTLS')}
+                      </Label>
+                    </div>
+                  </RadioGroup>
+                  <p className='text-muted-foreground text-xs'>
+                    {t('Choose one SMTP transport security mode')}
+                  </p>
                 </div>
 
+                <div className='flex items-center justify-between gap-4 rounded-lg border p-4'>
+                  <div className='space-y-1'>
+                    <Label htmlFor='site-mail-smtp-skip-verify'>
+                      {t('Skip SMTP TLS certificate verification')}
+                    </Label>
+                    <p className='text-muted-foreground text-xs'>
+                      {t(
+                        'Allow self-signed or hostname-mismatched SMTP certificates'
+                      )}
+                    </p>
+                  </div>
+                  <Switch
+                    id='site-mail-smtp-skip-verify'
+                    disabled={disabled}
+                    checked={draft.smtp_insecure_skip_verify}
+                    onCheckedChange={(checked) =>
+                      updateDraft({ smtp_insecure_skip_verify: checked })
+                    }
+                  />
+                </div>
+
+                <div className='flex items-center justify-between gap-4 rounded-lg border p-4'>
+                  <div className='space-y-1'>
+                    <Label htmlFor='site-mail-smtp-force-login'>
+                      {t('Force AUTH LOGIN')}
+                    </Label>
+                    <p className='text-muted-foreground text-xs'>
+                      {t('Force SMTP authentication using AUTH LOGIN method')}
+                    </p>
+                  </div>
+                  <Switch
+                    id='site-mail-smtp-force-login'
+                    disabled={disabled}
+                    checked={draft.smtp_force_auth_login}
+                    onCheckedChange={(checked) =>
+                      updateDraft({ smtp_force_auth_login: checked })
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className='space-y-2'>
+                <Label htmlFor='site-mail-smtp-account'>{t('Username')}</Label>
+                <Input
+                  id='site-mail-smtp-account'
+                  autoComplete='off'
+                  disabled={disabled}
+                  placeholder='noreply@example.com'
+                  value={draft.smtp_account}
+                  onChange={(event) =>
+                    updateDraft({ smtp_account: event.target.value })
+                  }
+                />
+                <p className='text-muted-foreground text-xs'>
+                  {t('Account used when authenticating with the SMTP server')}
+                </p>
+              </div>
+
+              <div className='space-y-2'>
+                <div className='flex items-center gap-2'>
+                  <Label htmlFor='site-mail-smtp-token'>
+                    {t('Password / Access Token')}
+                  </Label>
+                  {savedConfig.smtp_token_configured &&
+                    !draft.clear_smtp_token && (
+                      <Badge variant='secondary'>{t('Configured')}</Badge>
+                    )}
+                </div>
+                <PasswordInput
+                  id='site-mail-smtp-token'
+                  autoComplete='new-password'
+                  disabled={disabled}
+                  placeholder={t('Enter new token to update')}
+                  value={draft.smtp_token}
+                  onChange={(event) =>
+                    updateDraft({
+                      smtp_token: event.target.value,
+                      clear_smtp_token: false,
+                    })
+                  }
+                />
+                <p className='text-muted-foreground text-xs'>
+                  {t('Leave blank to keep the existing credential')}
+                </p>
+                {savedConfig.smtp_token_configured && (
+                  <div className='flex items-center gap-2 pt-1'>
+                    <Checkbox
+                      id='site-mail-clear-smtp-token'
+                      disabled={disabled}
+                      checked={draft.clear_smtp_token}
+                      onCheckedChange={(checked) => {
+                        const shouldClear = Boolean(checked)
+                        updateDraft({
+                          clear_smtp_token: shouldClear,
+                          ...(shouldClear ? { smtp_token: '' } : {}),
+                        })
+                      }}
+                    />
+                    <Label
+                      htmlFor='site-mail-clear-smtp-token'
+                      className='cursor-pointer text-xs font-normal'
+                    >
+                      {t('Clear saved credential')}
+                    </Label>
+                  </div>
+                )}
+              </div>
+
+              <div className='grid gap-6 md:grid-cols-2'>
                 <div className='space-y-2'>
-                  <Label htmlFor='site-mail-smtp-account'>
-                    {t('Username')}
+                  <Label htmlFor='site-mail-smtp-from'>
+                    {t('From Address')}
                   </Label>
                   <Input
-                    id='site-mail-smtp-account'
+                    id='site-mail-smtp-from'
                     autoComplete='off'
                     disabled={disabled}
                     placeholder='noreply@example.com'
-                    value={draft.smtp_account}
+                    value={draft.smtp_from}
                     onChange={(event) =>
-                      updateDraft({ smtp_account: event.target.value })
+                      updateDraft({ smtp_from: event.target.value })
                     }
                   />
                   <p className='text-muted-foreground text-xs'>
-                    {t('Account used when authenticating with the SMTP server')}
+                    {t('Sender email address used in outgoing messages')}
                   </p>
                 </div>
 
                 <div className='space-y-2'>
-                  <div className='flex items-center gap-2'>
-                    <Label htmlFor='site-mail-smtp-token'>
-                      {t('Password / Access Token')}
-                    </Label>
-                    {savedConfig.smtp_token_configured &&
-                      !draft.clear_smtp_token && (
-                        <Badge variant='secondary'>{t('Configured')}</Badge>
-                      )}
-                  </div>
-                  <PasswordInput
-                    id='site-mail-smtp-token'
-                    autoComplete='new-password'
+                  <Label htmlFor='site-mail-smtp-sender-name'>
+                    {t('Sender display name')}
+                  </Label>
+                  <Input
+                    id='site-mail-smtp-sender-name'
+                    autoComplete='off'
+                    maxLength={128}
                     disabled={disabled}
-                    placeholder={t('Enter new token to update')}
-                    value={draft.smtp_token}
+                    placeholder={fallbackSenderName}
+                    value={draft.smtp_sender_name}
                     onChange={(event) =>
-                      updateDraft({
-                        smtp_token: event.target.value,
-                        clear_smtp_token: false,
-                      })
+                      updateDraft({ smtp_sender_name: event.target.value })
                     }
                   />
                   <p className='text-muted-foreground text-xs'>
-                    {t('Leave blank to keep the existing credential')}
+                    {t(
+                      'The name recipients see. Leave blank to use the site name.'
+                    )}
                   </p>
-                  {savedConfig.smtp_token_configured && (
-                    <div className='flex items-center gap-2 pt-1'>
-                      <Checkbox
-                        id='site-mail-clear-smtp-token'
-                        disabled={disabled}
-                        checked={draft.clear_smtp_token}
-                        onCheckedChange={(checked) => {
-                          const shouldClear = Boolean(checked)
-                          updateDraft({
-                            clear_smtp_token: shouldClear,
-                            ...(shouldClear ? { smtp_token: '' } : {}),
-                          })
-                        }}
-                      />
-                      <Label
-                        htmlFor='site-mail-clear-smtp-token'
-                        className='cursor-pointer text-xs font-normal'
-                      >
-                        {t('Clear saved credential')}
-                      </Label>
-                    </div>
-                  )}
-                </div>
-
-                <div className='grid gap-6 md:grid-cols-2'>
-                  <div className='space-y-2'>
-                    <Label htmlFor='site-mail-smtp-from'>
-                      {t('From Address')}
-                    </Label>
-                    <Input
-                      id='site-mail-smtp-from'
-                      autoComplete='off'
-                      disabled={disabled}
-                      placeholder='noreply@example.com'
-                      value={draft.smtp_from}
-                      onChange={(event) =>
-                        updateDraft({ smtp_from: event.target.value })
-                      }
-                    />
-                    <p className='text-muted-foreground text-xs'>
-                      {t('Sender email address used in outgoing messages')}
-                    </p>
-                  </div>
-
-                  <div className='space-y-2'>
-                    <Label htmlFor='site-mail-smtp-sender-name'>
-                      {t('Sender display name')}
-                    </Label>
-                    <Input
-                      id='site-mail-smtp-sender-name'
-                      autoComplete='off'
-                      maxLength={128}
-                      disabled={disabled}
-                      placeholder={fallbackSenderName}
-                      value={draft.smtp_sender_name}
-                      onChange={(event) =>
-                        updateDraft({ smtp_sender_name: event.target.value })
-                      }
-                    />
-                    <p className='text-muted-foreground text-xs'>
-                      {t(
-                        'The name recipients see. Leave blank to use the site name.'
-                      )}
-                    </p>
-                  </div>
                 </div>
               </div>
-            )}
-
-            {draft.provider === 'resend' && (
-              <div className='flex flex-col gap-6'>
-                <div className='grid gap-6 md:grid-cols-2'>
-                  <div className='space-y-2'>
-                    <Label htmlFor='site-mail-resend-from'>
-                      {t('Sender email address')}
-                    </Label>
-                    <Input
-                      id='site-mail-resend-from'
-                      autoComplete='off'
-                      type='email'
-                      disabled={disabled}
-                      placeholder='noreply@example.com'
-                      value={draft.resend_from}
-                      onChange={(event) =>
-                        updateDraft({ resend_from: event.target.value })
-                      }
-                    />
-                    <p className='text-muted-foreground text-xs'>
-                      {t('The domain must be verified in Resend')}
-                    </p>
-                  </div>
-
-                  <div className='space-y-2'>
-                    <Label htmlFor='site-mail-resend-sender-name'>
-                      {t('Sender display name')}
-                    </Label>
-                    <Input
-                      id='site-mail-resend-sender-name'
-                      autoComplete='off'
-                      maxLength={128}
-                      disabled={disabled}
-                      placeholder={fallbackSenderName}
-                      value={draft.resend_sender_name}
-                      onChange={(event) =>
-                        updateDraft({ resend_sender_name: event.target.value })
-                      }
-                    />
-                    <p className='text-muted-foreground text-xs'>
-                      {t(
-                        'The name recipients see. Leave blank to use the site name.'
-                      )}
-                    </p>
-                  </div>
-                </div>
-
-                <div className='space-y-2'>
-                  <div className='flex items-center gap-2'>
-                    <Label htmlFor='site-mail-resend-key'>
-                      {t('Resend API key')}
-                    </Label>
-                    {savedConfig.resend_api_key_configured &&
-                      !draft.clear_resend_api_key && (
-                        <Badge variant='secondary'>{t('Configured')}</Badge>
-                      )}
-                  </div>
-                  <PasswordInput
-                    id='site-mail-resend-key'
-                    autoComplete='new-password'
-                    disabled={disabled}
-                    placeholder={t('Enter new token to update')}
-                    value={draft.resend_api_key}
-                    onChange={(event) =>
-                      updateDraft({
-                        resend_api_key: event.target.value,
-                        clear_resend_api_key: false,
-                      })
-                    }
-                  />
-                  <p className='text-muted-foreground text-xs'>
-                    {t('Leave blank to keep the existing key')}
-                  </p>
-                  {savedConfig.resend_api_key_configured && (
-                    <div className='flex items-center gap-2 pt-1'>
-                      <Checkbox
-                        id='site-mail-clear-resend-key'
-                        disabled={disabled}
-                        checked={draft.clear_resend_api_key}
-                        onCheckedChange={(checked) => {
-                          const shouldClear = Boolean(checked)
-                          updateDraft({
-                            clear_resend_api_key: shouldClear,
-                            ...(shouldClear ? { resend_api_key: '' } : {}),
-                          })
-                        }}
-                      />
-                      <Label
-                        htmlFor='site-mail-clear-resend-key'
-                        className='cursor-pointer text-xs font-normal'
-                      >
-                        {t('Clear saved API key')}
-                      </Label>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {validationError && (
-              <p role='alert' className='text-destructive text-sm'>
-                {validationError}
-              </p>
-            )}
-
-            <div>
-              <Button
-                type='submit'
-                variant='brand'
-                disabled={disabled || !isDirty}
-              >
-                {save.isPending ? t('Saving...') : t('Save')}
-              </Button>
             </div>
-          </form>
-        </CardContent>
-      </Card>
+          )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('Send test email')}</CardTitle>
-          <CardDescription>
-            {t(
-              'Send a test message using the currently saved email configuration.'
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSendTest} className='flex flex-col gap-3'>
-            <div className='flex flex-col gap-3 sm:flex-row sm:items-end'>
-              <div className='flex-1 space-y-2'>
-                <Label htmlFor='site-mail-test-to'>
-                  {t('Recipient email address')}
-                </Label>
-                <Input
-                  id='site-mail-test-to'
-                  type='email'
-                  autoComplete='off'
-                  disabled={isClosing || sendTest.isPending}
-                  placeholder='you@example.com'
-                  value={testEmail}
-                  onChange={(event) => setTestEmail(event.target.value)}
+          {draft.provider === 'resend' && (
+            <div className='flex flex-col gap-6'>
+              <div className='grid gap-6 md:grid-cols-2'>
+                <div className='space-y-2'>
+                  <Label htmlFor='site-mail-resend-from'>
+                    {t('Sender email address')}
+                  </Label>
+                  <Input
+                    id='site-mail-resend-from'
+                    autoComplete='off'
+                    type='email'
+                    disabled={disabled}
+                    placeholder='noreply@example.com'
+                    value={draft.resend_from}
+                    onChange={(event) =>
+                      updateDraft({ resend_from: event.target.value })
+                    }
+                  />
+                  <p className='text-muted-foreground text-xs'>
+                    {t('The domain must be verified in Resend')}
+                  </p>
+                </div>
+
+                <div className='space-y-2'>
+                  <Label htmlFor='site-mail-resend-sender-name'>
+                    {t('Sender display name')}
+                  </Label>
+                  <Input
+                    id='site-mail-resend-sender-name'
+                    autoComplete='off'
+                    maxLength={128}
+                    disabled={disabled}
+                    placeholder={fallbackSenderName}
+                    value={draft.resend_sender_name}
+                    onChange={(event) =>
+                      updateDraft({ resend_sender_name: event.target.value })
+                    }
+                  />
+                  <p className='text-muted-foreground text-xs'>
+                    {t(
+                      'The name recipients see. Leave blank to use the site name.'
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              <div className='space-y-2'>
+                <div className='flex items-center gap-2'>
+                  <Label htmlFor='site-mail-resend-key'>
+                    {t('Resend API key')}
+                  </Label>
+                  {savedConfig.resend_api_key_configured &&
+                    !draft.clear_resend_api_key && (
+                      <Badge variant='secondary'>{t('Configured')}</Badge>
+                    )}
+                </div>
+                <PasswordInput
+                  id='site-mail-resend-key'
+                  autoComplete='new-password'
+                  disabled={disabled}
+                  placeholder={t('Enter new token to update')}
+                  value={draft.resend_api_key}
+                  onChange={(event) =>
+                    updateDraft({
+                      resend_api_key: event.target.value,
+                      clear_resend_api_key: false,
+                    })
+                  }
                 />
+                <p className='text-muted-foreground text-xs'>
+                  {t('Leave blank to keep the existing key')}
+                </p>
+                {savedConfig.resend_api_key_configured && (
+                  <div className='flex items-center gap-2 pt-1'>
+                    <Checkbox
+                      id='site-mail-clear-resend-key'
+                      disabled={disabled}
+                      checked={draft.clear_resend_api_key}
+                      onCheckedChange={(checked) => {
+                        const shouldClear = Boolean(checked)
+                        updateDraft({
+                          clear_resend_api_key: shouldClear,
+                          ...(shouldClear ? { resend_api_key: '' } : {}),
+                        })
+                      }}
+                    />
+                    <Label
+                      htmlFor='site-mail-clear-resend-key'
+                      className='cursor-pointer text-xs font-normal'
+                    >
+                      {t('Clear saved API key')}
+                    </Label>
+                  </div>
+                )}
               </div>
-              <Button
-                type='submit'
-                variant='outline'
-                disabled={
-                  isClosing ||
-                  isDirty ||
-                  sendTest.isPending ||
-                  !testEmail.trim()
-                }
-              >
-                {sendTest.isPending ? t('Sending...') : t('Send test email')}
-              </Button>
             </div>
-            {isDirty && (
-              <p className='text-muted-foreground text-xs'>
-                {t('Save your changes before sending a test email.')}
-              </p>
-            )}
-          </form>
-        </CardContent>
-      </Card>
+          )}
+
+          {validationError && (
+            <p role='alert' className='text-destructive text-sm'>
+              {validationError}
+            </p>
+          )}
+
+          <div>
+            <Button
+              type='submit'
+              variant='brand'
+              disabled={disabled || !isDirty}
+            >
+              {save.isPending ? t('Saving...') : t('Save')}
+            </Button>
+          </div>
+        </form>
+      </SettingsSection>
+
+      <SettingsSection
+        title={t('Send test email')}
+        description={t(
+          'Send a test message using the currently saved email configuration.'
+        )}
+      >
+        <form
+          onSubmit={handleSendTest}
+          className='flex max-w-xl flex-col gap-3'
+        >
+          <div className='flex flex-col gap-3 sm:flex-row sm:items-end'>
+            <div className='flex-1 space-y-2'>
+              <Label htmlFor='site-mail-test-to'>
+                {t('Recipient email address')}
+              </Label>
+              <Input
+                id='site-mail-test-to'
+                type='email'
+                autoComplete='off'
+                disabled={isClosing || sendTest.isPending}
+                placeholder='you@example.com'
+                value={testEmail}
+                onChange={(event) => setTestEmail(event.target.value)}
+              />
+            </div>
+            <Button
+              type='submit'
+              variant='outline'
+              disabled={
+                isClosing || isDirty || sendTest.isPending || !testEmail.trim()
+              }
+            >
+              {sendTest.isPending ? t('Sending...') : t('Send test email')}
+            </Button>
+          </div>
+          {isDirty && (
+            <p className='text-muted-foreground text-xs'>
+              {t('Save your changes before sending a test email.')}
+            </p>
+          )}
+        </form>
+      </SettingsSection>
     </div>
   )
 }

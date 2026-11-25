@@ -141,11 +141,24 @@ export function TaskPlugins() {
           <Tabs
             value={tab}
             onValueChange={setTab}
-            className='flex h-full min-h-0 flex-col gap-3'
+            className='flex h-full min-h-0 flex-col gap-4'
           >
-            <TabsList className='max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto'>
-              <TabsTrigger value='installed'>{t('Installed')}</TabsTrigger>
-              <TabsTrigger value='marketplace'>{t('Marketplace')}</TabsTrigger>
+            <TabsList
+              variant='line'
+              className='border-border h-auto flex-wrap justify-start gap-x-6 gap-y-1 rounded-none border-b p-0 [--tab-underline:var(--brand)] group-data-horizontal/tabs:h-auto'
+            >
+              <TabsTrigger
+                value='installed'
+                className='text-dim hover:text-foreground data-active:text-foreground h-auto flex-none px-0 pt-0 pb-2.5 text-[13.5px] font-medium'
+              >
+                {t('Installed')}
+              </TabsTrigger>
+              <TabsTrigger
+                value='marketplace'
+                className='text-dim hover:text-foreground data-active:text-foreground h-auto flex-none px-0 pt-0 pb-2.5 text-[13.5px] font-medium'
+              >
+                {t('Marketplace')}
+              </TabsTrigger>
             </TabsList>
             <TabsContent value='installed' className='min-h-0 flex-1'>
               <PluginsTable

@@ -92,26 +92,30 @@ export function PausedSiteRepairPanel() {
 
   return (
     <section
-      className='bg-muted/40 flex flex-col gap-3 rounded-md border p-3'
+      className='border-warning/40 bg-warning/5 flex flex-col gap-3 rounded-[14px] border px-5 py-4 sm:px-6'
       aria-label={t('Leftover paused sites')}
     >
       <div className='space-y-1'>
-        <h2 className='text-sm font-medium'>{t('Leftover paused sites')}</h2>
-        <p className='text-muted-foreground text-sm'>
+        <h2 className='text-[15px] leading-snug font-semibold tracking-tight [word-break:keep-all]'>
+          {t('Leftover paused sites')}
+        </h2>
+        <p className='text-dim max-w-[80ch] text-[12.5px] leading-relaxed'>
           {t(
             'These leftover paused sites are not an operating mode. Review each one and either repair it to active or enter close/handover. Nothing is changed automatically.'
           )}
         </p>
       </div>
       {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
-      <ul className='flex flex-col gap-2'>
+      <ul className='divide-border/70 border-border/70 divide-y border-t pt-1'>
         {rows.map((site) => (
           <li
             key={site.id}
-            className='flex flex-wrap items-center justify-between gap-2'
+            className='flex flex-wrap items-center justify-between gap-2 py-2.5 first:pt-2 last:pb-0'
           >
             <div className='flex flex-wrap items-center gap-2'>
-              <span className='font-medium'>{site.host || site.subdomain}</span>
+              <span className='font-mono text-sm font-medium'>
+                {site.host || site.subdomain}
+              </span>
               <SiteStatusBadge status={site.status} />
             </div>
             <div className='flex flex-wrap gap-2'>

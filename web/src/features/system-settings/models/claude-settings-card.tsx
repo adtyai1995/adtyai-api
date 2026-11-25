@@ -293,6 +293,8 @@ export function ClaudeSettingsCard({ defaultValues }: ClaudeSettingsCardProps) {
                   <FormControl>
                     <Input
                       {...field}
+                      inputMode='decimal'
+                      className='sm:max-w-44'
                       value={String(field.value ?? '')}
                       onChange={(event) => field.onChange(event.target.value)}
                     />

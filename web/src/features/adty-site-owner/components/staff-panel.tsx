@@ -24,6 +24,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { StaticDataTable } from '@/components/data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -85,113 +86,120 @@ export function StaffPanel(props: { siteId: number; closing?: boolean }) {
       confirming.staff.status === 'enabled' ? t('Disable') : t('Enable')
   }
   return (
-    <div className='flex flex-col gap-4'>
-      <div className='flex flex-wrap items-center justify-between gap-2'>
-        <h2 className='text-lg font-medium'>{t('Staff accounts')}</h2>
-        <Button
-          type='button'
-          variant='brand'
-          disabled={props.closing}
-          onClick={() => setEditing({ mode: 'create', staff: null })}
-        >
-          {t('Create staff account')}
-        </Button>
-      </div>
-      <p className='text-muted-foreground text-sm'>
-        {t(
-          'Staff receive only the permissions selected here. Wallets, withdrawals, API keys and cross-site access are always blocked.'
-        )}
-      </p>
-      {list.isPending && <Skeleton className='h-24' />}
-      {list.isError && <ErrorState onRetry={() => void list.refetch()} />}
-      {!list.isPending && !list.isError && (
-        <>
-          <StaticDataTable
-            data={list.data.items ?? []}
-            getRowKey={(staff) => staff.id}
-            tableProps={{ 'aria-label': t('Staff accounts') }}
-            emptyContent={<EmptyState title={t('No staff accounts')} />}
-            columns={[
-              {
-                id: 'name',
-                header: t('ID / Username'),
-                cell: (staff) => (
-                  <div>
-                    <div className='tabular-nums'>
-                      {formatUserIdentity(staff.user_id, staff.username)}
+    <div className='flex flex-col gap-8'>
+      <section className='flex flex-col gap-3' aria-label={t('Staff accounts')}>
+        <div className='flex flex-wrap items-center justify-between gap-x-4 gap-y-2'>
+          <p className='text-dim max-w-[80ch] text-[13px] leading-relaxed'>
+            {t(
+              'Staff receive only the permissions selected here. Wallets, withdrawals, API keys and cross-site access are always blocked.'
+            )}
+          </p>
+          <Button
+            type='button'
+            variant='brand'
+            disabled={props.closing}
+            onClick={() => setEditing({ mode: 'create', staff: null })}
+          >
+            {t('Create staff account')}
+          </Button>
+        </div>
+        {list.isPending && <Skeleton className='h-24' />}
+        {list.isError && <ErrorState onRetry={() => void list.refetch()} />}
+        {!list.isPending && !list.isError && (
+          <>
+            <StaticDataTable
+              data={list.data.items ?? []}
+              getRowKey={(staff) => staff.id}
+              tableProps={{ 'aria-label': t('Staff accounts') }}
+              emptyContent={<EmptyState title={t('No staff accounts')} />}
+              columns={[
+                {
+                  id: 'name',
+                  header: t('ID / Username'),
+                  cell: (staff) => (
+                    <div>
+                      <div className='tabular-nums'>
+                        {formatUserIdentity(staff.user_id, staff.username)}
+                      </div>
+                      {staff.display_name &&
+                        staff.display_name !== staff.username && (
+                          <div className='text-muted-foreground text-xs'>
+                            {staff.display_name}
+                          </div>
+                        )}
                     </div>
-                    {staff.display_name &&
-                      staff.display_name !== staff.username && (
-                        <div className='text-muted-foreground text-xs'>
-                          {staff.display_name}
-                        </div>
-                      )}
-                  </div>
-                ),
-              },
-              {
-                id: 'role',
-                header: t('Staff role'),
-                cell: (staff) => roleLabels[staff.role],
-              },
-              {
-                id: 'status',
-                header: t('Status'),
-                cell: (staff) =>
-                  staff.status === 'enabled' ? t('Enabled') : t('Disabled'),
-              },
-              {
-                id: 'actions',
-                header: t('Actions'),
-                cell: (staff) => (
-                  <div className='flex flex-wrap gap-1'>
-                    <Button
-                      type='button'
-                      size='sm'
-                      variant='outline'
-                      onClick={() => setEditing({ mode: 'edit', staff })}
-                    >
-                      {t('Edit')}
-                    </Button>
-                    <Button
-                      type='button'
-                      size='sm'
-                      variant='outline'
-                      disabled={props.closing}
-                      onClick={() => setEditing({ mode: 'password', staff })}
-                    >
-                      {t('Reset staff password')}
-                    </Button>
-                    <Button
-                      type='button'
-                      size='sm'
-                      variant='outline'
-                      disabled={props.closing && staff.status !== 'enabled'}
-                      onClick={() => setConfirming({ staff, action: 'status' })}
-                    >
-                      {staff.status === 'enabled' ? t('Disable') : t('Enable')}
-                    </Button>
-                    <Button
-                      type='button'
-                      size='sm'
-                      variant='destructive'
-                      onClick={() => setConfirming({ staff, action: 'delete' })}
-                    >
-                      {t('Delete')}
-                    </Button>
-                  </div>
-                ),
-              },
-            ]}
-          />
-          <PageSwitcher
-            page={page}
-            total={list.data.total}
-            pageSize={STAFF_PAGE_SIZE}
-            onPageChange={setPage}
-          />
-        </>
-      )}
+                  ),
+                },
+                {
+                  id: 'role',
+                  header: t('Staff role'),
+                  cell: (staff) => roleLabels[staff.role],
+                },
+                {
+                  id: 'status',
+                  header: t('Status'),
+                  cell: (staff) =>
+                    staff.status === 'enabled' ? t('Enabled') : t('Disabled'),
+                },
+                {
+                  id: 'actions',
+                  header: t('Actions'),
+                  cell: (staff) => (
+                    <div className='flex flex-wrap gap-1'>
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='outline'
+                        onClick={() => setEditing({ mode: 'edit', staff })}
+                      >
+                        {t('Edit')}
+                      </Button>
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='outline'
+                        disabled={props.closing}
+                        onClick={() => setEditing({ mode: 'password', staff })}
+                      >
+                        {t('Reset staff password')}
+                      </Button>
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='outline'
+                        disabled={props.closing && staff.status !== 'enabled'}
+                        onClick={() =>
+                          setConfirming({ staff, action: 'status' })
+                        }
+                      >
+                        {staff.status === 'enabled'
+                          ? t('Disable')
+                          : t('Enable')}
+                      </Button>
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='destructive'
+                        onClick={() =>
+                          setConfirming({ staff, action: 'delete' })
+                        }
+                      >
+                        {t('Delete')}
+                      </Button>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+            <PageSwitcher
+              page={page}
+              total={list.data.total}
+              pageSize={STAFF_PAGE_SIZE}
+              onPageChange={setPage}
+            />
+          </>
+        )}
+      </section>
       {editing && (
         <StaffDialog
           siteId={props.siteId}
@@ -250,8 +258,7 @@ function StaffActivity() {
     'staff.balance_review': t('Review balance request'),
   }
   return (
-    <section className='flex flex-col gap-3'>
-      <h2 className='text-lg font-medium'>{t('Staff activity')}</h2>
+    <ContentSection title={t('Staff activity')}>
       {audits.isPending && <Skeleton className='h-24' />}
       {audits.isError && <ErrorState onRetry={() => void audits.refetch()} />}
       {audits.data && !audits.isError && (
@@ -324,6 +331,6 @@ function StaffActivity() {
           />
         </>
       )}
-    </section>
+    </ContentSection>
   )
 }

@@ -24,6 +24,7 @@ import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
@@ -70,53 +71,57 @@ export function WithdrawRulesPanel() {
       usdtRate ?? current.data.usdt_usd_rate,
     ].every((value) => !!value?.trim())
   return (
-    <section className='flex flex-col gap-3'>
-      <h2 className='text-sm font-medium'>{t('Withdrawal rules')}</h2>
-      <div className='text-muted-foreground flex flex-col gap-1 text-sm'>
-        <p>{t('These figures apply only to new owner withdrawal requests.')}</p>
-        <p>
-          {t(
-            'Site owner earnings withdrawals are paid in USDT (TRC20 / BEP20 / Polygon / X Layer).'
-          )}
-        </p>
+    <SettingsSection
+      title={t('Withdrawal rules')}
+      description={`${t('These figures apply only to new owner withdrawal requests.')} ${t(
+        'Site owner earnings withdrawals are paid in USDT (TRC20 / BEP20 / Polygon / X Layer).'
+      )}`}
+    >
+      <div className='flex flex-col gap-5'>
+        <div className='grid max-w-2xl gap-4 sm:grid-cols-3'>
+          <div className='flex flex-col gap-2'>
+            <Label htmlFor='withdraw-min'>
+              {t('Minimum withdrawal (USD)')}
+            </Label>
+            <Input
+              id='withdraw-min'
+              className='sm:max-w-48'
+              value={minUsd ?? current.data?.min_usd ?? ''}
+              inputMode='decimal'
+              onChange={(event) => setMinUsd(event.target.value)}
+            />
+          </div>
+          <div className='flex flex-col gap-2'>
+            <Label htmlFor='withdraw-fee'>{t('Fee (USD)')}</Label>
+            <Input
+              id='withdraw-fee'
+              className='sm:max-w-48'
+              value={feeUsd ?? current.data?.fee_usd ?? ''}
+              inputMode='decimal'
+              onChange={(event) => setFeeUsd(event.target.value)}
+            />
+          </div>
+          <div className='flex flex-col gap-2'>
+            <Label htmlFor='withdraw-usdt'>{t('USDT/USD rate')}</Label>
+            <Input
+              id='withdraw-usdt'
+              className='sm:max-w-48'
+              value={usdtRate ?? current.data?.usdt_usd_rate ?? ''}
+              inputMode='decimal'
+              onChange={(event) => setUsdtRate(event.target.value)}
+            />
+          </div>
+        </div>
+        <div>
+          <Button
+            type='button'
+            disabled={save.isPending || !ready}
+            onClick={() => save.mutate()}
+          >
+            {t('Save')}
+          </Button>
+        </div>
       </div>
-      <div className='grid gap-3 sm:grid-cols-3'>
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor='withdraw-min'>{t('Minimum withdrawal (USD)')}</Label>
-          <Input
-            id='withdraw-min'
-            value={minUsd ?? current.data?.min_usd ?? ''}
-            inputMode='decimal'
-            onChange={(event) => setMinUsd(event.target.value)}
-          />
-        </div>
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor='withdraw-fee'>{t('Fee (USD)')}</Label>
-          <Input
-            id='withdraw-fee'
-            value={feeUsd ?? current.data?.fee_usd ?? ''}
-            inputMode='decimal'
-            onChange={(event) => setFeeUsd(event.target.value)}
-          />
-        </div>
-        <div className='flex flex-col gap-1'>
-          <Label htmlFor='withdraw-usdt'>{t('USDT/USD rate')}</Label>
-          <Input
-            id='withdraw-usdt'
-            value={usdtRate ?? current.data?.usdt_usd_rate ?? ''}
-            inputMode='decimal'
-            onChange={(event) => setUsdtRate(event.target.value)}
-          />
-        </div>
-      </div>
-      <Button
-        type='button'
-        variant='outline'
-        disabled={save.isPending || !ready}
-        onClick={() => save.mutate()}
-      >
-        {t('Save')}
-      </Button>
-    </section>
+    </SettingsSection>
   )
 }

@@ -143,7 +143,8 @@ export function TwoFACard({ loading: pageLoading }: TwoFACardProps) {
               {!status.enabled && (
                 <Button
                   variant='brand'
-                  className='w-full sm:w-auto xl:w-full 2xl:w-auto'
+                  size='sm'
+                  className='self-start'
                   onClick={setup.start}
                   disabled={setup.active}
                 >
@@ -154,10 +155,10 @@ export function TwoFACard({ loading: pageLoading }: TwoFACardProps) {
 
             {/* Actions Section - Only show when enabled */}
             {status.enabled && (
-              <div className='flex flex-col gap-3 border-t pt-6 sm:flex-row xl:flex-col 2xl:flex-row'>
+              <div className='flex flex-wrap items-center gap-2 border-t pt-5'>
                 <Button
                   variant='outline'
-                  className='flex-1'
+                  size='sm'
                   onClick={() => dialogs.open('backup')}
                 >
                   <RefreshCw className='mr-2 h-4 w-4' />
@@ -165,7 +166,7 @@ export function TwoFACard({ loading: pageLoading }: TwoFACardProps) {
                 </Button>
                 <Button
                   variant='destructive'
-                  className='flex-1'
+                  size='sm'
                   onClick={() => dialogs.open('disable')}
                 >
                   <AlertTriangle className='mr-2 h-4 w-4' />

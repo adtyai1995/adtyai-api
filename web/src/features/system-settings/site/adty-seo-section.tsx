@@ -159,12 +159,12 @@ export function AdtySeoSection(props: { defaultValues: AdtySeoDefaults }) {
     }))
 
   return (
-    <SettingsSection title={t('Home Page SEO')}>
+    <SettingsSection title={t('Home Page SEO')} bodyClassName='space-y-5'>
       <SettingsPageFormActions
         onSave={save}
         isSaving={updateOption.isPending}
       />
-      <p className='text-muted-foreground max-w-3xl text-sm'>
+      <p className='text-dim max-w-[80ch] text-[13px] leading-relaxed'>
         {t(
           'Written into the source of the two home page URLs (/ for English and /zh-cn for Simplified Chinese) for search engines and link previews. A language left empty uses English; without English the title is the site name and there is no description. Other pages are never indexed.'
         )}

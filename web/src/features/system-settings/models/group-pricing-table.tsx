@@ -33,14 +33,8 @@ import { toast } from 'sonner'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
+import { ContentSection } from '@/components/layout'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import {
   InputGroup,
@@ -226,208 +220,203 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
     : 0
 
   return (
-    <Card className='min-w-0 shadow-none'>
-      <CardHeader className='gap-2 border-b'>
-        <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
-          <div>
-            <CardTitle>{t('Pricing groups')}</CardTitle>
-            <CardDescription>
-              {t(
-                'Each group has a fixed ID. Rename it in any language without affecting users or keys. Any group can be migrated or deleted as long as at least one active group remains.'
-              )}
-            </CardDescription>
-          </div>
-          <Button
-            onClick={() => createMutation.mutate()}
-            size='sm'
-            className='sm:self-start'
-            disabled={createMutation.isPending}
-          >
-            <Plus className='mr-2 h-4 w-4' />
-            {t('Add group')}
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className='flex min-w-0 flex-col gap-4'>
-          <InputGroup className='max-w-sm'>
-            <InputGroupAddon>
-              <Search aria-hidden='true' />
+    <ContentSection
+      title={t('Pricing groups')}
+      description={t(
+        'Each group has a fixed ID. Rename it in any language without affecting users or keys. Any group can be migrated or deleted as long as at least one active group remains.'
+      )}
+      actions={
+        <Button
+          variant='brand'
+          onClick={() => createMutation.mutate()}
+          size='sm'
+          disabled={createMutation.isPending}
+        >
+          <Plus className='mr-2 h-4 w-4' />
+          {t('Add group')}
+        </Button>
+      }
+    >
+      <div className='flex min-w-0 flex-col gap-4'>
+        <InputGroup className='max-w-sm'>
+          <InputGroupAddon>
+            <Search aria-hidden='true' />
+          </InputGroupAddon>
+          <InputGroupInput
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            aria-label={t('Search groups by name or description')}
+            placeholder={t('Search groups by name or description')}
+          />
+          {search && (
+            <InputGroupAddon align='inline-end'>
+              <InputGroupButton
+                size='icon-xs'
+                aria-label={t('Clear search')}
+                onClick={() => setSearch('')}
+              >
+                <X aria-hidden='true' />
+              </InputGroupButton>
             </InputGroupAddon>
-            <InputGroupInput
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              aria-label={t('Search groups by name or description')}
-              placeholder={t('Search groups by name or description')}
+          )}
+        </InputGroup>
+        <StaticDataTable
+          tableClassName='min-w-[860px]'
+          tableProps={{ 'aria-label': t('Pricing groups') }}
+          data={visibleRows}
+          getRowKey={(row) => row.id}
+          emptyClassName='text-muted-foreground h-20 text-sm'
+          emptyContent={
+            <EmptyState
+              className='min-h-40'
+              title={
+                query
+                  ? t('No results found')
+                  : t('No groups yet. Add a group to get started.')
+              }
+              action={
+                query ? (
+                  <Button
+                    variant='outline'
+                    size='sm'
+                    onClick={() => setSearch('')}
+                  >
+                    {t('Clear search')}
+                  </Button>
+                ) : undefined
+              }
             />
-            {search && (
-              <InputGroupAddon align='inline-end'>
-                <InputGroupButton
-                  size='icon-xs'
-                  aria-label={t('Clear search')}
-                  onClick={() => setSearch('')}
-                >
-                  <X aria-hidden='true' />
-                </InputGroupButton>
-              </InputGroupAddon>
-            )}
-          </InputGroup>
-          <StaticDataTable
-            tableClassName='min-w-[860px]'
-            tableProps={{ 'aria-label': t('Pricing groups') }}
-            data={visibleRows}
-            getRowKey={(row) => row.id}
-            emptyClassName='text-muted-foreground h-20 text-sm'
-            emptyContent={
-              <EmptyState
-                className='min-h-40'
-                title={
-                  query
-                    ? t('No results found')
-                    : t('No groups yet. Add a group to get started.')
-                }
-                action={
-                  query ? (
-                    <Button
-                      variant='outline'
-                      size='sm'
-                      onClick={() => setSearch('')}
-                    >
-                      {t('Clear search')}
-                    </Button>
-                  ) : undefined
-                }
-              />
-            }
-            columns={[
-              {
-                id: 'id',
-                header: t('Group ID'),
-                className: 'w-28',
-                cell: (row) => (
-                  <code className='font-mono text-xs' data-testid='group-id'>
-                    {row.id}
-                  </code>
-                ),
+          }
+          columns={[
+            {
+              id: 'id',
+              header: t('Group ID'),
+              className: 'w-28',
+              cell: (row) => (
+                <code className='font-mono text-xs' data-testid='group-id'>
+                  {row.id}
+                </code>
+              ),
+            },
+            {
+              id: 'group',
+              header: t('Group name'),
+              className: 'min-w-40',
+              cell: (row) => {
+                const admin = adminById.get(row.id)
+                return (
+                  <Button
+                    variant='ghost'
+                    size='sm'
+                    className='h-auto justify-start gap-2 px-2 font-normal'
+                    disabled={!admin}
+                    aria-label={t('Edit names of {{group}}', {
+                      group: row.id,
+                    })}
+                    onClick={() => admin && setEditing(admin)}
+                  >
+                    <span className='truncate'>{display.name(row.id)}</span>
+                    <Pencil className='h-3 w-3 shrink-0' aria-hidden='true' />
+                  </Button>
+                )
               },
-              {
-                id: 'group',
-                header: t('Group name'),
-                className: 'min-w-40',
-                cell: (row) => {
-                  const admin = adminById.get(row.id)
-                  return (
+            },
+            {
+              id: 'ratio',
+              header: t('Ratio'),
+              className: 'w-28 min-w-28',
+              cell: (row) => (
+                <Input
+                  type='number'
+                  min={0}
+                  step={0.0001}
+                  className='w-24 min-w-24 tabular-nums'
+                  value={row.ratio}
+                  aria-label={t('Ratio')}
+                  onChange={(event) =>
+                    updateRow(row.id, 'ratio', event.target.value)
+                  }
+                />
+              ),
+            },
+            {
+              id: 'description',
+              header: t('Description'),
+              className: 'min-w-48',
+              cell: (row) => (
+                <Input
+                  className='min-w-44'
+                  value={row.description}
+                  aria-label={t('Group description')}
+                  placeholder={t('Group description')}
+                  onChange={(event) =>
+                    updateRow(row.id, 'description', event.target.value)
+                  }
+                />
+              ),
+            },
+            {
+              id: 'refs',
+              header: t('In use'),
+              className: 'min-w-44',
+              cell: (row) => (
+                <span
+                  className='text-muted-foreground text-xs'
+                  data-testid='group-refs'
+                >
+                  {refsText(row.id)}
+                </span>
+              ),
+            },
+            {
+              id: 'actions',
+              header: t('Actions'),
+              className: 'text-right',
+              cellClassName: 'text-right',
+              cell: (row) => {
+                const admin = adminById.get(row.id)
+                return (
+                  <div className='flex justify-end gap-1'>
                     <Button
                       variant='ghost'
                       size='sm'
-                      className='h-auto justify-start gap-2 px-2 font-normal'
-                      disabled={!admin}
-                      aria-label={t('Edit names of {{group}}', {
-                        group: row.id,
-                      })}
-                      onClick={() => admin && setEditing(admin)}
+                      onClick={() => props.onShowDetail(row.id)}
+                      aria-label={t('Details')}
                     >
-                      <span className='truncate'>{display.name(row.id)}</span>
-                      <Pencil className='h-3 w-3 shrink-0' aria-hidden='true' />
+                      <Info className='h-4 w-4' />
                     </Button>
-                  )
-                },
+                    <Button
+                      variant='ghost'
+                      size='sm'
+                      disabled={!admin}
+                      onClick={() => admin && setMigrating(admin)}
+                      aria-label={t('Migrate group')}
+                    >
+                      <ArrowRightLeft className='h-4 w-4' />
+                    </Button>
+                    <Button
+                      variant='ghost'
+                      size='sm'
+                      disabled={isLastGroup}
+                      onClick={() =>
+                        setDeleting({ id: row.id, refs: admin?.refs })
+                      }
+                      aria-label={t('Delete group')}
+                      title={
+                        isLastGroup
+                          ? t('At least one active group must remain')
+                          : undefined
+                      }
+                    >
+                      <Trash2 className='h-4 w-4' />
+                    </Button>
+                  </div>
+                )
               },
-              {
-                id: 'ratio',
-                header: t('Ratio'),
-                className: 'w-28',
-                cell: (row) => (
-                  <Input
-                    type='number'
-                    min={0}
-                    step={0.0001}
-                    value={row.ratio}
-                    aria-label={t('Ratio')}
-                    onChange={(event) =>
-                      updateRow(row.id, 'ratio', event.target.value)
-                    }
-                  />
-                ),
-              },
-              {
-                id: 'description',
-                header: t('Description'),
-                className: 'min-w-48',
-                cell: (row) => (
-                  <Input
-                    value={row.description}
-                    aria-label={t('Group description')}
-                    placeholder={t('Group description')}
-                    onChange={(event) =>
-                      updateRow(row.id, 'description', event.target.value)
-                    }
-                  />
-                ),
-              },
-              {
-                id: 'refs',
-                header: t('In use'),
-                className: 'min-w-44',
-                cell: (row) => (
-                  <span
-                    className='text-muted-foreground text-xs'
-                    data-testid='group-refs'
-                  >
-                    {refsText(row.id)}
-                  </span>
-                ),
-              },
-              {
-                id: 'actions',
-                header: t('Actions'),
-                className: 'text-right',
-                cellClassName: 'text-right',
-                cell: (row) => {
-                  const admin = adminById.get(row.id)
-                  return (
-                    <div className='flex justify-end gap-1'>
-                      <Button
-                        variant='ghost'
-                        size='sm'
-                        onClick={() => props.onShowDetail(row.id)}
-                        aria-label={t('Details')}
-                      >
-                        <Info className='h-4 w-4' />
-                      </Button>
-                      <Button
-                        variant='ghost'
-                        size='sm'
-                        disabled={!admin}
-                        onClick={() => admin && setMigrating(admin)}
-                        aria-label={t('Migrate group')}
-                      >
-                        <ArrowRightLeft className='h-4 w-4' />
-                      </Button>
-                      <Button
-                        variant='ghost'
-                        size='sm'
-                        disabled={isLastGroup}
-                        onClick={() =>
-                          setDeleting({ id: row.id, refs: admin?.refs })
-                        }
-                        aria-label={t('Delete group')}
-                        title={
-                          isLastGroup
-                            ? t('At least one active group must remain')
-                            : undefined
-                        }
-                      >
-                        <Trash2 className='h-4 w-4' />
-                      </Button>
-                    </div>
-                  )
-                },
-              },
-            ]}
-          />
-        </div>
-      </CardContent>
+            },
+          ]}
+        />
+      </div>
       <GroupTextDialog
         group={editing}
         onOpenChange={(open) => {
@@ -508,6 +497,6 @@ export function GroupPricingTable(props: GroupPricingTableProps) {
           </div>
         )}
       </ConfirmDialog>
-    </Card>
+    </ContentSection>
   )
 }

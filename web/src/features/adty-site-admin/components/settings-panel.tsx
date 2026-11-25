@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Trash2 } from 'lucide-react'
+import { ChevronRight, Plus, Trash2 } from 'lucide-react'
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -29,6 +29,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -118,7 +119,10 @@ function resellerFieldLabel(key: string, t: (k: string) => string): string {
   }
 }
 
-function resellerWarningText(warning: string, t: (k: string) => string): string {
+function resellerWarningText(
+  warning: string,
+  t: (k: string) => string
+): string {
   switch (warning) {
     case 'cleared_secret:cloudflare_api_token':
       return t(
@@ -204,7 +208,9 @@ export function SettingsPanel(props: {
       setDrafts(toResellerDrafts(saved))
     }
   })
-  useEffect(() => { mergeSavedFields() }, [saved])
+  useEffect(() => {
+    mergeSavedFields()
+  }, [saved])
 
   const save = useMutation({
     mutationFn: (body: ResellerSettingsUpdate) => {
@@ -323,7 +329,7 @@ export function SettingsPanel(props: {
 
   return (
     <form
-      className='flex max-w-3xl flex-col gap-6'
+      className='flex flex-col gap-4'
       onSubmit={(event) => {
         event.preventDefault()
         if (disabled || conflicts.length) return
@@ -331,8 +337,11 @@ export function SettingsPanel(props: {
       }}
     >
       {conflicts.length > 0 && (
-        <div role='alert'>
-          <p>
+        <div
+          role='alert'
+          className='border-warning/50 bg-warning/10 flex flex-col gap-2 rounded-[14px] border px-5 py-4 text-sm'
+        >
+          <p className='font-medium'>
             {t('These settings have changed')} ·{' '}
             {conflicts.map((key) => resellerFieldLabel(key, t)).join(', ')}
           </p>
@@ -344,32 +353,34 @@ export function SettingsPanel(props: {
                 !key.toLowerCase().includes('token')
             )
             .map((key) => (
-              <p key={key}>
+              <p key={key} className='text-dim text-[13px] break-all'>
                 {resellerFieldLabel(key, t)} · {t('Current value')}{' '}
                 {JSON.stringify(saved[key as keyof typeof saved])}
               </p>
             ))}
-          <Button
-            type='button'
-            variant='outline'
-            onClick={() => {
-              setDrafts(mergeResellerDrafts(baseline, drafts, saved))
-              setBaseline(saved)
-            }}
-          >
-            {t('Keep my changes')}
-          </Button>
-          <Button
-            type='button'
-            variant='ghost'
-            onClick={() => {
-              edited.current = false
-              setBaseline(saved)
-              setDrafts(toResellerDrafts(saved))
-            }}
-          >
-            {t('Discard changes')}
-          </Button>
+          <div className='flex flex-wrap gap-2'>
+            <Button
+              type='button'
+              variant='outline'
+              onClick={() => {
+                setDrafts(mergeResellerDrafts(baseline, drafts, saved))
+                setBaseline(saved)
+              }}
+            >
+              {t('Keep my changes')}
+            </Button>
+            <Button
+              type='button'
+              variant='ghost'
+              onClick={() => {
+                edited.current = false
+                setBaseline(saved)
+                setDrafts(toResellerDrafts(saved))
+              }}
+            >
+              {t('Discard changes')}
+            </Button>
+          </div>
         </div>
       )}
       {(saved.settings_warnings ?? []).map((warning) => (
@@ -378,364 +389,384 @@ export function SettingsPanel(props: {
         </p>
       ))}
       {props.section === 'supply' && (
-        <div className='flex flex-col gap-2'>
-          <SwitchRow
-            label={t('Reseller sites')}
-            checked={drafts.enabled}
-            disabled={disabled || (!canEnable && !drafts.enabled)}
-            hint={enableHint}
-            onCheckedChange={(value) => set('enabled', value)}
-          />
-          {!rootsSet && props.onNavigateSection && (
-            <div>
-              <Button
-                type='button'
-                size='sm'
-                variant='outline'
-                onClick={() => props.onNavigateSection?.('domains')}
-              >
-                {t('Go to Domains')}
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {props.section === 'domains' && (
-        <fieldset className='grid gap-4 sm:grid-cols-2'>
-          <legend className='mb-2 text-sm font-medium'>{t('Domains')}</legend>
-          <div className='space-y-2'>
-            <Label htmlFor='reseller-roots'>
-              {t('Root domains (one per line)')}
-            </Label>
-            <Textarea
-              id='reseller-roots'
-              rows={3}
-              value={drafts.root_domains}
-              disabled={disabled}
-              onChange={(event) => set('root_domains', event.target.value)}
+        <SettingsSection title={t('Supply settings')}>
+          <div className='flex max-w-xl flex-col gap-3'>
+            <SwitchRow
+              label={t('Reseller sites')}
+              checked={drafts.enabled}
+              disabled={disabled || (!canEnable && !drafts.enabled)}
+              hint={enableHint}
+              onCheckedChange={(value) => set('enabled', value)}
             />
-            {!rootsSet && (
-              <p className='text-warning text-xs'>{t('Not configured')}</p>
-            )}
-          </div>
-          <div className='space-y-2'>
-            <Label htmlFor='reseller-reserved'>
-              {t('Reserved subdomains (one per line)')}
-            </Label>
-            <Textarea
-              id='reseller-reserved'
-              rows={3}
-              value={drafts.reserved_subdomains}
-              disabled={disabled}
-              onChange={(event) =>
-                set('reserved_subdomains', event.target.value)
-              }
-            />
-          </div>
-          <div className='space-y-2'>
-            <p>{t('Unknown host')} · {t('Return 404')}</p>
-          </div>
-        </fieldset>
-      )}
-
-      {props.section === 'domains' && (
-        <fieldset className='grid gap-4 sm:grid-cols-2'>
-          <legend className='mb-2 text-sm font-medium'>
-            {t('Custom domains (Cloudflare for SaaS)')}
-          </legend>
-          <div className='flex gap-2 sm:col-span-2'>
-            <Button
-              type='button'
-              variant='outline'
-              disabled={secretsDisabled || checkProvider.isPending}
-              onClick={() => checkProvider.mutate('cloudflare')}
-            >
-              {t('Check Cloudflare')}
-            </Button>
-            <Button
-              type='button'
-              variant='outline'
-              disabled={secretsDisabled || checkProvider.isPending}
-              onClick={() => checkProvider.mutate('aliyun')}
-            >
-              {t('Check AliDNS')}
-            </Button>
-          </div>
-          <SwitchRow
-            label={t('Automate platform domains')}
-            checked={drafts.domain_automation_enabled}
-            disabled={secretsDisabled}
-            onCheckedChange={(value) => set('domain_automation_enabled', value)}
-          />
-          <TextField
-            label={t('AliDNS managed root domain')}
-            value={drafts.aliyun_domain}
-            disabled={secretsDisabled}
-            onChange={(value) => set('aliyun_domain', value)}
-          />
-          <TextField
-            label={t('Mainland CNAME target')}
-            value={drafts.domain_mainland_target}
-            disabled={secretsDisabled}
-            onChange={(value) => set('domain_mainland_target', value)}
-          />
-          <SecretField
-            label={t('AliDNS AccessKey ID')}
-            value={drafts.aliyun_id}
-            configured={!!saved.aliyun_id_configured && !drafts.clear_aliyun}
-            disabled={secretsDisabled}
-            onChange={(value) => set('aliyun_id', value)}
-          />
-          <SecretField
-            label={t('AliDNS AccessKey Secret')}
-            value={drafts.aliyun_secret}
-            configured={
-              !!saved.aliyun_secret_configured && !drafts.clear_aliyun
-            }
-            disabled={secretsDisabled}
-            onChange={(value) => set('aliyun_secret', value)}
-          />
-          <SwitchRow
-            label={t('Remove saved AliDNS credentials')}
-            checked={drafts.clear_aliyun}
-            disabled={secretsDisabled}
-            onCheckedChange={(value) => set('clear_aliyun', value)}
-          />
-          <SecretField
-            label={t('Cloudflare API token')}
-            value={drafts.cloudflare_token}
-            configured={
-              saved.cloudflare_token_configured &&
-              !drafts.clear_cloudflare_token
-            }
-            disabled={secretsDisabled}
-            onChange={(value) => set('cloudflare_token', value)}
-          />
-          <TextField
-            label={t('Cloudflare zone ID')}
-            required
-            value={drafts.cloudflare_zone_id}
-            disabled={secretsDisabled}
-            onChange={(value) => set('cloudflare_zone_id', value)}
-          />
-          <TextField
-            label={t('Cloudflare account ID')}
-            required
-            value={drafts.cloudflare_account_id}
-            disabled={secretsDisabled}
-            onChange={(value) => set('cloudflare_account_id', value)}
-          />
-          <TextField
-            label={t('CNAME target')}
-            required
-            placeholder='customers.example.com'
-            value={drafts.cname_target}
-            disabled={secretsDisabled}
-            onChange={(value) => set('cname_target', value)}
-          />
-          <TextField
-            label={t('Fallback origin')}
-            required
-            value={drafts.fallback_origin}
-            disabled={secretsDisabled}
-            onChange={(value) => set('fallback_origin', value)}
-          />
-          {saved.cloudflare_token_configured && (
-            <div className='flex items-center gap-2 self-end'>
-              <Checkbox
-                id='reseller-clear-token'
-                checked={drafts.clear_cloudflare_token}
-                disabled={secretsDisabled}
-                onCheckedChange={(value) =>
-                  set('clear_cloudflare_token', value === true)
-                }
-              />
-              <Label htmlFor='reseller-clear-token'>
-                {t('Remove the saved token')}
-              </Label>
-            </div>
-          )}
-          <div className='space-y-2 sm:col-span-2'>
-            <Label>{t('Turnstile widgets')}</Label>
-            <p className='text-muted-foreground text-xs'>
-              {t(
-                'Optional Cloudflare Turnstile captcha pool for custom or automated site domains (up to 10 domains per widget). Leave empty if not using custom domain captcha yet.'
-              )}
-            </p>
-            {drafts.widgets.map((widget, index) => (
-              <div
-                key={widget.key}
-                className='grid items-end gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]'
-              >
-                <TextField
-                  label={t('Widget ID of widget {{n}}', { n: index + 1 })}
-                  value={widget.id}
-                  disabled={secretsDisabled}
-                  onChange={(value) =>
-                    set(
-                      'widgets',
-                      drafts.widgets.map((item, i) =>
-                        i === index ? { ...item, id: value } : item
-                      )
-                    )
-                  }
-                />
-                <TextField
-                  label={t('Site key of widget {{n}}', { n: index + 1 })}
-                  value={widget.site_key}
-                  disabled={secretsDisabled}
-                  onChange={(value) =>
-                    set(
-                      'widgets',
-                      drafts.widgets.map((item, i) =>
-                        i === index ? { ...item, site_key: value } : item
-                      )
-                    )
-                  }
-                />
-                <SecretField
-                  label={t('Secret of widget {{n}}', { n: index + 1 })}
-                  value={widget.secret}
-                  configured={
-                    saved.turnstile_secret_configured?.[widget.id] === true
-                  }
-                  disabled={secretsDisabled}
-                  onChange={(value) =>
-                    set(
-                      'widgets',
-                      drafts.widgets.map((item, i) =>
-                        i === index ? { ...item, secret: value } : item
-                      )
-                    )
-                  }
-                />
+            {!rootsSet && props.onNavigateSection && (
+              <div>
                 <Button
                   type='button'
-                  variant='ghost'
-                  size='icon'
-                  disabled={secretsDisabled}
-                  aria-label={t('Remove widget {{n}}', { n: index + 1 })}
-                  onClick={() =>
-                    set(
-                      'widgets',
-                      drafts.widgets.filter((_, i) => i !== index)
-                    )
-                  }
+                  size='sm'
+                  variant='outline'
+                  onClick={() => props.onNavigateSection?.('domains')}
                 >
-                  <Trash2 aria-hidden />
+                  {t('Go to Domains')}
                 </Button>
               </div>
-            ))}
-            <Button
-              type='button'
-              variant='outline'
-              size='sm'
-              disabled={secretsDisabled}
-              onClick={() =>
-                set('widgets', [
-                  ...drafts.widgets,
-                  { key: newRowKey(), id: '', site_key: '', secret: '' },
-                ])
-              }
-            >
-              <Plus aria-hidden />
-              {t('Add widget')}
-            </Button>
-            {drafts.widgets.length === 0 &&
-              (drafts.custom_domain_enabled ||
-                drafts.domain_automation_enabled) && (
-                <p className='text-warning text-xs'>{t('Not configured')}</p>
-              )}
+            )}
           </div>
-        </fieldset>
+        </SettingsSection>
       )}
 
       {props.section === 'domains' && (
-        <fieldset className='flex flex-col gap-3'>
-          <legend className='mb-2 text-sm font-medium'>{t('Features')}</legend>
-          <SwitchRow
-            label={t('Custom domains')}
-            checked={drafts.custom_domain_enabled}
-            disabled={disabled || (!cfReady && !drafts.custom_domain_enabled)}
-            hint={
-              cfReady
-                ? undefined
-                : t(
-                    'Fill in the Cloudflare API token, zone ID and CNAME target first.'
-                  )
-            }
-            onCheckedChange={(value) => set('custom_domain_enabled', value)}
-          />
-        </fieldset>
-      )}
-
-      {props.section === 'policies' && (
-        <fieldset className='grid gap-4 sm:grid-cols-2'>
-          <legend className='mb-2 text-sm font-medium'>{t('Rules')}</legend>
-          {SWITCH_KEYS.map((key) => (
-            <SwitchRow
-              key={key}
-              label={switchLabels[key]}
-              checked={drafts[key]}
-              disabled={disabled}
-              onCheckedChange={(value) => set(key, value)}
-            />
-          ))}
-        </fieldset>
-      )}
-
-      {props.section === 'policies' && (
-        <fieldset className='grid gap-4 sm:grid-cols-2'>
-          <legend className='mb-2 text-sm font-medium'>
-            {t('What site owners can see by default')}
-          </legend>
-          {VISIBILITY_KEYS.map((key) => (
-            <div key={key} className='space-y-2'>
-              <Label htmlFor={`reseller-visibility-${key}`}>
-                {visibilityLabels[key]}
+        <SettingsSection title={t('Domains')}>
+          <fieldset className='grid max-w-3xl gap-4 sm:grid-cols-2'>
+            <legend className='sr-only'>{t('Domains')}</legend>
+            <div className='space-y-2'>
+              <Label htmlFor='reseller-roots'>
+                {t('Root domains (one per line)')}
               </Label>
-              <NativeSelect
-                id={`reseller-visibility-${key}`}
-                value={drafts.visibility[key]}
+              <Textarea
+                id='reseller-roots'
+                rows={3}
+                value={drafts.root_domains}
+                disabled={disabled}
+                onChange={(event) => set('root_domains', event.target.value)}
+              />
+              {!rootsSet && (
+                <p className='text-warning text-xs'>{t('Not configured')}</p>
+              )}
+            </div>
+            <div className='space-y-2'>
+              <Label htmlFor='reseller-reserved'>
+                {t('Reserved subdomains (one per line)')}
+              </Label>
+              <Textarea
+                id='reseller-reserved'
+                rows={3}
+                value={drafts.reserved_subdomains}
                 disabled={disabled}
                 onChange={(event) =>
-                  set('visibility', {
-                    ...drafts.visibility,
-                    [key]: event.target.value,
-                  })
+                  set('reserved_subdomains', event.target.value)
                 }
-              >
-                {key === 'customer_email' ? (
-                  <>
-                    <NativeSelectOption value='masked'>
-                      {t('Masked')}
-                    </NativeSelectOption>
-                    <NativeSelectOption value='full'>
-                      {t('Full')}
-                    </NativeSelectOption>
-                  </>
-                ) : (
-                  <>
-                    <NativeSelectOption value='on'>
-                      {t('Shown')}
-                    </NativeSelectOption>
-                    <NativeSelectOption value='off'>
-                      {t('Hidden')}
-                    </NativeSelectOption>
-                  </>
-                )}
-              </NativeSelect>
+              />
             </div>
-          ))}
-        </fieldset>
+            <div className='sm:col-span-2'>
+              <p className='text-dim text-[13px]'>
+                {t('Unknown host')} · {t('Return 404')}
+              </p>
+            </div>
+          </fieldset>
+        </SettingsSection>
       )}
 
-      <details>
-        <summary className='cursor-pointer text-sm font-medium'>
+      {props.section === 'domains' && (
+        <SettingsSection title={t('Custom domains (Cloudflare for SaaS)')}>
+          <fieldset className='grid max-w-3xl gap-4 sm:grid-cols-2'>
+            <legend className='sr-only'>
+              {t('Custom domains (Cloudflare for SaaS)')}
+            </legend>
+            <div className='flex flex-wrap gap-2 sm:col-span-2'>
+              <Button
+                type='button'
+                variant='outline'
+                disabled={secretsDisabled || checkProvider.isPending}
+                onClick={() => checkProvider.mutate('cloudflare')}
+              >
+                {t('Check Cloudflare')}
+              </Button>
+              <Button
+                type='button'
+                variant='outline'
+                disabled={secretsDisabled || checkProvider.isPending}
+                onClick={() => checkProvider.mutate('aliyun')}
+              >
+                {t('Check AliDNS')}
+              </Button>
+            </div>
+            <SwitchRow
+              label={t('Automate platform domains')}
+              checked={drafts.domain_automation_enabled}
+              disabled={secretsDisabled}
+              onCheckedChange={(value) =>
+                set('domain_automation_enabled', value)
+              }
+            />
+            <TextField
+              label={t('AliDNS managed root domain')}
+              value={drafts.aliyun_domain}
+              disabled={secretsDisabled}
+              onChange={(value) => set('aliyun_domain', value)}
+            />
+            <TextField
+              label={t('Mainland CNAME target')}
+              value={drafts.domain_mainland_target}
+              disabled={secretsDisabled}
+              onChange={(value) => set('domain_mainland_target', value)}
+            />
+            <SecretField
+              label={t('AliDNS AccessKey ID')}
+              value={drafts.aliyun_id}
+              configured={!!saved.aliyun_id_configured && !drafts.clear_aliyun}
+              disabled={secretsDisabled}
+              onChange={(value) => set('aliyun_id', value)}
+            />
+            <SecretField
+              label={t('AliDNS AccessKey Secret')}
+              value={drafts.aliyun_secret}
+              configured={
+                !!saved.aliyun_secret_configured && !drafts.clear_aliyun
+              }
+              disabled={secretsDisabled}
+              onChange={(value) => set('aliyun_secret', value)}
+            />
+            <SwitchRow
+              label={t('Remove saved AliDNS credentials')}
+              checked={drafts.clear_aliyun}
+              disabled={secretsDisabled}
+              onCheckedChange={(value) => set('clear_aliyun', value)}
+            />
+            <SecretField
+              label={t('Cloudflare API token')}
+              value={drafts.cloudflare_token}
+              configured={
+                saved.cloudflare_token_configured &&
+                !drafts.clear_cloudflare_token
+              }
+              disabled={secretsDisabled}
+              onChange={(value) => set('cloudflare_token', value)}
+            />
+            <TextField
+              label={t('Cloudflare zone ID')}
+              required
+              value={drafts.cloudflare_zone_id}
+              disabled={secretsDisabled}
+              onChange={(value) => set('cloudflare_zone_id', value)}
+            />
+            <TextField
+              label={t('Cloudflare account ID')}
+              required
+              value={drafts.cloudflare_account_id}
+              disabled={secretsDisabled}
+              onChange={(value) => set('cloudflare_account_id', value)}
+            />
+            <TextField
+              label={t('CNAME target')}
+              required
+              placeholder='customers.example.com'
+              value={drafts.cname_target}
+              disabled={secretsDisabled}
+              onChange={(value) => set('cname_target', value)}
+            />
+            <TextField
+              label={t('Fallback origin')}
+              required
+              value={drafts.fallback_origin}
+              disabled={secretsDisabled}
+              onChange={(value) => set('fallback_origin', value)}
+            />
+            {saved.cloudflare_token_configured && (
+              <div className='flex h-8 items-center gap-2 self-end'>
+                <Checkbox
+                  id='reseller-clear-token'
+                  checked={drafts.clear_cloudflare_token}
+                  disabled={secretsDisabled}
+                  onCheckedChange={(value) =>
+                    set('clear_cloudflare_token', value === true)
+                  }
+                />
+                <Label htmlFor='reseller-clear-token'>
+                  {t('Remove the saved token')}
+                </Label>
+              </div>
+            )}
+            <div className='border-border space-y-2 border-t pt-4 sm:col-span-2'>
+              <Label>{t('Turnstile widgets')}</Label>
+              <p className='text-dim text-[12.5px] leading-relaxed'>
+                {t(
+                  'Optional Cloudflare Turnstile captcha pool for custom or automated site domains (up to 10 domains per widget). Leave empty if not using custom domain captcha yet.'
+                )}
+              </p>
+              {drafts.widgets.map((widget, index) => (
+                <div
+                  key={widget.key}
+                  className='grid items-end gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]'
+                >
+                  <TextField
+                    label={t('Widget ID of widget {{n}}', { n: index + 1 })}
+                    value={widget.id}
+                    disabled={secretsDisabled}
+                    onChange={(value) =>
+                      set(
+                        'widgets',
+                        drafts.widgets.map((item, i) =>
+                          i === index ? { ...item, id: value } : item
+                        )
+                      )
+                    }
+                  />
+                  <TextField
+                    label={t('Site key of widget {{n}}', { n: index + 1 })}
+                    value={widget.site_key}
+                    disabled={secretsDisabled}
+                    onChange={(value) =>
+                      set(
+                        'widgets',
+                        drafts.widgets.map((item, i) =>
+                          i === index ? { ...item, site_key: value } : item
+                        )
+                      )
+                    }
+                  />
+                  <SecretField
+                    label={t('Secret of widget {{n}}', { n: index + 1 })}
+                    value={widget.secret}
+                    configured={
+                      saved.turnstile_secret_configured?.[widget.id] === true
+                    }
+                    disabled={secretsDisabled}
+                    onChange={(value) =>
+                      set(
+                        'widgets',
+                        drafts.widgets.map((item, i) =>
+                          i === index ? { ...item, secret: value } : item
+                        )
+                      )
+                    }
+                  />
+                  <Button
+                    type='button'
+                    variant='ghost'
+                    size='icon'
+                    disabled={secretsDisabled}
+                    aria-label={t('Remove widget {{n}}', { n: index + 1 })}
+                    onClick={() =>
+                      set(
+                        'widgets',
+                        drafts.widgets.filter((_, i) => i !== index)
+                      )
+                    }
+                  >
+                    <Trash2 aria-hidden />
+                  </Button>
+                </div>
+              ))}
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                disabled={secretsDisabled}
+                onClick={() =>
+                  set('widgets', [
+                    ...drafts.widgets,
+                    { key: newRowKey(), id: '', site_key: '', secret: '' },
+                  ])
+                }
+              >
+                <Plus aria-hidden />
+                {t('Add widget')}
+              </Button>
+              {drafts.widgets.length === 0 &&
+                (drafts.custom_domain_enabled ||
+                  drafts.domain_automation_enabled) && (
+                  <p className='text-warning text-xs'>{t('Not configured')}</p>
+                )}
+            </div>
+          </fieldset>
+        </SettingsSection>
+      )}
+
+      {props.section === 'domains' && (
+        <SettingsSection title={t('Features')}>
+          <fieldset className='flex max-w-xl flex-col gap-3'>
+            <legend className='sr-only'>{t('Features')}</legend>
+            <SwitchRow
+              label={t('Custom domains')}
+              checked={drafts.custom_domain_enabled}
+              disabled={disabled || (!cfReady && !drafts.custom_domain_enabled)}
+              hint={
+                cfReady
+                  ? undefined
+                  : t(
+                      'Fill in the Cloudflare API token, zone ID and CNAME target first.'
+                    )
+              }
+              onCheckedChange={(value) => set('custom_domain_enabled', value)}
+            />
+          </fieldset>
+        </SettingsSection>
+      )}
+
+      {props.section === 'policies' && (
+        <SettingsSection title={t('Rules')}>
+          <fieldset className='grid max-w-3xl gap-3 sm:grid-cols-2'>
+            <legend className='sr-only'>{t('Rules')}</legend>
+            {SWITCH_KEYS.map((key) => (
+              <SwitchRow
+                key={key}
+                label={switchLabels[key]}
+                checked={drafts[key]}
+                disabled={disabled}
+                onCheckedChange={(value) => set(key, value)}
+              />
+            ))}
+          </fieldset>
+        </SettingsSection>
+      )}
+
+      {props.section === 'policies' && (
+        <SettingsSection title={t('What site owners can see by default')}>
+          <fieldset className='grid max-w-3xl grid-cols-2 gap-4 sm:grid-cols-3'>
+            <legend className='sr-only'>
+              {t('What site owners can see by default')}
+            </legend>
+            {VISIBILITY_KEYS.map((key) => (
+              <div key={key} className='space-y-2'>
+                <Label htmlFor={`reseller-visibility-${key}`}>
+                  {visibilityLabels[key]}
+                </Label>
+                <NativeSelect
+                  id={`reseller-visibility-${key}`}
+                  value={drafts.visibility[key]}
+                  disabled={disabled}
+                  onChange={(event) =>
+                    set('visibility', {
+                      ...drafts.visibility,
+                      [key]: event.target.value,
+                    })
+                  }
+                >
+                  {key === 'customer_email' ? (
+                    <>
+                      <NativeSelectOption value='masked'>
+                        {t('Masked')}
+                      </NativeSelectOption>
+                      <NativeSelectOption value='full'>
+                        {t('Full')}
+                      </NativeSelectOption>
+                    </>
+                  ) : (
+                    <>
+                      <NativeSelectOption value='on'>
+                        {t('Shown')}
+                      </NativeSelectOption>
+                      <NativeSelectOption value='off'>
+                        {t('Hidden')}
+                      </NativeSelectOption>
+                    </>
+                  )}
+                </NativeSelect>
+              </div>
+            ))}
+          </fieldset>
+        </SettingsSection>
+      )}
+
+      <details className='group border-border bg-card overflow-hidden rounded-[14px] border'>
+        <summary className='text-foreground flex cursor-pointer list-none items-center gap-2 px-5 py-4 text-[15px] leading-snug font-semibold tracking-tight sm:px-6 [&::-webkit-details-marker]:hidden'>
+          <ChevronRight
+            aria-hidden
+            className='text-dim size-4 transition-transform group-open:rotate-90'
+          />
           {t('Advanced settings')}
         </summary>
-        <div className='mt-3 grid gap-3 sm:grid-cols-2'>
+        <div className='border-border grid max-w-full gap-4 border-t px-5 py-5 sm:grid-cols-2 sm:px-6 sm:py-6 lg:max-w-3xl lg:border-r-0'>
           {RULE_KEYS.filter((key) => {
             if (key === 'markup_increase_delay_hours') {
               return props.section === 'supply'
@@ -751,6 +782,7 @@ export function SettingsPanel(props: {
             <TextField
               key={key}
               type='number'
+              inputClassName='sm:max-w-44'
               label={ruleLabels[key]}
               value={drafts[key]}
               disabled={disabled}

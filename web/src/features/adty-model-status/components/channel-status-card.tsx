@@ -122,7 +122,7 @@ export const ChannelStatusCard = memo(function ChannelStatusCard(
       </div>
 
       {/* 2-Column KPI Strip */}
-      <div className='grid grid-cols-2 gap-2'>
+      <div className='mt-auto grid grid-cols-2 gap-2'>
         <div className='border-border/70 bg-muted/20 flex min-w-0 flex-col justify-between rounded-xl border px-2.5 py-2.5'>
           <div>
             <div className='text-muted-foreground flex items-center gap-1 text-[11px] font-medium'>
@@ -135,7 +135,7 @@ export const ChannelStatusCard = memo(function ChannelStatusCard(
           </div>
           <div
             className={cn(
-              'mt-2 truncate font-mono text-[15px] font-bold tracking-tight tabular-nums',
+              'font-display mt-2 truncate text-[17px] font-extrabold tracking-[-0.02em] tabular-nums',
               item.avgPingMs === null
                 ? 'text-muted-foreground'
                 : 'text-foreground'
@@ -157,7 +157,7 @@ export const ChannelStatusCard = memo(function ChannelStatusCard(
           </div>
           <div
             className={cn(
-              'mt-2 truncate font-mono text-[15px] font-bold tracking-tight tabular-nums',
+              'font-display mt-2 truncate text-[17px] font-extrabold tracking-[-0.02em] tabular-nums',
               successRateTone
             )}
           >

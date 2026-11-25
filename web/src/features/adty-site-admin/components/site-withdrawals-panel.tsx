@@ -32,6 +32,7 @@ import { StaticDataTable } from '@/components/data-table/static/static-data-tabl
 import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
@@ -179,16 +180,12 @@ export function SiteWithdrawalsPanel() {
   })()
 
   return (
-    <section className='flex flex-col gap-3'>
-      <div className='flex flex-wrap items-start justify-between gap-3'>
-        <div className='flex flex-col gap-1'>
-          <h2 className='text-sm font-medium'>{t('Site withdrawals')}</h2>
-          <p className='text-muted-foreground text-sm'>
-            {t(
-              'Pay site owners offline, then record it here. Rejecting returns the amount to the site earnings wallet.'
-            )}
-          </p>
-        </div>
+    <ContentSection
+      title={t('Site withdrawals')}
+      description={t(
+        'Pay site owners offline, then record it here. Rejecting returns the amount to the site earnings wallet.'
+      )}
+      actions={
         <NativeSelect
           aria-label={t('Status')}
           value={status}
@@ -204,7 +201,8 @@ export function SiteWithdrawalsPanel() {
             </NativeSelectOption>
           ))}
         </NativeSelect>
-      </div>
+      }
+    >
       {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
       {query.isPending ? (
         <LoadingState />
@@ -525,6 +523,6 @@ export function SiteWithdrawalsPanel() {
           </div>
         )}
       </Dialog>
-    </section>
+    </ContentSection>
   )
 }

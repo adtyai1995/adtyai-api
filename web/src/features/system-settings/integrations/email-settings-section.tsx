@@ -374,7 +374,7 @@ export function EmailSettingsSection({
                 )}
               />
 
-              <div className='grid gap-6 md:grid-cols-2'>
+              <div className='grid items-start gap-6 md:grid-cols-2'>
                 <FormField
                   control={form.control}
                   name='SMTPPort'
@@ -386,6 +386,7 @@ export function EmailSettingsSection({
                           autoComplete='off'
                           type='number'
                           placeholder='587'
+                          className='sm:max-w-36'
                           {...field}
                           onChange={(event) =>
                             field.onChange(event.target.value)

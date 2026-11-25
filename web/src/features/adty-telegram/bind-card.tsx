@@ -21,9 +21,9 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { api } from '@/lib/api'
 import { formatTimestamp } from '@/lib/format'
 import {
@@ -150,114 +150,127 @@ export function TelegramBindCard(props: {
 
   const bound = status.data?.status === 'active'
   return (
-    <Card>
-      <CardContent className='flex flex-col gap-4 py-4'>
-        <div className='flex flex-col gap-1'>
-          <h2 className='text-sm font-medium'>
-            {t(props.purpose === 'admin' ? 'Admin bot' : 'Telegram notices')}
-          </h2>
-          <p className='text-muted-foreground text-sm'>
-            {t(
-              'This bot only sends notifications. Account changes stay on the website.'
-            )}
-          </p>
-        </div>
-        {status.isLoading && (
-          <p className='text-muted-foreground text-sm'>{t('Loading...')}</p>
-        )}
-        {status.isError && (
-          <Button
-            type='button'
-            variant='outline'
-            onClick={() => void status.refetch()}
-          >
-            {t('Retry')}
-          </Button>
-        )}
-        {status.data && (
-          <p className='text-sm'>
-            <span className='bg-muted mr-2 inline-block size-2 rounded-full align-middle' />
-            {boundLabel(bound, status.data.status, t)}
-            {status.data.telegram_user_id > 0 && (
-              <span className='text-muted-foreground tabular-nums'>
-                {' '}
-                · {status.data.telegram_user_id}
+    <SettingsSection
+      title={t(props.purpose === 'admin' ? 'Admin bot' : 'Telegram notices')}
+      description={t(
+        'This bot only sends notifications. Account changes stay on the website.'
+      )}
+      bodyClassName='flex flex-col gap-4'
+    >
+      <div className='flex flex-wrap items-center justify-between gap-3'>
+        <div className='text-sm'>
+          {status.isLoading && (
+            <span className='text-muted-foreground'>{t('Loading...')}</span>
+          )}
+          {status.data && (
+            <span className='inline-flex items-center gap-2'>
+              <span
+                aria-hidden
+                className={
+                  bound
+                    ? 'bg-success inline-block size-2 rounded-full'
+                    : 'bg-muted-foreground/40 inline-block size-2 rounded-full'
+                }
+              />
+              <span className='font-medium'>
+                {boundLabel(bound, status.data.status, t)}
               </span>
-            )}
-          </p>
-        )}
-        {bound && (
-          <Button
-            type='button'
-            variant='outline'
-            disabled={pending}
-            onClick={() => void unbind()}
-          >
-            {t('Unbind Telegram')}
-          </Button>
-        )}
-        {!bound && (
-          <div className='flex flex-col gap-3'>
+              {status.data.telegram_user_id > 0 && (
+                <span className='text-muted-foreground font-mono text-xs tabular-nums'>
+                  {status.data.telegram_user_id}
+                </span>
+              )}
+            </span>
+          )}
+        </div>
+        <div className='flex flex-wrap items-center gap-2'>
+          {status.isError && (
             <Button
               type='button'
+              size='sm'
+              variant='outline'
+              onClick={() => void status.refetch()}
+            >
+              {t('Retry')}
+            </Button>
+          )}
+          {bound ? (
+            <Button
+              type='button'
+              size='sm'
+              variant='outline'
+              disabled={pending}
+              onClick={() => void unbind()}
+            >
+              {t('Unbind Telegram')}
+            </Button>
+          ) : (
+            <Button
+              type='button'
+              size='sm'
               variant='outline'
               disabled={pending}
               onClick={() => void start()}
             >
               {t('Start binding')}
             </Button>
-            {code && (
-              <div className='bg-muted/40 flex flex-col gap-1.5 rounded-md border p-3 text-sm'>
-                {botUsername && (
-                  <div className='flex flex-wrap items-center gap-2'>
-                    <span className='font-mono text-xs'>@{botUsername}</span>
-                    <a
-                      href={`https://t.me/${encodeURIComponent(botUsername)}?start=${encodeURIComponent(code)}`}
-                      target='_blank'
-                      rel='noreferrer'
-                      className='text-primary underline underline-offset-2'
-                    >
-                      {t('Open Telegram bot')}
-                    </a>
-                  </div>
-                )}
-                <p className='break-all'>
-                  {t('Send the following command to the bot')}:{' '}
-                  <code className='font-mono text-xs'>/start {code}</code>
-                </p>
-                <p className='text-muted-foreground break-all text-xs'>
-                  {t('Binding code')}: {code}
-                </p>
-                {expiresAt > 0 && (
-                  <p className='text-muted-foreground text-xs'>
-                    {t('Expires at')}: {formatTimestamp(expiresAt)}
-                  </p>
-                )}
-              </div>
-            )}
-            <div className='flex flex-col gap-1'>
-              <Label htmlFor={`tg-id-${props.purpose}`}>
-                {t('Telegram user id')}
-              </Label>
-              <Input
-                id={`tg-id-${props.purpose}`}
-                value={telegramId}
-                inputMode='numeric'
-                onChange={(event) => setTelegramId(event.target.value)}
-              />
+          )}
+        </div>
+      </div>
+      {!bound && code && (
+        <div className='bg-muted flex max-w-xl flex-col gap-1.5 rounded-[12px] px-4 py-3 text-sm'>
+          {botUsername && (
+            <div className='flex flex-wrap items-center gap-2'>
+              <span className='font-mono text-xs'>@{botUsername}</span>
+              <a
+                href={`https://t.me/${encodeURIComponent(botUsername)}?start=${encodeURIComponent(code)}`}
+                target='_blank'
+                rel='noreferrer'
+                className='text-primary underline underline-offset-2'
+              >
+                {t('Open Telegram bot')}
+              </a>
             </div>
-            <Button
-              variant='brand'
-              type='button'
-              disabled={pending || code === '' || telegramId.trim() === ''}
-              onClick={() => void confirm()}
-            >
-              {t('Confirm binding')}
-            </Button>
+          )}
+          <p className='break-all'>
+            {t('Send the following command to the bot')}:{' '}
+            <code className='font-mono text-xs'>/start {code}</code>
+          </p>
+          <p className='text-muted-foreground text-xs break-all'>
+            {t('Binding code')}: {code}
+          </p>
+          {expiresAt > 0 && (
+            <p className='text-muted-foreground text-xs'>
+              {t('Expires at')}: {formatTimestamp(expiresAt)}
+            </p>
+          )}
+        </div>
+      )}
+      {!bound && (
+        <div className='flex flex-wrap items-end gap-3'>
+          <div className='flex flex-col gap-1.5'>
+            <Label htmlFor={`tg-id-${props.purpose}`}>
+              {t('Telegram user id')}
+            </Label>
+            <Input
+              id={`tg-id-${props.purpose}`}
+              className='w-56 font-mono tabular-nums'
+              value={telegramId}
+              inputMode='numeric'
+              onChange={(event) => setTelegramId(event.target.value)}
+            />
           </div>
-        )}
-        {error && <p className='text-destructive text-sm'>{error}</p>}
-      </CardContent>
-    </Card>
+          <Button
+            variant='brand'
+            type='button'
+            disabled={pending || code === '' || telegramId.trim() === ''}
+            onClick={() => void confirm()}
+          >
+            {t('Confirm binding')}
+          </Button>
+        </div>
+      )}
+      {error && <p className='text-destructive text-sm'>{error}</p>}
+    </SettingsSection>
   )
 }

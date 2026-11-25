@@ -21,12 +21,13 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
@@ -76,20 +77,18 @@ function SceneManagement(props: { userId: number }) {
     onError: (error) => handleServerError(error),
   })
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t('Payment scenes')}</CardTitle>
-      </CardHeader>
-      <CardContent className='flex min-w-0 flex-col gap-4'>
-        <p className='text-muted-foreground text-sm'>
-          {t(
-            'Control where each payment method can be used. Empty restrictions inherit the selected providers.'
-          )}
-        </p>
-        <div className='flex flex-wrap gap-2'>
+    <ContentSection
+      className='border-border border-b pb-6'
+      title={t('Payment scenes')}
+      description={t(
+        'Control where each payment method can be used. Empty restrictions inherit the selected providers.'
+      )}
+      actions={
+        <>
           <Button
             type='button'
             size='sm'
+            variant='brand'
             disabled={!query.data || query.isError}
             onClick={() =>
               query.data && setEditing({ config: query.data, index: -1 })
@@ -106,82 +105,108 @@ function SceneManagement(props: { userId: number }) {
           >
             {t('Refresh')}
           </Button>
-        </div>
-        {query.isLoading && <LoadingState />}
-        {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
-        {query.data?.scenes.length === 0 && (
-          <EmptyState title={t('No payment scenes')} />
-        )}
-        {query.data?.scenes.map((scene, index) => (
-          <div
-            key={scene.key}
-            className='flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-md border p-3'
-          >
-            <div className='min-w-0 flex-1 break-words'>
-              <p className='font-medium'>{t(scene.name)}</p>
-              <p className='text-muted-foreground text-sm'>
-                {scene.key} ·{' '}
-                {t(sceneBusinessLabels[scene.business] ?? scene.business)}
-              </p>
-            </div>
-            <StatusBadge
-              variant={scene.enabled ? 'success' : 'neutral'}
-              copyable={false}
-              label={t(scene.enabled ? 'Enabled' : 'Disabled')}
-            />
-            <div className='flex gap-2'>
-              <Button
-                type='button'
-                size='sm'
-                variant='outline'
-                aria-label={t('Edit payment scene {{name}}', {
-                  name: scene.name,
-                })}
-                onClick={() =>
-                  query.data && setEditing({ config: query.data, index })
-                }
-              >
-                {t('Edit')}
-              </Button>
-              <Button
-                type='button'
-                size='sm'
-                variant='outline'
-                aria-label={t('Delete payment scene {{name}}', {
-                  name: scene.name,
-                })}
-                onClick={() =>
-                  query.data && setRemoving({ config: query.data, index })
-                }
-              >
-                {t('Delete')}
-              </Button>
-            </div>
-          </div>
-        ))}
-        {editing && (
-          <PaymentSceneEditor
-            config={editing.config}
-            index={editing.index}
-            userId={props.userId}
-            onClose={() => setEditing(null)}
-          />
-        )}
-        <ConfirmDialog
-          open={!!removing}
-          onOpenChange={(open) =>
-            !open && !remove.isPending && setRemoving(null)
+        </>
+      }
+    >
+      {query.isLoading && <LoadingState />}
+      {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
+      {query.data && (
+        <StaticDataTable
+          tableProps={{ 'aria-label': t('Payment scenes') }}
+          data={query.data.scenes}
+          getRowKey={(scene) => scene.key}
+          emptyContent={
+            <EmptyState className='min-h-24' title={t('No payment scenes')} />
           }
-          title={t('Delete payment scene')}
-          desc={t(
-            'New orders will use these rules. Existing orders keep their original settings.'
-          )}
-          destructive
-          isLoading={remove.isPending}
-          handleConfirm={() => removing && remove.mutate(removing)}
+          columns={[
+            {
+              id: 'name',
+              header: t('Name'),
+              cell: (scene) => (
+                <div className='flex min-w-0 flex-col'>
+                  <span className='font-medium'>{t(scene.name)}</span>
+                  <code className='text-dim font-mono text-xs'>
+                    {scene.key}
+                  </code>
+                </div>
+              ),
+            },
+            {
+              id: 'business',
+              header: t('Business'),
+              cell: (scene) =>
+                t(sceneBusinessLabels[scene.business] ?? scene.business),
+            },
+            {
+              id: 'status',
+              header: t('Status'),
+              cell: (scene) => (
+                <StatusBadge
+                  variant={scene.enabled ? 'success' : 'neutral'}
+                  copyable={false}
+                  label={t(scene.enabled ? 'Enabled' : 'Disabled')}
+                />
+              ),
+            },
+            {
+              id: 'actions',
+              header: t('Actions'),
+              className: 'text-right',
+              cellClassName: 'text-right',
+              cell: (scene, index) => (
+                <div className='flex justify-end gap-1.5'>
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    aria-label={t('Edit payment scene {{name}}', {
+                      name: scene.name,
+                    })}
+                    onClick={() =>
+                      query.data && setEditing({ config: query.data, index })
+                    }
+                  >
+                    {t('Edit')}
+                  </Button>
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    aria-label={t('Delete payment scene {{name}}', {
+                      name: scene.name,
+                    })}
+                    onClick={() =>
+                      query.data && setRemoving({ config: query.data, index })
+                    }
+                  >
+                    {t('Delete')}
+                  </Button>
+                </div>
+              ),
+            },
+          ]}
         />
-      </CardContent>
-    </Card>
+      )}
+      {editing && (
+        <PaymentSceneEditor
+          config={editing.config}
+          index={editing.index}
+          userId={props.userId}
+          onClose={() => setEditing(null)}
+        />
+      )}
+      <ConfirmDialog
+        open={!!removing}
+        onOpenChange={(open) => !open && !remove.isPending && setRemoving(null)}
+        title={t('Delete payment scene')}
+        desc={t(
+          'New orders will use these rules. Existing orders keep their original settings.'
+        )}
+        destructive
+        isLoading={remove.isPending}
+        handleConfirm={() => removing && remove.mutate(removing)}
+      />
+    </ContentSection>
   )
 }
 

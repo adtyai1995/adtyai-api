@@ -300,27 +300,23 @@ export function ChannelHealthSection({
   }
 
   return (
-    <SettingsSection title={t('Channel health')}>
-      <div className='text-muted-foreground space-y-1 text-sm'>
-        <p>{t('Source: global settings. Changes take effect after saving.')}</p>
-        <p>
-          {form.watch('AutomaticDisableChannelEnabled')
-            ? t(
-                'Channels must also enable Auto Ban before automatic disabling can take effect.'
-              )
-            : t(
-                'With these settings, automatic disabling is off for all channels.'
-              )}
-        </p>
+    <SettingsSection title={t('Channel health')} bodyClassName='space-y-5'>
+      <p className='text-dim max-w-[80ch] text-[13px] leading-relaxed'>
+        {t('Source: global settings. Changes take effect after saving.')}{' '}
+        {form.watch('AutomaticDisableChannelEnabled')
+          ? t(
+              'Channels must also enable Auto Ban before automatic disabling can take effect.'
+            )
+          : t(
+              'With these settings, automatic disabling is off for all channels.'
+            )}
         {form.watch('AutomaticEnableChannelEnabled') &&
-          !form.watch('monitor_setting.auto_test_channel_enabled') && (
-            <p>
-              {t(
-                'Scheduled recovery is off. Bulk channel tests can still re-enable automatically disabled channels.'
-              )}
-            </p>
-          )}
-      </div>
+        !form.watch('monitor_setting.auto_test_channel_enabled')
+          ? ` ${t(
+              'Scheduled recovery is off. Bulk channel tests can still re-enable automatically disabled channels.'
+            )}`
+          : null}
+      </p>
       <Form {...form}>
         <SettingsForm onSubmit={form.handleSubmit(onSubmit)}>
           <SettingsPageFormActions
@@ -329,9 +325,7 @@ export function ChannelHealthSection({
           />
 
           <div className='flex min-w-0 flex-col gap-4'>
-            <h4 className='text-sm font-medium'>
-              {t('Channel health checks')}
-            </h4>
+            <h4>{t('Channel health checks')}</h4>
             <SettingsFormGrid>
               <SettingsControlGroup>
                 <FormField
@@ -498,7 +492,7 @@ export function ChannelHealthSection({
           <Separator />
 
           <div className='flex min-w-0 flex-col gap-4'>
-            <h4 className='text-sm font-medium'>{t('Auto-disable rules')}</h4>
+            <h4>{t('Auto-disable rules')}</h4>
             <SettingsFormGrid>
               <FormField
                 control={form.control}
@@ -559,6 +553,7 @@ export function ChannelHealthSection({
                     <FormControl>
                       <Input
                         placeholder={t('e.g. 401, 403, 429, 500-599')}
+                        className='max-w-md'
                         value={field.value}
                         onChange={(event) => field.onChange(event.target.value)}
                       />

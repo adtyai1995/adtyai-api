@@ -16,7 +16,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import {
   Download,
   LifeBuoy,
@@ -377,7 +381,10 @@ function TicketWorkspace(props: { workspace: TicketScope; userId?: number }) {
         } catch (cause) {
           failedItems.push(item)
           if (!firstErr) {
-            firstErr = getServerErrorMessage(cause, t('Only images are accepted'))
+            firstErr = getServerErrorMessage(
+              cause,
+              t('Only images are accepted')
+            )
           }
         }
       }
@@ -562,7 +569,10 @@ function TicketWorkspace(props: { workspace: TicketScope; userId?: number }) {
         } catch (cause) {
           failedCount++
           if (!firstErr) {
-            firstErr = getServerErrorMessage(cause, t('Only images are accepted'))
+            firstErr = getServerErrorMessage(
+              cause,
+              t('Only images are accepted')
+            )
           }
         }
       }
@@ -648,12 +658,12 @@ function TicketWorkspace(props: { workspace: TicketScope; userId?: number }) {
 
   const hasActiveFilters = Boolean(
     searchInput.trim() ||
-      statusFilter ||
-      priorityFilter ||
-      typeFilter ||
-      assigneeInput.trim() ||
-      dateFrom ||
-      dateTo
+    statusFilter ||
+    priorityFilter ||
+    typeFilter ||
+    assigneeInput.trim() ||
+    dateFrom ||
+    dateTo
   )
 
   const clearFilters = () => {
@@ -1019,19 +1029,19 @@ function TicketWorkspace(props: { workspace: TicketScope; userId?: number }) {
           )}
 
           {!list.isError && (
-            <div className='border-border flex flex-col gap-3 border-t px-5 py-4'>
-              <p className='text-muted-foreground text-center text-xs tabular-nums'>
+            <div className='border-border flex flex-wrap items-center justify-between gap-3 border-t px-5 py-3'>
+              <p className='text-muted-foreground text-xs tabular-nums'>
                 {t('Page {{page}} of {{totalPages}}, {{total}} tickets total', {
                   page,
                   totalPages,
                   total,
                 })}
               </p>
-              <div className='grid grid-cols-2 gap-3'>
+              <div className='flex items-center gap-2'>
                 <Button
                   type='button'
+                  size='sm'
                   variant='outline'
-                  className='text-muted-foreground h-9 w-full rounded-full'
                   disabled={page <= 1 || list.isFetching}
                   onClick={() => setPage((prev) => Math.max(1, prev - 1))}
                 >
@@ -1039,8 +1049,8 @@ function TicketWorkspace(props: { workspace: TicketScope; userId?: number }) {
                 </Button>
                 <Button
                   type='button'
+                  size='sm'
                   variant='outline'
-                  className='text-muted-foreground h-9 w-full rounded-full'
                   disabled={page >= totalPages || list.isFetching}
                   onClick={() =>
                     setPage((prev) => Math.min(totalPages, prev + 1))

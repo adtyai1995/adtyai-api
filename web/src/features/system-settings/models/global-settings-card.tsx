@@ -24,8 +24,8 @@ import { toast } from 'sonner'
 import * as z from 'zod'
 
 import { JsonCodeEditor } from '@/components/json-code-editor'
-import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -265,14 +265,10 @@ export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
 
           <div className='space-y-4'>
             <div className='flex items-center gap-2'>
-              <h3 className='text-base font-semibold'>
+              <h4 className='text-[15px] leading-snug font-semibold tracking-tight'>
                 {t('ChatCompletions -> Responses Compatibility')}
-              </h3>
-              <StatusBadge
-                label={t('Preview')}
-                variant='neutral'
-                copyable={false}
-              />
+              </h4>
+              <Badge variant='secondary'>{t('Preview')}</Badge>
             </div>
 
             <Alert>

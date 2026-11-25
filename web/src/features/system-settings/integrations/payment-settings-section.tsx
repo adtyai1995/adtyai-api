@@ -255,206 +255,202 @@ export function PaymentSettingsSection({
   }
 
   return (
-    <SettingsSection title={t('Payment Gateway')}>
-      <Form {...form}>
-        <SettingsForm
-          onSubmit={form.handleSubmit(onSubmit)}
-          className='gap-y-8'
-          data-no-autosubmit='true'
+    <Form {...form}>
+      <div className='flex min-w-0 flex-col gap-6'>
+        {activeTab !== 'usdt' && (
+          <SettingsPageFormActions
+            onSave={form.handleSubmit(onSubmit)}
+            isSaving={updateOption.isPending || isSubmitting}
+          />
+        )}
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) => {
+            setActiveTab(value as PaymentTab)
+            void navigate({
+              search: (previous) => ({
+                ...previous,
+                tab: value === 'general' ? undefined : value,
+              }),
+            })
+          }}
+          className='min-w-0'
         >
-          {activeTab !== 'usdt' && (
-            <SettingsPageFormActions
-              onSave={form.handleSubmit(onSubmit)}
-              isSaving={updateOption.isPending || isSubmitting}
-            />
-          )}
-          <Tabs
-            value={activeTab}
-            onValueChange={(value) => {
-              setActiveTab(value as PaymentTab)
-              void navigate({
-                search: (previous) => ({
-                  ...previous,
-                  tab: value === 'general' ? undefined : value,
-                }),
-              })
-            }}
-            className='min-w-0'
-          >
-            <div className='overflow-x-auto pb-1'>
-              <TabsList className='grid min-w-[24rem] grid-cols-3'>
-                <TabsTrigger value='general'>{t('General')}</TabsTrigger>
-                <TabsTrigger value='epay'>Epay</TabsTrigger>
-                <TabsTrigger value='usdt'>USDT</TabsTrigger>
-              </TabsList>
-            </div>
+          <div className='overflow-x-auto pb-1'>
+            <TabsList className='grid min-w-[24rem] grid-cols-3'>
+              <TabsTrigger value='general'>{t('General')}</TabsTrigger>
+              <TabsTrigger value='epay'>Epay</TabsTrigger>
+              <TabsTrigger value='usdt'>USDT</TabsTrigger>
+            </TabsList>
+          </div>
 
-            <TabsContent value='general' className={paymentTabContentClassName}>
-              <div className='space-y-4'>
-                <PaymentSceneManager />
-                <div>
-                  <h3 className='text-lg font-medium'>
-                    {t('General Settings')}
-                  </h3>
-                  <p className='text-muted-foreground text-sm'>
-                    {t('Shared configuration for all payment gateways')}
-                  </p>
-                </div>
+          <TabsContent value='general' className={paymentTabContentClassName}>
+            <div className='flex min-w-0 flex-col gap-8'>
+              <PaymentSceneManager />
 
-                <div className='grid gap-6 md:grid-cols-2'>
-                  <FormField
-                    control={form.control}
-                    name='Price'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>
-                          {t('Price (local currency / USD)')}
-                        </FormLabel>
-                        <FormControl>
-                          <Input
-                            type='number'
-                            step='0.01'
-                            min={0}
-                            {...safeNumberFieldProps(field)}
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          {t(
-                            'How much to charge for each US dollar of balance (Epay)'
-                          )}
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name='MinTopUp'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('Minimum top-up (USD)')}</FormLabel>
-                        <FormControl>
-                          <Input
-                            type='number'
-                            step='0.01'
-                            min={0}
-                            {...safeNumberFieldProps(field)}
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          {t('Smallest USD amount users can recharge (Epay)')}
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </div>
-
-                <div className='max-w-2xl'>
-                  <FormField
-                    control={form.control}
-                    name='AmountOptions'
-                    render={({ field }) => (
-                      <FormItem>
-                        <div className='mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
-                          <FormLabel>{t('Top-up amount options')}</FormLabel>
-                          <Button
-                            type='button'
-                            variant='outline'
-                            size='sm'
-                            onClick={() =>
-                              setAmountOptionsVisualMode(
-                                !amountOptionsVisualMode
-                              )
-                            }
-                            className='w-full sm:w-auto'
-                          >
-                            {amountOptionsVisualMode ? (
-                              <>
-                                <Code2 className='mr-2 h-3 w-3' />
-                                {t('JSON Editor')}
-                              </>
-                            ) : (
-                              <>
-                                <Eye className='mr-2 h-3 w-3' />
-                                {t('Visual Editor')}
-                              </>
+              <SettingsSection
+                title={t('General Settings')}
+                description={t('Shared configuration for all payment gateways')}
+              >
+                <SettingsForm
+                  onSubmit={form.handleSubmit(onSubmit)}
+                  data-no-autosubmit='true'
+                >
+                  <div className='grid max-w-3xl gap-6 sm:grid-cols-2'>
+                    <FormField
+                      control={form.control}
+                      name='Price'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>
+                            {t('Price (local currency / USD)')}
+                          </FormLabel>
+                          <FormControl>
+                            <Input
+                              type='number'
+                              step='0.01'
+                              min={0}
+                              {...safeNumberFieldProps(field)}
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            {t(
+                              'How much to charge for each US dollar of balance (Epay)'
                             )}
-                          </Button>
-                        </div>
-                        <FormControl>
-                          {amountOptionsVisualMode ? (
-                            <AmountOptionsVisualEditor
-                              value={field.value}
-                              onChange={field.onChange}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name='MinTopUp'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Minimum top-up (USD)')}</FormLabel>
+                          <FormControl>
+                            <Input
+                              type='number'
+                              step='0.01'
+                              min={0}
+                              {...safeNumberFieldProps(field)}
                             />
-                          ) : (
-                            <JsonCodeEditor
-                              value={field.value}
-                              onChange={field.onChange}
-                              name={field.name}
-                              onBlur={field.onBlur}
-                              textareaRef={field.ref}
-                              placeholder='[10, 20, 50, 100]'
-                              heightClassName='h-40 min-h-40 max-h-40'
-                              aria-invalid={Boolean(
-                                form.formState.errors.AmountOptions
+                          </FormControl>
+                          <FormDescription>
+                            {t('Smallest USD amount users can recharge (Epay)')}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+
+                  <div className='max-w-2xl'>
+                    <FormField
+                      control={form.control}
+                      name='AmountOptions'
+                      render={({ field }) => (
+                        <FormItem>
+                          <div className='mb-2 flex flex-wrap items-center justify-between gap-2'>
+                            <FormLabel>{t('Top-up amount options')}</FormLabel>
+                            <Button
+                              type='button'
+                              variant='outline'
+                              size='sm'
+                              onClick={() =>
+                                setAmountOptionsVisualMode(
+                                  !amountOptionsVisualMode
+                                )
+                              }
+                            >
+                              {amountOptionsVisualMode ? (
+                                <>
+                                  <Code2 className='mr-2 h-3 w-3' />
+                                  {t('JSON Editor')}
+                                </>
+                              ) : (
+                                <>
+                                  <Eye className='mr-2 h-3 w-3' />
+                                  {t('Visual Editor')}
+                                </>
                               )}
-                            />
-                          )}
-                        </FormControl>
-                        <FormDescription>
-                          {t('Preset recharge amounts (JSON array)')}
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </div>
-              </div>
-            </TabsContent>
+                            </Button>
+                          </div>
+                          <FormControl>
+                            {amountOptionsVisualMode ? (
+                              <AmountOptionsVisualEditor
+                                value={field.value}
+                                onChange={field.onChange}
+                              />
+                            ) : (
+                              <JsonCodeEditor
+                                value={field.value}
+                                onChange={field.onChange}
+                                name={field.name}
+                                onBlur={field.onBlur}
+                                textareaRef={field.ref}
+                                placeholder='[10, 20, 50, 100]'
+                                heightClassName='h-40 min-h-40 max-h-40'
+                                aria-invalid={Boolean(
+                                  form.formState.errors.AmountOptions
+                                )}
+                              />
+                            )}
+                          </FormControl>
+                          <FormDescription>
+                            {t('Preset recharge amounts (JSON array)')}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                </SettingsForm>
+              </SettingsSection>
+            </div>
+          </TabsContent>
 
-            <TabsContent
-              value='usdt'
-              keepMounted
-              className={paymentTabContentClassName}
-            >
-              <BEpusdtSettingsSection
-                defaultValues={usdtDefaultValues}
-                inlineActions
-              />
-            </TabsContent>
+          <TabsContent
+            value='usdt'
+            keepMounted
+            className={paymentTabContentClassName}
+          >
+            <BEpusdtSettingsSection
+              defaultValues={usdtDefaultValues}
+              inlineActions
+            />
+          </TabsContent>
 
-            <TabsContent
-              value='epay'
-              keepMounted
-              className={paymentTabContentClassName}
-            >
-              <div className='space-y-4'>
-                <div>
-                  <h3 className='text-lg font-medium'>{t('Epay Gateway')}</h3>
-                  <p className='text-muted-foreground text-sm'>
-                    {t('Configuration for Epay payment integration')}
-                  </p>
-                </div>
+          <TabsContent
+            value='epay'
+            keepMounted
+            className={paymentTabContentClassName}
+          >
+            <div className='flex min-w-0 flex-col gap-8'>
+              <SettingsSection
+                title={t('Epay Gateway')}
+                description={t('Configuration for Epay payment integration')}
+              >
+                <SettingsForm
+                  onSubmit={form.handleSubmit(onSubmit)}
+                  data-no-autosubmit='true'
+                >
+                  <Alert>
+                    <ShieldAlert className='h-4 w-4' />
+                    <AlertTitle>{t('Epay safety reminder')}</AlertTitle>
+                    <AlertDescription>
+                      {t(
+                        'Epay is a payment protocol, not a specific official website. Verify the provider yourself and do not trust random third-party Epay deployments.'
+                      )}
+                    </AlertDescription>
+                  </Alert>
 
-                <Alert>
-                  <ShieldAlert className='h-4 w-4' />
-                  <AlertTitle>{t('Epay safety reminder')}</AlertTitle>
-                  <AlertDescription>
-                    {t(
-                      'Epay is a payment protocol, not a specific official website. Verify the provider yourself and do not trust random third-party Epay deployments.'
-                    )}
-                  </AlertDescription>
-                </Alert>
-
-                <div className='grid gap-6 md:grid-cols-2'>
                   <FormField
                     control={form.control}
                     name='CustomCallbackAddress'
                     render={({ field }) => (
-                      <FormItem>
+                      <FormItem className='max-w-xl'>
                         <FormLabel>{t('Callback address')}</FormLabel>
                         <FormControl>
                           <Input
@@ -474,20 +470,19 @@ export function PaymentSettingsSection({
                       </FormItem>
                     )}
                   />
-                </div>
+                </SettingsForm>
+              </SettingsSection>
 
-                <div className='space-y-6'>
-                  <PaymentChannels embedded />
-                  <AdtyEpaySettingsSection
-                    defaultValues={epayDefaultValues}
-                    inlineActions
-                  />
-                </div>
-              </div>
-            </TabsContent>
-          </Tabs>
-        </SettingsForm>
-      </Form>
-    </SettingsSection>
+              <PaymentChannels embedded />
+
+              <AdtyEpaySettingsSection
+                defaultValues={epayDefaultValues}
+                inlineActions
+              />
+            </div>
+          </TabsContent>
+        </Tabs>
+      </div>
+    </Form>
   )
 }

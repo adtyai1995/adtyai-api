@@ -36,6 +36,7 @@ import {
   type UsdtNetwork,
 } from '@/features/referral/lib/address'
 import { WITHDRAWAL_TARGET_LABELS } from '@/features/referral/lib/labels'
+import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
@@ -250,7 +251,7 @@ export function SettingsPanel(props: { canWrite: boolean }) {
 
   return (
     <form
-      className='flex max-w-3xl flex-col gap-6'
+      className='flex flex-col gap-6'
       onSubmit={(event) => {
         event.preventDefault()
         if (disabled || hasWithdrawValidationError) return
@@ -265,32 +266,32 @@ export function SettingsPanel(props: { canWrite: boolean }) {
         )
       }}
     >
-      <div className='flex items-center justify-between gap-4 rounded-lg border p-3'>
-        <div className='flex flex-col'>
-          <Label htmlFor='referral-enabled'>{t('Referral program')}</Label>
-          {rateMissing && (
-            <span className='text-muted-foreground text-xs'>
-              {t('Set the default rate first')}
-            </span>
-          )}
+      <SettingsSection title={t('Referral program')}>
+        <div className='flex max-w-xl items-center justify-between gap-4'>
+          <div className='flex flex-col gap-0.5'>
+            <Label htmlFor='referral-enabled'>{t('Referral program')}</Label>
+            {rateMissing && (
+              <span className='text-dim text-[12.5px]'>
+                {t('Set the default rate first')}
+              </span>
+            )}
+          </div>
+          <Switch
+            id='referral-enabled'
+            checked={enabled}
+            disabled={disabled || (rateMissing && !enabled)}
+            onCheckedChange={setEnabled}
+          />
         </div>
-        <Switch
-          id='referral-enabled'
-          checked={enabled}
-          disabled={disabled || (rateMissing && !enabled)}
-          onCheckedChange={setEnabled}
-        />
-      </div>
+      </SettingsSection>
 
-      <fieldset className='space-y-2'>
-        <legend className='text-sm font-medium'>
-          {t('Money (no built-in values)')}
-        </legend>
-        <div className='grid gap-4 sm:grid-cols-3'>
+      <SettingsSection title={t('Money (no built-in values)')}>
+        <div className='grid max-w-md gap-4 sm:grid-cols-2'>
           <div className='space-y-2'>
             <Label htmlFor='referral-default_rate'>{labels.default_rate}</Label>
             <Input
               id='referral-default_rate'
+              className='sm:max-w-44'
               disabled={disabled}
               type='number'
               min={0}
@@ -309,6 +310,7 @@ export function SettingsPanel(props: { canWrite: boolean }) {
             </Label>
             <Input
               id='referral-min_withdraw_usd'
+              className='sm:max-w-44'
               disabled={disabled}
               type='number'
               min={0}
@@ -327,142 +329,143 @@ export function SettingsPanel(props: { canWrite: boolean }) {
             )}
           </div>
         </div>
-      </fieldset>
+      </SettingsSection>
 
-      <div className='space-y-4 rounded-lg border p-4'>
-        <div className='space-y-1'>
-          <h3 className='text-sm font-medium'>
-            {t('Cash withdrawal methods')}
-          </h3>
-          <p className='text-muted-foreground text-xs'>
-            {t('Transfer to account balance is always enabled.')}
-          </p>
-        </div>
+      <SettingsSection
+        title={t('Cash withdrawal methods')}
+        description={t('Transfer to account balance is always enabled.')}
+      >
+        <div className='flex max-w-2xl flex-col gap-5'>
+          <fieldset className='space-y-2'>
+            <legend className='sr-only'>{t('Cash withdrawal methods')}</legend>
+            <div className='flex flex-wrap gap-5'>
+              {CASH_WITHDRAW_METHODS.map((method) => (
+                <label
+                  key={method}
+                  className='flex items-center gap-2 text-sm font-medium'
+                >
+                  <Checkbox
+                    disabled={disabled}
+                    checked={withdrawMethods.includes(method)}
+                    onCheckedChange={(checked) =>
+                      toggleMethod(method, checked === true)
+                    }
+                  />
+                  {t(WITHDRAWAL_TARGET_LABELS[method])}
+                </label>
+              ))}
+            </div>
+          </fieldset>
 
-        <fieldset className='space-y-2'>
-          <legend className='sr-only'>{t('Cash withdrawal methods')}</legend>
-          <div className='flex flex-wrap gap-5'>
-            {CASH_WITHDRAW_METHODS.map((method) => (
-              <label
-                key={method}
-                className='flex items-center gap-2 text-sm font-medium'
-              >
-                <Checkbox
+          {usdtEnabled && (
+            <div className='border-border space-y-4 border-t pt-4'>
+              <fieldset className='space-y-2'>
+                <legend className='text-sm font-medium'>
+                  {t('Enabled chains')}
+                </legend>
+                <div className='flex flex-wrap gap-4'>
+                  {USDT_NETWORKS.map((network) => (
+                    <label
+                      key={network}
+                      className='flex items-center gap-2 text-sm'
+                    >
+                      <Checkbox
+                        disabled={disabled}
+                        checked={withdrawUsdtNetworks.includes(network)}
+                        onCheckedChange={(checked) =>
+                          toggleNetwork(network, checked === true)
+                        }
+                      />
+                      {usdtNetworkLabel(network)}
+                    </label>
+                  ))}
+                </div>
+                {usdtChainError && (
+                  <p className='text-destructive text-xs'>{usdtChainError}</p>
+                )}
+              </fieldset>
+              <div className='space-y-2'>
+                <Label htmlFor='referral-usdt_withdraw_fee'>
+                  {labels.usdt_withdraw_fee}
+                </Label>
+                <Input
+                  id='referral-usdt_withdraw_fee'
+                  className='w-44'
                   disabled={disabled}
-                  checked={withdrawMethods.includes(method)}
-                  onCheckedChange={(checked) =>
-                    toggleMethod(method, checked === true)
+                  type='number'
+                  min={0}
+                  step='0.000001'
+                  value={drafts.usdt_withdraw_fee}
+                  placeholder={t('Not set')}
+                  aria-invalid={Boolean(feeMissingError)}
+                  onChange={(event) =>
+                    set('usdt_withdraw_fee', event.target.value)
                   }
                 />
-                {t(WITHDRAWAL_TARGET_LABELS[method])}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-
-        {usdtEnabled && (
-          <div className='bg-muted/30 space-y-4 rounded-md border p-3'>
-            <fieldset className='space-y-2'>
-              <legend className='text-sm font-medium'>
-                {t('Enabled chains')}
-              </legend>
-              <div className='flex flex-wrap gap-4'>
-                {USDT_NETWORKS.map((network) => (
-                  <label
-                    key={network}
-                    className='flex items-center gap-2 text-sm'
-                  >
-                    <Checkbox
-                      disabled={disabled}
-                      checked={withdrawUsdtNetworks.includes(network)}
-                      onCheckedChange={(checked) =>
-                        toggleNetwork(network, checked === true)
-                      }
-                    />
-                    {usdtNetworkLabel(network)}
-                  </label>
-                ))}
+                {feeMissingError && (
+                  <p className='text-destructive text-xs'>{feeMissingError}</p>
+                )}
               </div>
-              {usdtChainError && (
-                <p className='text-destructive text-xs'>{usdtChainError}</p>
-              )}
-            </fieldset>
-            <div className='max-w-xs space-y-2'>
-              <Label htmlFor='referral-usdt_withdraw_fee'>
-                {labels.usdt_withdraw_fee}
+            </div>
+          )}
+
+          {alipayEnabled && (
+            <div className='border-border space-y-2 border-t pt-4'>
+              <Label htmlFor='referral-cny-rate'>
+                {t('CNY withdrawal rate (1 USD = ? CNY)')}
               </Label>
               <Input
-                id='referral-usdt_withdraw_fee'
+                id='referral-cny-rate'
+                disabled={disabled}
+                className='w-44'
+                type='number'
+                min={0}
+                step='0.0001'
+                value={drafts.cny_rate}
+                placeholder={t('Not set')}
+                aria-invalid={Boolean(cnyRateMissingError)}
+                onChange={(event) => set('cny_rate', event.target.value)}
+              />
+              {cnyRateMissingError ? (
+                <p className='text-destructive text-xs'>
+                  {cnyRateMissingError}
+                </p>
+              ) : (
+                <p className='text-dim text-xs' data-testid='cny-updated'>
+                  {saved.withdraw_cny_rate_updated_at > 0
+                    ? t('Updated {{time}}', {
+                        time: formatTimestamp(
+                          saved.withdraw_cny_rate_updated_at
+                        ),
+                      })
+                    : t('Not set')}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      </SettingsSection>
+
+      <SettingsSection title={t('Rules')}>
+        <div className='grid max-w-3xl gap-4 sm:grid-cols-2 lg:grid-cols-3'>
+          {RULE_KEYS.map((key) => (
+            <div key={key} className='space-y-2'>
+              <Label htmlFor={`referral-${key}`}>{labels[key]}</Label>
+              <Input
+                id={`referral-${key}`}
+                className='sm:max-w-44'
                 disabled={disabled}
                 type='number'
                 min={0}
-                step='0.000001'
-                value={drafts.usdt_withdraw_fee}
-                placeholder={t('Not set')}
-                aria-invalid={Boolean(feeMissingError)}
-                onChange={(event) =>
-                  set('usdt_withdraw_fee', event.target.value)
-                }
+                step={1}
+                value={drafts[key]}
+                onChange={(event) => set(key, event.target.value)}
               />
-              {feeMissingError && (
-                <p className='text-destructive text-xs'>{feeMissingError}</p>
-              )}
             </div>
-          </div>
-        )}
+          ))}
+        </div>
+      </SettingsSection>
 
-        {alipayEnabled && (
-          <div className='bg-muted/30 space-y-2 rounded-md border p-3'>
-            <Label htmlFor='referral-cny-rate'>
-              {t('CNY withdrawal rate (1 USD = ? CNY)')}
-            </Label>
-            <Input
-              id='referral-cny-rate'
-              disabled={disabled}
-              className='w-40'
-              type='number'
-              min={0}
-              step='0.0001'
-              value={drafts.cny_rate}
-              placeholder={t('Not set')}
-              aria-invalid={Boolean(cnyRateMissingError)}
-              onChange={(event) => set('cny_rate', event.target.value)}
-            />
-            {cnyRateMissingError ? (
-              <p className='text-destructive text-xs'>{cnyRateMissingError}</p>
-            ) : (
-              <p
-                className='text-muted-foreground text-xs'
-                data-testid='cny-updated'
-              >
-                {saved.withdraw_cny_rate_updated_at > 0
-                  ? t('Updated {{time}}', {
-                      time: formatTimestamp(saved.withdraw_cny_rate_updated_at),
-                    })
-                  : t('Not set')}
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-
-      <fieldset className='grid gap-4 sm:grid-cols-3'>
-        <legend className='mb-2 text-sm font-medium'>{t('Rules')}</legend>
-        {RULE_KEYS.map((key) => (
-          <div key={key} className='space-y-2'>
-            <Label htmlFor={`referral-${key}`}>{labels[key]}</Label>
-            <Input
-              id={`referral-${key}`}
-              disabled={disabled}
-              type='number'
-              min={0}
-              step={1}
-              value={drafts[key]}
-              onChange={(event) => set(key, event.target.value)}
-            />
-          </div>
-        ))}
-      </fieldset>
       <div>
         <Button
           variant='brand'
