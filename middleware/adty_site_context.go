@@ -97,6 +97,12 @@ func AdtySiteContext() gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		// Edge nodes fetch certificates and routing manifests via main host or fallback origin;
+		// controller enforces X-Adty-Edge-Token and origin Nginx restricts client IPs.
+		if method == http.MethodGet && path == "/api/adty/internal/edge/manifest" {
+			c.Next()
+			return
+		}
 		// R1-013: Before initial /setup completes on a fresh install with default
 		// ServerAddress (localhost) and reseller disabled, allow first-time setup on
 		// the deployment domain.

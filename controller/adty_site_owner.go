@@ -180,10 +180,14 @@ func GetAdtyOwnerSite(c *gin.Context) {
 		"close_requested_at": site.CloseRequestedAt, "close_execute_at": site.CloseExecuteAt,
 		"prices": prices, "pricing_version": version, "domains": domains, "visibility": service.AdtySiteVisibility(site),
 	}
+	resp["edge_mainland_enabled"] = cfg.EdgeMainlandEnabled
 	if cfg.CustomDomainEnabled {
 		resp["domain_automation_enabled"] = cfg.DomainAutomationEnabled
 		resp["cname_target"] = strings.TrimSpace(cfg.CnameTarget)
+	}
+	if cfg.EdgeMainlandEnabled {
 		resp["domain_mainland_target"] = strings.TrimSpace(cfg.DomainMainlandTarget)
+		resp["edge_acme_alias_suffix"] = strings.TrimSpace(cfg.EdgeACMEAliasSuffix)
 	}
 	common.ApiSuccess(c, resp)
 }

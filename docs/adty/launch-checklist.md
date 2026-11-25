@@ -124,11 +124,11 @@
 
 ## 11. 站长分站（P11）
 
-部署按 [deploy.md](deploy.md) 第 11 节。
+部署按 [deploy.md](deploy.md) 第 11–12 节。
 
 ### 先填好 Cloudflare 和 Resend，做完实测
 
-- [ ] Cloudflare 各项在后台「分站管理 → 设置」里填好：API Token（这个 zone 的 `SSL and Certificates Write`，账号的 `Turnstile Sites Write`）、Zone ID、Account ID、CNAME 目标、回源主机名、Turnstile widget 列表（每个的 id、site key、secret）。旁边不再显示「未配置」。
+- [ ] Cloudflare 各项在后台「分站管理 → 设置」里填好：API Token（这个 zone 的 `SSL and Certificates Write`，账号的 `Turnstile Sites Write`；若启用中国大陆首页边缘加速需补充该 zone 的 `Zone:DNS:Edit`）、Zone ID、Account ID、CNAME 目标（默认已预填 `edge.adtyaicf.top`）、回源主机名（默认已预填 `origin.adtyaicf.top`）、Turnstile widget 列表（每个的 id、site key、secret）。旁边不再显示「未配置」。
 - [ ] Resend：API Key 填在「系统设置 → 邮件」（`ResendApiKey`）。营销中心已整块删除，不再需要营销发件地址、webhook 签名密钥或 Broadcast 配置。
 - [ ] 按方案任务 11.0 实测四项，结果记下来，任何一项不通先改代码再上线：
   - [ ] Cloudflare 自定义主机名：用 API 建一个（`ssl.method=http`），另一个域名的子域名 CNAME 过来，等 `status` 和 `ssl.status` 都是 active，curl 确认证书有效，记下用了多久。
@@ -150,6 +150,13 @@
 - [ ] 支付：分站客户用支付宝付款，付完回到分站钱包。
 - [ ] 搜索引擎：没开 SEO 的分站，首页网页源码里有 noindex。
 - [ ] 后台能看到 Turnstile widget 用量（每个 widget 已登记域名数 / 10）。原托管 Resend 发件域名已退役，分站改用自有 Resend API Key 或自定义 SMTP，不再验收托管发件域名名额。
+
+### 中国大陆首页加速（选配，按 deploy.md 第 12 节）
+
+- [ ] 在阿里云根域（如 `adtyai-fz.top`）默认线路添加一次 `_acme-challenge.adtyai-fz.top CNAME wild.acme.adtyaicf.top`；源站 `.env` 配置 `ADTY_EDGE_TOKEN`，将香港 VPS 公网 IPv4 写入 `/etc/adtyai/edge-ips.txt` 并执行 `sudo /opt/adtyai/update-edge-ips.sh` 刷新 Nginx 白名单与 UFW `adtyai-edge` 规则。
+- [ ] 在「分站管理 → 域名设置 → 中国大陆首页加速」填写一个或多个香港节点 IPv4（单节点填 1 行、多节点填多行）并先勾选 Let's Encrypt 测试环境验证通过，再切回生产环境确认 `*.adtyai-fz.top` 泛域名证书签发 `ready`；确认香港节点 `adty-edge-sync.timer` 正常拉取清单、通过 `nginx -t` 并命中 `/static/` 缓存，同时拒绝未知 Host 与 `api-sN.*`。
+- [ ] 验证阿里云按用途分流：平台网站域名（`role=site`）存在 `default -> edge.adtyaicf.top` 与 `internal -> cn.adtyaicf.top`；平台 API 域名（`role=base_url`）仅存在 `default -> edge.adtyaicf.top`，不经香港节点。
+- [ ] 验证站长自定义网站域名两步加速（第 1 步 `_acme-challenge` CNAME 生效、证书 `ready` 后才展示第 2 步大陆 CNAME；自定义 API 域名不展示）、Root 后台「一键回切 Cloudflare」（`cn.adtyaicf.top` 切橙云 `proxied=true`）/「切回香港边缘节点」（恢复全部已配置节点灰云 TTL 60s）、每分钟并发多节点 HTTPS SNI 探活与节点明细表（含开启「自动摘除故障节点与全挂回切」后的 3 失败摘除 / 2 成功恢复行为）。
 
 ## 12. 收尾
 

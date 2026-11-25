@@ -55,6 +55,7 @@ import {
   getSiteCustomers,
   resolveCloseMail,
   retryDomainAutomation,
+  retryResellerEdgeCert,
   saveAdminSiteBonusMarginFill,
   saveAdminSiteCommissionMargin,
   SITE_ADMIN_PAGE_SIZE,
@@ -161,6 +162,24 @@ function adminDomainSslLabel(
     case 'none':
     case '':
       return '-'
+    default:
+      return status
+  }
+}
+
+function adminEdgeCertLabel(
+  status: string,
+  t: (key: string) => string
+): string {
+  switch (status) {
+    case 'ready':
+      return t('Certificate ready')
+    case 'issuing':
+      return t('Issuing certificate')
+    case 'failed':
+      return t('Issuance failed')
+    case 'waiting_dns':
+      return t('Waiting for DNS')
     default:
       return status
   }
@@ -338,6 +357,14 @@ export function SiteDomainsCard(props: {
     },
     onError: (error) => handleServerError(error),
   })
+  const retryEdgeCert = useMutation({
+    mutationFn: (certName: string) => retryResellerEdgeCert(certName),
+    onSuccess: () => {
+      toast.success(t('Certificate check queued'))
+      void queryClient.invalidateQueries({ queryKey: siteAdminKeys.all })
+    },
+    onError: (error) => handleServerError(error),
+  })
 
   const defaultHost =
     props.site.host || `${props.site.subdomain}.${props.site.root_domain}`
@@ -423,6 +450,20 @@ export function SiteDomainsCard(props: {
                       {adminDomainAutomationLabel(domain.automation_state, t)}
                     </p>
                   )}
+                  {domain.role !== 'base_url' && domain.edge_cert_status && (
+                    <p className='text-dim mt-0.5 text-xs'>
+                      {t('Mainland edge cert')}:{' '}
+                      {adminEdgeCertLabel(domain.edge_cert_status, t)}
+                      {(domain.edge_cert_not_after ?? 0) > 0
+                        ? ` · ${t('Expires {{date}}', { date: formatTimestampToDate(domain.edge_cert_not_after) })}`
+                        : ''}
+                    </p>
+                  )}
+                  {domain.edge_cert_error && (
+                    <p className='text-destructive mt-0.5 text-xs'>
+                      {formatDomainLastError(domain.edge_cert_error, t)}
+                    </p>
+                  )}
                   {domain.last_error && (
                     <p className='text-destructive mt-0.5 text-xs'>
                       {formatDomainLastError(domain.last_error, t)}
@@ -430,6 +471,27 @@ export function SiteDomainsCard(props: {
                   )}
                 </div>
                 <div className='flex shrink-0 gap-1.5'>
+                  {!isDeleting &&
+                    user?.role === ROLE.SUPER_ADMIN &&
+                    domain.status !== 'removed' &&
+                    domain.role !== 'base_url' &&
+                    domain.edge_cert_status && (
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        disabled={isDeleting || retryEdgeCert.isPending}
+                        onClick={() =>
+                          retryEdgeCert.mutate(
+                            domain.managed_by === 'platform'
+                              ? ''
+                              : domain.hostname
+                          )
+                        }
+                      >
+                        {t('Retry edge cert')}
+                      </Button>
+                    )}
                   {!isDeleting &&
                     user?.role === ROLE.SUPER_ADMIN &&
                     domain.status !== 'removed' &&

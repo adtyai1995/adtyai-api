@@ -31,6 +31,8 @@ func SetAdtyRouter(apiRouter *gin.RouterGroup) {
 	registerAdtyBEpusdtRoutes(apiRouter)
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/internal/flush-batch", "session", "")
 	apiRouter.POST("/adty/internal/flush-batch", controller.FlushAdtyBatchUpdates)
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/internal/edge/manifest", "session", "")
+	apiRouter.GET("/adty/internal/edge/manifest", controller.GetAdtyEdgeManifest)
 	registerAdtyEpayRoutes(apiRouter)
 	registerAdtyReferralRoutes(apiRouter)
 	registerAdtySiteRoutes(apiRouter)
@@ -736,6 +738,11 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/reseller/settings", authz.AdtySiteSettingsRead, controller.GetAdtyResellerSettings},
 		{http.MethodPut, "/reseller/settings", authz.AdtySiteSettings, controller.UpdateAdtyResellerSettings},
 		{http.MethodPost, "/reseller/domains/check/:provider", authz.AdtySiteSettings, controller.CheckAdtyDomainProvider},
+		{http.MethodGet, "/reseller/edge/status", authz.AdtySiteSettingsRead, controller.GetAdtyAdminEdgeStatus},
+		{http.MethodPost, "/reseller/edge/failover", authz.AdtySiteSettings, controller.PostAdtyAdminEdgeFailover},
+		{http.MethodPost, "/reseller/edge/sync-dns", authz.AdtySiteSettings, controller.PostAdtyAdminEdgeSyncDNS},
+		{http.MethodPost, "/reseller/edge/probe", authz.AdtySiteSettings, controller.PostAdtyAdminEdgeProbe},
+		{http.MethodPost, "/reseller/edge/cert/retry", authz.AdtySiteSettings, controller.PostAdtyAdminEdgeCertRetry},
 		{http.MethodPost, "/sites/domains/:id/retry", authz.AdtySiteSettings, controller.RetryAdtyDomainAutomation},
 	} {
 		handlePermissionRoute(admin, route.method, route.path, route.permission, route.handler)

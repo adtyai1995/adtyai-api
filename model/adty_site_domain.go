@@ -10,6 +10,14 @@ const (
 	AdtySiteDomainRemoved = "removed" // 已从 Cloudflare 和 Turnstile 删除，保留存档
 )
 
+// 大陆边缘证书状态（adty_site_domains.edge_cert_status 和 adty_edge_certs.status 共用）。
+const (
+	AdtyEdgeCertStatusWaitingDNS = "waiting_dns"
+	AdtyEdgeCertStatusIssuing    = "issuing"
+	AdtyEdgeCertStatusReady      = "ready"
+	AdtyEdgeCertStatusFailed     = "failed"
+)
+
 // 自定义域名的用途。站长一个站绑两个域名：站点域名放页面，API 地址只放 /v1 这类调用。
 const (
 	// AdtySiteDomainRoleSite 是站点域名：放行所有页面和账号接口，客户在它上面浏览、登录、充值。
@@ -49,6 +57,10 @@ type AdtySiteDomain struct {
 	VerifyRecords     string `json:"verify_records" gorm:"type:text"` // 给站长看的 DNS 记录（JSON 数组）
 	TurnstileWidget   string `json:"turnstile_widget" gorm:"type:varchar(64)"`
 	LastError         string `json:"last_error" gorm:"type:text"` // 最近一次 Cloudflare 报错，给站长和后台看
+	EdgeACMEAlias     string `json:"edge_acme_alias" gorm:"type:varchar(64);index"`
+	EdgeCertStatus    string `json:"edge_cert_status" gorm:"type:varchar(24);default:'';index"`
+	EdgeCertError     string `json:"edge_cert_error" gorm:"type:text"`
+	EdgeCertNotAfter  int64  `json:"edge_cert_not_after" gorm:"default:0"`
 	LastCheckedAt     int64  `json:"last_checked_at"`
 	CreatedAt         int64  `json:"created_at"` // 这次（或重试）开始验证的时间，72 小时超时从这里算
 	UpdatedAt         int64  `json:"updated_at" gorm:"autoUpdateTime"`

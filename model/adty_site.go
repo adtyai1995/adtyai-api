@@ -416,7 +416,7 @@ func AdtySiteTables() []any {
 		&AdtySiteEarningDaily{}, &AdtySiteEarningLine{}, &AdtySiteEarningFact{}, &AdtySiteTrialGrant{}, &AdtySiteReport{}, &AdtySiteLookup{}, &AdtySiteSenderDomain{}, &AdtySenderDomainCleanup{},
 		&AdtySiteTier{}, &AdtySiteTierEvaluation{}, &AdtySiteTierPrincipalAdjustment{}, &AdtySiteWallet{}, &AdtySiteWalletLedger{}, &AdtySiteWithdrawal{}, &AdtySitePayoutAttempt{}, &AdtySiteStaff{}, &AdtySiteOwnership{},
 		&AdtySiteSettlementSheet{}, &AdtySettlementCoverageAdjustment{}, &AdtySettlementRevision{}, &AdtySettlementScan{}, &AdtySiteCloseMailBatch{}, &AdtySiteCloseMailRecipient{}, &AdtySiteCloseMailAttempt{}, &AdtyDomainCloudResource{},
-		&AdtySiteReferralAffiliate{}, &AdtySiteReferralAuditLog{}, &AdtySiteMailConfig{}}
+		&AdtySiteReferralAffiliate{}, &AdtySiteReferralAuditLog{}, &AdtySiteMailConfig{}, &AdtyEdgeCert{}, &AdtyEdgeACMEAccount{}, &AdtyEdgeState{}}
 }
 
 // AdtySetUsersSiteTx 把 fromSite 的客户全部改到 toSite（0 是主站），同事务撤销旧Key。

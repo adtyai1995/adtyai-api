@@ -75,6 +75,10 @@ export type SiteDomain = {
   ssl_status: string
   verify_records: string
   last_error: string
+  edge_acme_alias?: string
+  edge_cert_status?: string
+  edge_cert_error?: string
+  edge_cert_not_after?: number
   created_at: number
 }
 
@@ -150,6 +154,8 @@ export type OwnerSite = {
   domain_automation_enabled?: boolean
   cname_target?: string
   domain_mainland_target?: string
+  edge_mainland_enabled?: boolean
+  edge_acme_alias_suffix?: string
   sender_domain_enabled: boolean
   brand: SiteBrand
   home_page_content?: string

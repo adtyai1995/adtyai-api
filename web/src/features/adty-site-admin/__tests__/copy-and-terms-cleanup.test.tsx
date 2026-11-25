@@ -32,12 +32,14 @@ import type { AdminSite, ResellerSettings } from '../types'
 
 const {
   getResellerSettingsMock,
+  getResellerEdgeStatusMock,
   getAdminSiteWalletsMock,
   getAdminFundAnomaliesMock,
   getAdminSiteWalletLedgerMock,
   getAdminAnomalyDispositionsMock,
 } = vi.hoisted(() => ({
   getResellerSettingsMock: vi.fn(),
+  getResellerEdgeStatusMock: vi.fn(),
   getAdminSiteWalletsMock: vi.fn(),
   getAdminFundAnomaliesMock: vi.fn(),
   getAdminSiteWalletLedgerMock: vi.fn(),
@@ -50,6 +52,8 @@ vi.mock('../api', async () => {
     ...actual,
     getResellerSettings: (...args: unknown[]) =>
       getResellerSettingsMock(...args),
+    getResellerEdgeStatus: (...args: unknown[]) =>
+      getResellerEdgeStatusMock(...args),
     getAdminSiteWallets: (...args: unknown[]) =>
       getAdminSiteWalletsMock(...args),
     getAdminFundAnomalies: (...args: unknown[]) =>
@@ -237,5 +241,73 @@ describe('adty-site-admin copy updates and obsolete terms removal', () => {
       )
     ).toBeTruthy()
     expect(screen.queryByText(/purchasing recharge codes/i)).toBeNull()
+  })
+
+  it('renders mainland edge CDN controls and truthful no-data probe state in domains settings', async () => {
+    getResellerSettingsMock.mockResolvedValueOnce({
+      ...baseResellerSettings,
+      root_domains: ['adtyai-fz.top'],
+      aliyun_domain: 'adtyai-fz.top',
+      domain_mainland_target: 'cn.adtyaicf.top',
+      cname_target: 'edge.adtyaicf.top',
+      fallback_origin: 'origin.adtyaicf.top',
+      edge_mainland_enabled: true,
+      edge_acme_alias_suffix: 'acme.adtyaicf.top',
+      edge_node_ip: '47.242.10.20',
+      cloudflare_token_configured: true,
+      cloudflare_zone_id: 'zone123',
+      cloudflare_configured: true,
+    })
+    getResellerEdgeStatusMock.mockResolvedValueOnce({
+      edge_mainland_enabled: true,
+      edge_acme_staging: false,
+      edge_node_ip: '47.242.10.20',
+      edge_failover_to_cf: false,
+      edge_probe_enabled: false,
+      edge_token_configured: true,
+      domain_mainland_target: 'cn.adtyaicf.top',
+      edge_acme_alias_suffix: 'acme.adtyaicf.top',
+      wildcard_cert: {
+        cert_name: '*.adtyai-fz.top',
+        challenge_host: '_acme-challenge.adtyai-fz.top',
+        alias_fqdn: 'wild.acme.adtyaicf.top',
+        environment: 'production',
+        status: 'waiting_dns',
+        not_after: 0,
+        last_error: '',
+        last_issued_at: 0,
+        attempts: 0,
+      },
+      custom_cert_counts: {
+        total: 2,
+        ready: 1,
+        waiting_dns: 1,
+        issuing: 0,
+        failed: 0,
+      },
+      manifest_pull: null,
+      dns_sync: null,
+      probe: null,
+    })
+
+    renderWithQuery(
+      <SettingsPanel section='domains' canWrite canWriteSecrets />
+    )
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', {
+          name: 'Mainland China acceleration (Edge CDN)',
+        })
+      ).toBeTruthy()
+    })
+    await waitFor(() => {
+      expect(screen.getByText('*.adtyai-fz.top')).toBeTruthy()
+    })
+    expect(screen.getByText('wild.acme.adtyaicf.top')).toBeTruthy()
+    expect(screen.getByText('Custom site certificates: 1 / 2 ready')).toBeTruthy()
+    expect(screen.getByText('Fail over to Cloudflare')).toBeTruthy()
+    expect(screen.queryByText('Healthy')).toBeNull()
+    expect(screen.getAllByText('No data').length).toBeGreaterThanOrEqual(2)
   })
 })

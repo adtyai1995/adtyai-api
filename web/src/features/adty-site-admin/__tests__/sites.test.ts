@@ -24,6 +24,8 @@ import {
   parseSiteBrand,
   siteNotice,
 } from '../lib/sites'
+import { buildResellerUpdate, toResellerDrafts } from '../lib/settings'
+import type { ResellerSettings } from '../types'
 
 describe('adty-site-admin/lib/sites', () => {
   it('parses valid brand JSON including wallet_notice and voucher_purchase_url', () => {
@@ -70,5 +72,56 @@ describe('adty-site-admin/lib/sites', () => {
     expect(/[A-Z]/.test(pwd)).toBe(true)
     expect(/[a-z]/.test(pwd)).toBe(true)
     expect(/[0-9]/.test(pwd)).toBe(true)
+  })
+
+  it('normalizes multi-node edge_node_ips and falls back to legacy edge_node_ip', () => {
+    const base: ResellerSettings = {
+      enabled: true,
+      root_domains: ['adtyai-fz.top'],
+      reserved_subdomains: ['www'],
+      unknown_host_mode: 'reject',
+      markup_increase_delay_hours: 0,
+      settle_hour: 4,
+      freeze_days: 7,
+      close_notice_days: 7,
+      site_login_only: true,
+      custom_domain_enabled: true,
+      sender_domain_enabled: false,
+      self_use_check_enabled: true,
+      migration_check_enabled: true,
+      fingerprint_window_days: 30,
+      customer_lookup_per_hour: 20,
+      max_custom_domains_per_site: 2,
+      custom_domain_creates_per_hour: 3,
+      visibility: null,
+      cloudflare_apiToken: '',
+      cloudflare_zone_id: 'zone1',
+      cloudflare_account_id: '',
+      cname_target: 'edge.adtyaicf.top',
+      fallback_origin: 'origin.adtyaicf.top',
+      edge_mainland_enabled: true,
+      edge_acme_alias_suffix: 'acme.adtyaicf.top',
+      edge_node_ip: '47.242.10.20',
+      edge_probe_enabled: true,
+      edge_auto_failover: false,
+      turnstile_widgets: [],
+      turnstile_widget_secret: null,
+      cloudflare_token_configured: true,
+      turnstile_secret_configured: null,
+      cloudflare_configured: true,
+      resend_configured: false,
+      money_configured: true,
+      site_customer_terms_version: 0,
+    }
+    const drafts = toResellerDrafts(base)
+    expect(drafts.edge_node_ips).toBe('47.242.10.20')
+    expect(buildResellerUpdate(base, drafts)).toEqual({})
+
+    drafts.edge_node_ips = '47.242.10.20, 47.242.10.21\n47.242.10.20'
+    drafts.edge_auto_failover = true
+    expect(buildResellerUpdate(base, drafts)).toEqual({
+      edge_node_ips: ['47.242.10.20', '47.242.10.21'],
+      edge_auto_failover: true,
+    })
   })
 })

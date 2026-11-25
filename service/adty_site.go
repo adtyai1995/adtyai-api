@@ -94,13 +94,13 @@ func AdtyNormalizeSubdomain(raw string) (string, error) {
 	return label, nil
 }
 
-// adtyInfrastructureLabels 取出 cname_target、fallback_origin 紧挨根域名的那一段标签。
+// adtyInfrastructureLabels 取出 cname_target、fallback_origin、境内目标和 ACME 别名后缀紧挨根域名的那一段标签。
 func adtyInfrastructureLabels(cfg *adty_setting.ResellerSetting) []string {
 	if cfg == nil {
 		return nil
 	}
-	labels := make([]string, 0, 2)
-	for _, host := range []string{cfg.CnameTarget, cfg.FallbackOrigin} {
+	labels := make([]string, 0, 4)
+	for _, host := range []string{cfg.CnameTarget, cfg.FallbackOrigin, cfg.DomainMainlandTarget, cfg.EdgeACMEAliasSuffix} {
 		if label := adtyLabelUnderRoot(host, cfg.RootDomains); label != "" {
 			labels = append(labels, label)
 		}
@@ -834,7 +834,7 @@ func AdjustAdtySiteWithAuditForActor(siteId, adminId, actorRole int, denyAdminTa
 			}
 			fields := map[string]*string{
 				"name": &brand.Name, "title": &brand.Title, "notice": &brand.Notice,
-				"support_contact": &brand.SupportContact,
+				"support_contact":  &brand.SupportContact,
 				"tawk_property_id": &brand.TawkPropertyID, "tawk_widget_id": &brand.TawkWidgetID,
 				"wallet_notice": &brand.WalletNotice, "voucher_purchase_url": &brand.VoucherPurchaseURL,
 			}

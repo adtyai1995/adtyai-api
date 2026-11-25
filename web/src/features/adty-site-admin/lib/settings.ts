@@ -49,6 +49,7 @@ export const CLOUDFLARE_KEYS = [
   'fallback_origin',
   'aliyun_domain',
   'domain_mainland_target',
+  'edge_acme_alias_suffix',
 ] as const
 export type CloudflareKey = (typeof CLOUDFLARE_KEYS)[number]
 
@@ -82,6 +83,12 @@ export type ResellerDrafts = Record<RuleKey, string> &
   Record<CloudflareKey, string> & {
     enabled: boolean
     domain_automation_enabled: boolean
+    edge_mainland_enabled: boolean
+    edge_acme_staging: boolean
+    edge_probe_enabled: boolean
+    edge_auto_failover: boolean
+    /** One IPv4 per line (or comma-separated). */
+    edge_node_ips: string
     aliyun_id: string
     aliyun_secret: string
     clear_aliyun: boolean
@@ -112,10 +119,37 @@ function lines(value: string): string[] {
     .filter(Boolean)
 }
 
+function uniqueLines(value: string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const part of value.split(/[\n,;\s]+/)) {
+    const trimmed = part.trim()
+    if (!trimmed || seen.has(trimmed)) continue
+    seen.add(trimmed)
+    out.push(trimmed)
+  }
+  return out
+}
+
+function savedEdgeNodeIPs(saved: ResellerSettings): string[] {
+  if (Array.isArray(saved.edge_node_ips) && saved.edge_node_ips.length > 0) {
+    return uniqueLines(saved.edge_node_ips.join('\n'))
+  }
+  if (saved.edge_node_ip?.trim()) {
+    return [saved.edge_node_ip.trim()]
+  }
+  return []
+}
+
 export function toResellerDrafts(saved: ResellerSettings): ResellerDrafts {
   const drafts = {
     enabled: saved.enabled,
     domain_automation_enabled: saved.domain_automation_enabled ?? false,
+    edge_mainland_enabled: saved.edge_mainland_enabled ?? false,
+    edge_acme_staging: saved.edge_acme_staging ?? false,
+    edge_probe_enabled: saved.edge_probe_enabled ?? false,
+    edge_auto_failover: saved.edge_auto_failover ?? false,
+    edge_node_ips: savedEdgeNodeIPs(saved).join('\n'),
     aliyun_id: '',
     aliyun_secret: '',
     clear_aliyun: false,
@@ -156,6 +190,17 @@ export function cloudflareReady(
   )
 }
 
+export function edgeMainlandReady(
+  saved: ResellerSettings,
+  drafts: ResellerDrafts
+): boolean {
+  return (
+    cloudflareReady(saved, drafts) &&
+    drafts.domain_mainland_target.trim() !== '' &&
+    drafts.edge_acme_alias_suffix.trim() !== ''
+  )
+}
+
 function sameList(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((item, index) => item === b[index])
 }
@@ -175,6 +220,22 @@ export function buildResellerUpdate(
     (saved.domain_automation_enabled ?? false)
   ) {
     body.domain_automation_enabled = drafts.domain_automation_enabled
+  }
+  if (drafts.edge_mainland_enabled !== (saved.edge_mainland_enabled ?? false)) {
+    body.edge_mainland_enabled = drafts.edge_mainland_enabled
+  }
+  if (drafts.edge_acme_staging !== (saved.edge_acme_staging ?? false)) {
+    body.edge_acme_staging = drafts.edge_acme_staging
+  }
+  if (drafts.edge_probe_enabled !== (saved.edge_probe_enabled ?? false)) {
+    body.edge_probe_enabled = drafts.edge_probe_enabled
+  }
+  if (drafts.edge_auto_failover !== (saved.edge_auto_failover ?? false)) {
+    body.edge_auto_failover = drafts.edge_auto_failover
+  }
+  const edgeIPs = uniqueLines(drafts.edge_node_ips)
+  if (!sameList(edgeIPs, savedEdgeNodeIPs(saved))) {
+    body.edge_node_ips = edgeIPs
   }
   if (drafts.aliyun_id.trim()) {
     body.aliyun_access_key_id = drafts.aliyun_id.trim()

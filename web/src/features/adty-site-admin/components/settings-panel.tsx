@@ -44,6 +44,7 @@ import {
 import {
   buildResellerUpdate,
   cloudflareReady,
+  edgeMainlandReady,
   mergeResellerDrafts,
   newRowKey,
   RULE_KEYS,
@@ -56,6 +57,7 @@ import {
   type VisibilityKey,
 } from '../lib/settings'
 import type { ResellerSettingsUpdate } from '../types'
+import { EdgeStatusCard } from './edge-status-card'
 import { SecretField, SwitchRow, TextField } from './setting-fields'
 
 function resellerFieldLabel(key: string, t: (k: string) => string): string {
@@ -110,6 +112,22 @@ function resellerFieldLabel(key: string, t: (k: string) => string): string {
       return t('CNAME target')
     case 'fallback_origin':
       return t('Fallback origin')
+    case 'edge_mainland_enabled':
+      return t('Enable mainland China acceleration')
+    case 'edge_acme_alias_suffix':
+      return t('ACME verification alias suffix')
+    case 'edge_acme_staging':
+      return t('ACME staging environment')
+    case 'edge_node_ip':
+      return t('Edge node IPv4 address')
+    case 'edge_node_ips':
+      return t('Edge node IPv4 addresses')
+    case 'edge_failover_to_cf':
+      return t('Edge failover to Cloudflare')
+    case 'edge_probe_enabled':
+      return t('Enable origin HTTPS health probe')
+    case 'edge_auto_failover':
+      return t('Automatic node failover')
     case 'turnstile_widgets':
       return t('Turnstile widgets')
     case 'turnstile_widget_secret':
@@ -230,6 +248,14 @@ export function SettingsPanel(props: {
         delete permitted.cloudflare_account_id
         delete permitted.cname_target
         delete permitted.fallback_origin
+        delete permitted.edge_mainland_enabled
+        delete permitted.edge_acme_alias_suffix
+        delete permitted.edge_acme_staging
+        delete permitted.edge_node_ip
+        delete permitted.edge_node_ips
+        delete permitted.edge_failover_to_cf
+        delete permitted.edge_probe_enabled
+        delete permitted.edge_auto_failover
         delete permitted.turnstile_widgets
         delete permitted.turnstile_widget_secret
         delete permitted.clear_secrets
@@ -244,6 +270,7 @@ export function SettingsPanel(props: {
       setBaseline(next)
       setDrafts(toResellerDrafts(next))
       queryClient.setQueryData(siteAdminKeys.settings, next)
+      void queryClient.invalidateQueries({ queryKey: siteAdminKeys.edgeStatus })
       toast.success(t('Saved successfully'))
     },
     onError: (err) => {
@@ -293,6 +320,7 @@ export function SettingsPanel(props: {
   const rootsSet = drafts.root_domains.trim() !== ''
   const canEnable = tierReady && rootsSet
   const cfReady = cloudflareReady(saved, drafts)
+  const edgeReady = edgeMainlandReady(saved, drafts)
 
   const ruleLabels: Record<RuleKey, string> = {
     markup_increase_delay_hours: t(
@@ -668,6 +696,104 @@ export function SettingsPanel(props: {
                   <p className='text-warning text-xs'>{t('Not configured')}</p>
                 )}
             </div>
+          </fieldset>
+        </SettingsSection>
+      )}
+
+      {props.section === 'domains' && (
+        <SettingsSection title={t('Mainland China acceleration (Edge CDN)')}>
+          <fieldset className='grid max-w-3xl gap-4 sm:grid-cols-2'>
+            <legend className='sr-only'>
+              {t('Mainland China acceleration (Edge CDN)')}
+            </legend>
+            <div className='sm:col-span-2'>
+              <SwitchRow
+                label={t('Enable mainland China acceleration')}
+                checked={drafts.edge_mainland_enabled}
+                disabled={
+                  secretsDisabled ||
+                  (!edgeReady && !drafts.edge_mainland_enabled)
+                }
+                hint={
+                  edgeReady
+                    ? undefined
+                    : t(
+                        'Configure Cloudflare, the mainland CNAME target, and the ACME verification alias suffix first.'
+                      )
+                }
+                onCheckedChange={(value) => set('edge_mainland_enabled', value)}
+              />
+            </div>
+            <TextField
+              label={t('ACME verification alias suffix')}
+              placeholder='acme.adtyaicf.top'
+              value={drafts.edge_acme_alias_suffix}
+              disabled={secretsDisabled}
+              onChange={(value) => set('edge_acme_alias_suffix', value)}
+            />
+            <div className='space-y-2 sm:col-span-2'>
+              <Label htmlFor='reseller-edge-node-ips'>
+                {t('Edge node IPv4 addresses (one per line)')}
+              </Label>
+              <Textarea
+                id='reseller-edge-node-ips'
+                rows={3}
+                className='font-mono text-sm'
+                placeholder={'203.0.113.10\n203.0.113.11'}
+                value={drafts.edge_node_ips}
+                disabled={secretsDisabled}
+                onChange={(event) => set('edge_node_ips', event.target.value)}
+              />
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'Enter one or more Hong Kong edge VPS public IPv4 addresses (one per line or comma-separated). One IP runs as a single node; multiple IPs enable DNS round-robin.'
+                )}
+              </p>
+            </div>
+            <SwitchRow
+              label={t("Use Let's Encrypt staging environment")}
+              checked={drafts.edge_acme_staging}
+              disabled={secretsDisabled}
+              hint={t(
+                'Staging certificates are not trusted by browsers. Use staging only during initial DNS and sync verification.'
+              )}
+              onCheckedChange={(value) => set('edge_acme_staging', value)}
+            />
+            <SwitchRow
+              label={t('Enable origin HTTPS health probe')}
+              checked={drafts.edge_probe_enabled}
+              disabled={secretsDisabled}
+              hint={t(
+                'Periodically probe every configured edge node over HTTPS from the origin server every minute.'
+              )}
+              onCheckedChange={(value) => {
+                set('edge_probe_enabled', value)
+                if (!value && drafts.edge_auto_failover) {
+                  set('edge_auto_failover', false)
+                }
+              }}
+            />
+            <div className='sm:col-span-2'>
+              <SwitchRow
+                label={t('Automatic node failover')}
+                checked={drafts.edge_auto_failover}
+                disabled={
+                  secretsDisabled ||
+                  (!drafts.edge_probe_enabled && !drafts.edge_auto_failover)
+                }
+                hint={
+                  drafts.edge_probe_enabled
+                    ? t(
+                        'Automatically remove a node from DNS after 3 consecutive probe failures, restore it after 2 consecutive successes, and fail over to Cloudflare if all nodes fail.'
+                      )
+                    : t('Enable origin HTTPS health probe first.')
+                }
+                onCheckedChange={(value) => set('edge_auto_failover', value)}
+              />
+            </div>
+            <EdgeStatusCard
+              canManage={props.canWrite && props.canWriteSecrets}
+            />
           </fieldset>
         </SettingsSection>
       )}

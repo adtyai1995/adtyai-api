@@ -37,10 +37,12 @@ func adtyAllocatePlatformDomainsTx(tx *gorm.DB, site *model.AdtySite) error {
 	}
 	for _, role := range []string{model.AdtySiteDomainRoleSite, model.AdtySiteDomainRoleBaseURL} {
 		host := site.Subdomain + "." + site.RootDomain
+		mainlandTarget := strings.TrimSpace(cfg.DomainMainlandTarget)
 		if role == model.AdtySiteDomainRoleBaseURL {
 			host = fmt.Sprintf("api-s%d.%s", site.Id, site.RootDomain)
+			mainlandTarget = ""
 		}
-		row := model.AdtySiteDomain{SiteId: site.Id, Hostname: host, Role: role, ManagedBy: "platform", DesiredState: "serve", Status: model.AdtySiteDomainPending, AutomationState: "queued", Generation: 1, ProviderZone: cfg.CloudflareZoneId, DNSRoot: cfg.AliyunDomain, DNSTarget: cfg.CnameTarget, MainlandTarget: cfg.DomainMainlandTarget, CreatedAt: time.Now().Unix()}
+		row := model.AdtySiteDomain{SiteId: site.Id, Hostname: host, Role: role, ManagedBy: "platform", DesiredState: "serve", Status: model.AdtySiteDomainPending, AutomationState: "queued", Generation: 1, ProviderZone: cfg.CloudflareZoneId, DNSRoot: cfg.AliyunDomain, DNSTarget: strings.TrimSpace(cfg.CnameTarget), MainlandTarget: mainlandTarget, CreatedAt: time.Now().Unix()}
 		if err := tx.Create(&row).Error; err != nil {
 			return err
 		}
@@ -472,7 +474,14 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			}
 			res := tx.Model(&model.AdtySiteDomain{}).
 				Where("id = ? AND lease_token = ? AND generation = ?", row.Id, row.LeaseToken, row.Generation).
-				Updates(map[string]any{"status": model.AdtySiteDomainRemoved, "automation_state": "removed", "turnstile_widget": ""})
+				Updates(map[string]any{
+					"status":              model.AdtySiteDomainRemoved,
+					"automation_state":    "removed",
+					"turnstile_widget":    "",
+					"edge_cert_status":    "",
+					"edge_cert_error":     "",
+					"edge_cert_not_after": 0,
+				})
 			if res.Error != nil {
 				return res.Error
 			}
@@ -482,6 +491,9 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			row.Status = model.AdtySiteDomainRemoved
 			row.AutomationState = "removed"
 			row.TurnstileWidget = ""
+			row.EdgeCertStatus = ""
+			row.EdgeCertError = ""
+			row.EdgeCertNotAfter = 0
 			return nil
 		})
 	}
@@ -543,12 +555,58 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 		return adtySaveDomainResource(row, map[string]any{"dns_records": string(encoded)})
 	}
 	if row.ManagedBy == "platform" {
-		row.MainlandTarget, row.DNSTarget = cfg.DomainMainlandTarget, cfg.CnameTarget
+		row.DNSTarget = strings.TrimSpace(cfg.CnameTarget)
+		if row.Role == model.AdtySiteDomainRoleSite {
+			row.MainlandTarget = strings.TrimSpace(cfg.DomainMainlandTarget)
+		} else {
+			row.MainlandTarget = ""
+		}
 		if err := adtySaveDomainResource(row, map[string]any{"mainland_target": row.MainlandTarget, "dns_target": row.DNSTarget}); err != nil {
 			return err
 		}
-		for _, record := range []AdtyDNSRecord{{Type: "CNAME", Name: row.Hostname, Value: row.MainlandTarget, Line: "internal"}, {Type: "CNAME", Name: row.Hostname, Value: row.DNSTarget, Line: "oversea"}} {
+		wanted := []AdtyDNSRecord{{Type: "CNAME", Name: row.Hostname, Value: row.DNSTarget, Line: "default"}}
+		if row.Role == model.AdtySiteDomainRoleSite && row.MainlandTarget != "" {
+			wanted = append(wanted, AdtyDNSRecord{Type: "CNAME", Name: row.Hostname, Value: row.MainlandTarget, Line: "internal"})
+		}
+		for _, record := range wanted {
 			if err := ensure(record); err != nil {
+				return err
+			}
+		}
+		for i := 0; i < len(records); {
+			existing := records[i]
+			if existing.Type != "CNAME" {
+				i++
+				continue
+			}
+			keep := false
+			for _, w := range wanted {
+				if existing.Name == w.Name && existing.Line == w.Line {
+					keep = true
+					break
+				}
+			}
+			if keep {
+				i++
+				continue
+			}
+			if existing.ID == "" {
+				found, err := AdtyAliDNS().Find(ctx, row.DNSRoot, existing)
+				if err != nil {
+					return err
+				}
+				if found != nil {
+					existing = *found
+				}
+			}
+			if existing.ID != "" {
+				if err := AdtyAliDNS().Delete(ctx, row.DNSRoot, existing); err != nil {
+					return err
+				}
+			}
+			records = append(records[:i], records[i+1:]...)
+			encoded, _ := common.Marshal(records)
+			if err := adtySaveDomainResource(row, map[string]any{"dns_records": string(encoded)}); err != nil {
 				return err
 			}
 		}

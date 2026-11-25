@@ -368,6 +368,12 @@ func normalizeCustomDomain(raw string) (string, error) {
 	if fallback := strings.ToLower(strings.TrimSpace(cfg.FallbackOrigin)); fallback != "" {
 		blocked = append(blocked, adtyRegistrableDomain(fallback))
 	}
+	if mainland := strings.ToLower(strings.TrimSpace(cfg.DomainMainlandTarget)); mainland != "" {
+		blocked = append(blocked, adtyRegistrableDomain(mainland))
+	}
+	if acmeSuffix := strings.ToLower(strings.TrimSpace(cfg.EdgeACMEAliasSuffix)); acmeSuffix != "" {
+		blocked = append(blocked, adtyRegistrableDomain(acmeSuffix))
+	}
 	if main := adtyMainHost(); main != "" && main != "localhost" {
 		blocked = append(blocked, adtyRegistrableDomain(main))
 	}
@@ -469,6 +475,17 @@ func adtyCustomDomainRoleOccupied(tx *gorm.DB, siteId int, role string, excludeI
 	return count > 0, nil
 }
 
+func adtyGenerateEdgeACMEAlias(domainID int) (string, error) {
+	if domainID <= 0 {
+		return "", common.NewMessage("Invalid parameters")
+	}
+	buf := make([]byte, 4)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("d%d-%s", domainID, hex.EncodeToString(buf)), nil
+}
+
 func adtyUpsertCustomDomainTx(tx *gorm.DB, cfg *adty_setting.ResellerSetting, siteId, ownerUserId int, host, role string, found bool, existing *model.AdtySiteDomain, now int64) (model.AdtySiteDomain, error) {
 	token, err := adtyNewOwnershipToken()
 	if err != nil {
@@ -487,13 +504,37 @@ func adtyUpsertCustomDomainTx(tx *gorm.DB, cfg *adty_setting.ResellerSetting, si
 		if err := tx.Create(&domain).Error; err != nil {
 			return model.AdtySiteDomain{}, err
 		}
+		if role == model.AdtySiteDomainRoleSite {
+			alias, err := adtyGenerateEdgeACMEAlias(domain.Id)
+			if err != nil {
+				return model.AdtySiteDomain{}, err
+			}
+			if err := tx.Model(&model.AdtySiteDomain{}).Where("id = ?", domain.Id).Update("edge_acme_alias", alias).Error; err != nil {
+				return model.AdtySiteDomain{}, err
+			}
+			domain.EdgeACMEAlias = alias
+		}
 	} else {
 		domain.Id = existing.Id
 		domain.Generation = existing.Generation + 1
+		alias := ""
+		if role == model.AdtySiteDomainRoleSite {
+			if existing.SiteId == siteId && adtyNormalizeDomainRole(existing.Role) == model.AdtySiteDomainRoleSite && strings.TrimSpace(existing.EdgeACMEAlias) != "" {
+				alias = strings.TrimSpace(existing.EdgeACMEAlias)
+			} else {
+				var err error
+				alias, err = adtyGenerateEdgeACMEAlias(existing.Id)
+				if err != nil {
+					return model.AdtySiteDomain{}, err
+				}
+			}
+		}
+		domain.EdgeACMEAlias = alias
 		if err := tx.Model(&model.AdtySiteDomain{}).Where("id = ?", existing.Id).Updates(map[string]any{
 			"site_id": siteId, "bound_by": ownerUserId, "role": role, "ownership_token": token, "cf_hostname_id": "", "status": model.AdtySiteDomainPending,
 			"ssl_status": "", "verify_records": domain.VerifyRecords, "turnstile_widget": "",
 			"last_error": "", "last_checked_at": now, "created_at": now,
+			"edge_acme_alias": alias, "edge_cert_status": "", "edge_cert_error": "", "edge_cert_not_after": 0,
 			"managed_by": "owner", "desired_state": "serve", "automation_state": domain.AutomationState, "provider_zone": cfg.CloudflareZoneId, "dns_root": "", "dns_target": cfg.CnameTarget, "dns_records": "", "mainland_target": "", "lease_token": "", "lease_until": 0, "next_run_at": 0, "attempts": 0, "cf_create_started_at": 0, "generation": gorm.Expr("generation + 1"),
 		}).Error; err != nil {
 			return model.AdtySiteDomain{}, err
@@ -1402,6 +1443,9 @@ func removeAdtySiteDomainForActor(ctx context.Context, domain *model.AdtySiteDom
 			"cf_hostname_id":       "",
 			"cf_create_started_at": 0,
 			"turnstile_widget":     "",
+			"edge_cert_status":     "",
+			"edge_cert_error":      "",
+			"edge_cert_not_after":  0,
 			"lease_token":          "",
 			"lease_until":          0,
 			"generation":           gorm.Expr("generation + 1"),
@@ -1420,6 +1464,7 @@ func removeAdtySiteDomainForActor(ctx context.Context, domain *model.AdtySiteDom
 		}
 		updatedDomain = snapshot
 		updatedDomain.Status, updatedDomain.CFHostnameId, updatedDomain.CFCreateStartedAt, updatedDomain.TurnstileWidget = model.AdtySiteDomainRemoved, "", 0, ""
+		updatedDomain.EdgeCertStatus, updatedDomain.EdgeCertError, updatedDomain.EdgeCertNotAfter = "", "", 0
 		updatedDomain.LeaseToken, updatedDomain.LeaseUntil = "", 0
 		updatedDomain.Generation = current.Generation + 1
 		return nil
@@ -1887,5 +1932,27 @@ func ListAdtySiteDomains(ownerUserId int) ([]model.AdtySiteDomain, error) {
 	}
 	domains := []model.AdtySiteDomain{}
 	err = model.DB.Where("site_id = ? AND status <> ?", site.Id, model.AdtySiteDomainRemoved).Order("id").Find(&domains).Error
-	return domains, err
+	if err != nil {
+		return nil, err
+	}
+	for i := range domains {
+		if domains[i].ManagedBy != "platform" && adtyNormalizeDomainRole(domains[i].Role) == model.AdtySiteDomainRoleSite && strings.TrimSpace(domains[i].EdgeACMEAlias) == "" {
+			if alias, genErr := adtyGenerateEdgeACMEAlias(domains[i].Id); genErr == nil {
+				res := model.DB.Model(&model.AdtySiteDomain{}).
+					Where("id = ? AND edge_acme_alias = ?", domains[i].Id, "").
+					Update("edge_acme_alias", alias)
+				if res.Error == nil {
+					if res.RowsAffected > 0 {
+						domains[i].EdgeACMEAlias = alias
+					} else {
+						var fresh model.AdtySiteDomain
+						if model.DB.Select("edge_acme_alias").First(&fresh, domains[i].Id).Error == nil {
+							domains[i].EdgeACMEAlias = fresh.EdgeACMEAlias
+						}
+					}
+				}
+			}
+		}
+	}
+	return domains, nil
 }

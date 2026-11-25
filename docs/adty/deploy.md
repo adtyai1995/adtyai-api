@@ -8,7 +8,9 @@
 | `.env.example` | 环境变量模板，复制成 `.env` 填密钥 |
 | `nginx.conf` | Nginx 站点配置：真实 IP、WebSocket、流式、100m 请求体；另有一个接收分站域名的 server 块（第 11 节） |
 | `update-cloudflare-ips.sh` | 下载 Cloudflare 网段，更新 Nginx 的 include 文件，再调 `ufw-cloudflare.sh` |
-| `ufw-cloudflare.sh` | 443 只放行 Cloudflare 网段，保留 SSH |
+| `update-edge-ips.sh` | 读取 `/etc/adtyai/edge-ips.txt`，更新源站 Nginx 的边缘节点真实 IP / 清单放行配置并刷新 ufw |
+| `ufw-cloudflare.sh` | 443 只放行 Cloudflare 网段与可选边缘节点 IP，保留 SSH |
+| `edge/` | 香港边缘节点 Nginx 模板、Python 同步脚本、systemd 定时任务与 BBR 配置（第 12 节） |
 | `backup.sh` | 每天 pg_dump 加打包 data 目录，本机留 14 天，同步到另一台机器 |
 
 这份文档还没有在真实服务器上完整走过一遍。第一次部署时按顺序做，和实际情况不一致的地方改进本文。
@@ -45,6 +47,7 @@ sudo cp .env.example .env && sudo chmod 600 .env
 | `SESSION_SECRET`、`CRYPTO_SECRET` | 是 | — | 会话与加密密钥，分开设（见上面的密钥说明） |
 | `SESSION_COOKIE_TRUSTED_URL` | 是 | — | 与 `SESSION_COOKIE_SECURE=true` 配套，写 https origin |
 | `ADTY_FLUSH_TOKEN` | 是 | — | 内部刷盘接口密钥，compose 用 `:?` 强制要求 |
+| `ADTY_EDGE_TOKEN` | 否 | 空 | 可选：大陆边缘节点拉取 `GET /api/adty/internal/edge/manifest` 的共享密钥 |
 | `LOG_SQL_DSN` | 否 | 空（用主库） | 独立日志库，必须是 PostgreSQL 18 |
 | `ADTY_TELEGRAM_ALLOW_NETWORK` | 否 | `1` | 设成 `0` 时进程里没有 Telegram sender：通知和公告同步全部失败，外部只看到「没有消息要发」 |
 | `NODE_NAME` | 否 | `adtyai-node-1` | 节点名，多节点时区分 |
@@ -275,3 +278,65 @@ sudo docker compose ps adtyai-api                 # 等到 healthy
 - `SESSION_COOKIE_TRUSTED_URL` 不用加分站的地址：会话 cookie 本来就按 Host 写，同站请求放行（任务 11.2 已说明）。
 - 分站 Logo 存在 `/data/uploads/site-assets`，在 `./data` 卷里，跟着 `backup.sh` 每天的 data 打包一起备份。
 - 后台的服务器地址（ServerAddress）仍填主站地址：支付回调、支付跳转都走主站（执行层决定 30）。
+
+## 12. 中国大陆首页加速（自建香港边缘节点）
+
+用于把各分站**首页/网站域名**的中国大陆访问流量路由到自建香港轻量 VPS（Nginx 反向代理 + `/static/` 静态资源缓存），境外流量与全部 **API 域名**（`api-sN.*` 及站长自定义 API 域名）仍保持走 Cloudflare。
+
+### 路由与证书机制
+
+- 阿里云解析分线路：`role=site` 平台网站域名写 `default -> edge.adtyaicf.top`（Cloudflare）+ `internal -> cn.adtyaicf.top`（大陆边缘加速目标）；`role=base_url` 平台 API 域名仅写 `default -> edge.adtyaicf.top`，不走边缘节点。
+- 源站主节点进程内通过 ACME DNS-01（`*.acme.adtyaicf.top` 别名委托，复用 Cloudflare API Token）自动签发与续期泛域名证书（`*.adtyai-fz.top`）及已配置 CNAME 委托的站长自定义网站域名证书；私钥用 `CRYPTO_SECRET` 加密存库（`adty_edge_certs`）。
+- 香港节点通过 `deploy/adty/edge/sync-edge.py` 每分钟拉取 `GET /api/adty/internal/edge/manifest`（带 `X-Adty-Edge-Token` 与 `ETag`/`If-None-Match`），写入证书并生成 Nginx 配置，`nginx -t` 通过才热重载，失败自动回滚。
+
+### 步骤 A：Cloudflare 权限与初始 DNS
+
+1. 复用后台已填的 Cloudflare API Token，在原 `SSL and Certificates: Edit` 基础上补充该 Zone（如 `adtyaicf.top`）的 **`Zone:DNS:Edit`** 权限。
+2. 在阿里云解析的平台根域名（如 `adtyai-fz.top`）添加一次泛域名验证委托（**默认线路**）：
+   - `_acme-challenge.adtyai-fz.top` `CNAME` `wild.acme.adtyaicf.top`
+3. 后台「分站管理 → 域名设置 → 中国大陆首页加速」中确认默认参数（大陆 CNAME 目标 `cn.adtyaicf.top`、ACME 验证别名后缀 `acme.adtyaicf.top`），填写一个或多个香港 VPS 公网 IPv4（每行一个，填 1 个为单节点，填多个自动 DNS 轮询），按需开启源站每分钟探活与「自动摘除故障节点与全挂回切」并保存（首次联调可先勾选 Let's Encrypt 测试环境，确认跑通后再切回生产环境）。
+
+### 步骤 B：源站放行香港节点
+
+1. 在源站 `/opt/adtyai/.env` 设置 `ADTY_EDGE_TOKEN`（`openssl rand -hex 32`），重建容器：`sudo docker compose up -d adtyai-api`。
+2. 首次部署更新后的 `deploy/adty/nginx.conf` 前，先确保两个空占位文件存在，或直接写入香港节点 IP 并运行 `update-edge-ips.sh`：
+
+```bash
+sudo mkdir -p /etc/adtyai
+echo '<香港 VPS 公网 IPv4>' | sudo tee /etc/adtyai/edge-ips.txt >/dev/null
+sudo /opt/adtyai/update-edge-ips.sh
+```
+
+`update-edge-ips.sh` 会生成 `/etc/nginx/adty-edge-ips.conf`（`set_real_ip_from`）和 `/etc/nginx/adty-edge-allow.conf`（`/api/adty/internal/edge/manifest` IP 白名单），并调用 `ufw-cloudflare.sh` 用独立备注 `adtyai-edge` 放行 443，每周更新 Cloudflare 网段不会误删香港节点规则。
+
+### 步骤 C：配置香港轻量 VPS
+
+1. 系统建议 Debian 12 / Ubuntu 24.04，安全组与防火墙开放 22、80、443，安装 `nginx-full`（或 `nginx` + `libnginx-mod-stream`）与 `python3`：
+
+```bash
+sudo apt-get update && sudo apt-get install -y nginx-full python3
+sudo mkdir -p /opt/adtyai-edge /etc/adtyai /etc/nginx/adty-edge/sites /etc/nginx/adty-edge/certs /var/cache/nginx/adty-static /var/cache/nginx/adty-assets
+```
+
+2. 拷贝仓库 `deploy/adty/edge/` 下的文件到香港节点：
+   - `nginx.conf` → `/etc/nginx/nginx.conf`
+   - `origin-proxy.conf` → `/etc/nginx/adty-edge/origin-proxy.conf`
+   - `sync-edge.py` → `/opt/adtyai-edge/sync-edge.py`（`chmod +x`）
+   - `edge.env.example` → `/etc/adtyai/edge.env`（`chmod 600`，填入 `ORIGIN_CONNECT_IP` 与 `EDGE_TOKEN`）
+   - `sysctl-bbr.conf` → `/etc/sysctl.d/99-adty-edge-bbr.conf`（运行 `sudo sysctl --system`）
+   - `adty-edge-sync.service`、`adty-edge-sync.timer` → `/etc/systemd/system/`
+3. 下载 Cloudflare Origin CA RSA 根证书到 `/etc/nginx/adty-edge/cloudflare-origin-ca.pem`（用于回源 TLS 严格校验）。
+4. 首次手动同步并启动定时任务：
+
+```bash
+sudo set -a && source /etc/adtyai/edge.env && set +a && sudo -E python3 /opt/adtyai-edge/sync-edge.py
+sudo systemctl daemon-reload
+sudo systemctl enable --now adty-edge-sync.timer
+```
+
+### 步骤 D：故障回切与回滚
+
+- **一键回切 Cloudflare**：在后台「中国大陆首页加速 → 大陆解析与故障切换」点击「一键回切 Cloudflare」，系统会将 `cn.adtyaicf.top` 在 Cloudflare DNS 切为单条橙云代理记录（`proxied=true`），大陆首页流量立即绕过全部香港节点改由 Cloudflare 回源；恢复后再点击「切回香港边缘节点」，自动把全部已配置的香港节点 IP 还原为灰云直连（TTL 60 秒）。
+- **多节点负载分担与自动摘除**：在源站 `/etc/adtyai/edge-ips.txt` 每行写入一台香港 VPS 公网 IPv4 并执行 `update-edge-ips.sh`，在后台「边缘节点 IPv4 地址（每行一个）」填入对应 IP 列表即可自动维护多条灰云 A 记录轮询。同时开启「源站每分钟健康探活」与「自动摘除故障节点与全挂回切」后，单节点连续 3 次探活失败会自动从 DNS 摘除、连续 2 次恢复后自动加回；全部节点均失败时自动回切 Cloudflare 橙云兜底，且不会覆盖管理员的手动回切锁定状态。
+- **彻底下线边缘节点**：先切回 Cloudflare 或清空大陆加速目标并关闭「启用中国大陆首页加速」；再清空源站 `/etc/adtyai/edge-ips.txt` 并执行 `sudo /opt/adtyai/update-edge-ips.sh` 即可收回源站 443 白名单。
+

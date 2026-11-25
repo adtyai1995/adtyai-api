@@ -35,6 +35,9 @@ import type {
   AdminSiteBrand,
   AdminSiteTierPrincipalAdjustResult,
   AdminSiteTierPrincipalView,
+  ResellerEdgeDNSSync,
+  ResellerEdgeProbe,
+  ResellerEdgeStatus,
   ResellerSettings,
   ResellerUsage,
   ResellerSettingsUpdate,
@@ -66,6 +69,7 @@ export const SITE_ADMIN_PAGE_SIZE = 20
 export const siteAdminKeys = {
   all: ['adty-site-admin'] as const,
   settings: ['adty-site-admin', 'settings'] as const,
+  edgeStatus: ['adty-site-admin', 'edge-status'] as const,
   site: (id: number) => ['adty-site-admin', 'site', id] as const,
   list: (name: string, params: Record<string, unknown>) =>
     ['adty-site-admin', name, params] as const,
@@ -501,6 +505,10 @@ export type AdminSiteDomain = {
   automation_state?: string
   ssl_status?: string
   last_error?: string
+  edge_acme_alias?: string
+  edge_cert_status?: string
+  edge_cert_error?: string
+  edge_cert_not_after?: number
   id: number
   hostname: string
   status: string
@@ -515,6 +523,44 @@ export async function checkDomainProvider(
 
 export async function retryDomainAutomation(id: number): Promise<void> {
   const res = await api.post(`${BASE}/sites/domains/${id}/retry`)
+  requireServerSuccess(res.data)
+}
+
+export async function getResellerEdgeStatus(): Promise<ResellerEdgeStatus> {
+  const res = await api.get<ApiResponse<ResellerEdgeStatus>>(
+    `${BASE}/reseller/edge/status`
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function setResellerEdgeFailover(
+  failoverToCF: boolean
+): Promise<{ failover_to_cf: boolean; dns_sync: ResellerEdgeDNSSync }> {
+  const res = await api.post<
+    ApiResponse<{ failover_to_cf: boolean; dns_sync: ResellerEdgeDNSSync }>
+  >(`${BASE}/reseller/edge/failover`, { failover_to_cf: failoverToCF })
+  return requireServerSuccess(res.data).data
+}
+
+export async function syncResellerEdgeDNS(): Promise<ResellerEdgeDNSSync> {
+  const res = await api.post<ApiResponse<ResellerEdgeDNSSync>>(
+    `${BASE}/reseller/edge/sync-dns`
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function probeResellerEdge(): Promise<ResellerEdgeProbe> {
+  const res = await api.post<ApiResponse<ResellerEdgeProbe>>(
+    `${BASE}/reseller/edge/probe`
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function retryResellerEdgeCert(certName = ''): Promise<void> {
+  const res = await api.post<ApiResponse<{ queued: boolean }>>(
+    `${BASE}/reseller/edge/cert/retry`,
+    certName ? { cert_name: certName } : {}
+  )
   requireServerSuccess(res.data)
 }
 

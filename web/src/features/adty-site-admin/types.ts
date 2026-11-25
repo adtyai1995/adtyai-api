@@ -258,6 +258,14 @@ export type ResellerSettings = {
   cloudflare_account_id: string
   cname_target: string
   fallback_origin: string
+  edge_mainland_enabled?: boolean
+  edge_acme_alias_suffix?: string
+  edge_acme_staging?: boolean
+  edge_node_ip?: string
+  edge_node_ips?: string[] | null
+  edge_failover_to_cf?: boolean
+  edge_probe_enabled?: boolean
+  edge_auto_failover?: boolean
   turnstile_widgets: TurnstileWidget[] | null
   turnstile_widget_secret: Record<string, string> | null
   cloudflare_token_configured: boolean
@@ -269,6 +277,100 @@ export type ResellerSettings = {
   money_configured: boolean
   tier_configured?: boolean
   site_customer_terms_version: number
+}
+
+export type ResellerEdgeWildcardCert = {
+  cert_name: string
+  challenge_host: string
+  alias_fqdn: string
+  environment: string
+  status: string
+  not_after: number
+  last_error: string
+  last_issued_at: number
+  attempts: number
+}
+
+export type ResellerEdgeNodePull = {
+  pulled_at: number
+  version: string
+}
+
+export type ResellerEdgeManifestPull = {
+  pulled_at: number
+  client_ip: string
+  version: string
+  nodes?: Record<string, ResellerEdgeNodePull>
+}
+
+export type ResellerEdgeDNSSync = {
+  synced_at: number
+  target: string
+  ip: string
+  ips?: string[]
+  proxied: boolean
+  auto_mode?: boolean
+  ttl: number
+  record_id: string
+  record_ids?: string[]
+  last_error: string
+}
+
+export type ResellerEdgeNodeProbe = {
+  ip: string
+  checked_at: number
+  healthy: boolean
+  http_status: number
+  latency_ms: number
+  cert_not_after: number
+  consecutive_failures: number
+  consecutive_successes: number
+  ejected: boolean
+  ejected_at?: number
+  last_error: string
+}
+
+export type ResellerEdgeProbe = {
+  checked_at: number
+  healthy: boolean
+  healthy_count?: number
+  total_count?: number
+  probe_host: string
+  http_status: number
+  latency_ms: number
+  cert_not_after: number
+  consecutive_failures: number
+  consecutive_successes: number
+  auto_failover_active?: boolean
+  active_dns_ips?: string[]
+  last_auto_action?: string
+  last_auto_action_at?: number
+  last_error: string
+  nodes?: ResellerEdgeNodeProbe[]
+}
+
+export type ResellerEdgeStatus = {
+  edge_mainland_enabled: boolean
+  edge_acme_staging: boolean
+  edge_node_ip: string
+  edge_node_ips?: string[]
+  edge_failover_to_cf: boolean
+  edge_probe_enabled: boolean
+  edge_auto_failover?: boolean
+  edge_token_configured: boolean
+  domain_mainland_target: string
+  edge_acme_alias_suffix: string
+  wildcard_cert: ResellerEdgeWildcardCert | null
+  custom_cert_counts: {
+    total: number
+    ready: number
+    waiting_dns: number
+    issuing: number
+    failed: number
+  }
+  manifest_pull: ResellerEdgeManifestPull | null
+  dns_sync: ResellerEdgeDNSSync | null
+  probe: ResellerEdgeProbe | null
 }
 
 /** PUT body: only changed keys; clear_secrets empties secrets. */

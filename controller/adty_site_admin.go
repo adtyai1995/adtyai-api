@@ -2,9 +2,11 @@ package controller
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -459,8 +461,28 @@ func GetAdtyAdminSite(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	resellerCfg := adty_setting.GetResellerSetting()
+	var wildcardCerts map[string]model.AdtyEdgeCert
+	if resellerCfg.EdgeMainlandEnabled {
+		var rows []model.AdtyEdgeCert
+		if err := model.DB.Where("kind = ?", model.AdtyEdgeCertKindWildcard).Find(&rows).Error; err == nil {
+			wildcardCerts = make(map[string]model.AdtyEdgeCert, len(rows))
+			for _, cert := range rows {
+				wildcardCerts[strings.ToLower(strings.TrimSpace(cert.CertName))] = cert
+			}
+		}
+	}
 	for i := range domains {
 		domains[i].CloseAction = service.AdtyDomainCloseAction(domains[i])
+		if domains[i].ManagedBy == "platform" && domains[i].Role == model.AdtySiteDomainRoleSite && len(wildcardCerts) > 0 {
+			if _, rest, ok := strings.Cut(strings.ToLower(strings.TrimSpace(domains[i].Hostname)), "."); ok {
+				if cert, exists := wildcardCerts["*."+rest]; exists {
+					domains[i].EdgeCertStatus = cert.Status
+					domains[i].EdgeCertError = cert.LastError
+					domains[i].EdgeCertNotAfter = cert.NotAfter
+				}
+			}
+		}
 	}
 	var senders []model.AdtySiteSenderDomain
 	if err := model.DB.Where("site_id = ? AND status <> ?", id, model.AdtySenderDomainDisabled).Find(&senders).Error; err != nil {
@@ -901,6 +923,14 @@ type adtyResellerSettingsView struct {
 	CloudflareAccountId        string                                 `json:"cloudflare_account_id"`
 	CnameTarget                string                                 `json:"cname_target"`
 	FallbackOrigin             string                                 `json:"fallback_origin"`
+	EdgeMainlandEnabled        bool                                   `json:"edge_mainland_enabled"`
+	EdgeACMEAliasSuffix        string                                 `json:"edge_acme_alias_suffix"`
+	EdgeACMEStaging            bool                                   `json:"edge_acme_staging"`
+	EdgeNodeIP                 string                                 `json:"edge_node_ip"`
+	EdgeNodeIPs                []string                               `json:"edge_node_ips"`
+	EdgeFailoverToCF           bool                                   `json:"edge_failover_to_cf"`
+	EdgeProbeEnabled           bool                                   `json:"edge_probe_enabled"`
+	EdgeAutoFailover           bool                                   `json:"edge_auto_failover"`
 	TurnstileWidgets           []adty_setting.ResellerTurnstileWidget `json:"turnstile_widgets"`
 	TurnstileWidgetSecret      map[string]string                      `json:"turnstile_widget_secret"`
 	CloudflareTokenConfigured  bool                                   `json:"cloudflare_token_configured"`
@@ -940,6 +970,10 @@ func adtyResellerSettingsWarnings(cfg *adty_setting.ResellerSetting) []string {
 				"Some Turnstile widgets are missing a site key or secret: affected sites will fall back until every widget secret is saved.")
 			break
 		}
+	}
+	if cfg.EdgeMainlandEnabled && strings.TrimSpace(os.Getenv("ADTY_EDGE_TOKEN")) == "" {
+		warnings = append(warnings,
+			"Mainland edge acceleration is enabled, but ADTY_EDGE_TOKEN is not set in the server environment: edge nodes cannot fetch certificates or routing manifests.")
 	}
 	return warnings
 }
@@ -1024,6 +1058,14 @@ func GetAdtyResellerSettings(c *gin.Context) {
 		return
 	}
 	warnings := append(adtyResellerSettingsWarnings(&cfg), adtyClearedSecretWarnings()...)
+	edgeIPs := cfg.EffectiveEdgeNodeIPs()
+	if edgeIPs == nil {
+		edgeIPs = []string{}
+	}
+	edgeFirstIP := ""
+	if len(edgeIPs) > 0 {
+		edgeFirstIP = edgeIPs[0]
+	}
 	view := adtyResellerSettingsView{
 		FieldVersions:              versions,
 		AliyunIDConfigured:         cfg.AliyunAccessKeyID != "",
@@ -1053,6 +1095,14 @@ func GetAdtyResellerSettings(c *gin.Context) {
 		CloudflareAccountId:        cfg.CloudflareAccountId,
 		CnameTarget:                cfg.CnameTarget,
 		FallbackOrigin:             cfg.FallbackOrigin,
+		EdgeMainlandEnabled:        cfg.EdgeMainlandEnabled,
+		EdgeACMEAliasSuffix:        cfg.EdgeACMEAliasSuffix,
+		EdgeACMEStaging:            cfg.EdgeACMEStaging,
+		EdgeNodeIP:                 edgeFirstIP,
+		EdgeNodeIPs:                edgeIPs,
+		EdgeFailoverToCF:           cfg.EdgeFailoverToCF,
+		EdgeProbeEnabled:           cfg.EdgeProbeEnabled,
+		EdgeAutoFailover:           cfg.EdgeAutoFailover,
 		TurnstileWidgets:           cfg.TurnstileWidgets,
 		CloudflareTokenConfigured:  strings.TrimSpace(cfg.CloudflareApiToken) != "",
 		WidgetSecretConfigured:     map[string]bool{},
@@ -1104,7 +1154,7 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		return
 	}
 	if c.GetInt("role") < common.RoleRootUser {
-		for _, key := range []string{adty_setting.ResellerKeyCloudflareTok, adty_setting.ResellerKeyWidgetSecret, "turnstile_widgets", "aliyun_access_key_id", "aliyun_access_key_Secret", "domain_automation_enabled", "aliyun_domain", "domain_mainland_target", "cloudflare_zone_id", "cloudflare_account_id", "cname_target", "fallback_origin", "clear_secrets"} {
+		for _, key := range []string{adty_setting.ResellerKeyCloudflareTok, adty_setting.ResellerKeyWidgetSecret, "turnstile_widgets", "aliyun_access_key_id", "aliyun_access_key_Secret", "domain_automation_enabled", "aliyun_domain", "domain_mainland_target", "cloudflare_zone_id", "cloudflare_account_id", "cname_target", "fallback_origin", "edge_mainland_enabled", "edge_acme_alias_suffix", "edge_acme_staging", "edge_node_ip", "edge_node_ips", "edge_failover_to_cf", "edge_probe_enabled", "edge_auto_failover", "clear_secrets"} {
 			if _, present := body[key]; present {
 				denyAdtyAdminAction(c)
 				return
@@ -1220,6 +1270,31 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		for i := range next.ReservedSubdomains {
 			next.ReservedSubdomains[i] = strings.ToLower(strings.TrimSpace(next.ReservedSubdomains[i]))
 		}
+		next.AliyunDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(next.AliyunDomain)), ".")
+		next.DomainMainlandTarget = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(next.DomainMainlandTarget)), ".")
+		next.CnameTarget = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(next.CnameTarget)), ".")
+		next.FallbackOrigin = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(next.FallbackOrigin)), ".")
+		next.EdgeACMEAliasSuffix = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(next.EdgeACMEAliasSuffix)), ".")
+		_, touchedEdgeIPsInTx := values["edge_node_ips"]
+		_, touchedEdgeIPInTx := values["edge_node_ip"]
+		if touchedEdgeIPsInTx {
+			next.EdgeNodeIPs = adty_setting.NormalizeEdgeNodeIPs(next.EdgeNodeIPs)
+			if len(next.EdgeNodeIPs) > 0 {
+				next.EdgeNodeIP = next.EdgeNodeIPs[0]
+			} else {
+				next.EdgeNodeIP = ""
+			}
+			values["edge_node_ip"] = next.EdgeNodeIP
+		} else if touchedEdgeIPInTx {
+			next.EdgeNodeIP = strings.TrimSpace(next.EdgeNodeIP)
+			if next.EdgeNodeIP != "" {
+				next.EdgeNodeIPs = []string{next.EdgeNodeIP}
+			} else {
+				next.EdgeNodeIPs = []string{}
+			}
+			encIPs, _ := common.Marshal(next.EdgeNodeIPs)
+			values["edge_node_ips"] = string(encIPs)
+		}
 		if err := adty_setting.ValidateResellerPatch(&next, adtyResendConfigured(), values); err != nil {
 			return err
 		}
@@ -1250,6 +1325,17 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		return
 	}
 	service.InvalidateAdtySiteCache()
+	_, touchedEdgeIP := values["edge_node_ip"]
+	_, touchedEdgeIPs := values["edge_node_ips"]
+	_, touchedEdgeFailover := values["edge_failover_to_cf"]
+	_, touchedEdgeAutoFailover := values["edge_auto_failover"]
+	_, touchedMainlandTarget := values["domain_mainland_target"]
+	if (touchedEdgeIP || touchedEdgeIPs || touchedEdgeFailover || (touchedEdgeAutoFailover && !next.EdgeAutoFailover) || touchedMainlandTarget) &&
+		len(next.EffectiveEdgeNodeIPs()) > 0 && next.DomainMainlandTarget != "" && next.CloudflareConfigured() {
+		syncCtx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		_, _ = service.SyncAdtyEdgeMainlandDNS(syncCtx)
+		cancel()
+	}
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)

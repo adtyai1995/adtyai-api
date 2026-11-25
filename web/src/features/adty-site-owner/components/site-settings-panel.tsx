@@ -35,6 +35,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { adtySiteQueryKey } from '@/features/adty-site/api'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
 import { formatDomainLastError } from '@/lib/domain-error'
+import { formatTimestampToDate } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 import { toSquareIconFile } from '@/lib/square-icon'
 import { STATUS_QUERY_KEY } from '@/lib/status-query'
@@ -109,6 +110,32 @@ function domainLabel(t: TFunction, status: SiteDomain['status']): string {
   if (status === 'failed') return t('Failed')
   if (status === 'removed') return t('Removed')
   return t('Waiting for DNS')
+}
+
+function edgeCertVariant(status: string | undefined) {
+  switch (status) {
+    case 'ready':
+      return 'success' as const
+    case 'failed':
+      return 'danger' as const
+    case 'issuing':
+      return 'info' as const
+    default:
+      return 'warning' as const
+  }
+}
+
+function edgeCertLabel(t: TFunction, status: string | undefined): string {
+  switch (status) {
+    case 'ready':
+      return t('Certificate ready')
+    case 'issuing':
+      return t('Issuing certificate')
+    case 'failed':
+      return t('Issuance failed')
+    default:
+      return t('Waiting for DNS')
+  }
 }
 
 function domainAutomationLabel(t: TFunction, state: string): string {
@@ -483,6 +510,8 @@ function DomainsCard(props: { site: OwnerSite }) {
   const platformApiUrl = normalizeDisplayUrl(props.site.api_base_url)
   const cnameTarget = (props.site.cname_target ?? '').trim()
   const mainlandTarget = (props.site.domain_mainland_target ?? '').trim()
+  const acmeSuffix = (props.site.edge_acme_alias_suffix ?? '').trim()
+  const edgeMainlandEnabled = Boolean(props.site.edge_mainland_enabled)
   const closing = props.site.status === 'closing'
 
   return (
@@ -524,45 +553,24 @@ function DomainsCard(props: { site: OwnerSite }) {
           </p>
         ) : (
           <>
-            {(cnameTarget || mainlandTarget) && (
+            {cnameTarget && (
               <div className='bg-muted/40 space-y-2.5 rounded-lg border p-3'>
                 <div className='space-y-0.5'>
                   <p className='text-sm font-medium'>{t('DNS CNAME target')}</p>
                   <p className='text-muted-foreground text-xs'>
                     {t(
-                      'Add a CNAME record for both your site domain and API domain pointing to the target below.'
+                      'Add a CNAME record on the default line for both your site domain and API domain pointing to the target below.'
                     )}
                   </p>
                 </div>
-                <div className='grid gap-2 sm:grid-cols-2'>
-                  {cnameTarget && (
-                    <div className='bg-background flex items-center justify-between gap-2 rounded-md border px-3 py-2'>
-                      <div className='min-w-0'>
-                        <p className='text-muted-foreground text-[11px]'>
-                          {mainlandTarget
-                            ? t('Default / Overseas CNAME')
-                            : t('CNAME target')}
-                        </p>
-                        <p className='truncate font-mono text-xs'>
-                          {cnameTarget}
-                        </p>
-                      </div>
-                      <CopyButton value={cnameTarget} />
-                    </div>
-                  )}
-                  {mainlandTarget && (
-                    <div className='bg-background flex items-center justify-between gap-2 rounded-md border px-3 py-2'>
-                      <div className='min-w-0'>
-                        <p className='text-muted-foreground text-[11px]'>
-                          {t('Mainland China CNAME')}
-                        </p>
-                        <p className='truncate font-mono text-xs'>
-                          {mainlandTarget}
-                        </p>
-                      </div>
-                      <CopyButton value={mainlandTarget} />
-                    </div>
-                  )}
+                <div className='bg-background flex items-center justify-between gap-2 rounded-md border px-3 py-2'>
+                  <div className='min-w-0'>
+                    <p className='text-muted-foreground text-[11px]'>
+                      {t('Default CNAME target')}
+                    </p>
+                    <p className='truncate font-mono text-xs'>{cnameTarget}</p>
+                  </div>
+                  <CopyButton value={cnameTarget} />
                 </div>
               </div>
             )}
@@ -670,6 +678,146 @@ function DomainsCard(props: { site: OwnerSite }) {
                           {formatDomainLastError(domain.last_error, t)}
                         </p>
                       )}
+                      {edgeMainlandEnabled &&
+                        domain.managed_by !== 'platform' &&
+                        domain.role === 'site' &&
+                        domain.status === 'active' && (
+                          <div className='bg-muted/30 space-y-2.5 rounded-md border p-3'>
+                            <div className='flex flex-wrap items-center justify-between gap-2'>
+                              <span className='text-xs font-medium'>
+                                {t('Mainland China acceleration')}
+                              </span>
+                              <div className='flex flex-wrap items-center gap-2'>
+                                <StatusBadge
+                                  variant={edgeCertVariant(
+                                    domain.edge_cert_status
+                                  )}
+                                  label={edgeCertLabel(
+                                    t,
+                                    domain.edge_cert_status
+                                  )}
+                                />
+                                {(domain.edge_cert_not_after ?? 0) > 0 && (
+                                  <span className='text-muted-foreground text-[11px]'>
+                                    {t('Expires {{date}}', {
+                                      date: formatTimestampToDate(
+                                        domain.edge_cert_not_after
+                                      ),
+                                    })}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <p className='text-muted-foreground text-xs'>
+                              {t(
+                                'Optional: speed up mainland China homepage visits through the platform edge node. Your API domain stays on Cloudflare.'
+                              )}
+                            </p>
+                            {domain.edge_acme_alias && acmeSuffix && (
+                              <div className='space-y-1.5'>
+                                <p className='text-xs font-medium'>
+                                  {t(
+                                    'Step 1: Add the ACME certificate verification CNAME (default line)'
+                                  )}
+                                </p>
+                                <div className='bg-background grid gap-2 rounded-md border p-2.5 text-xs sm:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] sm:items-center'>
+                                  <Badge
+                                    variant='outline'
+                                    className='w-fit font-mono'
+                                  >
+                                    CNAME
+                                  </Badge>
+                                  <div className='flex min-w-0 items-center justify-between gap-1.5'>
+                                    <div className='min-w-0'>
+                                      <span className='text-muted-foreground block text-[11px]'>
+                                        {t('Host record')}
+                                      </span>
+                                      <span className='block truncate font-mono'>
+                                        {`_acme-challenge.${domain.hostname}`}
+                                      </span>
+                                    </div>
+                                    <CopyButton
+                                      value={`_acme-challenge.${domain.hostname}`}
+                                    />
+                                  </div>
+                                  <div className='flex min-w-0 items-center justify-between gap-1.5'>
+                                    <div className='min-w-0'>
+                                      <span className='text-muted-foreground block text-[11px]'>
+                                        {t('Record value')}
+                                      </span>
+                                      <span className='block truncate font-mono'>
+                                        {`${domain.edge_acme_alias}.${acmeSuffix}`}
+                                      </span>
+                                    </div>
+                                    <CopyButton
+                                      value={`${domain.edge_acme_alias}.${acmeSuffix}`}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                            {domain.edge_cert_error && (
+                              <p className='text-destructive text-xs'>
+                                {formatDomainLastError(
+                                  domain.edge_cert_error,
+                                  t
+                                )}
+                              </p>
+                            )}
+                            {domain.edge_cert_status === 'ready' &&
+                            mainlandTarget ? (
+                              <div className='space-y-1.5'>
+                                <p className='text-xs font-medium'>
+                                  {t(
+                                    'Step 2: Point your mainland China DNS line to the acceleration target'
+                                  )}
+                                </p>
+                                <div className='bg-background grid gap-2 rounded-md border p-2.5 text-xs sm:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] sm:items-center'>
+                                  <Badge
+                                    variant='outline'
+                                    className='w-fit font-mono'
+                                  >
+                                    CNAME
+                                  </Badge>
+                                  <div className='flex min-w-0 items-center justify-between gap-1.5'>
+                                    <div className='min-w-0'>
+                                      <span className='text-muted-foreground block text-[11px]'>
+                                        {t('Host record')} ·{' '}
+                                        {t('Mainland China line')}
+                                      </span>
+                                      <span className='block truncate font-mono'>
+                                        {domain.hostname}
+                                      </span>
+                                    </div>
+                                    <CopyButton value={domain.hostname} />
+                                  </div>
+                                  <div className='flex min-w-0 items-center justify-between gap-1.5'>
+                                    <div className='min-w-0'>
+                                      <span className='text-muted-foreground block text-[11px]'>
+                                        {t('Record value')}
+                                      </span>
+                                      <span className='block truncate font-mono'>
+                                        {mainlandTarget}
+                                      </span>
+                                    </div>
+                                    <CopyButton value={mainlandTarget} />
+                                  </div>
+                                </div>
+                                <p className='text-muted-foreground text-[11px]'>
+                                  {t(
+                                    'Keep the default/overseas CNAME pointing to Cloudflare. Requires a DNS provider that supports split-line routing (such as AliDNS or DNSPod).'
+                                  )}
+                                </p>
+                              </div>
+                            ) : (
+                              <p className='text-muted-foreground text-xs'>
+                                {t(
+                                  'Step 2 will appear automatically once the edge certificate is ready.'
+                                )}
+                              </p>
+                            )}
+                          </div>
+                        )}
                     </div>
                   )
                 })}

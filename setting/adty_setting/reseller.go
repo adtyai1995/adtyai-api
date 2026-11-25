@@ -2,6 +2,7 @@ package adty_setting
 
 import (
 	"math"
+	"net"
 	"regexp"
 	"slices"
 	"strings"
@@ -65,6 +66,16 @@ type ResellerSetting struct {
 	FallbackOrigin        string                    `json:"fallback_origin"` // 回源主机名
 	TurnstileWidgets      []ResellerTurnstileWidget `json:"turnstile_widgets"`
 	TurnstileWidgetSecret map[string]string         `json:"turnstile_widget_secret"` // widget id → secret
+
+	// 大陆边缘加速节点（自建香港 Nginx + 进程内 ACME 证书 + Cloudflare DNS 故障切换）。
+	EdgeMainlandEnabled bool     `json:"edge_mainland_enabled"`
+	EdgeACMEAliasSuffix string   `json:"edge_acme_alias_suffix"`
+	EdgeACMEStaging     bool     `json:"edge_acme_staging"`
+	EdgeNodeIP          string   `json:"edge_node_ip"`
+	EdgeNodeIPs         []string `json:"edge_node_ips"`
+	EdgeFailoverToCF    bool     `json:"edge_failover_to_cf"`
+	EdgeProbeEnabled    bool     `json:"edge_probe_enabled"`
+	EdgeAutoFailover    bool     `json:"edge_auto_failover"`
 }
 
 // ResellerCostTier 是按站点上月客户消费额分档的 d。
@@ -107,7 +118,9 @@ func DefaultResellerSetting() ResellerSetting {
 		visibility[key] = value
 	}
 	return ResellerSetting{
-		RootDomains:                []string{},
+		AliyunDomain:               "adtyai-fz.top",
+		DomainMainlandTarget:       "cn.adtyaicf.top",
+		RootDomains:                []string{"adtyai-fz.top"},
 		ReservedSubdomains:         []string{"www", "api", "admin", "pay", "mail", "news", "links", "status", "docs", "app"},
 		UnknownHostMode:            ResellerUnknownHostReject,
 		CostFactorTiers:            []ResellerCostTier{},
@@ -123,8 +136,12 @@ func DefaultResellerSetting() ResellerSetting {
 		MaxCustomDomainsPerSite:    2,
 		CustomDomainCreatesPerHour: 3,
 		Visibility:                 visibility,
+		CnameTarget:                "edge.adtyaicf.top",
+		FallbackOrigin:             "origin.adtyaicf.top",
 		TurnstileWidgets:           []ResellerTurnstileWidget{},
 		TurnstileWidgetSecret:      map[string]string{},
+		EdgeACMEAliasSuffix:        "acme.adtyaicf.top",
+		EdgeNodeIPs:                []string{},
 	}
 }
 
@@ -174,6 +191,9 @@ func GetResellerSetting() *ResellerSetting {
 	}
 	if resellerSetting.TurnstileWidgets != nil {
 		snap.TurnstileWidgets = slices.Clone(resellerSetting.TurnstileWidgets)
+	}
+	if resellerSetting.EdgeNodeIPs != nil {
+		snap.EdgeNodeIPs = slices.Clone(resellerSetting.EdgeNodeIPs)
 	}
 	snap.Visibility = cloneStringMap(resellerSetting.Visibility)
 	snap.TurnstileWidgetSecret = cloneStringMap(resellerSetting.TurnstileWidgetSecret)
@@ -226,6 +246,71 @@ var resellerDomainPattern = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-
 // ResellerLabelPattern 是一个 DNS 标签：小写字母、数字、连字符，1–63 位，不以连字符开头或结尾。
 var ResellerLabelPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
+// MaxAdtyEdgeNodeIPs caps the number of Hong Kong edge node IPs in round-robin DNS.
+const MaxAdtyEdgeNodeIPs = 16
+
+// NormalizeEdgeNodeIPs splits comma/newline-separated IP entries, trims whitespace,
+// and deduplicates while preserving order.
+func NormalizeEdgeNodeIPs(raw []string) []string {
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, entry := range raw {
+		for _, part := range strings.FieldsFunc(entry, func(r rune) bool {
+			return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+		}) {
+			ip := strings.TrimSpace(part)
+			if ip == "" {
+				continue
+			}
+			if _, ok := seen[ip]; ok {
+				continue
+			}
+			seen[ip] = struct{}{}
+			out = append(out, ip)
+		}
+	}
+	return out
+}
+
+// EffectiveEdgeNodeIPs returns the configured edge node IPv4 list, falling back to
+// legacy single-node EdgeNodeIP when EdgeNodeIPs is empty.
+func (s *ResellerSetting) EffectiveEdgeNodeIPs() []string {
+	if s == nil {
+		return nil
+	}
+	if list := NormalizeEdgeNodeIPs(s.EdgeNodeIPs); len(list) > 0 {
+		return list
+	}
+	if ip := strings.TrimSpace(s.EdgeNodeIP); ip != "" {
+		return []string{ip}
+	}
+	return nil
+}
+
+// ValidPublicEdgeIPv4 accepts only globally routable public IPv4 addresses for
+// edge DNS A records and origin health probes.
+func ValidPublicEdgeIPv4(raw string) bool {
+	ip := net.ParseIP(strings.TrimSpace(raw))
+	if ip == nil {
+		return false
+	}
+	v4 := ip.To4()
+	if v4 == nil {
+		return false
+	}
+	if !v4.IsGlobalUnicast() || v4.IsPrivate() || v4.IsLoopback() || v4.IsLinkLocalUnicast() || v4.IsMulticast() || v4.IsUnspecified() {
+		return false
+	}
+	// Reject RFC 6598 CGNAT (100.64.0.0/10) and RFC 5737 / benchmark ranges.
+	if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return false
+	}
+	if v4[0] == 0 || v4[0] == 127 || v4[0] >= 224 {
+		return false
+	}
+	return true
+}
+
 // validPositiveMultiplier accepts a supply-price multiplier. Values may be below or above 1.
 func validPositiveMultiplier(value *float64) bool {
 	return value != nil && !math.IsNaN(*value) && !math.IsInf(*value, 0) && *value > 0
@@ -250,8 +335,36 @@ func ValidateResellerPatch(s *ResellerSetting, resendConfigured bool, changed ma
 		}
 		return false
 	}
-	if touches("domain_automation_enabled", "cloudflare_apiToken", "cloudflare_zone_id", "aliyun_domain", "root_domains", "aliyun_access_key_id", "aliyun_access_key_Secret", "domain_mainland_target", "cname_target", "fallback_origin") && s.DomainAutomationEnabled && (!s.CloudflareConfigured() || !resellerDomainPattern.MatchString(s.AliyunDomain) || !slices.Contains(s.RootDomains, s.AliyunDomain) || strings.TrimSpace(s.AliyunAccessKeyID) == "" || strings.TrimSpace(s.AliyunAccessKeySecret) == "" || !resellerDomainPattern.MatchString(s.DomainMainlandTarget) || !resellerDomainPattern.MatchString(s.CnameTarget) || !resellerDomainPattern.MatchString(s.FallbackOrigin)) {
-		return common.NewMessage("Configure Cloudflare, AliDNS credentials, an allowed root domain and both routing targets before enabling domain automation")
+	if touches("domain_mainland_target") && strings.TrimSpace(s.DomainMainlandTarget) != "" && !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.DomainMainlandTarget))) {
+		return common.NewMessage("Invalid value for {{key}}", map[string]any{"key": "domain_mainland_target"})
+	}
+	if touches("domain_automation_enabled", "cloudflare_apiToken", "cloudflare_zone_id", "aliyun_domain", "root_domains", "aliyun_access_key_id", "aliyun_access_key_Secret", "domain_mainland_target", "cname_target", "fallback_origin") && s.DomainAutomationEnabled && (!s.CloudflareConfigured() || !resellerDomainPattern.MatchString(s.AliyunDomain) || !slices.Contains(s.RootDomains, s.AliyunDomain) || strings.TrimSpace(s.AliyunAccessKeyID) == "" || strings.TrimSpace(s.AliyunAccessKeySecret) == "" || (strings.TrimSpace(s.DomainMainlandTarget) != "" && !resellerDomainPattern.MatchString(s.DomainMainlandTarget)) || !resellerDomainPattern.MatchString(s.CnameTarget) || !resellerDomainPattern.MatchString(s.FallbackOrigin)) {
+		return common.NewMessage("Configure Cloudflare, AliDNS credentials, an allowed root domain and routing targets before enabling domain automation")
+	}
+	if touches("edge_acme_alias_suffix") && strings.TrimSpace(s.EdgeACMEAliasSuffix) != "" && !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.EdgeACMEAliasSuffix))) {
+		return common.NewMessage("Invalid value for {{key}}", map[string]any{"key": "edge_acme_alias_suffix"})
+	}
+	if touches("edge_node_ips") {
+		ips := NormalizeEdgeNodeIPs(s.EdgeNodeIPs)
+		if len(ips) > MaxAdtyEdgeNodeIPs {
+			return common.NewMessage("At most {{max}} edge node IPs can be configured", map[string]any{"max": MaxAdtyEdgeNodeIPs})
+		}
+		for _, ip := range ips {
+			if !ValidPublicEdgeIPv4(ip) {
+				return common.NewMessage("Edge node IP {{ip}} must be a valid public IPv4 address", map[string]any{"ip": ip})
+			}
+		}
+	}
+	if touches("edge_node_ip") && strings.TrimSpace(s.EdgeNodeIP) != "" && !ValidPublicEdgeIPv4(s.EdgeNodeIP) {
+		return common.NewMessage("Edge node IP must be a valid public IPv4 address")
+	}
+	if touches("edge_auto_failover", "edge_probe_enabled") && s.EdgeAutoFailover && !s.EdgeProbeEnabled {
+		return common.NewMessage("Enable origin HTTPS health probe before turning on automatic node failover")
+	}
+	if touches("edge_mainland_enabled", "cloudflare_apiToken", "cloudflare_zone_id", "cname_target", "domain_mainland_target", "edge_acme_alias_suffix") && s.EdgeMainlandEnabled {
+		if !s.CloudflareConfigured() || !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.DomainMainlandTarget))) || !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.EdgeACMEAliasSuffix))) {
+			return common.NewMessage("Configure Cloudflare, the mainland CNAME target, and the ACME verification alias suffix before enabling mainland acceleration")
+		}
 	}
 	for _, domain := range s.RootDomains {
 		if touches("root_domains", "enabled") && !resellerDomainPattern.MatchString(domain) {
