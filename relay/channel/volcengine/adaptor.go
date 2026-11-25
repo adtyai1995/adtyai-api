@@ -395,7 +395,8 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 	}
 
 	if info.RelayMode == constant.RelayModeAudioSpeech {
-		encoding := mapEncoding(c.GetString(contextKeyResponseFormat))
+		encoding := c.GetString(contextKeyResponseFormat)
+		encoding = mapEncoding(encoding)
 		if info.IsStream {
 			if resp != nil {
 				defer service.CloseResponseBodyGracefully(resp)

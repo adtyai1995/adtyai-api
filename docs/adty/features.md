@@ -52,7 +52,7 @@
 
 **后台**：
 
-- 系统设置 → 计费 → 支付（只有超级管理员）：人民币单价 `Price`、最低充值 `MinTopUp`、金额按钮、各支付方式加赠、回调地址 `CustomCallbackAddress`。
+- 充值加赠（`/recharge-bonus`，仅超级管理员；旧路径 `/system-settings/billing/recharge-bonus` 重定向至此）：按支付方式配置主站加赠开关和比例（`adty_topup_setting.method_bonus`）。人民币单价 `Price`、最低充值 `MinTopUp`、金额按钮和回调地址 `CustomCallbackAddress` 在「系统设置 → 计费 → 支付网关」。
 - 站长中心 → 加赠（`/site-owner/bonus`）：主站已启用支付方式的本站开关和比例（原站点明细内的逐站授权列表已移除）。
 
 **默认**：没有任何支付方式规则，不送加赠。「支付合规确认」2026-11-01 取消，相关接口和设置 2026-11-16 删除，支付默认就能用（见 deleted-features.md）。
@@ -170,21 +170,21 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 - **佣金** = 面额 × 快照比例 ÷ 100（8 位小数），不含任何加赠。永久计佣，没有期限。
 - **绑定**：打开 `/r/<邀请码>` 或任意页面带 `?ref=<邀请码>`，写一个签名 cookie `adty_ref`，有效期 `cookie_ttl_days`（默认 30 天），以最后一次点击为准；注册时绑定，绑定后不能改。拒绝自己邀请自己和互相邀请。部署时必须固定 `CRYPTO_SECRET` 或 `SESSION_SECRET`，否则重启后 cookie 全部失效。
 - **冻结和结算**：入账时插一条计佣任务，主节点每 60 秒（环境变量 `REFERRAL_SETTLEMENT_INTERVAL_SECONDS`）跑一轮：先生成待结算佣金（`冻结到 = 现在 + freeze_days`，默认 7 天），再把到期的转成可提现。佣金最多晚一轮才出现。
-- **提现**（`/referral` 页的提现抽屉）：
-  - **转入余额**：随时、免费、免审，立即到账，额度 = 金额 × QuotaPerUnit（向下取整），写余额流水 `commission_transfer`。
-  - **USDT**：先选链（TRC20、BEP20、Polygon、X Layer）再填地址，按链校验地址；TRC20使用T开头的34位base58格式，其余三网使用0x开头的40位十六进制地址。X Layer接口及存储代码为`XLAYER`，选择器、二次确认、本人记录及后台审核显示X Layer。实到 = 金额 − `usdt_withdraw_fee`；要达到 `min_withdraw_usd`；人工审核，打款时填交易哈希。格式校验不代表已确认链上地址归属，不会自动发起转账。
-  - **支付宝、微信收款码**：上传收款码和收款人姓名，免手续费，要达到 `min_withdraw_usd`；汇率 `withdraw_cny_rate` 由管理员实时改，提交时直接查库，和用户看到的不一样就让用户确认新汇率，一样就锁进提现单；人工审核。
+- **提现**（`/referral` 页的提现抽屉；仅支持 `balance`、`usdt`、`alipay` 三种方式，已移除微信提现，外部提现方式与 USDT 链受 `withdraw_methods` / `withdraw_usdt_networks` 配置控制）：
+  - **转入余额（`balance`）**：随时、免费、免审，立即到账，额度 = 金额 × QuotaPerUnit（向下取整），写余额流水 `commission_transfer`。
+  - **USDT（`usdt`）**：在 `withdraw_methods` 启用 `usdt` 且选定 `withdraw_usdt_networks` 中已启用的链（TRC20、BEP20、Polygon、X Layer）后填地址，按链校验地址；TRC20使用T开头的34位base58格式，其余三网使用0x开头的40位十六进制地址。X Layer接口及存储代码为`XLAYER`，选择器、二次确认、本人记录及后台审核显示X Layer。实到 = 金额 − `usdt_withdraw_fee`；要达到 `min_withdraw_usd`；人工审核，打款时填交易哈希。格式校验不代表已确认链上地址归属，不会自动发起转账。
+  - **支付宝（`alipay`）**：在 `withdraw_methods` 启用 `alipay` 后填写支付宝账号和收款人真实姓名，支付宝收款码为选填，免手续费，要达到 `min_withdraw_usd`；汇率 `withdraw_cny_rate` 由管理员实时改，提交时直接查库，和用户看到的不一样就让用户确认新汇率，一样就锁进提现单；人工审核（微信提现已移除）。
   - 防并发多提：条件更新 `可提现 ≥ 金额`，加幂等键。提交后 `cancel_window_minutes`（默认 30 分钟）内待审核的单可以撤回。驳回要填原因，会解冻并发邮件。
 - **防刷**：被邀请人注册时的 IP 或设备和推广人 `self_invite_window_days`（默认 30 天）内用过的相同，照样绑定但标成自邀、不计佣；同一个推广员 `batch_register_window_hours`（默认 24 小时）内同一个 IP 的绑定达到 `batch_register_threshold`（默认 3）个，停这个推广员的结算。IP 和 UA 只存哈希。
 - **合作伙伴申请/审批已退役**：用户端申请入口与后台审批入口均已下线（`POST /api/user/referral/apply` 与 `POST /api/user/admin/referral/affiliates/:user_id/partner` 返回 410 Gone）；推广员单独比例由管理员在推广管理直接调整。
 - **站长停止计佣**：付款人或推广员开站（站点变成 active）后，他的推广链接照样能打开，但不再绑定、新订单不再带返佣快照；开站前创建的订单保留当时的快照，即使之后才支付也照常计佣。订单创建与开站使用同一用户行锁排序。关站后不自动恢复邀请返佣，要后台「恢复邀请返佣」。站长收益提现不走这套 `referral_*` 账户。分站客户充值不计主站推广佣金；一级邀请佣金见下一节。
 - **退款**：按退掉的本金比例扣回佣金，见「充值退款」。
 
-**算例**：面额 $100（不管送了多少）× 10% = $10 佣金，7 天后转成可提现。USDT 提现 $150、手续费 2：实到 148 USDT。收款码提现 $50、汇率 7.1：锁定 ¥355.00。
+**算例**：面额 $100（不管送了多少）× 10% = $10 佣金，7 天后转成可提现。USDT 提现 $150、手续费 2：实到 148 USDT。支付宝提现 $50、汇率 7.1：锁定 ¥355.00。
 
 **后台**：推广管理（`/admin-referral`）：推广提现审核、推广员（调比例、停结算、停提现、恢复邀请返佣）、计佣任务（按状态筛选，默认看失败的；失败或卡住的任务可以「重新执行」，需要「推广·调整」，已计佣或已跳过的不会重复计佣）、佣金流水（四个余额的每笔变动，可按推广员筛选）、后台操作记录（审核、推广员调整、调佣金、改提现汇率）、设置，以及「立即结算」按钮。接口 `GET /api/user/admin/referral/commission-jobs`、`POST .../commission-jobs/retry`、`GET .../ledgers`、`GET .../audit-logs`。用户侧：`/referral`（推广页和提现）、公开页 `/affiliate`、落地 `/r/$code`。
 
-**默认**：总开关 `adty_referral_setting.enabled` 默认关；关着时点击、绑定、下单快照、推广佣金提现全部不工作；站长收益走独立的分站提现（见「站长收益提现」），不受这个开关影响。没有内置值的四项：`default_rate`（没设不能打开总开关）、`min_withdraw_usd`（没设不能提到 USDT 和收款码）、`usdt_withdraw_fee`（没设不能提到 USDT）、`withdraw_cny_rate`（没设不能提到收款码）。
+**默认**：总开关 `adty_referral_setting.enabled` 默认关；关着时点击、绑定、下单快照、推广佣金提现全部不工作；站长收益走独立的分站提现（见「站长收益提现」），不受这个开关影响。没有内置值的四项：`default_rate`（没设不能打开总开关）、`min_withdraw_usd`（没设不能提到 USDT 和支付宝）、`usdt_withdraw_fee`（没设不能提到 USDT）、`withdraw_cny_rate`（没设不能提到支付宝）。
 
 **表和接口**：`referral_affiliates`、`referral_bindings`、`referral_clicks`、`referral_commission_accounts`、`referral_commissions`、`referral_commission_ledgers`、`referral_commission_jobs`、`referral_withdrawals` 等 12 张表，加上 `adty_user_fingerprints`。公开 `POST /api/adty/referral/click`、`GET /api/adty/referral/public-settings`；用户 `GET /api/user/referral/profile`、`GET`/`POST /api/user/referral/withdrawals`、`POST /api/user/referral/withdrawals/:id/cancel`（旧 `POST /api/user/referral/apply` 已退役返回 410）；后台都在 `/api/user/admin/referral/` 下。
 
@@ -656,6 +656,6 @@ Root 在支付设置的 General 页新增、编辑、停用或删除支付场景
 
 **翻译**：正式动态译文由 Root 配置。相同内容复用；旧任务晚返回不能覆盖新版本；人工修改不被普通重试覆盖。失败时保留中文并标明英文未就绪。不扣客户或团队余额，不用客户 Key，不把翻译请求发回本站中转。Root 在系统设置 → 运维 → System translation 配置：平台模型或独立接口（OpenAI Chat Completions / Anthropic Messages，https 地址和密钥），模型、备用模型、超时、并发、单次字符上限、每日调用次数、备用模型重试次数和是否启用。表单从已保存的配置读出来，保存只改动过的项；保存和「测试连接」各要一次重新验证。页面显示今天（UTC）的调用次数、失败次数和平均耗时。
 
-**内置模型探活（原分组健康已退役）**：原「系统设置 → 运营/运维 → 分组健康」及 `/group-health*` 路由（`/api/adty/group-health`、`GET`/`PUT /api/adty/admin/group-health`、`POST /api/adty/admin/group-health/probe` 均返回 410 Gone）已退役。现行可用性监测由主节点**内置模型/图片定时探活**与 **Uptime Kuma** 替代，在「系统设置 → 内容 → 服务监控 / 模型探活」配置探活分组、文本模型探活间隔（`console_setting.model_probe_interval_minutes`）、图片模型探活间隔（`console_setting.image_probe_interval_minutes`）与探活超时（`console_setting.model_probe_timeout_seconds`），并支持按需触发手动探活；无样本不伪造 100% 或绿色，且不暴露渠道密钥。
+**内置模型探活（原分组健康已退役）**：原「系统设置 → 运营/运维 → 分组健康」及 `/group-health*` 路由（`/api/adty/groups/health`、`GET`/`PUT /api/adty/admin/group-health`、`POST /api/adty/admin/group-health/probe` 均返回 410 Gone）已退役。现行可用性监测由主节点**内置模型/图片定时探活**与 **Uptime Kuma** 替代，在「系统设置 → 内容 → 服务监控 / 模型探活」配置探活分组、文本模型探活间隔（`console_setting.model_probe_interval_minutes`）、图片模型探活间隔（`console_setting.image_probe_interval_minutes`）与探活超时（`console_setting.model_probe_timeout_seconds`），并支持按需触发手动探活；无样本不伪造 100% 或绿色，且不暴露渠道密钥。
 
 **持久审计（ISS-R1-0043）**：Bot、翻译配置、API Key 写操作、通知隐藏及兑换码冻结或取消，将脱敏审计 intent 与主库修改放在同一事务。完整 Key 读取必须先持久化审计再返回。独立日志库中断时保留原事件身份并重投，主库审计写入失败时回滚修改或拒绝放出 Key；关站外层事务回滚不会留下撤券成功日志。日后重投不重做业务操作；以上仍需本轮复审与正式门禁验收。

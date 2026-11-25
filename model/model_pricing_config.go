@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -622,7 +621,7 @@ func validateModelPricing(name string, values, previous PricingValues) error {
 			continue
 		}
 		number, ok := value.(float64)
-		if !ok || math.IsNaN(number) || math.IsInf(number, 0) || number < 0 {
+		if !ok || ratio_setting.ValidateRatioFloat(number) != nil {
 			return common.NewMessage("{{key}} must be a finite, non-negative number", map[string]any{"key": key})
 		}
 	}
@@ -819,6 +818,14 @@ func mutateModelPricingOptions(mutate func(*gorm.DB, map[string]map[string]any) 
 			encoded, err := common.Marshal(values[key])
 			if err != nil {
 				return err
+			}
+			// R7-01: Pre-validate numeric pricing option maps inside the transaction
+			// before COMMIT so unparseable JSON can never split DB from memory.
+			switch key {
+			case "ModelPrice", "ModelRatio", "CompletionRatio", "AudioRatio", "AudioCompletionRatio":
+				if err := ratio_setting.ValidateRatioJSONObject(string(encoded)); err != nil {
+					return common.NewMessage("{{key}} must be a finite, non-negative number", map[string]any{"key": key})
+				}
 			}
 			if err := tx.Model(&Option{}).Where(commonKeyCol+" = ?", key).Update("value", string(encoded)).Error; err != nil {
 				return err

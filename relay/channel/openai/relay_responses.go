@@ -99,7 +99,6 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	defer service.CloseResponseBodyGracefully(resp)
 
 	accumulator := service.NewResponsesUsageAccumulator(info)
-	receivedValidEvent := false
 	var lastParseErr error
 	var streamErr *types.NewAPIError
 
@@ -127,13 +126,15 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			sr.Stop(streamErr)
 			return
 		}
-		receivedValidEvent = true
 		if streamResponse.Response != nil {
 			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))
 			data = string(ensureResponsesUsageReasoningDetails([]byte(data), "response.usage"))
 		}
 		accumulator.Observe(&streamResponse, common.StringToByteSlice(data))
 		if err := helper.ResponseChunkData(c, streamResponse, data); err != nil {
+			if info != nil && info.StreamStatus != nil {
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+			}
 			sr.Stop(err)
 			return
 		}
@@ -151,9 +152,17 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	if streamErr != nil && !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
 		return nil, streamErr
 	}
-	if !receivedValidEvent && !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
-		if helper.ClientRequestCanceled(c) {
-			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+	if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+		if helper.ClientRequestCanceled(c) || (info != nil && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone) {
+			var cancelErr error
+			if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
+				cancelErr = info.StreamStatus.EndError
+			} else if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+				cancelErr = c.Request.Context().Err()
+			} else {
+				cancelErr = fmt.Errorf("client closed request")
+			}
+			return nil, types.NewError(cancelErr, types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
 		}
 		if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
 			return nil, types.NewOpenAIError(info.StreamStatus.EndError, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)

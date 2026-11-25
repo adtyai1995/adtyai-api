@@ -99,6 +99,9 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	hostedBridge := relayconvert.NewGeminiHostedStreamBridge()
 	var streamErr *types.NewAPIError
 	wroteToClient := false
+	hasWritten := func() bool {
+		return wroteToClient || helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0)
+	}
 
 	sendEvent := func(event relayconvert.ChatToResponsesStreamEvent) bool {
 		data, err := common.Marshal(event.Payload)
@@ -119,7 +122,7 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 		return true
 	}
 	failResponsesStream := func(err error) bool {
-		if !wroteToClient {
+		if !hasWritten() {
 			return false
 		}
 		failureResults, handled := state.FailResponsesStream("server_error", err.Error(), "")
@@ -164,20 +167,22 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 		if geminiAbnormalFinishReason(geminiResponse) != "" && !geminiHasVisibleOutput(geminiResponse) {
 			return true
 		}
-		if !wroteToClient && !geminiHasRenderablePart(geminiResponse) {
+		if !hasWritten() && !geminiHasRenderablePart(geminiResponse) {
 			return true
 		}
 		hostedBridge.Observe(geminiResponse)
 		return sendChunk(geminiResponse)
 	})
 	if streamAPIError != nil {
-		if wroteToClient && failResponsesStream(streamAPIError) && streamErr == nil {
-			if info.StreamStatus != nil {
+		if hasWritten() {
+			logger.LogError(c, common.LogText("gemini responses stream error after output was delivered, billing delivered usage: %s", streamAPIError.Error()))
+			_ = failResponsesStream(streamAPIError)
+			if info != nil && info.StreamStatus != nil {
 				info.StreamStatus.MarkFailed(string(streamAPIError.GetErrorCode()), "server_error", streamAPIError.StatusCode)
 			}
 			return usage, nil
 		}
-		if !wroteToClient && streamErr != nil {
+		if streamErr != nil {
 			return nil, streamErr
 		}
 		return nil, streamAPIError
@@ -185,12 +190,12 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	if info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
 		if info.StreamStatus.EndReason != relaycommon.StreamEndReasonClientGone {
 			err := fmt.Errorf("gemini stream ended unexpectedly: %s", info.StreamStatus.Summary())
-			if !wroteToClient {
+			if !hasWritten() {
 				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 			}
 			info.StreamStatus.MarkFailed(string(types.ErrorCodeBadResponse), "server_error", http.StatusInternalServerError)
 			failResponsesStream(err)
-		} else if !wroteToClient {
+		} else if !hasWritten() {
 			cancelErr := info.StreamStatus.EndError
 			if cancelErr == nil && c != nil && c.Request != nil {
 				cancelErr = c.Request.Context().Err()
@@ -204,7 +209,7 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	}
 	if !isGeminiDownstreamStop(c, info) && outcome.abnormalFinishReason != "" {
 		err := fmt.Errorf("gemini stream stopped abnormally: finishReason=%s", outcome.abnormalFinishReason)
-		if !wroteToClient {
+		if !hasWritten() {
 			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 		}
 		if info.StreamStatus != nil {
@@ -215,7 +220,7 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	}
 	if !isGeminiDownstreamStop(c, info) && !outcome.hasVisibleOutput && !outcome.hasGroundingOutput {
 		err := fmt.Errorf("gemini stream finished with empty visible output: finishReason=%s", outcome.lastFinishReason)
-		if !wroteToClient {
+		if !hasWritten() {
 			return nil, types.NewOpenAIError(err, types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
 		}
 		if info.StreamStatus != nil {
@@ -225,16 +230,38 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 		return usage, nil
 	}
 	if streamErr != nil {
+		if hasWritten() {
+			logger.LogError(c, common.LogText("gemini responses stream failed after output was delivered, billing delivered usage: %s", streamErr.Error()))
+			_ = failResponsesStream(streamErr)
+			if info != nil && info.StreamStatus != nil {
+				info.StreamStatus.MarkFailed(string(streamErr.GetErrorCode()), "server_error", streamErr.StatusCode)
+			}
+			return usage, nil
+		}
 		return nil, streamErr
 	}
 	hostedEvents, err := hostedBridge.Finalize(state)
 	if err != nil {
+		if hasWritten() {
+			logger.LogError(c, common.LogText("gemini responses hosted bridge finalize failed after output was delivered, billing delivered usage: %s", err.Error()))
+			_ = failResponsesStream(err)
+			if info != nil && info.StreamStatus != nil {
+				info.StreamStatus.MarkFailed(string(types.ErrorCodeBadResponse), "server_error", http.StatusInternalServerError)
+			}
+			return usage, nil
+		}
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 	for _, event := range hostedEvents {
 		if !sendEvent(event) {
+			if hasWritten() {
+				if streamErr != nil {
+					logger.LogError(c, common.LogText("gemini responses send hosted event failed after output was delivered, billing delivered usage: %s", streamErr.Error()))
+				}
+				return usage, nil
+			}
 			if streamErr != nil {
-				return usage, streamErr
+				return nil, streamErr
 			}
 			return usage, nil
 		}
@@ -245,19 +272,39 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	}
 	finalResults, err := service.FinalizeStreamResponse(c, info, state)
 	if err != nil {
-		if failResponsesStream(err) {
-			return usage, streamErr
+		if hasWritten() {
+			logger.LogError(c, common.LogText("gemini responses finalize stream failed after output was delivered, billing delivered usage: %s", err.Error()))
+			_ = failResponsesStream(err)
+			if info != nil && info.StreamStatus != nil {
+				info.StreamStatus.MarkFailed(string(types.ErrorCodeBadResponse), "server_error", http.StatusInternalServerError)
+			}
+			return usage, nil
 		}
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 	for _, result := range finalResults {
 		event, ok := result.Value.(relayconvert.ChatToResponsesStreamEvent)
 		if !ok {
-			return nil, types.NewOpenAIError(fmt.Errorf("expected OAI responses stream event, got %T", result.Value), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			typeErr := fmt.Errorf("expected OAI responses stream event, got %T", result.Value)
+			if hasWritten() {
+				logger.LogError(c, common.LogText("gemini responses unexpected final event after output was delivered, billing delivered usage: %s", typeErr.Error()))
+				_ = failResponsesStream(typeErr)
+				if info != nil && info.StreamStatus != nil {
+					info.StreamStatus.MarkFailed(string(types.ErrorCodeBadResponse), "server_error", http.StatusInternalServerError)
+				}
+				return usage, nil
+			}
+			return nil, types.NewOpenAIError(typeErr, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 		}
 		if !sendEvent(event) {
+			if hasWritten() {
+				if streamErr != nil {
+					logger.LogError(c, common.LogText("gemini responses send final event failed after output was delivered, billing delivered usage: %s", streamErr.Error()))
+				}
+				return usage, nil
+			}
 			if streamErr != nil {
-				return usage, streamErr
+				return nil, streamErr
 			}
 			return usage, nil
 		}

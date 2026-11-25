@@ -61,7 +61,7 @@
 
 ### 支付
 
-- [ ] 充值加赠：没有内置值。在支付设置里按支付方式设主站比例（`adty_topup_setting.method_bonus`，`rate` 是 0–1 的小数，如 0.025 = 2.5%）。分站加赠直接按主站已启用的支付方式放行，由站长在站长中心配置本站比例（原逐站授权 `PUT /api/adty/admin/sites/:id/bonus-methods` / `site_method_auth` 已退役返 410）；金额档位已退役，不要再填 `bonus_rates`。
+- [ ] 充值加赠：没有内置值。在独立入口「充值加赠」（`/recharge-bonus`，旧路径 `/system-settings/billing/recharge-bonus` 重定向至此）按支付方式设主站比例（`adty_topup_setting.method_bonus`，`rate` 是 0–1 的小数，如 0.025 = 2.5%）。分站加赠直接按主站已启用的支付方式放行，由站长在站长中心配置本站比例（原逐站授权 `PUT /api/adty/admin/sites/:id/bonus-methods` / `site_method_auth` 已退役返 410）；金额档位已退役，不要再填 `bonus_rates`。
 - [ ] 易支付单通道下单超时（`channel_timeout_seconds`）在「支付宝和微信支付」分区里设；所选通道不可用时直接提示切换，不做静默自动切换。
 - [ ] 易支付通道：每个通道的支付宝、微信填好显示名称（如「支付宝1」「微信2」），钱包里按通道平铺成按钮；测试下单通过后再启用通道。
 
@@ -96,7 +96,7 @@
 
 ## 7. 推广和后台权限实测
 
-- [ ] 用两个账号走完 点击 → 注册 → 充值 → 冻结 → 结算 → 三种提现 → 退款扣回。
+- [ ] 用两个账号走完 点击 → 注册 → 充值 → 冻结 → 结算 → 三种提现（转入余额 `balance`、USDT `usdt`、支付宝 `alipay`，受 `withdraw_methods` / `withdraw_usdt_networks` 控制；支付宝收款码为选填，微信提现已移除） → 退款扣回。
 - [ ] 推广管理的「计佣任务」页没有失败的任务；「佣金流水」能对上这几步的每一笔变动。
 - [ ] 建一个管理员，分别套用客服、运营、财务预设，确认菜单和接口都按权限放行。
 

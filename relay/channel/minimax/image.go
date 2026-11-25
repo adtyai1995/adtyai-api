@@ -1,6 +1,7 @@
 package minimax
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -244,8 +245,12 @@ func miniMaxImageHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 
 	// Bill the images that are actually delivered. MiniMax may return fewer
 	// entries than the requested n, and an entry without a payload bills nothing.
+	count := miniMaxImagePayloadCount(jsonResponse)
+	if count == 0 {
+		return nil, types.NewError(errors.New("empty image response"), types.ErrorCodeEmptyResponse)
+	}
 	if info != nil {
-		info.UpdateImageCount(miniMaxImagePayloadCount(jsonResponse))
+		info.UpdateImageCount(count)
 	}
 
 	c.Writer.Header().Set("Content-Type", "application/json")

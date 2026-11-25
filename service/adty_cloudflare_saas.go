@@ -1163,6 +1163,7 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 			}
 		}
 	}
+	clearedTurnstile := false
 	if domain.TurnstileWidget != "" || (hostnameID != "" && resellerSetting().TurnstileConfigured()) {
 		if err := adtyTurnstileRemoveDomain(ctx, tx, domain.TurnstileWidget, domain.Hostname); err != nil {
 			common.SysError(common.LogText("remove timed out turnstile domain %d failed", domain.Id))
@@ -1170,8 +1171,9 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 			return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
 		}
 		updates["turnstile_widget"] = ""
-		domain.TurnstileWidget = ""
+		clearedTurnstile = true
 	}
+	clearedCFHostname := false
 	if hostnameID != "" {
 		if err := AdtyCloudflare.deleteCustomHostname(ctx, zone, hostnameID); err != nil {
 			common.SysError(common.LogText("delete timed out custom hostname for domain %d failed", domain.Id))
@@ -1179,14 +1181,28 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 			return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
 		}
 		updates["cf_hostname_id"] = ""
-		domain.CFHostnameId = ""
+		clearedCFHostname = true
 	}
 	updates["cf_create_started_at"] = 0
 	updates["status"] = model.AdtySiteDomainFailed
-	if err := adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error; err != nil {
-		return err
+	// R7-15: Keep domain.CFHostnameId intact until adtyDomainSnapshotQuery matches
+	// the persisted row; otherwise WHERE cf_hostname_id = '' updates 0 rows and
+	// loops forever against Cloudflare API.
+	res := adtyDomainSnapshotQuery(tx, domain).Updates(updates)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return errors.New("custom domain snapshot changed during timeout cleanup")
+	}
+	if clearedTurnstile {
+		domain.TurnstileWidget = ""
+	}
+	if clearedCFHostname {
+		domain.CFHostnameId = ""
 	}
 	domain.CFCreateStartedAt = 0
+	domain.Status = model.AdtySiteDomainFailed
 	if tx.Migrator().HasTable(&model.AdtyDomainCloudResource{}) {
 		if err := tx.Where("domain_id = ?", domain.Id).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
 			return err

@@ -69,7 +69,7 @@ func PostAdtyRootExpiringGift(c *gin.Context) {
 	if err != nil {
 		_ = c.Error(err)
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorStatus(c, http.StatusConflict, model.ErrAdtyIdempotencyConflict)
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
 			return
 		}
 		common.ApiErrorT(c, "Failed to grant expiring gift")

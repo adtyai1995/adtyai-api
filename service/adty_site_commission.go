@@ -956,9 +956,9 @@ func refundClawedSiteCommissionToFundingWalletsTx(tx *gorm.DB, row *model.AdtySi
 			Reason:         "site invite commission clawback return",
 			IdempotencyKey: idemKey,
 		}
-		// R6-17: Release margin cycle_used_usd for funds deducted within the active
-		// margin cycle so refunded converted commissions do not permanently consume
-		// the 90% margin cycle allowance.
+		// R6-17 / R7-04: Release margin cycle_used_usd for funds deducted within
+		// the active margin cycle, minus any release already applied by earlier
+		// partial refunds on this same order and cycle.
 		if kinds[i] == model.AdtySiteWalletMargin && len(marginSpentByCycle) > 0 {
 			var marginWallet model.AdtySiteWallet
 			lookup := model.AdtyLockForUpdate(tx).Select("id", "cycle_number").
@@ -969,7 +969,34 @@ func refundClawedSiteCommissionToFundingWalletsTx(tx *gorm.DB, row *model.AdtySi
 			}
 			if lookup.RowsAffected > 0 && marginWallet.CycleNumber > 0 {
 				if sameCycleSpent := marginSpentByCycle[marginWallet.CycleNumber]; sameCycleSpent.IsPositive() {
-					change.ReleaseCycleUsed = decimal.Min(part, sameCycleSpent)
+					var returnLedgers []model.AdtySiteWalletLedger
+					if err := tx.Select("margin_cycle_before", "margin_cycle_after").
+						Where("site_id = ? AND wallet_kind = ? AND type = ? AND ref_type = ? AND ref_id = ? AND delta > 0",
+							row.SiteId, model.AdtySiteWalletMargin, "commission_clawback_return", "site_invite", row.TradeNo).
+						Find(&returnLedgers).Error; err != nil {
+						return err
+					}
+					alreadyReleased := decimal.Zero
+					for _, ret := range returnLedgers {
+						if ret.MarginCycleBefore == nil || ret.MarginCycleAfter == nil {
+							continue
+						}
+						var beforeSnap, afterSnap adtyMarginCycleSnapshot
+						if err := common.Unmarshal([]byte(*ret.MarginCycleBefore), &beforeSnap); err != nil {
+							continue
+						}
+						if err := common.Unmarshal([]byte(*ret.MarginCycleAfter), &afterSnap); err != nil {
+							continue
+						}
+						if beforeSnap.CycleNumber == marginWallet.CycleNumber && afterSnap.CycleNumber == marginWallet.CycleNumber {
+							if released := beforeSnap.UsedUSD.Sub(afterSnap.UsedUSD); released.IsPositive() {
+								alreadyReleased = alreadyReleased.Add(released)
+							}
+						}
+					}
+					if remaining := sameCycleSpent.Sub(alreadyReleased); remaining.IsPositive() {
+						change.ReleaseCycleUsed = decimal.Min(part, remaining)
+					}
 				}
 			}
 		}
@@ -1103,7 +1130,7 @@ func consumeSiteCommissionHoldTx(tx *gorm.DB, row *model.AdtySiteInviteCommissio
 			return lookup.Error
 		}
 		if lookup.RowsAffected > 0 {
-			continue
+			return model.ErrAdtyIdempotencyConflict
 		}
 		change := AdtySiteWalletChange{
 			Type: "commission_release", RefType: "site_invite", RefID: row.TradeNo, IdempotencyKey: key, HoldDelta: part.Neg(),
@@ -1197,7 +1224,7 @@ func ConvertAdtySiteInviteCommission(inviterID int, commissionID int64, amount d
 		if amount.GreaterThan(remaining) {
 			return common.NewMessage("Invalid parameters")
 		}
-		if err := consumeSiteCommissionHoldTx(tx, &row, amount, false, key); err != nil {
+		if err := consumeSiteCommissionHoldTx(tx, &row, amount, false, "cvt:"+key); err != nil {
 			return err
 		}
 		before, err := model.AdtyCreditUserQuotaTx(tx, inviterID, int64(quota))

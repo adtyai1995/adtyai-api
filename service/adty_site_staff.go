@@ -75,16 +75,27 @@ func adtyStaffGrants(role string, custom *[]string) ([]string, error) {
 	return slices.Compact(grants), nil
 }
 
-// Recheck ownership inside the mutation transaction, including account status,
-// the current agreement and site state. A cached HTTP precheck is insufficient.
-func adtyStaffOwnerTx(tx *gorm.DB, ownerID, siteID int, allowClosing bool) (*model.AdtySite, error) {
-	// Canonical lock order: AdtySite -> User.
+// adtyStaffLockSiteTx locks and validates the site row only so callers that
+// subsequently lock adty_site_staff and multiple users can obey the canonical
+// global lock order: AdtySite -> AdtySiteStaff -> User (id ASC) (R7-16).
+func adtyStaffLockSiteTx(tx *gorm.DB, ownerID, siteID int, allowClosing bool) (*model.AdtySite, error) {
 	var site model.AdtySite
 	if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
 		return nil, err
 	}
 	if site.OwnerUserId != ownerID || !AdtySiteAgreementAccepted(site.AgreementVer) || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && (!allowClosing || site.Status != model.AdtySiteStatusClosing)) {
 		return nil, ErrAdtyStaffDenied
+	}
+	return &site, nil
+}
+
+// Recheck ownership inside the mutation transaction, including account status,
+// the current agreement and site state. A cached HTTP precheck is insufficient.
+func adtyStaffOwnerTx(tx *gorm.DB, ownerID, siteID int, allowClosing bool) (*model.AdtySite, error) {
+	// Canonical lock order: AdtySite -> User.
+	site, err := adtyStaffLockSiteTx(tx, ownerID, siteID, allowClosing)
+	if err != nil {
+		return nil, err
 	}
 	var owner model.User
 	if err := model.AdtyLockForUpdate(tx).First(&owner, ownerID).Error; err != nil {
@@ -93,7 +104,18 @@ func adtyStaffOwnerTx(tx *gorm.DB, ownerID, siteID int, allowClosing bool) (*mod
 	if owner.Status != common.UserStatusEnabled || owner.StaffSiteId != 0 {
 		return nil, ErrAdtyStaffDenied
 	}
-	return &site, nil
+	return site, nil
+}
+
+func adtySortedUniqueIDs(ids ...int) []int {
+	out := make([]int, 0, len(ids))
+	for _, id := range ids {
+		if id > 0 {
+			out = append(out, id)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 func CreateAdtyStaff(ownerID, siteID int, input AdtyStaffInput) (*AdtyStaffView, error) {
@@ -160,7 +182,8 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 	}
 	var staff model.AdtySiteStaff
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		site, err := adtyStaffOwnerTx(tx, ownerID, siteID, action == AdtySiteOwnerActionStaffDelete || action == AdtySiteOwnerActionStaffUpdate)
+		// R7-16: Strict global lock order AdtySite -> AdtySiteStaff -> User (id ASC).
+		site, err := adtyStaffLockSiteTx(tx, ownerID, siteID, action == AdtySiteOwnerActionStaffDelete || action == AdtySiteOwnerActionStaffUpdate)
 		if err != nil {
 			return err
 		}
@@ -170,10 +193,22 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 		if input.ExpectedVersion <= 0 || staff.Version != input.ExpectedVersion {
 			return ErrAdtyStaffConflict
 		}
-		var targetUser model.User
-		if err := model.AdtyLockForUpdate(tx).Select("id", "status", "auth_version").
-			Where("id = ? AND staff_site_id = ?", staff.UserId, siteID).First(&targetUser).Error; err != nil {
+		var lockedUsers []model.User
+		if err := model.AdtyLockForUpdate(tx).Select("id", "status", "auth_version", "staff_site_id").
+			Where("id IN ?", adtySortedUniqueIDs(ownerID, staff.UserId)).Order("id ASC").Find(&lockedUsers).Error; err != nil {
 			return err
+		}
+		usersByID := make(map[int]model.User, len(lockedUsers))
+		for _, u := range lockedUsers {
+			usersByID[u.Id] = u
+		}
+		owner, ok := usersByID[ownerID]
+		if !ok || owner.Status != common.UserStatusEnabled || owner.StaffSiteId != 0 {
+			return ErrAdtyStaffDenied
+		}
+		targetUser, ok := usersByID[staff.UserId]
+		if !ok || targetUser.StaffSiteId != siteID {
+			return gorm.ErrRecordNotFound
 		}
 		before := AdtyStaffViewOf(staff)
 		previousStaffStatus := staff.Status
@@ -334,7 +369,9 @@ func ManageAdtyStaffCustomer(userID int, authVersion int64, customerID int, acti
 	}
 	var customer model.User
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		site, err := adtyStaffOwnerTx(tx, membership.OwnerUserId, membership.SiteId, false)
+		// R7-16: Strict global lock order AdtySite -> AdtySiteStaff -> User (id ASC)
+		// without nested FOR UPDATE subqueries across adty_sites/referral_affiliates.
+		site, err := adtyStaffLockSiteTx(tx, membership.OwnerUserId, membership.SiteId, false)
 		if err != nil {
 			return err
 		}
@@ -342,22 +379,57 @@ func ManageAdtyStaffCustomer(userID int, authVersion int64, customerID int, acti
 		if err := model.AdtyLockForUpdate(tx).Where("id = ? AND owner_user_id = ? AND status = ?", membership.Id, site.OwnerUserId, "enabled").First(&staff).Error; err != nil {
 			return ErrAdtyStaffDenied
 		}
-		var employee model.User
-		if err := model.AdtyLockForUpdate(tx).Select("id", "status", "auth_version", "site_id", "staff_site_id", "role").First(&employee, userID).Error; err != nil {
+		if staff.SiteId != site.Id {
+			return ErrAdtyStaffDenied
+		}
+		var lockedUsers []model.User
+		if err := model.AdtyLockForUpdate(tx).Select("id", "username", "email", "setting", "status", "auth_version", "site_id", "staff_site_id", "role").
+			Where("id IN ?", adtySortedUniqueIDs(site.OwnerUserId, userID, customerID)).Order("id ASC").Find(&lockedUsers).Error; err != nil {
 			return err
+		}
+		usersByID := make(map[int]model.User, len(lockedUsers))
+		for _, u := range lockedUsers {
+			usersByID[u.Id] = u
+		}
+		owner, ok := usersByID[site.OwnerUserId]
+		if !ok || owner.Status != common.UserStatusEnabled || owner.StaffSiteId != 0 {
+			return ErrAdtyStaffDenied
+		}
+		employee, ok := usersByID[userID]
+		if !ok {
+			return gorm.ErrRecordNotFound
 		}
 		grants := AdtyStaffViewOf(staff).Permissions
 		if employee.AuthVersion != authVersion || employee.Status != common.UserStatusEnabled || employee.Role != common.RoleCommonUser ||
-			employee.SiteId != site.Id || employee.StaffSiteId != site.Id || staff.SiteId != site.Id ||
+			employee.SiteId != site.Id || employee.StaffSiteId != site.Id ||
 			!slices.Contains(grants, "customers.read") || !slices.Contains(grants, permission) {
 			return ErrAdtyStaffDenied
 		}
-		if err := model.AdtyLockForUpdate(tx).Select("id", "username", "email", "setting", "status", "auth_version", "site_id").
-			Where("id = ? AND site_id = ? AND staff_site_id = 0 AND role = ? AND id <> ?", customerID, site.Id, common.RoleCommonUser, site.OwnerUserId).
-			Where("id NOT IN (?)", tx.Model(&model.AdtySite{}).Select("owner_user_id").Where("status <> ?", model.AdtySiteStatusClosed)).
-			Where("id NOT IN (?)", tx.Model(&model.ReferralAffiliate{}).Select("user_id").Where("site_owner_since > 0")).First(&customer).Error; err != nil {
+		foundCustomer, ok := usersByID[customerID]
+		if !ok || foundCustomer.SiteId != site.Id || foundCustomer.StaffSiteId != 0 ||
+			foundCustomer.Role != common.RoleCommonUser || foundCustomer.Id == site.OwnerUserId {
+			return gorm.ErrRecordNotFound
+		}
+		var ownedSites int64
+		if err := tx.Model(&model.AdtySite{}).Where("owner_user_id = ? AND status <> ?", customerID, model.AdtySiteStatusClosed).Count(&ownedSites).Error; err != nil {
 			return err
 		}
+		if ownedSites > 0 {
+			return gorm.ErrRecordNotFound
+		}
+		var ownerAffiliates int64
+		if err := tx.Model(&model.ReferralAffiliate{}).Where("user_id = ? AND site_owner_since > 0", customerID).Count(&ownerAffiliates).Error; err != nil {
+			return err
+		}
+		if ownerAffiliates > 0 {
+			return gorm.ErrRecordNotFound
+		}
+		if isIndep, err := adtyIsIndependentTeamEmployeeTx(tx, customerID); err != nil {
+			return err
+		} else if isIndep {
+			return gorm.ErrRecordNotFound
+		}
+		customer = foundCustomer
 		var joined model.AdtySiteCustomer
 		if err := model.AdtyLockForUpdate(tx).Where("user_id = ? AND site_id = ?", customerID, site.Id).First(&joined).Error; err != nil {
 			return err

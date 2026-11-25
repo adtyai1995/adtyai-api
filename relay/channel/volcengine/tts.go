@@ -101,12 +101,13 @@ var openAIToVolcengineVoiceMap = map[string]string{
 }
 
 var responseFormatToEncodingMap = map[string]string{
-	"mp3":  "mp3",
-	"opus": "ogg_opus",
-	"aac":  "mp3",
-	"flac": "mp3",
-	"wav":  "wav",
-	"pcm":  "pcm",
+	"mp3":      "mp3",
+	"opus":     "ogg_opus",
+	"ogg_opus": "ogg_opus",
+	"aac":      "mp3",
+	"flac":     "mp3",
+	"wav":      "wav",
+	"pcm":      "pcm",
 }
 
 func parseVolcengineAuth(apiKey string) (appID, token string, err error) {
@@ -180,6 +181,13 @@ func handleTTSResponse(c *gin.Context, resp *http.Response, info *relaycommon.Re
 		return nil, types.NewErrorWithStatusCode(
 			errors.New("failed to decode audio data"),
 			types.ErrorCodeBadResponseBody,
+			http.StatusInternalServerError,
+		)
+	}
+	if len(audioData) == 0 {
+		return nil, types.NewErrorWithStatusCode(
+			errors.New("empty audio response from volcengine"),
+			types.ErrorCodeEmptyResponse,
 			http.StatusInternalServerError,
 		)
 	}

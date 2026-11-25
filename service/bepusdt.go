@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"slices"
@@ -305,22 +306,25 @@ func bepusdtPaymentDetected(err error) bool {
 	return strings.Contains(gateway.Message, "已支付") || strings.Contains(gateway.Message, "转账") || strings.Contains(gateway.Message, "支付成功")
 }
 
-// decimalFromJSON 接受 JSON 字符串或数字。
+// decimalFromJSON 接受 JSON 字符串或数字（有界十进制防大指数 DoS，R7-03）。
 func decimalFromJSON(raw common.RawMessage) (decimal.Decimal, error) {
 	text := strings.TrimSpace(string(raw))
 	text = strings.Trim(text, `"`)
-	return decimal.NewFromString(text)
+	return common.ParseBoundedDecimalString(text, 18, 8)
 }
 
 // AdtyDecimalFromAny 把回调里的值（float64 或字符串）转成 decimal。float64 按最短表示转换。
 func AdtyDecimalFromAny(value any) (decimal.Decimal, error) {
 	switch typed := value.(type) {
 	case float64:
-		return decimal.NewFromString(strconv.FormatFloat(typed, 'f', -1, 64))
+		if math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return decimal.Zero, fmt.Errorf("not a finite number")
+		}
+		return common.ParseBoundedDecimalString(strconv.FormatFloat(typed, 'f', -1, 64), 18, 8)
 	case string:
-		return decimal.NewFromString(strings.TrimSpace(typed))
+		return common.ParseBoundedDecimalString(typed, 18, 8)
 	case common.Number:
-		return decimal.NewFromString(typed.String())
+		return common.ParseBoundedDecimalString(typed.String(), 18, 8)
 	}
 	return decimal.Zero, fmt.Errorf("not a number: %v", value)
 }

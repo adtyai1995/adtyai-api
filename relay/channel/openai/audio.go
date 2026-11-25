@@ -139,6 +139,9 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 			logger.LogError(c, common.LogText("failed to read TTS response body: %v", apiErr.Error()))
 			return nil, apiErr
 		}
+		if len(bodyBytes) == 0 {
+			return nil, types.NewOpenAIError(errors.New("empty upstream TTS response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+		}
 
 		// 仅在首块有效数据到达后再写入响应头与状态码
 		writeUpstreamHeaders()

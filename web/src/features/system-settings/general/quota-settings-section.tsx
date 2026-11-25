@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import i18next from 'i18next'
-import type { ChangeEvent } from 'react'
+import { useMemo, type ChangeEvent } from 'react'
 import type { Resolver } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
@@ -56,14 +56,6 @@ const quotaSchema = z.object({
     .min(0, 'Value must be at least 0'),
   quota_setting: z.object({
     enable_free_model_pre_consume: z.boolean(),
-    trust_quota_usd: z.preprocess(
-      (value) => (value === '' ? undefined : value),
-      z.coerce
-        .number({ error: () => i18next.t('Please enter a valid number') })
-        .min(0, {
-          error: () => i18next.t('Must be greater than or equal to 0'),
-        })
-    ),
     pre_consume_multiplier: z.coerce
       .number({ error: () => i18next.t('Please enter a valid number') })
       .positive({ error: () => i18next.t('Must be greater than 0') }),
@@ -78,7 +70,12 @@ function formatQuotaInputValue(value: QuotaInputValue): string {
 }
 
 type QuotaSettingsSectionProps = {
-  defaultValues: QuotaFormValues
+  defaultValues: QuotaFormValues & {
+    quota_setting: QuotaFormValues['quota_setting'] & {
+      /** @deprecated Retired upstream bypass field; ignored by the form. */
+      trust_quota_usd?: number
+    }
+  }
 }
 
 export function QuotaSettingsSection({
@@ -93,6 +90,23 @@ export function QuotaSettingsSection({
       onChange(Number.isNaN(value) ? '' : value)
     }
 
+  const formDefaultValues = useMemo<QuotaFormValues>(
+    () => ({
+      QuotaForNewUser: defaultValues.QuotaForNewUser,
+      quota_setting: {
+        enable_free_model_pre_consume:
+          defaultValues.quota_setting.enable_free_model_pre_consume,
+        pre_consume_multiplier:
+          defaultValues.quota_setting.pre_consume_multiplier,
+      },
+    }),
+    [
+      defaultValues.QuotaForNewUser,
+      defaultValues.quota_setting.enable_free_model_pre_consume,
+      defaultValues.quota_setting.pre_consume_multiplier,
+    ]
+  )
+
   const { form, handleSubmit, isDirty, isSubmitting } =
     useSettingsForm<QuotaFormValues>({
       resolver: zodResolver(quotaSchema) as Resolver<
@@ -100,7 +114,7 @@ export function QuotaSettingsSection({
         unknown,
         QuotaFormValues
       >,
-      defaultValues,
+      defaultValues: formDefaultValues,
       onSubmit: async (_data, changedFields) => {
         for (const [key, value] of Object.entries(changedFields)) {
           await updateOption.mutateAsync({
@@ -145,36 +159,6 @@ export function QuotaSettingsSection({
                       {
                         formattedQuota: formatQuotaInputValue(field.value),
                       }
-                    )}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name='quota_setting.trust_quota_usd'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>
-                    {t('Wallet pre-consume bypass threshold (USD)')}
-                  </FormLabel>
-                  <FormControl>
-                    <Input
-                      type='number'
-                      min={0}
-                      step='any'
-                      value={field.value ?? ''}
-                      onChange={field.onChange}
-                      name={field.name}
-                      onBlur={field.onBlur}
-                      ref={field.ref}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    {t(
-                      'Skip pre-consumption when the wallet balance and limited API key balance both exceed this amount. Set to 0 to always pre-consume. Asynchronous tasks always reserve quota.'
                     )}
                   </FormDescription>
                   <FormMessage />

@@ -652,10 +652,14 @@ func lockAssignableAdtyGroupsTx(tx *gorm.DB, ids []string) error {
 	return nil
 }
 
-// preLockAdtyGroupRowAllowDeletedTx acquires the FOR UPDATE lock on one
+// PreLockAdtyGroupRowAllowDeletedTx acquires the FOR UPDATE lock on one
 // adty_groups row before locking users, reporting whether the row exists and
 // is soft-deleted so callers can allow keeping an unchanged legacy group while
 // rejecting transitions onto a soft-deleted group without reversing lock order.
+func PreLockAdtyGroupRowAllowDeletedTx(tx *gorm.DB, id string) (bool, error) {
+	return preLockAdtyGroupRowAllowDeletedTx(tx, id)
+}
+
 func preLockAdtyGroupRowAllowDeletedTx(tx *gorm.DB, id string) (bool, error) {
 	id = strings.TrimSpace(id)
 	if id == "" || tx == nil || !tx.Migrator().HasTable(&AdtyGroup{}) {

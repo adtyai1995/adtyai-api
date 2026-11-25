@@ -600,6 +600,10 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 				err := handleStream(c, info, emptyResponse)
 				if err != nil {
 					logger.LogError(c, err.Error())
+					if info != nil && info.StreamStatus != nil {
+						info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+					}
+					return false
 				}
 
 				response.ClearToolCalls()
@@ -610,6 +614,10 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 				err := handleStream(c, info, emptyResponse)
 				if err != nil {
 					logger.LogError(c, err.Error())
+					if info != nil && info.StreamStatus != nil {
+						info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+					}
+					return false
 				}
 			}
 		}
@@ -617,6 +625,10 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 		err := handleStream(c, info, response)
 		if err != nil {
 			logger.LogError(c, err.Error())
+			if info != nil && info.StreamStatus != nil {
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+			}
+			return false
 		}
 		if isStop {
 			if info.RelayFormat != types.RelayFormatClaude {
@@ -631,6 +643,20 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	}
 
 	streamNormallyEnded := info.StreamStatus == nil || info.StreamStatus.IsNormalEnd()
+	if !isGeminiDownstreamStop(c, info) && info.SendResponseCount == 0 && !helper.HasWrittenStreamPayload(c) && (!streamNormallyEnded || !outcome.hasVisibleOutput) {
+		var errMsg string
+		errCode := types.ErrorCodeEmptyResponse
+		if outcome.abnormalFinishReason != "" {
+			errMsg = fmt.Sprintf("gemini stream stopped abnormally: finishReason=%s", outcome.abnormalFinishReason)
+			errCode = types.ErrorCodeBadResponse
+		} else if !streamNormallyEnded {
+			errMsg = fmt.Sprintf("gemini stream ended unexpectedly: %s", info.StreamStatus.Summary())
+			errCode = types.ErrorCodeBadResponse
+		} else {
+			errMsg = fmt.Sprintf("gemini stream finished with empty visible output: finishReason=%s", outcome.lastFinishReason)
+		}
+		return nil, types.NewOpenAIError(errors.New(errMsg), errCode, http.StatusInternalServerError)
+	}
 	if !isGeminiDownstreamStop(c, info) && (outcome.abnormalFinishReason != "" || (streamNormallyEnded && !outcome.hasVisibleOutput)) {
 		var errMsg string
 		errCode := types.ErrorCodeEmptyResponse
@@ -820,6 +846,7 @@ func GeminiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	if resp != nil {
 		defer service.CloseResponseBodyGracefully(resp)
 	}
+	helper.StopStreamKeepAlive(c)
 	responseBody, apiErr := helper.ReadResponseBody(c, resp, types.ErrorCodeBadResponseBody)
 	if apiErr != nil {
 		return nil, apiErr

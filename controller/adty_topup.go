@@ -437,23 +437,6 @@ func newAdtyScanPageInfo(page, pageSize int) *common.PageInfo {
 	return &info
 }
 
-func resolveAdtyPageWindow(pageInfo *common.PageInfo) (int, int) {
-	var window struct {
-		Page     int `json:"page"`
-		PageSize int `json:"page_size"`
-	}
-	if raw, err := common.Marshal(pageInfo); err == nil {
-		_ = common.Unmarshal(raw, &window)
-	}
-	if window.Page <= 0 {
-		window.Page = 1
-	}
-	if window.PageSize <= 0 {
-		window.PageSize = 10
-	}
-	return window.Page, window.PageSize
-}
-
 func collectUserAdtyTopUpsForFilter(userID int) ([]model.AdtyTopUpView, error) {
 	const batchSize = 500
 	firstPage := newAdtyScanPageInfo(1, batchSize)
@@ -517,14 +500,11 @@ func GetAdtyTopUpSelf(c *gin.Context) {
 			matched = append(matched, item)
 		}
 	}
-	page, pageSize := resolveAdtyPageWindow(pageInfo)
-	start := (page - 1) * pageSize
-	end := start + pageSize
+	start := pageInfo.GetStartIdx()
+	pageSize := pageInfo.GetPageSize()
 	var pageItems []model.AdtyTopUpView
-	if start < len(matched) {
-		if end > len(matched) {
-			end = len(matched)
-		}
+	if start >= 0 && start < len(matched) {
+		end := start + min(pageSize, len(matched)-start)
 		pageItems = matched[start:end]
 	} else {
 		pageItems = make([]model.AdtyTopUpView, 0)

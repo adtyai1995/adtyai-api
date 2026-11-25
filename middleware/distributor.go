@@ -59,9 +59,10 @@ func Distribute() func(c *gin.Context) {
 			return
 		}
 		_, pinned, _ := constraints.ResolvedPin()
-		if !pinned {
-			// Select a channel for the user
-			// check token model mapping
+		// R7-06: Always enforce token model limits regardless of channel pinning
+		// (including PinSourceOriginTask) so pinned task/plugin requests cannot
+		// bypass API key model allowlists.
+		if checkModelPolicy {
 			modelLimitEnable := common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled)
 			if modelLimitEnable {
 				s, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
@@ -80,7 +81,8 @@ func Distribute() func(c *gin.Context) {
 					return
 				}
 			}
-
+		}
+		if !pinned {
 			if shouldSelectChannel {
 				if modelRequest.Model == "" {
 					abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorModelNameRequired))

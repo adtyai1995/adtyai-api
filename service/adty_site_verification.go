@@ -32,6 +32,7 @@ const (
 	AdtySiteOwnerActionBonus              = "bonus"         // target：站点 id
 	AdtySiteOwnerActionDomain             = "domain.delete" // target：自定义域名 id
 	AdtySiteOwnerActionSender             = "sender.delete" // target：站点 id
+	AdtySiteOwnerActionMailConfig         = "mail.config"   // target：站点 id
 	AdtySiteOwnerActionStaffCreate        = "staff.create"  // target: site ID
 	AdtySiteOwnerActionStaffUpdate        = "staff.update"  // target: membership ID
 	AdtySiteOwnerActionStaffPassword      = "staff.password"
@@ -46,7 +47,7 @@ const (
 	AdtySiteOwnerActionWithdrawalCreate   = "withdrawal.create"    // target: site ID
 )
 
-var adtySiteOwnerActions = []string{AdtySiteOwnerActionPricing, AdtySiteOwnerActionBonus, AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender,
+var adtySiteOwnerActions = []string{AdtySiteOwnerActionPricing, AdtySiteOwnerActionBonus, AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender, AdtySiteOwnerActionMailConfig,
 	AdtySiteOwnerActionStaffCreate, AdtySiteOwnerActionStaffUpdate, AdtySiteOwnerActionStaffPassword, AdtySiteOwnerActionStaffDelete,
 	AdtySiteOwnerActionStaffBalanceReview,
 	AdtySiteOwnerActionVoucherIssue, AdtySiteOwnerActionVoucherFreeze, AdtySiteOwnerActionVoucherCancel,
@@ -414,7 +415,7 @@ func adtySiteOwnerActionAccessTokenScope(ctx AdtySiteOwnerContext) string {
 		return AccessTokenResourceSiteOwnerSetting + ":write"
 	case AdtySiteOwnerActionBonus, AdtySiteOwnerActionVoucherIssue, AdtySiteOwnerActionVoucherFreeze, AdtySiteOwnerActionVoucherCancel, AdtySiteOwnerActionWithdrawalCreate:
 		return AccessTokenResourceSiteOwnerOrder + ":write"
-	case AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender, AdtySiteOwnerActionTeamBalance:
+	case AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender, AdtySiteOwnerActionMailConfig, AdtySiteOwnerActionTeamBalance:
 		return AccessTokenResourceSiteOwnerSetting + ":write"
 	default:
 		// staff.* and staff.balance_review require a browser session, never a PAT (R2-004).

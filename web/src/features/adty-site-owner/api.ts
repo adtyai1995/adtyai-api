@@ -1003,12 +1003,15 @@ export async function getOwnerSiteMailConfig(): Promise<SiteMailConfig> {
   return requireServerSuccess(res.data).data
 }
 
+/** Proof: action `mail.config`, target = site id. */
 export async function saveOwnerSiteMailConfig(
-  body: SiteMailConfigUpdate
+  body: SiteMailConfigUpdate,
+  proof?: string
 ): Promise<SiteMailConfig> {
   const res = await api.put<ApiResponse<SiteMailConfig>>(
     `${BASE}/mail-config`,
-    body
+    body,
+    proof ? proofHeaders(proof) : undefined
   )
   return requireServerSuccess(res.data).data
 }

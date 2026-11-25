@@ -236,6 +236,14 @@ func settleDurableMidjourney(task *model.Midjourney) (bool, error) {
 	}
 	key, err := model.QueueMidjourneyBillingOperation(task, false)
 	if err != nil {
+		if errors.Is(err, model.ErrBillingOperationConflict) && task != nil && task.Id > 0 {
+			// R7-22: Keep billing_charge_pending = true to block polling/auto-refund,
+			// but stamp a conflict marker so RecoverBillingOperations does not starve
+			// healthy tasks on every tick.
+			common.SysError(common.LogText("billing recovery: permanent conflict queuing Midjourney charge id=%d: %s", task.Id, err.Error()))
+			_ = model.DB.Model(&model.Midjourney{}).Where("id = ?", task.Id).
+				Updates(map[string]any{"billing_pending": false, "fail_reason": "billing_conflict: " + err.Error()}).Error
+		}
 		return false, err
 	}
 	op, _, err := model.ApplyBillingSettlement(key)
@@ -282,6 +290,13 @@ func stampMidjourneySiteBilling(relayInfo *relaycommon.RelayInfo, task *model.Mi
 func RefundMidjourneyQuota(ctx context.Context, task *model.Midjourney, reason string) bool {
 	key, err := model.QueueMidjourneyBillingOperation(task, true)
 	if err != nil {
+		if errors.Is(err, model.ErrBillingOperationConflict) && task != nil && task.Id > 0 {
+			// R7-22: Clear billing_pending on permanent refund queue conflict while
+			// preserving billing_charge_pending so recovery never starves healthy tasks.
+			common.SysError(common.LogText("billing recovery: permanent conflict queuing Midjourney refund id=%d: %s", task.Id, err.Error()))
+			_ = model.DB.Model(&model.Midjourney{}).Where("id = ?", task.Id).
+				Updates(map[string]any{"billing_pending": false, "fail_reason": "billing_conflict: " + err.Error()}).Error
+		}
 		return false
 	}
 	op, applied, err := model.ApplyBillingSettlement(key)

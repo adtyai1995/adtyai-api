@@ -38,6 +38,7 @@ import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
+import type { SiteOwnerAction } from '@/features/auth/secure-verification'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
 import { handleServerError } from '@/lib/handle-server-error'
 
@@ -53,8 +54,11 @@ import type {
   SiteMailConfigUpdate,
   SiteMailProvider,
 } from '../types'
+import { useOwnerVerification } from './owner-verification'
 
 type SmtpSecurityMode = 'none' | 'ssl_tls' | 'starttls'
+
+const MAIL_CONFIG_ACTION: SiteOwnerAction = 'mail.config'
 
 type MailDraft = {
   provider: SiteMailProvider
@@ -116,6 +120,7 @@ function serializeDraft(draft: MailDraft): string {
 export function SiteMailPanel(props: { site: OwnerSite }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const ownerVerification = useOwnerVerification()
   const isClosing = props.site.status === 'closing'
   const fallbackSenderName = props.site.brand.name || props.site.host
 
@@ -153,9 +158,16 @@ export function SiteMailPanel(props: { site: OwnerSite }) {
   }
 
   const save = useMutation({
-    mutationFn: (payload: SiteMailConfigUpdate) =>
-      saveOwnerSiteMailConfig(payload),
+    mutationFn: async (payload: SiteMailConfigUpdate) => {
+      const proof = await ownerVerification.verify(
+        MAIL_CONFIG_ACTION,
+        props.site.id
+      )
+      if (!proof) return null
+      return saveOwnerSiteMailConfig(payload, proof)
+    },
     onSuccess: (updated) => {
+      if (!updated) return
       queryClient.setQueryData(mailConfigQueryKey, updated)
       const next = toDraft(updated)
       setDraft(next)
@@ -188,7 +200,7 @@ export function SiteMailPanel(props: { site: OwnerSite }) {
   }
 
   const savedConfig = configQuery.data
-  const disabled = isClosing || save.isPending
+  const disabled = isClosing || save.isPending || ownerVerification.verifying
 
   const handleSave = (event: FormEvent) => {
     event.preventDefault()
@@ -702,7 +714,7 @@ export function SiteMailPanel(props: { site: OwnerSite }) {
               <Button
                 type='submit'
                 variant='brand'
-                disabled={isClosing || !isDirty || save.isPending}
+                disabled={disabled || !isDirty}
               >
                 {save.isPending ? t('Saving...') : t('Save')}
               </Button>

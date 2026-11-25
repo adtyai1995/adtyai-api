@@ -219,7 +219,7 @@ func PostAdtySiteCommissionConvert(c *gin.Context) {
 	}
 	if err := service.ConvertAdtySiteInviteCommission(c.GetInt("id"), id, amount, strings.TrimSpace(c.GetHeader("Idempotency-Key"))); err != nil {
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorStatus(c, http.StatusConflict, err)
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
 			return
 		}
 		common.ApiError(c, err)
@@ -300,7 +300,7 @@ func PostAdtySiteInviteWithdrawal(c *gin.Context) {
 			return
 		}
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorStatus(c, http.StatusConflict, err)
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
 			return
 		}
 		common.ApiError(c, err)

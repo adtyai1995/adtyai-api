@@ -826,6 +826,19 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 			} else {
 				base, tokenBase = 0, 0
 			}
+			if row.Kind == "mj_refund" {
+				// R7-08: Refuse automatic mj_refund if the paired mj_charge entered
+				// dead letter so we never fabricate a refund or split the ledger.
+				var deadChargeCount int64
+				if err := tx.Model(&BillingOperation{}).
+					Where("kind = ? AND reference_id = ? AND state = ?", "mj_charge", row.ReferenceId, BillingDead).
+					Count(&deadChargeCount).Error; err != nil {
+					return err
+				}
+				if deadChargeCount > 0 {
+					return ErrBillingOperationConflict
+				}
+			}
 			if row.Kind == "mj_refund" && !mj.BillingChargePending {
 				base = mj.Quota
 				if row.TokenId > 0 {

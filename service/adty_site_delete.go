@@ -126,6 +126,16 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 	cleanedOptions := map[string]string{}
 	commissionMarginKey := commissionMarginOptionKey(siteID)
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		// R7-28: Lock adty_payment_scene_configs BEFORE options -> adty_sites to
+		// preserve a consistent lock order with SaveAdtyPaymentScenes.
+		var sceneCfg *model.AdtyPaymentSceneConfig
+		if tx.Migrator().HasTable(&model.AdtyPaymentSceneConfig{}) {
+			var cfgErr error
+			sceneCfg, cfgErr = model.GetAdtyPaymentSceneConfig(tx, true)
+			if cfgErr != nil {
+				return cfgErr
+			}
+		}
 		// Pre-lock per-site option keys in sorted order BEFORE adty_sites to follow
 		// canonical options -> adty_sites lock order (R5-11).
 		lockedOptVals := map[string]string{}
@@ -213,6 +223,7 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			&model.AdtyTelegramBinding{},
 			&model.AdtyTelegramChallenge{},
 			&model.AdtyTelegramDelivery{},
+			&AdtySystemEmailDelivery{},
 			&model.AdtySiteLookup{},
 			&model.AdtyNotificationRead{},
 			&model.AdtyTranslationHead{},
@@ -226,6 +237,46 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 		if tx.Migrator().HasTable(&model.AdtyNotificationPublication{}) {
 			if err := tx.Where("issuer_site_id = ?", siteID).Delete(&model.AdtyNotificationPublication{}).Error; err != nil {
 				return err
+			}
+		}
+		// R7-28: Prune references to the hard-deleted site from payment scene configs
+		// so future SaveAdtyPaymentScenes calls are never permanently blocked.
+		if sceneCfg != nil && strings.TrimSpace(sceneCfg.Payload) != "" {
+			var scenes []model.AdtyPaymentScene
+			if err := common.UnmarshalJsonStr(sceneCfg.Payload, &scenes); err == nil {
+				changed := false
+				kept := make([]model.AdtyPaymentScene, 0, len(scenes))
+				for _, sc := range scenes {
+					if sc.SiteScope == "selected" && len(sc.SiteIDs) > 0 {
+						filtered := make([]int, 0, len(sc.SiteIDs))
+						for _, id := range sc.SiteIDs {
+							if id == siteID {
+								changed = true
+								continue
+							}
+							filtered = append(filtered, id)
+						}
+						sc.SiteIDs = filtered
+						if len(filtered) == 0 {
+							continue
+						}
+					}
+					kept = append(kept, sc)
+				}
+				if changed {
+					payload, mErr := common.Marshal(kept)
+					if mErr != nil {
+						return mErr
+					}
+					if err := tx.Model(sceneCfg).Updates(map[string]any{
+						"version":    sceneCfg.Version + 1,
+						"payload":    string(payload),
+						"updated_by": adminID,
+						"updated_at": time.Now().Unix(),
+					}).Error; err != nil {
+						return err
+					}
+				}
 			}
 		}
 		// Clean up per-site options so recycled or removed site IDs carry no stale policy.

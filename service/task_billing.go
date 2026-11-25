@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -255,6 +256,10 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 	}
 	key, err := model.QueueTaskBillingOperation(task, 0, true)
 	if err != nil {
+		if errors.Is(err, model.ErrBillingOperationConflict) {
+			common.SysError(common.LogText("billing recovery: permanent conflict queuing refund for task %s: %s", task.TaskID, err.Error()))
+			flagTaskBillingManualReview(ctx, task, "billing refund conflict: "+err.Error())
+		}
 		return false
 	}
 	op, applied, err := model.ApplyBillingSettlement(key)
@@ -307,6 +312,10 @@ func recalculateTaskQuotaResult(ctx context.Context, task *model.Task, actualQuo
 	}
 	key, err := model.QueueTaskBillingOperation(task, actualQuota, false)
 	if err != nil {
+		if errors.Is(err, model.ErrBillingOperationConflict) {
+			common.SysError(common.LogText("billing recovery: permanent conflict queuing settlement for task %s: %s", task.TaskID, err.Error()))
+			flagTaskBillingManualReview(ctx, task, "billing settlement conflict: "+err.Error())
+		}
 		return false
 	}
 	op, applied, err := model.ApplyBillingSettlement(key)

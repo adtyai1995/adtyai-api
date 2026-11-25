@@ -344,6 +344,15 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 				Params: map[string]any{"Group": retry.TokenGroup, "Model": modelName}, NoAvailableChannel: true,
 			}
 		}
+		// R7-06: Origin-task pins come from user-controlled draft_task/originTaskIds.
+		// Enforce channel-group-model authorization so callers cannot bill under a
+		// cheaper group while pinning a high-tier channel.
+		if pin.Source == dto.PinSourceOriginTask && selectGroup != "" && !model.IsChannelEnabledForGroupModel(selectGroup, modelName, channel.Id) {
+			return nil, selectGroup, &ChannelSelectError{
+				StatusCode: http.StatusForbidden, Code: types.ErrorCodeAccessDenied, MessageID: i18n.MsgDistributorNoAvailableChannel,
+				Params: map[string]any{"Group": retry.TokenGroup, "Model": modelName}, NoAvailableChannel: true,
+			}
+		}
 		if retry.TokenGroup == "auto" {
 			common.SetContextKey(c, constant.ContextKeyAutoGroup, selectGroup)
 		}

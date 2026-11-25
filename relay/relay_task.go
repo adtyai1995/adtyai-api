@@ -101,6 +101,11 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 	if ch.Status != common.ChannelStatusEnabled {
 		return service.TaskErrorWrapperLocal(errors.New("the channel of the origin task is disabled"), "task_channel_disable", http.StatusBadRequest)
 	}
+	// R7-07: Enforce current group/model channel authorization on remix/continuation
+	// so callers cannot reuse a high-tier origin task channel under a cheaper group.
+	if info.UsingGroup != "" && info.OriginModelName != "" && !model.IsChannelEnabledForGroupModel(info.UsingGroup, info.OriginModelName, ch.Id) {
+		return service.TaskErrorWrapperLocal(errors.New("the channel of the origin task is not allowed for this group"), "task_channel_forbidden", http.StatusForbidden)
+	}
 	info.LockedChannel = ch
 	// R14-009: Preserve the origin task's plugin binding on NewAPI/TaskPlugin locked
 	// channels, and let controller/relay.go run SetupContextForSelectedChannel on attempt 0

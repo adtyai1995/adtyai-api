@@ -30,10 +30,13 @@ var (
 	ErrAdtyTranslationSelf    = common.NewMessage("The translator cannot call this relay")
 	ErrAdtyTranslationQuota   = common.NewMessage("Daily translation quota reached")
 
-	adtyTranslationFlight   sync.Mutex
-	adtyTranslationInflight int
-	adtyTranslationHeadMu   sync.Mutex
-	adtyTranslationUsageMu  sync.Mutex
+	adtyTranslationFlight       sync.Mutex
+	adtyTranslationInflight     int
+	adtyTranslationHeadMu       sync.Mutex
+	adtyTranslationUsageMu      sync.Mutex
+	adtyTranslationSiteUsageDay string
+	adtyTranslationSiteUsageDB  *gorm.DB
+	adtyTranslationSiteCalls    map[int]int
 
 	adtyAmountToken         = regexp.MustCompile(`\d+(?:\.\d+)?`)
 	adtyURLToken            = regexp.MustCompile(`https?://[^\s,，。；;！!？?)"'<>]+`)
@@ -390,6 +393,65 @@ func TranslateAdtyDynamic(objectKey, source string, siteId int) (*AdtyTranslatio
 	return translateAdtyDynamicInternal(objectKey, source, siteId, 0, 0)
 }
 
+func nextAdtyTranslationLeaseUntil(prevLeaseUntil int64) int64 {
+	return max(time.Now().Add(adtyTranslationLeaseDuration).Unix(), prevLeaseUntil+1)
+}
+
+func adtyTranslationSiteDailyQuota(dailyQuota int) int {
+	if dailyQuota <= 0 {
+		return 0
+	}
+	return max(1, dailyQuota/4)
+}
+
+func adtyTranslationUTCDayBounds(now time.Time) (string, int64, int64) {
+	utc := now.UTC()
+	start := time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
+	return start.Format("2006-01-02"), start.Unix(), start.Add(24 * time.Hour).Unix()
+}
+
+func adtyTranslationSiteCallsTodayWithDB(db *gorm.DB, siteID int, now time.Time) (int, error) {
+	if siteID <= 0 || db == nil {
+		return 0, nil
+	}
+	if !db.Migrator().HasTable(&model.AdtyTranslationJob{}) || !db.Migrator().HasTable(&model.AdtyTranslationHead{}) {
+		return 0, nil
+	}
+	_, dayStart, dayEnd := adtyTranslationUTCDayBounds(now)
+	var count int64
+	err := db.Table("adty_translation_jobs AS j").
+		Joins("INNER JOIN adty_translation_heads AS h ON h.object_key = j.object_key").
+		Where("h.site_id = ?", siteID).
+		Where("((j.finished_at >= ? AND j.finished_at < ?) OR (j.finished_at = 0 AND j.created_at >= ? AND j.created_at < ?))", dayStart, dayEnd, dayStart, dayEnd).
+		Where("(j.status = ? OR j.model_name <> '')", model.AdtyTranslationReady).
+		Count(&count).Error
+	if err != nil {
+		return 0, err
+	}
+	return int(count), nil
+}
+
+func adtyTranslationSiteUsageToday(siteID int, totalCallsToday int) (int, error) {
+	if siteID <= 0 {
+		return 0, nil
+	}
+	now := time.Now().UTC()
+	day := now.Format("2006-01-02")
+	dbCalls, err := adtyTranslationSiteCallsTodayWithDB(model.DB, siteID, now)
+	if err != nil {
+		return 0, err
+	}
+	adtyTranslationUsageMu.Lock()
+	if adtyTranslationSiteUsageDay != day || adtyTranslationSiteUsageDB != model.DB || totalCallsToday == 0 {
+		adtyTranslationSiteUsageDay = day
+		adtyTranslationSiteUsageDB = model.DB
+		adtyTranslationSiteCalls = make(map[int]int)
+	}
+	memCalls := adtyTranslationSiteCalls[siteID]
+	adtyTranslationUsageMu.Unlock()
+	return max(dbCalls, memCalls), nil
+}
+
 func translateAdtyDynamicInternal(objectKey, source string, siteId, notifPubID int, notifRevision int64) (*AdtyTranslationResult, error) {
 	source = strings.TrimSpace(source)
 	objectKey = strings.TrimSpace(objectKey)
@@ -406,6 +468,7 @@ func translateAdtyDynamicInternal(objectKey, source string, siteId, notifPubID i
 	}
 
 	var version int
+	var leaseUntil int64
 	var reused *AdtyTranslationResult
 	var staleNotification bool
 	err := withAdtyTranslationHeadLock(func(tx *gorm.DB) error {
@@ -435,7 +498,7 @@ func translateAdtyDynamicInternal(objectKey, source string, siteId, notifPubID i
 			}
 			return nil
 		}
-		if lookup.RowsAffected > 0 && head.SourceHash == hash && head.Status == model.AdtyTranslationPending && head.LeaseUntil > time.Now().Unix() {
+		if notifPubID == 0 && lookup.RowsAffected > 0 && head.SourceHash == hash && head.Status == model.AdtyTranslationPending && head.LeaseUntil > time.Now().Unix() {
 			reused = &AdtyTranslationResult{
 				ObjectKey: head.ObjectKey,
 				Source:    head.Source,
@@ -447,10 +510,12 @@ func translateAdtyDynamicInternal(objectKey, source string, siteId, notifPubID i
 			return nil
 		}
 		version = 1
+		var prevLease int64
 		if lookup.RowsAffected > 0 {
 			version = head.Version + 1
+			prevLease = head.LeaseUntil
 		}
-		leaseUntil := time.Now().Add(adtyTranslationLeaseDuration).Unix()
+		leaseUntil = nextAdtyTranslationLeaseUntil(prevLease)
 		head.ObjectKey = objectKey
 		head.SiteId = siteId
 		head.Version = version
@@ -499,29 +564,29 @@ func translateAdtyDynamicInternal(objectKey, source string, siteId, notifPubID i
 		return reused, nil
 	}
 
-	return executeAdtyReservedTranslationWithGuard(objectKey, source, siteId, version, hash, notifPubID, notifRevision)
+	return executeAdtyReservedTranslationWithGuard(objectKey, source, siteId, version, hash, notifPubID, notifRevision, leaseUntil)
 }
 
-func executeAdtyReservedTranslation(objectKey, source string, siteId, version int, hash string) (*AdtyTranslationResult, error) {
-	return executeAdtyReservedTranslationWithGuard(objectKey, source, siteId, version, hash, 0, 0)
+func executeAdtyReservedTranslation(objectKey, source string, siteId, version int, hash string, expectedLeaseUntil int64) (*AdtyTranslationResult, error) {
+	return executeAdtyReservedTranslationWithGuard(objectKey, source, siteId, version, hash, 0, 0, expectedLeaseUntil)
 }
 
-func executeAdtyReservedTranslationWithGuard(objectKey, source string, siteId, version int, hash string, notifPubID int, notifRevision int64) (*AdtyTranslationResult, error) {
+func executeAdtyReservedTranslationWithGuard(objectKey, source string, siteId, version int, hash string, notifPubID int, notifRevision int64, expectedLeaseUntil int64) (*AdtyTranslationResult, error) {
 	if adtyTextHasOutboundSecret(source) {
-		return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, "", notifPubID, notifRevision)
+		return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, "", notifPubID, notifRevision, expectedLeaseUntil)
 	}
 	cfg, err := loadAdtyTranslationConfig()
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, "", notifPubID, notifRevision)
+			return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, "", notifPubID, notifRevision, expectedLeaseUntil)
 		}
 		return nil, err
 	}
 	if !cfg.Enabled {
-		return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, "", notifPubID, notifRevision)
+		return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, "", notifPubID, notifRevision, expectedLeaseUntil)
 	}
 	if cfg.MaxChars > 0 && len([]rune(source)) > cfg.MaxChars {
-		return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, "", notifPubID, notifRevision)
+		return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, "", notifPubID, notifRevision, expectedLeaseUntil)
 	}
 	if cfg.DailyQuota > 0 {
 		usage, err := AdtyTranslationUsageToday()
@@ -529,16 +594,25 @@ func executeAdtyReservedTranslationWithGuard(objectKey, source string, siteId, v
 			return nil, err
 		}
 		if usage.Calls >= cfg.DailyQuota {
-			return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, "", notifPubID, notifRevision)
+			return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, "", notifPubID, notifRevision, expectedLeaseUntil)
+		}
+		if siteId > 0 {
+			siteCalls, err := adtyTranslationSiteUsageToday(siteId, usage.Calls)
+			if err != nil {
+				return nil, err
+			}
+			if siteCalls >= adtyTranslationSiteDailyQuota(cfg.DailyQuota) {
+				return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, "", notifPubID, notifRevision, expectedLeaseUntil)
+			}
 		}
 	}
 
-	english, modelName, callErr := translateWithBackup(cfg, source)
+	english, modelName, callErr := translateWithBackupForSite(cfg, source, siteId)
 	if callErr == nil && adtyIsHTMLTranslation(model.DB, objectKey, source) {
 		english = SanitizeAdtyNotificationHTML(english)
 	}
 	if callErr != nil || !adtyTranslationKeepsFacts(source, english) {
-		return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, modelName, notifPubID, notifRevision)
+		return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, modelName, notifPubID, notifRevision, expectedLeaseUntil)
 	}
 
 	var saved model.AdtyTranslationHead
@@ -555,6 +629,33 @@ func executeAdtyReservedTranslationWithGuard(objectKey, source string, siteId, v
 				return checkErr
 			}
 			if !ok {
+				if found.RowsAffected > 0 && !current.HumanEdited && current.Version == version &&
+					current.Status == model.AdtyTranslationPending &&
+					(current.SourceHash == "" || current.SourceHash == hash) &&
+					(expectedLeaseUntil <= 0 || current.LeaseUntil == expectedLeaseUntil) {
+					if err := tx.Model(&current).Updates(map[string]any{
+						"status":      model.AdtyTranslationFailed,
+						"notice":      AdtyTranslationNotReady,
+						"model_name":  modelName,
+						"lease_until": 0,
+					}).Error; err != nil {
+						return err
+					}
+					if err := upsertAdtyTranslationJobTx(tx, &model.AdtyTranslationJob{
+						ObjectKey:  objectKey,
+						Version:    version,
+						SourceHash: hash,
+						Status:     model.AdtyTranslationFailed,
+						ModelName:  modelName,
+						FinishedAt: time.Now().Unix(),
+					}); err != nil {
+						return err
+					}
+					current.Status = model.AdtyTranslationFailed
+					current.Notice = AdtyTranslationNotReady
+					current.ModelName = modelName
+					current.LeaseUntil = 0
+				}
 				superseded = true
 				saved = current
 				return nil
@@ -578,6 +679,11 @@ func executeAdtyReservedTranslationWithGuard(objectKey, source string, siteId, v
 					FinishedAt: time.Now().Unix(),
 				})
 			}
+			saved = current
+			return nil
+		}
+		if found.RowsAffected > 0 && expectedLeaseUntil > 0 && current.LeaseUntil != expectedLeaseUntil {
+			superseded = true
 			saved = current
 			return nil
 		}
@@ -693,6 +799,7 @@ func RetryAdtyTranslationJob(objectKey string, version int) (*AdtyTranslationRes
 		return nil, ErrAdtyTranslationInvalid
 	}
 	var head model.AdtyTranslationHead
+	var leaseUntil int64
 	var reused *AdtyTranslationResult
 	var blocked *AdtyTranslationResult
 	isTicketReply := strings.HasPrefix(objectKey, "ticket-reply:")
@@ -762,9 +869,9 @@ func RetryAdtyTranslationJob(objectKey string, version int) (*AdtyTranslationRes
 			}
 			return nil
 		}
-		leaseUntil := int64(0)
+		leaseUntil = 0
 		if !isTicketReply {
-			leaseUntil = time.Now().Add(adtyTranslationLeaseDuration).Unix()
+			leaseUntil = nextAdtyTranslationLeaseUntil(head.LeaseUntil)
 		}
 		if err := tx.Model(&head).Updates(map[string]any{
 			"source_hash": head.SourceHash,
@@ -795,7 +902,7 @@ func RetryAdtyTranslationJob(objectKey string, version int) (*AdtyTranslationRes
 	if isTicketReply {
 		return &AdtyTranslationResult{ObjectKey: objectKey, Source: head.Source, Version: version, Status: model.AdtyTranslationPending, Notice: AdtyTranslationNotReady}, nil
 	}
-	return executeAdtyReservedTranslation(objectKey, head.Source, head.SiteId, version, head.SourceHash)
+	return executeAdtyReservedTranslation(objectKey, head.Source, head.SiteId, version, head.SourceHash, leaseUntil)
 }
 
 // ListAdtyTranslationTasks lists current translation heads with their job metadata.
@@ -1104,13 +1211,17 @@ func rejectAdtyCustomerTokenWithDB(db *gorm.DB, token string) error {
 }
 
 func translateWithBackup(cfg *model.AdtyTranslationConfig, source string) (string, string, error) {
+	return translateWithBackupForSite(cfg, source, 0)
+}
+
+func translateWithBackupForSite(cfg *model.AdtyTranslationConfig, source string, siteID int) (string, string, error) {
 	primary := strings.TrimSpace(cfg.ModelName)
 	backup := strings.TrimSpace(cfg.BackupModel)
 	if backup == "" {
 		backup = primary
 	}
 
-	english, err := callAdtyTranslator(primary, source)
+	english, err := callAdtyTranslatorForSite(primary, source, siteID)
 	if err == nil {
 		return english, primary, nil
 	}
@@ -1127,7 +1238,7 @@ func translateWithBackup(cfg *model.AdtyTranslationConfig, source string) (strin
 			targetModel = primary
 		}
 		lastModel = targetModel
-		english, err = callAdtyTranslator(targetModel, source)
+		english, err = callAdtyTranslatorForSite(targetModel, source, siteID)
 		if err == nil {
 			return english, targetModel, nil
 		}
@@ -1136,14 +1247,18 @@ func translateWithBackup(cfg *model.AdtyTranslationConfig, source string) (strin
 }
 
 func callAdtyTranslator(modelName, text string) (string, error) {
-	return callAdtyTranslatorWithOptions(modelName, text, false)
+	return callAdtyTranslatorWithOptions(modelName, text, false, 0)
+}
+
+func callAdtyTranslatorForSite(modelName, text string, siteID int) (string, error) {
+	return callAdtyTranslatorWithOptions(modelName, text, false, siteID)
 }
 
 func callAdtyTranslatorForTest(modelName, text string) (string, error) {
-	return callAdtyTranslatorWithOptions(modelName, text, true)
+	return callAdtyTranslatorWithOptions(modelName, text, true, 0)
 }
 
-func callAdtyTranslatorWithOptions(modelName, text string, allowDisabled bool) (string, error) {
+func callAdtyTranslatorWithOptions(modelName, text string, allowDisabled bool, siteID int) (string, error) {
 	adtyTranslationFlight.Lock()
 	cfgConcurrency := 0
 	dailyQuota := 0
@@ -1165,7 +1280,7 @@ func callAdtyTranslatorWithOptions(modelName, text string, allowDisabled bool) (
 	}()
 
 	day := time.Now().UTC().Format("2006-01-02")
-	if err := reserveAdtyTranslationCall(day, dailyQuota); err != nil {
+	if err := reserveAdtyTranslationCallForSite(day, dailyQuota, siteID); err != nil {
 		return "", err
 	}
 
@@ -1188,17 +1303,43 @@ func callAdtyTranslatorWithOptions(modelName, text string, allowDisabled bool) (
 }
 
 func reserveAdtyTranslationCall(day string, dailyQuota int) error {
+	return reserveAdtyTranslationCallForSite(day, dailyQuota, 0)
+}
+
+func reserveAdtyTranslationCallForSite(day string, dailyQuota, siteID int) error {
 	adtyTranslationUsageMu.Lock()
 	defer adtyTranslationUsageMu.Unlock()
 
-	return model.DB.Transaction(func(tx *gorm.DB) error {
+	now := time.Now().UTC()
+	if day == "" {
+		day = now.Format("2006-01-02")
+	}
+	siteQuota := adtyTranslationSiteDailyQuota(dailyQuota)
+	var nextSiteCalls int
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var row model.AdtyTranslationUsage
 		lookup := model.AdtyLockForUpdate(tx).Where("day = ?", day).Limit(1).Find(&row)
 		if lookup.Error != nil {
 			return lookup.Error
 		}
+		if adtyTranslationSiteUsageDay != day || adtyTranslationSiteUsageDB != model.DB || lookup.RowsAffected == 0 || row.Calls == 0 {
+			adtyTranslationSiteUsageDay = day
+			adtyTranslationSiteUsageDB = model.DB
+			adtyTranslationSiteCalls = make(map[int]int)
+		}
 		if dailyQuota > 0 && row.Calls >= dailyQuota {
 			return ErrAdtyTranslationQuota
+		}
+		if siteID > 0 && siteQuota > 0 {
+			dbCalls, err := adtyTranslationSiteCallsTodayWithDB(tx, siteID, now)
+			if err != nil {
+				return err
+			}
+			used := max(dbCalls, adtyTranslationSiteCalls[siteID])
+			if used >= siteQuota {
+				return ErrAdtyTranslationQuota
+			}
+			nextSiteCalls = used + 1
 		}
 		row.Day = day
 		row.Calls++
@@ -1210,6 +1351,13 @@ func reserveAdtyTranslationCall(day string, dailyQuota int) error {
 		}
 		return tx.Save(&row).Error
 	})
+	if err != nil {
+		return err
+	}
+	if siteID > 0 && siteQuota > 0 {
+		adtyTranslationSiteCalls[siteID] = nextSiteCalls
+	}
+	return nil
 }
 
 func finishAdtyTranslationCall(day string, failed bool, latency int64, callCost decimal.Decimal) error {
@@ -1314,11 +1462,11 @@ func upsertAdtyTranslationJobTx(tx *gorm.DB, job *model.AdtyTranslationJob) erro
 	return tx.Model(&existing).Updates(updates).Error
 }
 
-func fallbackAdtyTranslation(objectKey, source string, siteId, version int, hash, modelName string) (*AdtyTranslationResult, error) {
-	return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, modelName, 0, 0)
+func fallbackAdtyTranslation(objectKey, source string, siteId, version int, hash, modelName string, expectedLeaseUntil int64) (*AdtyTranslationResult, error) {
+	return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, modelName, 0, 0, expectedLeaseUntil)
 }
 
-func fallbackAdtyTranslationWithGuard(objectKey, source string, siteId, version int, hash, modelName string, notifPubID int, notifRevision int64) (*AdtyTranslationResult, error) {
+func fallbackAdtyTranslationWithGuard(objectKey, source string, siteId, version int, hash, modelName string, notifPubID int, notifRevision int64, expectedLeaseUntil int64) (*AdtyTranslationResult, error) {
 	head := model.AdtyTranslationHead{
 		ObjectKey: objectKey, SiteId: siteId, Version: version, SourceHash: hash, Source: source,
 		Status: model.AdtyTranslationFailed, Notice: AdtyTranslationNotReady, ModelName: modelName,
@@ -1336,10 +1484,42 @@ func fallbackAdtyTranslationWithGuard(objectKey, source string, siteId, version 
 				return checkErr
 			}
 			if !ok {
+				if found.RowsAffected > 0 && !current.HumanEdited && current.Version == version &&
+					current.Status == model.AdtyTranslationPending &&
+					(current.SourceHash == "" || current.SourceHash == hash) &&
+					(expectedLeaseUntil <= 0 || current.LeaseUntil == expectedLeaseUntil) {
+					if err := upsertAdtyTranslationJobTx(tx, &model.AdtyTranslationJob{
+						ObjectKey:  objectKey,
+						Version:    version,
+						SourceHash: hash,
+						Status:     model.AdtyTranslationFailed,
+						ModelName:  modelName,
+						FinishedAt: time.Now().Unix(),
+					}); err != nil {
+						return err
+					}
+					if err := tx.Model(&current).Updates(map[string]any{
+						"status":      model.AdtyTranslationFailed,
+						"notice":      AdtyTranslationNotReady,
+						"model_name":  modelName,
+						"lease_until": 0,
+					}).Error; err != nil {
+						return err
+					}
+					current.Status = model.AdtyTranslationFailed
+					current.Notice = AdtyTranslationNotReady
+					current.ModelName = modelName
+					current.LeaseUntil = 0
+				}
 				head = current
 				preserved = found.RowsAffected > 0
 				return nil
 			}
+		}
+		if found.RowsAffected > 0 && expectedLeaseUntil > 0 && current.LeaseUntil != expectedLeaseUntil {
+			head = current
+			preserved = true
+			return nil
 		}
 		if (strings.HasPrefix(objectKey, "ticket-reply:") || strings.HasPrefix(objectKey, "notification:") || strings.HasPrefix(objectKey, "notification-title:")) &&
 			(found.RowsAffected == 0 || current.Status != model.AdtyTranslationPending || current.Version != version || current.SourceHash != hash) {

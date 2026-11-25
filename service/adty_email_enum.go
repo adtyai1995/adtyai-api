@@ -484,8 +484,24 @@ func deliverAdtySystemEmailRow(db *gorm.DB, row *AdtySystemEmailDelivery, now ti
 	}
 	attempts := row.Attempts + 1
 	var sendErr error
-	if adtyUsesDefaultSystemEmailSender() && row.SiteId > 0 {
-		if site := AdtySiteById(row.SiteId); site != nil {
+	if row.SiteId > 0 {
+		site := AdtySiteById(row.SiteId)
+		if site == nil || site.Status == model.AdtySiteStatusDeleting || site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusPending {
+			// R7-27: Never fall back to the platform default sender when a subsite has
+			// been hard-deleted, is deleting, or is closed.
+			row.Status = AdtySystemEmailStatusDead
+			row.LastError = "site unavailable"
+			row.BodyCipher = ""
+			if db != nil && row.Id > 0 {
+				_ = db.Model(row).Updates(map[string]any{
+					"status":      row.Status,
+					"last_error":  row.LastError,
+					"body_cipher": "",
+				}).Error
+			}
+			return nil
+		}
+		if adtyUsesDefaultSystemEmailSender() {
 			sendErr = AdtySendSiteEmail(site, row.Subject, row.Recipient, content)
 		} else {
 			sendErr = AdtySystemEmailSender(row.Sender, row.Subject, row.Recipient, content)

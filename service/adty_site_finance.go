@@ -352,9 +352,6 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 			}
 			cycleUsed = cycleUsed.Add(delta.Abs())
 		}
-		if kind == model.AdtySiteWalletMargin && delta.IsPositive() && change.Type == "gift_spend" && cycleUsed.IsPositive() {
-			cycleUsed = decimal.Max(decimal.Zero, cycleUsed.Sub(delta))
-		}
 		if kind == model.AdtySiteWalletMargin && delta.IsZero() && change.HoldDelta.IsPositive() && cycleTier.IsPositive() && !change.AllowOverdraft {
 			allowed := AdtyMarginNewDraw(AdtyMarginDrawInput{
 				TierUSD: cycleTier, Balance: before, Used: cycleUsed, Frozen: wallet.FrozenUSD, ExcessFrozen: wallet.ExcessFrozenUSD,
@@ -719,7 +716,11 @@ func TransferAdtyEarningToMargin(siteID, operator int, amount decimal.Decimal, k
 			if err := tx.Model(&model.AdtySiteTier{}).Where("code = ? AND enabled = ?", site.TierCode, true).Count(&configured).Error; err != nil {
 				return err
 			}
-			if configured == 0 || !margin.RequiredBalance.IsPositive() {
+			floor, err := adtyMarginRequiredFloorTx(tx, siteID, &margin)
+			if err != nil {
+				return err
+			}
+			if configured == 0 || !floor.IsPositive() {
 				return common.NewMessage("Margin tier is not configured")
 			}
 		}

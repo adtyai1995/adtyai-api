@@ -1431,9 +1431,50 @@ func reverseSiteGiftSpendForSourceTx(tx *gorm.DB, userID int, operationKey, trad
 		}
 	}
 	if restMargin.IsPositive() {
+		if !restEarning.IsPositive() {
+			if err := preLockAdtySiteWalletsTx(tx, ext.SiteId, model.AdtySiteWalletEarnings); err != nil {
+				return err
+			}
+		}
+		var releaseCycleUsed decimal.Decimal
+		var marginWallet model.AdtySiteWallet
+		mLookup := model.AdtyLockForUpdate(tx).Select("id", "cycle_number").
+			Where("site_id = ? AND kind = ?", ext.SiteId, model.AdtySiteWalletMargin).
+			Limit(1).Find(&marginWallet)
+		if mLookup.Error != nil {
+			return mLookup.Error
+		}
+		if mLookup.RowsAffected > 0 && marginWallet.CycleNumber > 0 {
+			sameCycleSpent := decimal.Zero
+			sameCycleReleased := decimal.Zero
+			for _, r := range rows {
+				if r.WalletKind != model.AdtySiteWalletMargin {
+					continue
+				}
+				if r.Delta.IsNegative() && r.MarginCycleAfter != nil && strings.TrimSpace(*r.MarginCycleAfter) != "" {
+					var afterSnap adtyMarginCycleSnapshot
+					if err := common.Unmarshal([]byte(*r.MarginCycleAfter), &afterSnap); err == nil && afterSnap.CycleNumber == marginWallet.CycleNumber {
+						sameCycleSpent = sameCycleSpent.Add(r.Delta.Neg())
+					}
+				} else if r.Delta.IsPositive() && r.MarginCycleBefore != nil && r.MarginCycleAfter != nil {
+					var beforeSnap, afterSnap adtyMarginCycleSnapshot
+					if err := common.Unmarshal([]byte(*r.MarginCycleBefore), &beforeSnap); err == nil {
+						if err := common.Unmarshal([]byte(*r.MarginCycleAfter), &afterSnap); err == nil &&
+							beforeSnap.CycleNumber == marginWallet.CycleNumber && afterSnap.CycleNumber == marginWallet.CycleNumber {
+							if rel := beforeSnap.UsedUSD.Sub(afterSnap.UsedUSD); rel.IsPositive() {
+								sameCycleReleased = sameCycleReleased.Add(rel)
+							}
+						}
+					}
+				}
+			}
+			if sameCycleNet := sameCycleSpent.Sub(sameCycleReleased); sameCycleNet.IsPositive() {
+				releaseCycleUsed = decimal.Min(restMargin, sameCycleNet)
+			}
+		}
 		if _, err := applyAdtySiteWalletChangeTx(tx, ext.SiteId, model.AdtySiteWalletMargin, restMargin, AdtySiteWalletChange{
 			Type: "gift_spend", RefType: "topup", RefID: tradeNo, IdempotencyKey: key + ":margin",
-			HoldDelta: restMargin, AllowOverdraft: true,
+			HoldDelta: restMargin, AllowOverdraft: true, ReleaseCycleUsed: releaseCycleUsed,
 		}); err != nil {
 			return err
 		}

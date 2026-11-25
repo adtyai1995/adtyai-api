@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -16,6 +17,30 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+type streamWriteError struct {
+	err error
+}
+
+func (e *streamWriteError) Error() string {
+	return e.err.Error()
+}
+
+func (e *streamWriteError) Unwrap() error {
+	return e.err
+}
+
+func wrapStreamWriteError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &streamWriteError{err: err}
+}
+
+func isStreamWriteError(err error) bool {
+	var writeErr *streamWriteError
+	return errors.As(err, &writeErr)
+}
 
 // 辅助函数
 func HandleStreamFormat(c *gin.Context, info *relaycommon.RelayInfo, data string, forceFormat bool, thinkToContent bool) error {
@@ -60,8 +85,10 @@ func handleClaudeFormat(c *gin.Context, data string, info *relaycommon.RelayInfo
 		if resp == nil {
 			continue
 		}
-		_ = helper.ClaudeData(c, *resp)
-		if resp.Type != "ping" && (c == nil || c.Request == nil || c.Request.Context().Err() == nil) {
+		if err := helper.ClaudeData(c, *resp); err != nil {
+			return wrapStreamWriteError(err)
+		}
+		if resp.Type != "ping" {
 			wrote = true
 		}
 	}
@@ -126,12 +153,11 @@ func sendGeminiStreamResults(c *gin.Context, info *relaycommon.RelayInfo, result
 			logger.LogError(c, common.LogText("failed to marshal gemini response: %s", err.Error()))
 			return err
 		}
-		c.Render(-1, common.CustomEvent{Data: "data: " + string(data)})
-		if flushErr := helper.FlushWriter(c); flushErr == nil {
-			helper.MarkStreamPayloadWritten(c)
-			if info != nil {
-				info.SendResponseCount++
-			}
+		if err := helper.StringData(c, string(data)); err != nil {
+			return wrapStreamWriteError(err)
+		}
+		if info != nil {
+			info.SendResponseCount++
 		}
 	}
 	return nil

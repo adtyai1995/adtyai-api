@@ -85,7 +85,7 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	}
 
 	if !forceFormat && !thinkToContent {
-		return helper.StringData(c, data)
+		return wrapStreamWriteError(helper.StringData(c, data))
 	}
 
 	var lastStreamResponse dto.ChatCompletionsStreamResponse
@@ -94,7 +94,7 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	}
 
 	if !thinkToContent {
-		return helper.ObjectData(c, lastStreamResponse)
+		return wrapStreamWriteError(helper.ObjectData(c, lastStreamResponse))
 	}
 
 	hasThinkingContent := false
@@ -122,12 +122,12 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 			}
 			info.ThinkingContentInfo.IsFirstThinkingContent = false
 			info.ThinkingContentInfo.HasSentThinkingContent = true
-			return helper.ObjectData(c, response)
+			return wrapStreamWriteError(helper.ObjectData(c, response))
 		}
 	}
 
 	if lastStreamResponse.Choices == nil || len(lastStreamResponse.Choices) == 0 {
-		return helper.ObjectData(c, lastStreamResponse)
+		return wrapStreamWriteError(helper.ObjectData(c, lastStreamResponse))
 	}
 
 	// Process each choice
@@ -142,7 +142,9 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 				response.Choices[j].Delta.Reasoning = nil
 			}
 			info.ThinkingContentInfo.SendLastThinkingContent = true
-			helper.ObjectData(c, response)
+			if err := helper.ObjectData(c, response); err != nil {
+				return wrapStreamWriteError(err)
+			}
 		}
 
 		// Convert reasoning content to regular content if any
@@ -157,7 +159,7 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 		}
 	}
 
-	return helper.ObjectData(c, lastStreamResponse)
+	return wrapStreamWriteError(helper.ObjectData(c, lastStreamResponse))
 }
 
 func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -196,6 +198,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		if !directForward && lastStreamData != "" {
 			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 				common.SysLog(common.LogText("error handling stream format: %s", err.Error()))
+				if isStreamWriteError(err) || helper.ClientRequestCanceled(c) {
+					if info != nil && info.StreamStatus != nil {
+						info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+					}
+					sr.Stop(err)
+					return
+				}
 				sr.Error(err)
 			}
 		}
@@ -225,16 +234,33 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 		if err := HandleStreamFormat(c, info, data, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 			common.SysLog(common.LogText("error handling stream format: %s", err.Error()))
+			if isStreamWriteError(err) || helper.ClientRequestCanceled(c) {
+				if info != nil && info.StreamStatus != nil {
+					info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+				}
+				sr.Stop(err)
+				return
+			}
 			sr.Error(err)
 		}
 	})
 
 	info.StreamStatus.RequireTerminal()
 
-	if lastStreamData == "" || (!receivedValidFrame && info.SendResponseCount == 0) {
-		if info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone && helper.ClientRequestCanceled(c) {
-			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+	if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) &&
+		(helper.ClientRequestCanceled(c) || (info != nil && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone)) {
+		var cancelErr error
+		if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
+			cancelErr = info.StreamStatus.EndError
+		} else if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+			cancelErr = c.Request.Context().Err()
+		} else {
+			cancelErr = errors.New("client closed request")
 		}
+		return nil, types.NewError(cancelErr, types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+	}
+
+	if lastStreamData == "" || (!receivedValidFrame && info.SendResponseCount == 0) {
 		return nil, types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
 	}
 

@@ -835,65 +835,6 @@ func calculateUserPermissions(userRole int) map[string]any {
 	return permissions
 }
 
-// 根据用户角色生成默认的边栏配置
-func generateDefaultSidebarConfig(userRole int) string {
-	defaultConfig := map[string]any{}
-
-	// 聊天区域 - 所有用户都可以访问
-	defaultConfig["chat"] = map[string]any{
-		"enabled": true,
-		"chat":    true,
-	}
-
-	// 控制台区域 - 所有用户都可以访问
-	defaultConfig["console"] = map[string]any{
-		"enabled":    true,
-		"detail":     true,
-		"token":      true,
-		"log":        true,
-		"midjourney": true,
-		"task":       true,
-	}
-
-	// 个人中心区域 - 所有用户都可以访问
-	defaultConfig["personal"] = map[string]any{
-		"enabled":  true,
-		"topup":    true,
-		"personal": true,
-	}
-
-	// 管理员区域 - 根据角色决定
-	if userRole == common.RoleAdminUser {
-		// 管理员可以访问管理员区域，但不能访问系统设置
-		defaultConfig["admin"] = map[string]any{
-			"enabled": true,
-			"channel": true,
-			"models":  true,
-			"user":    true,
-			"setting": false, // 管理员不能访问系统设置
-		}
-	} else if userRole == common.RoleRootUser {
-		// 超级管理员可以访问所有功能
-		defaultConfig["admin"] = map[string]any{
-			"enabled": true,
-			"channel": true,
-			"models":  true,
-			"user":    true,
-			"setting": true,
-		}
-	}
-	// 普通用户不包含admin区域
-
-	// 转换为JSON字符串
-	configBytes, err := common.Marshal(defaultConfig)
-	if err != nil {
-		common.SysLog(common.LogText("failed to generate the default sidebar config: %s", err.Error()))
-		return ""
-	}
-
-	return string(configBytes)
-}
-
 func GetUserModels(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
@@ -998,9 +939,14 @@ func UpdateUser(c *gin.Context) {
 	auditEvents := make([]model.AuditLog, 0, 2)
 	previousAuthVersion := originUser.AuthVersion
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
-		// Maintain canonical lock order adty_groups -> users only when group is explicitly updated (R6-05).
+		// Maintain canonical lock order adty_groups -> users only when group is explicitly provided (R6-05 / R7-18).
+		// Allow locking an existing soft-deleted group row so callers echoing the user's
+		// unchanged legacy group are not rejected before comparing against current.Group.
+		targetGroupDeleted := false
 		if groupProvided && updatedUser.Group != "" {
-			if err := model.PreLockAdtyGroupsTx(tx, updatedUser.Group); err != nil {
+			var err error
+			targetGroupDeleted, err = model.PreLockAdtyGroupRowAllowDeletedTx(tx, updatedUser.Group)
+			if err != nil {
 				return err
 			}
 		}
@@ -1021,6 +967,9 @@ func UpdateUser(c *gin.Context) {
 			return errAdtyAdminActionDenied
 		}
 		if groupProvided && current.Group != updatedUser.Group {
+			if targetGroupDeleted {
+				return model.ErrAdtyGroupNotFound
+			}
 			if err := adtyAuthorizeAdminActions(c, authz.AdtyUserGroup); err != nil {
 				return err
 			}

@@ -68,8 +68,21 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id").First(&user, input.UserID).Error; err != nil {
 			return err
 		}
+		// R7-29: Scope idempotency keys per (site, user) so callers cannot collide
+		// with or probe another user's withdrawal keys, while keeping compatibility
+		// with legacy raw keys belonging to the same user.
+		if input.SiteID == 0 {
+			input.SiteID = user.SiteId
+		}
 		var existing model.AdtySiteInviteWithdrawal
-		lookup := tx.Where("idempotency_key = ?", key).Limit(1).Find(&existing)
+		var lookup *gorm.DB
+		if input.SiteID > 0 {
+			scopedKey := adtySiteInviteWithdrawScopedKey(input.SiteID, input.UserID, key)
+			lookup = tx.Where("user_id = ? AND site_id = ? AND (idempotency_key = ? OR idempotency_key = ?)", input.UserID, input.SiteID, scopedKey, key).Limit(1).Find(&existing)
+			row.IdempotencyKey = scopedKey
+		} else {
+			lookup = tx.Where("user_id = ? AND idempotency_key = ?", input.UserID, key).Limit(1).Find(&existing)
+		}
 		if lookup.Error != nil {
 			return lookup.Error
 		}
@@ -87,10 +100,10 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 			row = &existing
 			return nil
 		}
-		if input.SiteID == 0 {
-			input.SiteID = user.SiteId
-		}
 		row.SiteId = input.SiteID
+		if input.SiteID > 0 {
+			row.IdempotencyKey = adtySiteInviteWithdrawScopedKey(input.SiteID, input.UserID, key)
+		}
 		if err := authorizeCommissionSource(tx, input.UserID, user.SiteId, input.SiteID); err != nil {
 			return err
 		}

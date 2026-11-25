@@ -63,7 +63,11 @@ func SetAdtyRouter(apiRouter *gin.RouterGroup) {
 			handler = controller.GetAdtyManagedNotifications
 		}
 		apiRouter.Handle(route.method, rootPath, middleware.RootAuth(), func(c *gin.Context) { c.Set("notification_root", true) }, handler)
-		apiRouter.Handle(route.method, ownerPath, middleware.UserAuth(), handler)
+		if route.method == http.MethodGet {
+			apiRouter.Handle(route.method, ownerPath, middleware.UserAuth(), handler)
+		} else {
+			apiRouter.Handle(route.method, ownerPath, middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:site-notification"), handler)
+		}
 	}
 
 	// 余额流水（任务 7.2）
@@ -211,12 +215,12 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.POST("/adty/badges/seen", middleware.UserAuth(), controller.PostAdtySidebarBadgesSeen)
 	apiRouter.GET("/adty/tickets", middleware.UserAuth(), controller.GetAdtyTickets)
 	apiRouter.GET("/adty/tickets/request-audience", middleware.UserAuth(), controller.GetAdtyTicketRequestAudience)
-	apiRouter.POST("/adty/tickets", middleware.UserAuth(), controller.PostAdtyTicket)
+	apiRouter.POST("/adty/tickets", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:ticket-create"), controller.PostAdtyTicket)
 	apiRouter.GET("/adty/tickets/:id", middleware.UserAuth(), controller.GetAdtyTicket)
-	apiRouter.POST("/adty/tickets/:id/replies", middleware.UserAuth(), controller.PostAdtyTicketReply)
-	apiRouter.POST("/adty/tickets/:id/notes", middleware.UserAuth(), controller.PostAdtyTicketNote)
+	apiRouter.POST("/adty/tickets/:id/replies", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:ticket-reply"), controller.PostAdtyTicketReply)
+	apiRouter.POST("/adty/tickets/:id/notes", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:ticket-note"), controller.PostAdtyTicketNote)
 	apiRouter.POST("/adty/tickets/:id/status", middleware.UserAuth(), controller.PostAdtyTicketStatus)
-	apiRouter.POST("/adty/tickets/:id/images", middleware.UserAuth(), controller.PostAdtyTicketImage)
+	apiRouter.POST("/adty/tickets/:id/images", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:ticket-image"), controller.PostAdtyTicketImage)
 	apiRouter.GET("/adty/tickets/:id/images/:imageId", middleware.UserAuth(), controller.GetAdtyTicketImage)
 	apiRouter.DELETE("/adty/tickets/:id/images/:imageId", middleware.UserAuth(), controller.DeleteAdtyTicketImage)
 	apiRouter.GET("/adty/groups/health", middleware.UserAuth(), controller.GetAdtyGroupHealth)
@@ -516,13 +520,13 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/settlement-sheets", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerSettlementSheets}},
 		{http.MethodGet, "/earnings/lines", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerEarningLines}},
 		{http.MethodGet, "/vouchers", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtySiteVouchers}},
-		{http.MethodPost, "/vouchers", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtySiteVoucher}},
+		{http.MethodPost, "/vouchers", ownerOrdWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-voucher"), controller.PostAdtySiteVoucher}},
 		{http.MethodPost, "/vouchers/:id/cancel", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtyVoucherCancel}},
 		{http.MethodPost, "/vouchers/:id/freeze", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtyVoucherFreeze}},
-		{http.MethodPut, "/bonus-methods", ownerOrdWrite, []gin.HandlerFunc{controller.PutAdtySiteMethodBonus}},
+		{http.MethodPut, "/bonus-methods", ownerOrdWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-bonus-method"), controller.PutAdtySiteMethodBonus}},
 		{http.MethodGet, "/wallets", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerWallets}},
-		{http.MethodPost, "/wallets/earning-to-margin", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtyEarningToMargin}},
-		{http.MethodPost, "/wallets/earning-to-personal", ownerOrdWrite, []gin.HandlerFunc{controller.PostOwnerPersonalTransfer}},
+		{http.MethodPost, "/wallets/earning-to-margin", ownerOrdWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-earning-margin"), controller.PostAdtyEarningToMargin}},
+		{http.MethodPost, "/wallets/earning-to-personal", ownerOrdWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-earning-personal"), controller.PostOwnerPersonalTransfer}},
 		{http.MethodGet, "/wallets/self-use", ownerOrdRead, []gin.HandlerFunc{controller.GetOwnerSelfUseBalance}},
 		{http.MethodGet, "/self-use/usage", ownerOrdRead, []gin.HandlerFunc{controller.GetOwnerSelfUseUsage}},
 		{http.MethodGet, "/self-use/transfers", ownerOrdRead, []gin.HandlerFunc{controller.GetOwnerPrincipalTransfers}},
@@ -530,7 +534,7 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/withdrawals/rules", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtySiteWithdrawRules}},
 		{http.MethodGet, "/withdrawals/by-key", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtySiteWithdrawalByKey}},
 		{http.MethodGet, "/withdrawals", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtySiteWithdrawals}},
-		{http.MethodPost, "/withdrawals", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtySiteWithdrawal}},
+		{http.MethodPost, "/withdrawals", ownerOrdWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-withdraw"), controller.PostAdtySiteWithdrawal}},
 		{http.MethodPost, "/withdrawals/qr", ownerOrdWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-withdraw-qr"), controller.PostAdtySiteWithdrawalQR}},
 		{http.MethodPost, "/withdrawals/:id/cancel", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtySiteWithdrawalCancel}},
 		{http.MethodGet, "/wallet-ledgers", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerWalletLedger}},
@@ -567,10 +571,10 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/referral/audit-logs", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteReferralAuditLogs}},
 		{http.MethodGet, "/referral/invites", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteInvites}},
 		{http.MethodPost, "/referral/invites", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteInvite}},
-		{http.MethodPost, "/referral/cover-pending", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteCoverageResume}},
+		{http.MethodPost, "/referral/cover-pending", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-referral-cover"), controller.PostAdtyOwnerSiteCoverageResume}},
 		{http.MethodGet, "/commission-withdrawals", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteInviteWithdrawals}},
-		{http.MethodPost, "/commission-withdrawals/:id/review", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteInviteWithdrawalReview}},
-		{http.MethodPost, "/commission-withdrawals/:id/paid", ownerOrdWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteInviteWithdrawalPaid}},
+		{http.MethodPost, "/commission-withdrawals/:id/review", ownerOrdWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-comm-wd-review"), controller.PostAdtyOwnerSiteInviteWithdrawalReview}},
+		{http.MethodPost, "/commission-withdrawals/:id/paid", ownerOrdWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-comm-wd-paid"), controller.PostAdtyOwnerSiteInviteWithdrawalPaid}},
 		{http.MethodGet, "/customers", ownerCustRead, []gin.HandlerFunc{controller.GetAdtyOwnerCustomers}},
 		{http.MethodGet, "/customers/lookup", ownerCustRead, []gin.HandlerFunc{controller.LookupAdtyOwnerCustomer}},
 		{http.MethodGet, "/customers/:id", ownerCustRead, []gin.HandlerFunc{controller.GetAdtyOwnerCustomer}},
@@ -586,7 +590,7 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/sender-domain", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-sender"), controller.AddAdtySiteSenderDomain}},
 		{http.MethodDelete, "/sender-domain", ownerSetWrite, []gin.HandlerFunc{controller.RemoveAdtySiteSenderDomainWithProof}},
 		{http.MethodGet, "/mail-config", ownerSetRead, []gin.HandlerFunc{controller.GetAdtySiteMailConfig}},
-		{http.MethodPut, "/mail-config", ownerSetWrite, []gin.HandlerFunc{controller.PutAdtySiteMailConfig}},
+		{http.MethodPut, "/mail-config", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-mail-config"), controller.PutAdtySiteMailConfig}},
 		{http.MethodPost, "/mail-config/test", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-mail-test"), controller.PostAdtySiteMailConfigTest}},
 	} {
 		middleware.DeclareAdtyAccessTokenRoute(route.method, "/api/adty/site"+route.path, "scope", route.scope)
@@ -622,6 +626,8 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		handlers := []gin.HandlerFunc{middleware.UserAuth(), middleware.DisableCache()}
 		if route.method == http.MethodPost && (route.path == "/adty/staff/customers/:id/password-reset" || route.path == "/adty/staff/customers/:id/disable") {
 			handlers = append(handlers, middleware.UserCriticalRateLimit("CT:staff-customer-security"))
+		} else if (route.method == http.MethodPost && route.path == "/adty/site/staff") || (route.method == http.MethodPut && route.path == "/adty/site/staff/:id/password") {
+			handlers = append(handlers, middleware.UserCriticalRateLimit("CT:site-staff"))
 		}
 		if route.method == http.MethodPost && route.path == "/adty/site/balance-requests/:id/review" {
 			handlers = append(handlers, middleware.UserCriticalRateLimit("CT:site-balance-review"))

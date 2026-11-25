@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/types"
@@ -189,14 +192,117 @@ func decodeJSONObject(jsonStr string) (map[string]any, error) {
 func decimalFromJSONValue(value any) (decimal.Decimal, error) {
 	switch typed := value.(type) {
 	case json.Number:
-		parsed, err := common.ParseBoundedDecimalString(string(typed), 18, 12)
-		if err != nil {
-			return decimal.Zero, err
-		}
-		return parsed, nil
+		return parseBoundedRatioDecimal(string(typed))
 	case nil:
 		return decimal.Zero, fmt.Errorf("numeric value required")
 	default:
 		return decimal.Zero, fmt.Errorf("numeric value required, got %T", value)
 	}
+}
+
+var maxRatioDecimalAbs = decimal.New(1, 18)
+
+// parseBoundedRatioDecimal parses a JSON ratio/price number while blocking
+// shopspring/decimal giant-exponent CPU/OOM DoS. Unlike strict currency parsing,
+// it allows up to 18 fractional digits and bounded scientific notation
+// (exponent in [-18, 18]) so valid float64 values such as 1.643835616438356 or
+// 5e-7 round-trip cleanly (R7-01).
+func parseBoundedRatioDecimal(raw string) (decimal.Decimal, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" || len(s) > 64 {
+		return decimal.Zero, fmt.Errorf("invalid ratio number")
+	}
+	idx := 0
+	if s[idx] == '+' || s[idx] == '-' {
+		idx++
+		if idx >= len(s) {
+			return decimal.Zero, fmt.Errorf("invalid ratio number")
+		}
+	}
+	mantissa := s[idx:]
+	expPart := ""
+	if ePos := strings.IndexAny(mantissa, "eE"); ePos >= 0 {
+		expPart = mantissa[ePos+1:]
+		mantissa = mantissa[:ePos]
+		if expPart == "" {
+			return decimal.Zero, fmt.Errorf("invalid ratio exponent")
+		}
+	}
+	if mantissa == "" {
+		return decimal.Zero, fmt.Errorf("invalid ratio number")
+	}
+	dotSeen := false
+	totalDigits := 0
+	fracDigits := 0
+	for i := 0; i < len(mantissa); i++ {
+		ch := mantissa[i]
+		if ch == '.' {
+			if dotSeen {
+				return decimal.Zero, fmt.Errorf("invalid ratio number")
+			}
+			dotSeen = true
+			continue
+		}
+		if ch < '0' || ch > '9' {
+			return decimal.Zero, fmt.Errorf("invalid ratio number")
+		}
+		totalDigits++
+		if dotSeen {
+			fracDigits++
+		}
+	}
+	if totalDigits == 0 || totalDigits > 24 || fracDigits > 18 {
+		return decimal.Zero, fmt.Errorf("ratio precision exceeds limit")
+	}
+	if expPart != "" {
+		eIdx := 0
+		if expPart[eIdx] == '+' || expPart[eIdx] == '-' {
+			eIdx++
+		}
+		if eIdx >= len(expPart) || len(expPart)-eIdx > 4 {
+			return decimal.Zero, fmt.Errorf("ratio exponent out of range")
+		}
+		for i := eIdx; i < len(expPart); i++ {
+			if expPart[i] < '0' || expPart[i] > '9' {
+				return decimal.Zero, fmt.Errorf("invalid ratio exponent")
+			}
+		}
+		expVal, err := strconv.Atoi(expPart)
+		if err != nil || expVal < -18 || expVal > 18 {
+			return decimal.Zero, fmt.Errorf("ratio exponent out of range")
+		}
+	}
+	parsed, err := decimal.NewFromString(s)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	if parsed.Exponent() < -36 || parsed.Exponent() > 36 || parsed.Abs().GreaterThan(maxRatioDecimalAbs) {
+		return decimal.Zero, fmt.Errorf("ratio magnitude out of range")
+	}
+	return parsed, nil
+}
+
+// ValidateRatioFloat checks that a float64 ratio/price is finite, non-negative,
+// and representable by parseBoundedRatioDecimal once JSON-encoded (R7-01).
+func ValidateRatioFloat(v float64) error {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return fmt.Errorf("ratio must be a finite, non-negative number")
+	}
+	_, err := parseBoundedRatioDecimal(strconv.FormatFloat(v, 'g', -1, 64))
+	return err
+}
+
+// ValidateRatioJSONObject pre-validates a flat JSON object of non-negative
+// pricing ratios before persisting it to options (R7-01).
+func ValidateRatioJSONObject(jsonStr string) error {
+	parsed, err := parseDecimalObject(jsonStr)
+	if err != nil {
+		return err
+	}
+	for name, ratio := range parsed {
+		if ratio.IsNegative() {
+			return fmt.Errorf("%s: ratio must be non-negative", name)
+		}
+	}
+	return nil
 }

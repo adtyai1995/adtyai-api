@@ -329,6 +329,9 @@ func ollamaChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 			}
 			continue
 		}
+		if strings.TrimSpace(ck.Error) != "" {
+			return nil, types.NewOpenAIError(errors.New(ck.Error), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		}
 		parsedAny = true
 		lastChunk = ck
 		if ck.Message != nil && len(ck.Message.Thinking) > 0 {
@@ -360,6 +363,9 @@ func ollamaChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		var single ollamaChatStreamChunk
 		if err := common.Unmarshal(body, &single); err != nil {
 			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		if strings.TrimSpace(single.Error) != "" {
+			return nil, types.NewOpenAIError(errors.New(single.Error), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 		}
 		lastChunk = single
 		if single.Message != nil {

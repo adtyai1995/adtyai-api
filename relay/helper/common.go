@@ -304,35 +304,65 @@ func HasWrittenStreamPayload(c *gin.Context) bool {
 }
 
 func ClaudeData(c *gin.Context, resp dto.ClaudeResponse) error {
+	if c == nil || c.Writer == nil {
+		return errors.New("context or writer is nil")
+	}
 	if requestContextDone(c) {
-		return nil
+		if err := c.Request.Context().Err(); err != nil {
+			return fmt.Errorf("request context done: %w", err)
+		}
+		return errors.New("client disconnected")
 	}
 
 	jsonData, err := common.Marshal(resp)
 	if err != nil {
 		common.SysError(common.LogText("error marshalling stream response: %s", err.Error()))
-	} else {
-		c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
-		c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonData)})
-		if flushErr := FlushWriter(c); flushErr == nil && resp.Type != "ping" {
-			MarkStreamPayloadWritten(c)
-		}
-		return nil
+		return fmt.Errorf("error marshalling stream response: %w", err)
 	}
-	_ = FlushWriter(c)
+
+	event := common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)}
+	if err := event.Render(c.Writer); err != nil {
+		return err
+	}
+	event.Data = "data: " + string(jsonData)
+	if err := event.Render(c.Writer); err != nil {
+		return err
+	}
+	if err := FlushWriter(c); err != nil {
+		return err
+	}
+	if resp.Type != "ping" {
+		MarkStreamPayloadWritten(c)
+	}
 	return nil
 }
 
-func ClaudeChunkData(c *gin.Context, resp dto.ClaudeResponse, data string) {
+func ClaudeChunkData(c *gin.Context, resp dto.ClaudeResponse, data string) error {
+	if c == nil || c.Writer == nil {
+		return errors.New("context or writer is nil")
+	}
 	if requestContextDone(c) {
-		return
+		if err := c.Request.Context().Err(); err != nil {
+			return fmt.Errorf("request context done: %w", err)
+		}
+		return errors.New("client disconnected")
 	}
 
-	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
-	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s\n", data)})
-	if err := FlushWriter(c); err == nil && resp.Type != "ping" {
+	event := common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)}
+	if err := event.Render(c.Writer); err != nil {
+		return err
+	}
+	event.Data = fmt.Sprintf("data: %s\n", data)
+	if err := event.Render(c.Writer); err != nil {
+		return err
+	}
+	if err := FlushWriter(c); err != nil {
+		return err
+	}
+	if resp.Type != "ping" {
 		MarkStreamPayloadWritten(c)
 	}
+	return nil
 }
 
 func ResponseChunkData(c *gin.Context, resp dto.ResponsesStreamResponse, data string) error {
@@ -364,7 +394,10 @@ func StringData(c *gin.Context, str string) error {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
-	c.Render(-1, common.CustomEvent{Data: "data: " + str})
+	event := common.CustomEvent{Data: "data: " + str}
+	if err := event.Render(c.Writer); err != nil {
+		return err
+	}
 	if err := FlushWriter(c); err != nil {
 		return err
 	}

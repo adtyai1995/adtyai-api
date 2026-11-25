@@ -12,8 +12,42 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type adtySiteTierInput struct {
+	Id                int64                  `json:"id"`
+	Code              string                 `json:"code"`
+	Name              string                 `json:"name"`
+	MinMonthlyUSD     common.BoundedDecimal  `json:"min_monthly_usd"`
+	MinEffectiveUsers int64                  `json:"min_effective_users"`
+	MinPrincipalUSD   common.BoundedDecimal  `json:"min_principal_usd"`
+	MinConsumptionUSD common.BoundedDecimal  `json:"min_consumption_usd"`
+	CostFactor        *common.BoundedDecimal `json:"cost_factor"`
+	DepositUSD        common.BoundedDecimal  `json:"deposit_usd"`
+	Enabled           bool                   `json:"enabled"`
+	SortOrder         int                    `json:"sort_order"`
+}
+
+func (in adtySiteTierInput) toModel() model.AdtySiteTier {
+	out := model.AdtySiteTier{
+		Id:                in.Id,
+		Code:              in.Code,
+		Name:              in.Name,
+		MinMonthlyUSD:     in.MinMonthlyUSD.Decimal,
+		MinEffectiveUsers: in.MinEffectiveUsers,
+		MinPrincipalUSD:   in.MinPrincipalUSD.Decimal,
+		MinConsumptionUSD: in.MinConsumptionUSD.Decimal,
+		DepositUSD:        in.DepositUSD.Decimal,
+		Enabled:           in.Enabled,
+		SortOrder:         in.SortOrder,
+	}
+	if in.CostFactor != nil {
+		val := in.CostFactor.Decimal
+		out.CostFactor = &val
+	}
+	return out
+}
+
 type adtySiteTierBatchRequest struct {
-	Tiers *[]model.AdtySiteTier `json:"tiers"`
+	Tiers *[]adtySiteTierInput `json:"tiers"`
 }
 
 func GetAdtySiteTiers(c *gin.Context) {
@@ -35,6 +69,10 @@ func PutAdtySiteTiers(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	tiers := make([]model.AdtySiteTier, 0, len(*body.Tiers))
+	for _, item := range *body.Tiers {
+		tiers = append(tiers, item.toModel())
+	}
 	save := service.SaveAdtySiteTiers
 	if c.Request.Method == http.MethodPatch {
 		save = service.UpdateAdtySiteTiers
@@ -42,7 +80,7 @@ func PutAdtySiteTiers(c *gin.Context) {
 	if c.Request.Method == http.MethodPost {
 		save = service.CreateAdtySiteTiers
 	}
-	if err := save(*body.Tiers); err != nil {
+	if err := save(tiers); err != nil {
 		if errors.Is(err, service.ErrAdtySiteTierNotFound) {
 			common.ApiErrorT(c, "This level does not exist or is disabled")
 			return
@@ -189,7 +227,7 @@ func PostAdtyAdminSiteTierPrincipal(c *gin.Context) {
 	case errors.Is(err, service.ErrAdtySiteNotFound):
 		common.ApiErrorStatus(c, http.StatusNotFound, err)
 	case errors.Is(err, model.ErrAdtyIdempotencyConflict):
-		common.ApiErrorStatus(c, http.StatusConflict, err)
+		common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
 	case errors.Is(err, service.ErrAdtySiteTierInvalid):
 		common.ApiErrorT(c, "Invalid parameters")
 	case err != nil:

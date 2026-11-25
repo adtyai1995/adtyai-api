@@ -457,7 +457,7 @@ func LoadBonusPolicySnapshotTx(tx *gorm.DB, siteID int, isTeam bool, method stri
 	if !ok || !rule.Enabled {
 		return snap, nil
 	}
-	rateDec, err := decimal.NewFromString(strings.TrimSpace(rule.Rate))
+	rateDec, err := common.ParseBoundedDecimalString(rule.Rate, 4, 8)
 	if err != nil || rateDec.LessThanOrEqual(decimal.Zero) || rateDec.GreaterThan(decimal.NewFromInt(1)) {
 		return snap, nil
 	}
@@ -668,7 +668,7 @@ func parseBonusRate(rate string, enabled bool) (string, error) {
 	if !enabled && strings.TrimSpace(rate) == "" {
 		return "0", nil
 	}
-	parsed, err := decimal.NewFromString(strings.TrimSpace(rate))
+	parsed, err := common.ParseBoundedDecimalString(rate, 4, 8)
 	if err != nil || parsed.IsNegative() || parsed.GreaterThan(decimal.NewFromInt(1)) {
 		return "", errBonusMethod("bonus rate must be a decimal fraction from 0 to 1")
 	}

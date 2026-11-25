@@ -161,9 +161,15 @@ func RecoverBillingOperations(ctx context.Context, limit int) error {
 						_ = model.DB.WithContext(ctx).Model(&model.Task{}).Where("id = ?", deadTask.ID).
 							Updates(map[string]any{"billing_pending": false, "private_data": deadTask.PrivateData}).Error
 					}
-				} else if (op.Kind == "mj_charge" || op.Kind == "mj_refund") && op.ReferenceId > 0 {
+				} else if op.Kind == "mj_refund" && op.ReferenceId > 0 {
 					_ = model.DB.WithContext(ctx).Model(&model.Midjourney{}).Where("id = ?", op.ReferenceId).
-						Updates(map[string]any{"billing_pending": false, "billing_charge_pending": false}).Error
+						Update("billing_pending", false).Error
+				} else if op.Kind == "mj_charge" && op.ReferenceId > 0 {
+					// R7-08: Keep billing_charge_pending = true when mj_charge enters dead
+					// letter so polling and automatic mj_refund remain blocked pending
+					// manual review; queue starvation is already prevented by NOT EXISTS.
+					_ = model.DB.WithContext(ctx).Model(&model.Midjourney{}).Where("id = ?", op.ReferenceId).
+						Update("billing_pending", false).Error
 				}
 			}
 		}
@@ -218,6 +224,7 @@ func RecoverBillingOperations(ctx context.Context, limit int) error {
 	}
 	var mjs []model.Midjourney
 	if err := model.DB.WithContext(ctx).Where("(billing_pending = ? OR billing_charge_pending = ?)", true, true).
+		Where("fail_reason NOT LIKE ?", "billing_conflict:%").
 		Where("NOT EXISTS (SELECT 1 FROM billing_operations bo WHERE bo.state = ? AND bo.kind IN (?, ?) AND bo.reference_id = midjourneys.id)", model.BillingDead, "mj_charge", "mj_refund").
 		Order("id").Limit(limit).Find(&mjs).Error; err != nil {
 		return err

@@ -376,7 +376,7 @@ func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, out
 	}
 	result.PaidAt = AdtyEpayPaidTime(strings.Trim(string(parsed.PaidAt), `"`))
 	if money := strings.Trim(strings.TrimSpace(string(parsed.Money)), `"`); money != "" {
-		if value, err := decimal.NewFromString(money); err == nil {
+		if value, err := common.ParseBoundedDecimalString(money, 18, 8); err == nil {
 			result.MoneyCNY = value
 		}
 	}
@@ -426,7 +426,7 @@ func queryAdtyEpayOrderRSA(ctx context.Context, channel *model.AdtyEpayChannel, 
 	}
 	result.PaidAt = AdtyEpayPaidTime(strings.TrimSpace(fields["endtime"]))
 	if money := strings.TrimSpace(fields["money"]); money != "" {
-		if value, err := decimal.NewFromString(money); err == nil {
+		if value, err := common.ParseBoundedDecimalString(money, 18, 8); err == nil {
 			result.MoneyCNY = value
 		}
 	}

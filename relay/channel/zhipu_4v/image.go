@@ -84,15 +84,6 @@ func zhipu4vImageHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		payload.Created = info.StartTime.Unix()
 	}
 	for _, data := range zhipuResp.Data {
-		url := data.Url
-		if url == "" {
-			url = data.ImageUrl
-		}
-		if url == "" {
-			logger.LogWarn(c, common.LogText("zhipu_image_missing_url"))
-			continue
-		}
-
 		var b64 string
 		switch {
 		case data.B64Json != "":
@@ -100,6 +91,14 @@ func zhipu4vImageHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		case data.B64Image != "":
 			b64 = data.B64Image
 		default:
+			url := data.Url
+			if url == "" {
+				url = data.ImageUrl
+			}
+			if url == "" {
+				logger.LogWarn(c, common.LogText("zhipu_image_missing_url"))
+				continue
+			}
 			_, downloaded, err := service.GetImageFromUrl(url)
 			if err != nil {
 				logger.LogError(c, common.LogText("zhipu_image_get_b64_failed: %s", err.Error()))

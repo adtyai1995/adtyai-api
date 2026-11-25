@@ -167,7 +167,13 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 	input.RelatedModel = strings.TrimSpace(redactAdtySecrets(input.RelatedModel))
 	input.RelatedGroup = strings.TrimSpace(redactAdtySecrets(input.RelatedGroup))
 	input.RelatedError = strings.TrimSpace(redactAdtySecrets(input.RelatedError))
-	if userId <= 0 || input.Title == "" || input.Body == "" || utf8.RuneCountInString(input.Title) > 120 {
+	if userId <= 0 || input.Title == "" || input.Body == "" ||
+		utf8.RuneCountInString(input.Title) > 120 ||
+		utf8.RuneCountInString(input.Body) > 10000 ||
+		utf8.RuneCountInString(input.RelatedError) > 4000 ||
+		utf8.RuneCountInString(input.RelatedRef) > 255 ||
+		utf8.RuneCountInString(input.RelatedModel) > 255 ||
+		utf8.RuneCountInString(input.RelatedGroup) > 255 {
 		return nil, ErrAdtyTicketInvalid
 	}
 	if input.Type == "" {
@@ -250,6 +256,18 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 				created = &ticket
 				return nil
 			}
+		}
+
+		// R7-33: Cap concurrent open tickets per user to prevent ticket/attachment
+		// storage amplification when a single account spams new tickets.
+		var openTicketCount int64
+		if err := tx.Model(&model.AdtyTicket{}).
+			Where("user_id = ? AND status <> ?", actor.User.Id, model.AdtyTicketClosed).
+			Count(&openTicketCount).Error; err != nil {
+			return err
+		}
+		if openTicketCount >= 20 {
+			return common.NewMessage("Too many open tickets; please wait for existing tickets to be resolved")
 		}
 
 		ticket := model.AdtyTicket{
@@ -1470,7 +1488,7 @@ func DeleteAdtyTicketImage(userId int, ticketId, imageId int64, workspace ...str
 
 func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visibility string, workspace ...string) (*model.AdtyTicketMessage, error) {
 	body = strings.TrimSpace(redactAdtySecrets(body))
-	if body == "" {
+	if body == "" || utf8.RuneCountInString(body) > 10000 {
 		return nil, ErrAdtyTicketInvalid
 	}
 	var err error

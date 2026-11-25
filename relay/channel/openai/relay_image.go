@@ -41,13 +41,18 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
-	info.UpdateImageCount(openaiImageResponseCount(responseBody))
+	normalizeOpenAIUsage(&usageResp.Usage)
+	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
+
+	imageCount := openaiImageResponseCount(responseBody)
+	if imageCount == 0 && !service.ValidUsage(&usageResp.Usage) {
+		return nil, types.NewError(errors.New("empty image response"), types.ErrorCodeEmptyResponse)
+	}
+	info.UpdateImageCount(imageCount)
 
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
-	normalizeOpenAIUsage(&usageResp.Usage)
-	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
 	return &usageResp.Usage, nil
 }
 
@@ -153,6 +158,7 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	var streamErr *types.NewAPIError
 	var lastErrorEventErr *types.NewAPIError
 	var sawErrorEvent bool
+	var clientWriteFailed bool
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		raw := common.StringToByteSlice(data)
@@ -185,6 +191,7 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 			}
 		}
 		if err := writeOpenaiImageStreamChunk(c, raw); err != nil {
+			clientWriteFailed = true
 			sr.Stop(err)
 			return
 		}
@@ -200,7 +207,7 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	// Preserve the ClientGone anti-abuse billing rule for image generation;
 	// for non-canceled streams, reject empty or error-only streams without
 	// delivered images/usage so retries or full refunds can run.
-	clientGone := (info != nil && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone) || helper.ClientRequestCanceled(c)
+	clientGone := clientWriteFailed || (info != nil && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone) || helper.ClientRequestCanceled(c)
 	if !clientGone {
 		if len(lastStreamData) == 0 {
 			return nil, types.NewOpenAIError(fmt.Errorf("empty upstream image stream response"), types.ErrorCodeEmptyResponse, http.StatusBadGateway)
@@ -210,6 +217,9 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 				return nil, lastErrorEventErr
 			}
 			return nil, types.NewOpenAIError(fmt.Errorf("upstream image stream returned error event"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		}
+		if completedImages == 0 && !service.ValidUsage(usage) {
+			return nil, types.NewOpenAIError(fmt.Errorf("empty upstream image stream response"), types.ErrorCodeEmptyResponse, http.StatusBadGateway)
 		}
 	}
 

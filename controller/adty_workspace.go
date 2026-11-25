@@ -408,6 +408,7 @@ func GetAdtyTickets(c *gin.Context) {
 }
 
 func PostAdtyTicket(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
 	var body service.AdtyTicketInput
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -556,6 +557,7 @@ func PostAdtyTicketReply(c *gin.Context) {
 	if !ok {
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
 	var body struct {
 		Body string `json:"body"`
 	}
@@ -576,6 +578,7 @@ func PostAdtyTicketNote(c *gin.Context) {
 	if !ok {
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
 	var body struct {
 		Body string `json:"body"`
 	}

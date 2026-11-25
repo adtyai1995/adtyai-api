@@ -158,11 +158,12 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 		if err != nil {
 			return err
 		}
-		// R4-044: Check idempotency replay BEFORE current rule/toggle checks so retries
-		// succeed deterministically even after threshold/rate/status updates, and compare
-		// canonicalized network & QR asset path.
+		// R4-044 / R7-29: Scope idempotency keys per user so one caller cannot
+		// block or probe another user's withdrawal keys, while still matching
+		// historical raw keys owned by this user.
+		scopedKey := adtyReferralWithdrawScopedKey(input.UserId, key)
 		var existing []model.ReferralWithdrawal
-		if err := tx.Where("idempotency_key = ?", key).Limit(1).Find(&existing).Error; err != nil {
+		if err := tx.Where("user_id = ? AND (idempotency_key = ? OR idempotency_key = ?)", input.UserId, scopedKey, key).Limit(1).Find(&existing).Error; err != nil {
 			return err
 		}
 		if len(existing) > 0 {
@@ -182,7 +183,7 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 				strings.TrimSpace(existing[0].AccountName) == trimmedAccountName &&
 				existingQR == normalizedQR
 			if sameDest && input.AccountType == model.ReferralWithdrawToAlipay {
-				existingRate, err := decimal.NewFromString(strings.TrimSpace(existing[0].CNYRate))
+				existingRate, err := common.ParseBoundedDecimalString(existing[0].CNYRate, 18, 8)
 				if err != nil || !existingRate.Equal(input.ExpectedCNYRate) {
 					sameDest = false
 				}
@@ -297,7 +298,7 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 			return ErrReferralInsufficient
 		}
 		withdrawal.AffiliateId = affiliate.Id
-		withdrawal.IdempotencyKey = &key
+		withdrawal.IdempotencyKey = &scopedKey
 		if err := tx.Create(withdrawal).Error; err != nil {
 			return err
 		}

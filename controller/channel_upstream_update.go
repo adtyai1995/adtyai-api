@@ -534,28 +534,39 @@ func checkAndPersistChannelUpstreamModelUpdates(
 		return false, 0, fetchErr
 	}
 
-	if allowAutoApply && settings.UpstreamModelUpdateAutoSyncEnabled && len(pendingAddModels) > 0 {
-		originModels := normalizeModelNames(channel.GetModels())
-		mergedModels := mergeModelNames(originModels, pendingAddModels)
-		if len(mergedModels) > len(originModels) {
-			channel.Models = strings.Join(mergedModels, ",")
-			autoAdded = len(mergedModels) - len(originModels)
-			modelsChanged = true
-		}
-		settings.UpstreamModelUpdateLastDetectedModels = []string{}
-	} else {
-		settings.UpstreamModelUpdateLastDetectedModels = pendingAddModels
-	}
-	settings.UpstreamModelUpdateLastRemovedModels = pendingRemoveModels
-
 	if err = model.DB.Transaction(func(tx *gorm.DB) error {
-		if err := updateChannelUpstreamModelSettings(tx, channel, *settings, modelsChanged); err != nil {
+		// R7-19: Lock and reload the authoritative channel row after upstream I/O
+		// so concurrent disable/delete/group edits are never overwritten with stale abilities.
+		var locked model.Channel
+		if err := model.AdtyLockForUpdate(tx).First(&locked, "id = ?", channel.Id).Error; err != nil {
 			return err
 		}
+		lockedSettings := locked.GetOtherSettings()
+		lockedSettings.UpstreamModelUpdateLastCheckTime = now
+		modelsChanged = false
+		autoAdded = 0
+		if allowAutoApply && lockedSettings.UpstreamModelUpdateAutoSyncEnabled && len(pendingAddModels) > 0 {
+			originModels := normalizeModelNames(locked.GetModels())
+			mergedModels := mergeModelNames(originModels, pendingAddModels)
+			if len(mergedModels) > len(originModels) {
+				locked.Models = strings.Join(mergedModels, ",")
+				autoAdded = len(mergedModels) - len(originModels)
+				modelsChanged = true
+			}
+			lockedSettings.UpstreamModelUpdateLastDetectedModels = []string{}
+		} else {
+			lockedSettings.UpstreamModelUpdateLastDetectedModels = pendingAddModels
+		}
+		lockedSettings.UpstreamModelUpdateLastRemovedModels = pendingRemoveModels
+		if err := updateChannelUpstreamModelSettings(tx, &locked, lockedSettings, modelsChanged); err != nil {
+			return err
+		}
+		*settings = lockedSettings
+		channel.Models = locked.Models
 		if !modelsChanged {
 			return nil
 		}
-		return channel.UpdateAbilities(tx)
+		return locked.UpdateAbilities(tx)
 	}); err != nil {
 		return false, autoAdded, err
 	}
@@ -996,39 +1007,47 @@ func applyChannelUpstreamModelUpdates(
 	modelsChanged bool,
 	err error,
 ) {
-	settings := channel.GetOtherSettings()
-	pendingAddModels := normalizeModelNames(settings.UpstreamModelUpdateLastDetectedModels)
-	pendingRemoveModels := normalizeModelNames(settings.UpstreamModelUpdateLastRemovedModels)
-	addModels := intersectModelNames(addModelsInput, pendingAddModels)
-	ignoreModels := intersectModelNames(ignoreModelsInput, pendingAddModels)
-	removeModels := intersectModelNames(removeModelsInput, pendingRemoveModels)
-	removeModels = subtractModelNames(removeModels, addModels)
-
-	originModels := normalizeModelNames(channel.GetModels())
-	nextModels := applySelectedModelChanges(originModels, addModels, removeModels)
-	modelsChanged = !slices.Equal(originModels, nextModels)
-	if modelsChanged {
-		channel.Models = strings.Join(nextModels, ",")
-	}
-
-	settings.UpstreamModelUpdateIgnoredModels = mergeModelNames(settings.UpstreamModelUpdateIgnoredModels, ignoreModels)
-	if len(addModels) > 0 {
-		settings.UpstreamModelUpdateIgnoredModels = subtractModelNames(settings.UpstreamModelUpdateIgnoredModels, addModels)
-	}
-	remainingModels = subtractModelNames(pendingAddModels, append(addModels, ignoreModels...))
-	remainingRemoveModels = subtractModelNames(pendingRemoveModels, removeModels)
-	settings.UpstreamModelUpdateLastDetectedModels = remainingModels
-	settings.UpstreamModelUpdateLastRemovedModels = remainingRemoveModels
-	settings.UpstreamModelUpdateLastCheckTime = common.GetTimestamp()
-
+	var addModels, removeModels []string
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
-		if err := updateChannelUpstreamModelSettings(tx, channel, settings, modelsChanged); err != nil {
+		// R7-19: Lock and reload the authoritative channel row inside the transaction
+		// so concurrent disable/delete/group updates cannot be overwritten by stale snapshots.
+		var locked model.Channel
+		if err := model.AdtyLockForUpdate(tx).First(&locked, "id = ?", channel.Id).Error; err != nil {
 			return err
 		}
+		settings := locked.GetOtherSettings()
+		pendingAddModels := normalizeModelNames(settings.UpstreamModelUpdateLastDetectedModels)
+		pendingRemoveModels := normalizeModelNames(settings.UpstreamModelUpdateLastRemovedModels)
+		addModels = intersectModelNames(addModelsInput, pendingAddModels)
+		ignoreModels := intersectModelNames(ignoreModelsInput, pendingAddModels)
+		removeModels = intersectModelNames(removeModelsInput, pendingRemoveModels)
+		removeModels = subtractModelNames(removeModels, addModels)
+
+		originModels := normalizeModelNames(locked.GetModels())
+		nextModels := applySelectedModelChanges(originModels, addModels, removeModels)
+		modelsChanged = !slices.Equal(originModels, nextModels)
+		if modelsChanged {
+			locked.Models = strings.Join(nextModels, ",")
+		}
+
+		settings.UpstreamModelUpdateIgnoredModels = mergeModelNames(settings.UpstreamModelUpdateIgnoredModels, ignoreModels)
+		if len(addModels) > 0 {
+			settings.UpstreamModelUpdateIgnoredModels = subtractModelNames(settings.UpstreamModelUpdateIgnoredModels, addModels)
+		}
+		remainingModels = subtractModelNames(pendingAddModels, append(addModels, ignoreModels...))
+		remainingRemoveModels = subtractModelNames(pendingRemoveModels, removeModels)
+		settings.UpstreamModelUpdateLastDetectedModels = remainingModels
+		settings.UpstreamModelUpdateLastRemovedModels = remainingRemoveModels
+		settings.UpstreamModelUpdateLastCheckTime = common.GetTimestamp()
+
+		if err := updateChannelUpstreamModelSettings(tx, &locked, settings, modelsChanged); err != nil {
+			return err
+		}
+		channel.Models = locked.Models
 		if !modelsChanged {
 			return nil
 		}
-		return channel.UpdateAbilities(tx)
+		return locked.UpdateAbilities(tx)
 	}); err != nil {
 		return nil, nil, nil, nil, false, err
 	}

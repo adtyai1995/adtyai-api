@@ -210,24 +210,18 @@ func UpdateUserSetting(userId int, setting dto.UserSetting) error {
 	return PublishUserAuthCache(userId)
 }
 
-// 根据用户角色生成默认的边栏配置
+// 根据用户角色生成默认的边栏配置（R7-35：与前端 SIDEBAR_MODULES_DEFAULT 对齐，移除退役的 chat/midjourney）
 func generateDefaultSidebarConfigForRole(userRole int) string {
 	defaultConfig := map[string]any{}
 
-	// 聊天区域 - 所有用户都可以访问
-	defaultConfig["chat"] = map[string]any{
-		"enabled": true,
-		"chat":    true,
-	}
-
 	// 控制台区域 - 所有用户都可以访问
 	defaultConfig["console"] = map[string]any{
-		"enabled":    true,
-		"detail":     true,
-		"token":      true,
-		"log":        true,
-		"midjourney": true,
-		"task":       true,
+		"enabled": true,
+		"detail":  true,
+		"token":   true,
+		"log":     true,
+		"task":    true,
+		"audit":   true,
 	}
 
 	// 个人中心区域 - 所有用户都可以访问
@@ -235,26 +229,31 @@ func generateDefaultSidebarConfigForRole(userRole int) string {
 		"enabled":  true,
 		"topup":    true,
 		"personal": true,
+		"security": true,
 	}
 
 	// 管理员区域 - 根据角色决定
 	if userRole == common.RoleAdminUser {
 		// 管理员可以访问管理员区域，但不能访问系统设置
 		defaultConfig["admin"] = map[string]any{
-			"enabled": true,
-			"channel": true,
-			"models":  true,
-			"user":    true,
-			"setting": false, // 管理员不能访问系统设置
+			"enabled":        true,
+			"channel":        true,
+			"models":         true,
+			"user":           true,
+			"recharge_audit": true,
+			"admin_referral": true,
+			"setting":        false, // 管理员不能访问系统设置
 		}
 	} else if userRole == common.RoleRootUser {
 		// 超级管理员可以访问所有功能
 		defaultConfig["admin"] = map[string]any{
-			"enabled": true,
-			"channel": true,
-			"models":  true,
-			"user":    true,
-			"setting": true,
+			"enabled":        true,
+			"channel":        true,
+			"models":         true,
+			"user":           true,
+			"recharge_audit": true,
+			"admin_referral": true,
+			"setting":        true,
 		}
 	}
 	// 普通用户不包含admin区域

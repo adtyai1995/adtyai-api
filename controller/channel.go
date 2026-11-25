@@ -441,14 +441,8 @@ func SearchChannels(c *gin.Context) {
 		channelData = filtered
 	}
 
-	page, _ := strconv.Atoi(c.DefaultQuery("p", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-	if page < 1 {
-		page = 1
-	}
-	if pageSize <= 0 {
-		pageSize = 20
-	}
+	pageInfo := common.GetPageQuery(c)
+	pageSize := pageInfo.GetPageSize()
 
 	pagedData := make([]*model.Channel, 0)
 	var total int
@@ -456,16 +450,20 @@ func SearchChannels(c *gin.Context) {
 		// 一页里的单位是标签。按渠道条数切片会把同一个标签拆到两页，聚合后缺渠道。
 		tagGroups := groupChannelsByTag(channelData)
 		total = len(tagGroups)
-		startIdx := min((page-1)*pageSize, total)
-		endIdx := min(startIdx+pageSize, total)
-		for _, groupChannels := range tagGroups[startIdx:endIdx] {
-			pagedData = append(pagedData, groupChannels...)
+		startIdx := pageInfo.GetStartIdx()
+		if startIdx >= 0 && startIdx < total {
+			endIdx := startIdx + min(pageSize, total-startIdx)
+			for _, groupChannels := range tagGroups[startIdx:endIdx] {
+				pagedData = append(pagedData, groupChannels...)
+			}
 		}
 	} else {
 		total = len(channelData)
-		startIdx := min((page-1)*pageSize, total)
-		endIdx := min(startIdx+pageSize, total)
-		pagedData = channelData[startIdx:endIdx]
+		startIdx := pageInfo.GetStartIdx()
+		if startIdx >= 0 && startIdx < total {
+			endIdx := startIdx + min(pageSize, total-startIdx)
+			pagedData = channelData[startIdx:endIdx]
+		}
 	}
 
 	for _, datum := range pagedData {
@@ -1959,11 +1957,19 @@ func ManageMultiKeys(c *gin.Context) {
 			filteredKeyStatusList = allKeyStatusList
 		}
 
-		// Calculate pagination based on filtered results
+		// Calculate pagination based on filtered results (R7-32: overflow-safe bounds)
+		if page < 1 {
+			page = 1
+		}
+		if pageSize <= 0 {
+			pageSize = 20
+		} else if pageSize > 100 {
+			pageSize = 100
+		}
 		filteredTotal := len(filteredKeyStatusList)
-		totalPages := (filteredTotal + pageSize - 1) / pageSize
-		if totalPages == 0 {
-			totalPages = 1
+		totalPages := 1
+		if filteredTotal > 0 {
+			totalPages = (filteredTotal-1)/pageSize + 1
 		}
 		if page > totalPages {
 			page = totalPages
@@ -1971,11 +1977,9 @@ func ManageMultiKeys(c *gin.Context) {
 
 		// Calculate range for current page
 		start := (page - 1) * pageSize
-		end := min(start+pageSize, filteredTotal)
-
-		// Get the page data
 		var pageKeyStatusList []KeyStatus
-		if start < filteredTotal {
+		if start >= 0 && start < filteredTotal {
+			end := start + min(pageSize, filteredTotal-start)
 			pageKeyStatusList = filteredKeyStatusList[start:end]
 		}
 

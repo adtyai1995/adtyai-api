@@ -148,7 +148,7 @@ func AdtyActiveMethodBonusRates(userID int, requestSiteID int, business string) 
 		if !ok || !rule.Enabled {
 			continue
 		}
-		rateDec, err := decimal.NewFromString(strings.TrimSpace(rule.Rate))
+		rateDec, err := common.ParseBoundedDecimalString(rule.Rate, 4, 8)
 		if err != nil || !rateDec.IsPositive() || rateDec.GreaterThan(decimal.NewFromInt(1)) {
 			continue
 		}

@@ -1,6 +1,7 @@
 package jimeng
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -85,7 +86,10 @@ func jimengImageHandler(c *gin.Context, resp *http.Response, info *relaycommon.R
 
 	// Convert Jimeng response to OpenAI format
 	fullTextResponse, billableImages := responseJimeng2OpenAIImage(c, &jimengResponse, info)
-	if info != nil && billableImages > 0 {
+	if billableImages == 0 {
+		return nil, types.NewError(errors.New("empty image response"), types.ErrorCodeEmptyResponse)
+	}
+	if info != nil {
 		info.UpdateImageCount(billableImages)
 	}
 	jsonResponse, err := common.Marshal(fullTextResponse)

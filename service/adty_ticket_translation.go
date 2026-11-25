@@ -101,16 +101,18 @@ func processPendingTicketTranslations(now time.Time) error {
 	var batchError error
 	for _, head := range heads {
 		// A crashed worker gives up its lease automatically. Claim each row
-		// only when ready to call the provider so later jobs keep their lease.
-		claimed := eligible.Session(&gorm.Session{}).Model(&model.AdtyTranslationHead{}).Where("id=? AND version=?", head.Id, head.Version).
-			UpdateColumn("lease_until", time.Now().Add(5*time.Minute).Unix())
+		// atomically with a strictly monotonic fencing lease_until token.
+		nextLease := nextAdtyTranslationLeaseUntil(head.LeaseUntil)
+		claimed := eligible.Session(&gorm.Session{}).Model(&model.AdtyTranslationHead{}).
+			Where("id=? AND version=? AND lease_until=?", head.Id, head.Version, head.LeaseUntil).
+			UpdateColumn("lease_until", nextLease)
 		if claimed.Error != nil {
 			return claimed.Error
 		}
 		if claimed.RowsAffected == 0 {
 			continue
 		}
-		_, err := executeAdtyReservedTranslation(head.ObjectKey, head.Source, head.SiteId, head.Version, head.SourceHash)
+		_, err := executeAdtyReservedTranslation(head.ObjectKey, head.Source, head.SiteId, head.Version, head.SourceHash, nextLease)
 		batchError = errors.Join(batchError, err)
 	}
 	return batchError

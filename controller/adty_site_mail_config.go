@@ -23,12 +23,16 @@ func GetAdtySiteMailConfig(c *gin.Context) {
 // PutAdtySiteMailConfig validates and persists the site owner's outbound email
 // configuration (platform default, custom SMTP, or Resend API).
 func PutAdtySiteMailConfig(c *gin.Context) {
-	if _, ok := adtyOwnerSiteOr403(c); !ok {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
 		return
 	}
 	var body service.AdtySiteMailConfigUpdate
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionMailConfig, site.Id) {
 		return
 	}
 	cfg, err := service.SaveAdtySiteMailConfig(c.Request.Context(), c.GetInt("id"), body)

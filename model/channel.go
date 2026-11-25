@@ -417,25 +417,51 @@ func (channel *Channel) SaveMultiKeyManagement() error {
 	if channel.Id == 0 {
 		return errors.New("channel ID is 0")
 	}
-	updates := map[string]any{
-		"status":       channel.Status,
-		"other_info":   channel.OtherInfo,
-		"channel_info": channel.ChannelInfo,
-	}
-	if channel.Key != "" {
-		updates["key"] = channel.Key
-	}
 	return DB.Transaction(func(tx *gorm.DB) error {
 		var locked Channel
 		if err := lockForUpdate(tx).First(&locked, "id = ?", channel.Id).Error; err != nil {
 			return err
 		}
-		if channel.Status == common.ChannelStatusEnabled && len(locked.GetGroups()) == 0 {
+		// R7-20: Derive effective status from the locked authoritative row so a
+		// stale pre-transaction snapshot can never revive a manually disabled channel.
+		keys := locked.GetKeys()
+		if channel.Key != "" {
+			keys = channel.GetKeys()
+		}
+		hasAvailable := hasEnabledMultiKey(keys, channel.ChannelInfo.MultiKeyStatusList)
+		effectiveStatus := locked.Status
+		otherInfo := locked.GetOtherInfo()
+		if !hasAvailable {
+			if locked.Status == common.ChannelStatusEnabled {
+				effectiveStatus = common.ChannelStatusAutoDisabled
+				otherInfo["status_reason"] = ChannelStatusReasonAllKeysDisabled
+				otherInfo["status_time"] = common.GetTimestamp()
+			}
+		} else if locked.Status == common.ChannelStatusAutoDisabled && otherInfo["status_reason"] == ChannelStatusReasonAllKeysDisabled {
+			if len(locked.GetGroups()) == 0 {
+				return ErrChannelNoGroup
+			}
+			effectiveStatus = common.ChannelStatusEnabled
+			delete(otherInfo, "status_reason")
+			otherInfo["status_time"] = common.GetTimestamp()
+		}
+		if effectiveStatus == common.ChannelStatusEnabled && len(locked.GetGroups()) == 0 {
 			return ErrChannelNoGroup
+		}
+		locked.SetOtherInfo(otherInfo)
+		updates := map[string]any{
+			"status":       effectiveStatus,
+			"other_info":   locked.OtherInfo,
+			"channel_info": channel.ChannelInfo,
+		}
+		if channel.Key != "" {
+			updates["key"] = channel.Key
 		}
 		if err := tx.Model(&Channel{}).Where("id = ?", channel.Id).Updates(updates).Error; err != nil {
 			return err
 		}
+		channel.Status = effectiveStatus
+		channel.OtherInfo = locked.OtherInfo
 		if err := tx.First(&locked, "id = ?", channel.Id).Error; err != nil {
 			return err
 		}
@@ -999,53 +1025,86 @@ func UpdateChannelStatusWithError(channelId int, usingKey string, status int, re
 }
 
 func EnableChannelByTag(tag string) error {
-	var channels []Channel
-	if err := DB.Where("tag = ?", tag).Find(&channels).Error; err != nil {
-		return err
-	}
-	for _, channel := range channels {
-		if len(channel.GetGroups()) == 0 {
-			return ErrChannelNoGroup
-		}
-	}
 	defer func() { _ = RefreshChannelCache() }()
-	for _, channel := range channels {
-		keysBlocked := channel.ChannelInfo.IsMultiKey && !hasEnabledMultiKey(channel.GetKeys(), channel.ChannelInfo.MultiKeyStatusList)
-		if channel.Status == common.ChannelStatusEnabled && !keysBlocked {
-			continue
-		}
-		changed, err := UpdateChannelStatusWithError(channel.Id, "", common.ChannelStatusEnabled, "manual tag operation")
-		if err != nil {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		// R7-20: Lock matching channels inside one transaction and update both
+		// channels and abilities by locked channel IDs to prevent tag race drift.
+		var channels []Channel
+		if err := lockForUpdate(tx).Where("tag = ?", tag).Order("id ASC").Find(&channels).Error; err != nil {
 			return err
 		}
-		if !changed {
-			return fmt.Errorf("failed to enable channel #%d by tag", channel.Id)
+		for i := range channels {
+			if len(channels[i].GetGroups()) == 0 {
+				return ErrChannelNoGroup
+			}
 		}
-	}
-	return UpdateAbilityStatusByTag(tag, true)
+		for i := range channels {
+			ch := &channels[i]
+			if ch.ChannelInfo.IsMultiKey {
+				handlerMultiKeyUpdate(ch, "", common.ChannelStatusEnabled, "manual tag operation")
+			} else {
+				info := ch.GetOtherInfo()
+				info["status_reason"] = "manual tag operation"
+				info["status_time"] = common.GetTimestamp()
+				ch.SetOtherInfo(info)
+				ch.Status = common.ChannelStatusEnabled
+			}
+			updates := map[string]any{
+				"status":     ch.Status,
+				"other_info": ch.OtherInfo,
+			}
+			if ch.ChannelInfo.IsMultiKey {
+				updates["channel_info"] = ch.ChannelInfo
+			}
+			if err := tx.Model(&Channel{}).Where("id = ?", ch.Id).Updates(updates).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&Ability{}).Where("channel_id = ?", ch.Id).Select("enabled").Update("enabled", ch.Status == common.ChannelStatusEnabled).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func DisableChannelByTag(tag string) error {
 	// Explicit tag-level disable also cancels automatic restoration for
 	// channels that were already disabled because all keys were unavailable.
-	var channels []Channel
-	if err := DB.Where("tag = ?", tag).Find(&channels).Error; err != nil {
-		return err
-	}
 	defer func() { _ = RefreshChannelCache() }()
-	for _, channel := range channels {
-		if channel.ChannelInfo.IsMultiKey && channel.GetOtherInfo()["status_reason"] == ChannelStatusReasonAllKeysDisabled {
-			if !UpdateChannelStatus(channel.Id, "", common.ChannelStatusManuallyDisabled, "manual tag operation") {
-				return fmt.Errorf("failed to disable channel #%d by tag", channel.Id)
+	return DB.Transaction(func(tx *gorm.DB) error {
+		// R7-20: Atomically lock channels by tag and disable both channels and abilities
+		// by locked channel IDs in the same transaction.
+		var channels []Channel
+		if err := lockForUpdate(tx).Where("tag = ?", tag).Order("id ASC").Find(&channels).Error; err != nil {
+			return err
+		}
+		for i := range channels {
+			ch := &channels[i]
+			if ch.ChannelInfo.IsMultiKey {
+				handlerMultiKeyUpdate(ch, "", common.ChannelStatusManuallyDisabled, "manual tag operation")
+			} else {
+				info := ch.GetOtherInfo()
+				info["status_reason"] = "manual tag operation"
+				info["status_time"] = common.GetTimestamp()
+				ch.SetOtherInfo(info)
+				ch.Status = common.ChannelStatusManuallyDisabled
+			}
+			updates := map[string]any{
+				"status":     ch.Status,
+				"other_info": ch.OtherInfo,
+			}
+			if ch.ChannelInfo.IsMultiKey {
+				updates["channel_info"] = ch.ChannelInfo
+			}
+			if err := tx.Model(&Channel{}).Where("id = ?", ch.Id).Updates(updates).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&Ability{}).Where("channel_id = ?", ch.Id).Select("enabled").Update("enabled", false).Error; err != nil {
+				return err
 			}
 		}
-	}
-	err := DB.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusManuallyDisabled).Error
-	if err != nil {
-		return err
-	}
-	err = UpdateAbilityStatusByTag(tag, false)
-	return err
+		return nil
+	})
 }
 
 func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *string, group *string, priority *int64, weight *uint, paramOverride *string, headerOverride *string) error {

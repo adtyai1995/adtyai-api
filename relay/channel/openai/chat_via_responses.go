@@ -255,9 +255,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 	streamErr := (*types.NewAPIError)(nil)
-	// upstreamFailed records a response.failed / response.error event and
-	// failedUsage the usage it reported, if any.
-	upstreamFailed := false
+	// failedUsage records the usage reported by a response.failed / response.error event, if any.
 	var failedUsage *dto.Usage
 	wroteToClient := false
 	clientGone := false
@@ -428,7 +426,6 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		}
 
 		if streamResp.Type == "response.error" || streamResp.Type == "response.failed" {
-			upstreamFailed = true
 			if streamResp.Response != nil {
 				failedUsage = streamResp.Response.Usage
 				if oaiErr := streamResp.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
@@ -460,8 +457,27 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 
 	isClientGone := clientGone || (info != nil && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone)
 
+	hasBillableToolOrImage := func() bool {
+		if imageCounter.Count() > 0 || countedItemTools {
+			return true
+		}
+		if info == nil || info.ResponsesUsageInfo == nil {
+			return false
+		}
+		for _, tool := range info.ResponsesUsageInfo.BuiltInTools {
+			if tool != nil && tool.CallCount > 0 {
+				return true
+			}
+		}
+		return false
+	}
+
 	if streamErr != nil {
-		if !hasWritten() || !upstreamFailed || state.UsageText() == "" {
+		hasDeliveredBillableOutput := state.UsageText() != "" ||
+			failedUsage != nil ||
+			service.ValidUsage(state.Usage()) ||
+			hasBillableToolOrImage()
+		if !hasWritten() || !hasDeliveredBillableOutput {
 			if isClientGone && hasWritten() {
 				if !imageCommitted {
 					imageCounter.Commit(info)
@@ -480,12 +496,12 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			imageCounter.Commit(info)
 			imageCommitted = true
 		}
-		// The upstream failed after output reached the client: bill the
+		// The stream failed after billable output reached the client: bill the
 		// delivered output (upstream usage when reported, otherwise the
 		// estimate) and terminate the already-open SSE stream with a protocol
 		// error frame instead of writing raw JSON via c.JSON.
 		usage := relayconvert.UsageFromResponsesUsage(failedUsage)
-		if usage.TotalTokens == 0 {
+		if usage == nil || usage.TotalTokens == 0 {
 			usage = state.Usage()
 		}
 		if usage == nil || usage.TotalTokens == 0 {
@@ -510,16 +526,18 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			info.StreamStatus.MarkFailed(string(streamErr.GetErrorCode()), string(streamErr.GetErrorType()), streamErr.StatusCode)
 		}
 		logger.LogError(c, common.LogText("responses stream failed after output was delivered, billing the delivered output: %s", streamErr.Error()))
-		streamErr.SetMessage(common.MessageWithRequestId(streamErr.Error(), c.GetString(common.RequestIdKey)))
-		upstreamURLs := common.UpstreamAddresses(c)
-		if info.RelayFormat == types.RelayFormatClaude {
-			_ = helper.ClaudeData(c, dto.ClaudeResponse{
-				Type:  "error",
-				Error: streamErr.ToClaudeError(upstreamURLs...),
-			})
-		} else {
-			_ = helper.ObjectData(c, gin.H{"error": streamErr.ToOpenAIError(upstreamURLs...)})
-			helper.Done(c)
+		if !isClientGone {
+			streamErr.SetMessage(common.MessageWithRequestId(streamErr.Error(), c.GetString(common.RequestIdKey)))
+			upstreamURLs := common.UpstreamAddresses(c)
+			if info.RelayFormat == types.RelayFormatClaude {
+				_ = helper.ClaudeData(c, dto.ClaudeResponse{
+					Type:  "error",
+					Error: streamErr.ToClaudeError(upstreamURLs...),
+				})
+			} else {
+				_ = helper.ObjectData(c, gin.H{"error": streamErr.ToOpenAIError(upstreamURLs...)})
+				helper.Done(c)
+			}
 		}
 		return usage, nil
 	}
@@ -552,6 +570,13 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	}
 	finalResults, err := service.FinalizeStreamResponse(c, info, state)
 	if err != nil {
+		if hasWritten() {
+			logger.LogError(c, common.LogText("responses-to-chat finalize stream failed after output was delivered, billing the delivered output: %s", err.Error()))
+			if info != nil && info.StreamStatus != nil {
+				info.StreamStatus.MarkFailed(string(types.ErrorCodeBadResponse), "server_error", http.StatusInternalServerError)
+			}
+			return usage, nil
+		}
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 	for _, result := range finalResults {

@@ -540,7 +540,11 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 			policy.String())
 	}
 
-	if info.IsStream {
+	if info.IsStream &&
+		info.RelayMode != constant.RelayModeAudioSpeech &&
+		info.RelayFormat != types.RelayFormatOpenAIImage &&
+		info.RelayMode != constant.RelayModeImagesGenerations &&
+		info.RelayMode != constant.RelayModeImagesEdits {
 		helper.SetEventStreamHeaders(c)
 		// 处理流式请求的 ping 保活
 		generalSettings := operation_setting.GetGeneralSetting()

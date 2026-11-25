@@ -48,8 +48,16 @@ func newAwsInvokeContext(parent context.Context) (context.Context, context.Cance
 }
 
 func newAwsInvokeError(requestContext context.Context, err error, operation string) *types.NewAPIError {
+	if requestContext != nil && errors.Is(requestContext.Err(), context.Canceled) {
+		return types.NewError(
+			errors.Wrap(err, operation),
+			types.ErrorCodeRequestCancelled,
+			types.ErrOptionWithStatusCode(499),
+			types.ErrOptionWithSkipRetry(),
+		)
+	}
 	options := make([]types.NewAPIErrorOptions, 0, 1)
-	if requestContext.Err() != nil {
+	if requestContext != nil && requestContext.Err() != nil {
 		options = append(options, types.ErrOptionWithSkipRetry())
 	}
 	return types.NewOpenAIError(
@@ -273,7 +281,7 @@ func awsHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types
 }
 
 func awsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types.NewAPIError, *dto.Usage) {
-	helper.StopStreamKeepAlive(c)
+	defer helper.StopStreamKeepAlive(c)
 	requestContext := c.Request.Context()
 	ctx, cancel := newAwsInvokeContext(requestContext)
 	defer cancel()
@@ -299,6 +307,7 @@ func awsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (
 
 	events := stream.Events()
 	receivedChunk := false
+	streamHeadersSet := false
 streamLoop:
 	for {
 		select {
@@ -316,6 +325,11 @@ streamLoop:
 			case *bedrockruntimeTypes.ResponseStreamMemberChunk:
 				receivedChunk = true
 				info.SetFirstResponseTime()
+				if !streamHeadersSet {
+					helper.StopStreamKeepAlive(c)
+					helper.SetEventStreamHeaders(c)
+					streamHeadersSet = true
+				}
 				respErr := claude.HandleStreamResponseData(c, info, claudeInfo, string(v.Value.Bytes))
 				if respErr != nil {
 					if helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) {
@@ -362,6 +376,7 @@ streamLoop:
 
 // Nova模型处理函数
 func handleNovaRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types.NewAPIError, *dto.Usage) {
+	helper.StopStreamKeepAlive(c)
 
 	requestContext := c.Request.Context()
 	ctx, cancel := newAwsInvokeContext(requestContext)

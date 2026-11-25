@@ -69,8 +69,12 @@ func PostAdtySiteVoucher(c *gin.Context) {
 		Source: body.Source, Reason: body.Reason, IntentKey: intentKey, Count: body.Count,
 	})
 	if err != nil {
-		if errors.Is(err, service.ErrAdtyVoucherIntentConflict) || errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+		if errors.Is(err, service.ErrAdtyVoucherIntentConflict) {
 			common.ApiErrorStatus(c, http.StatusConflict, err)
+			return
+		}
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
 			return
 		}
 		common.ApiError(c, err)
@@ -121,8 +125,12 @@ func PostAdtyAdminVoucher(c *gin.Context) {
 		DesignatedOwnerId: designatedOwnerID, AmountUSD: amount, Reason: body.Reason, IntentKey: intentKey, Count: body.Count,
 	})
 	if err != nil {
-		if errors.Is(err, service.ErrAdtyVoucherIntentConflict) || errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+		if errors.Is(err, service.ErrAdtyVoucherIntentConflict) {
 			common.ApiErrorStatus(c, http.StatusConflict, err)
+			return
+		}
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
 			return
 		}
 		common.ApiError(c, err)
