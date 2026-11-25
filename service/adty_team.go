@@ -643,9 +643,24 @@ func CreateAdtyTeamEmployee(leaderId int, teamId int64, username, password, disp
 	var view *AdtyTeamMemberView
 	var event model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		// R10-12: Follow strict canonical lock order AdtySite -> AdtyTeam -> User
+		// so employee creation cannot race with subsite closure/deactivation.
+		var preTeam model.AdtyTeam
+		if err := tx.Select("id", "site_id").First(&preTeam, teamId).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAdtyTeamForbidden
+			}
+			return err
+		}
+		if err := lockActiveSiteForTeamTx(tx, preTeam.SiteId); err != nil {
+			return err
+		}
 		team, err := lockActiveTeam(tx, teamId)
 		if err != nil {
 			return err
+		}
+		if team.SiteId != preTeam.SiteId {
+			return model.ErrSiteRegistrationUnavailable
 		}
 		if team.LeaderUserId != leaderId {
 			return ErrAdtyTeamForbidden
@@ -1599,7 +1614,24 @@ func AcceptAdtyTeamInvite(userId int, code string) (*model.AdtyTeamMember, error
 	return nil, ErrAdtyTeamForbidden
 }
 
-// Read the immutable team identity first, then lock team before invite, as revoke does.
+func lockActiveSiteForTeamTx(tx *gorm.DB, siteID int) error {
+	if siteID <= 0 || !adtyTeamTableReadyFor(tx, &model.AdtySite{}) {
+		return nil
+	}
+	var site model.AdtySite
+	if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return model.ErrSiteRegistrationUnavailable
+		}
+		return err
+	}
+	if site.Status != model.AdtySiteStatusActive {
+		return model.ErrSiteRegistrationUnavailable
+	}
+	return nil
+}
+
+// Read the immutable team identity first, then lock site -> team -> invite in canonical DAG order.
 func lockAdtyTeamInviteTx(tx *gorm.DB, hash string) (*model.AdtyTeam, *model.AdtyTeamInvite, error) {
 	var candidate model.AdtyTeamInvite
 	if err := tx.Where("code_hash = ?", hash).Limit(1).Find(&candidate).Error; err != nil {
@@ -1608,9 +1640,18 @@ func lockAdtyTeamInviteTx(tx *gorm.DB, hash string) (*model.AdtyTeam, *model.Adt
 	if candidate.Id == 0 {
 		return nil, nil, ErrAdtyTeamInvalid
 	}
+	if err := lockActiveSiteForTeamTx(tx, candidate.SiteId); err != nil {
+		return nil, nil, err
+	}
 	team, err := lockActiveTeam(tx, candidate.TeamId)
 	if err != nil {
 		return nil, nil, err
+	}
+	if team.SiteId != candidate.SiteId {
+		if candidate.SiteId == 0 && team.SiteId > 0 {
+			return nil, nil, model.ErrSiteRegistrationUnavailable
+		}
+		return nil, nil, ErrAdtyTeamInvalid
 	}
 	var invite model.AdtyTeamInvite
 	if err := model.AdtyLockForUpdate(tx).Where("id = ? AND team_id = ? AND code_hash = ?", candidate.Id, team.Id, hash).Limit(1).Find(&invite).Error; err != nil {
@@ -1847,13 +1888,39 @@ func inheritAdtyTeamsBeforeUsersOnCloseTx(tx *gorm.DB, siteId int) ([]int64, err
 		if err := tx.Model(&model.AdtyTeamInvite{}).Where("team_id = ? AND used_at = 0 AND revoked_at = 0", team.Id).Update("revoked_at", now).Error; err != nil {
 			return nil, err
 		}
-		updates := map[string]any{"site_id": 0}
+		// R10-04: Subsite team discount is a multiplier on subsite supply price (>= 1.0x),
+		// whereas main-site team discount multiplies main-site group price directly.
+		// Reset to main-site default pay ratio (1.0x) on migration so migrated teams
+		// are not overcharged by 1/d after moving to main-site pricing.
+		updates := map[string]any{
+			"site_id":  0,
+			"discount": adtyTeamDefaultPayRatio,
+		}
+		sourceSiteID := team.SourceSiteId
 		// 只在来源尚未记录、且迁移前 site_id 就是正在关闭的分站时写入；已在主站（0）的不猜测来源。
 		if team.SourceSiteId == 0 && team.SiteId == siteId {
 			updates["source_site_id"] = team.SiteId
+			sourceSiteID = team.SiteId
 		}
 		if err := tx.Model(&model.AdtyTeam{}).Where("id = ?", team.Id).Updates(updates).Error; err != nil {
 			return nil, err
+		}
+		if adtyTeamTableReadyFor(tx, &model.AuditLog{}) {
+			zeroSite := 0
+			entry, err := model.PrepareOfficialAuditLog(nil, model.OfficialAuditWrite{
+				UserId: 0, Username: "system", ActorRole: common.RoleRootUser, SiteID: &zeroSite,
+				ObjectType: "team", ObjectID: strconv.FormatInt(team.Id, 10), Action: "adty.team.site_close.inherit",
+				Content: "adty.team.site_close.inherit", Category: model.AuditCategoryOperation,
+				Before: map[string]any{"site_id": team.SiteId, "discount": team.Discount.String()},
+				After:  map[string]any{"site_id": 0, "source_site_id": sourceSiteID, "discount": adtyTeamDefaultPayRatio.String()},
+				Result: model.AuditResultSuccess, Success: true,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if err := model.AppendAuditIntentTx(tx, entry); err != nil {
+				return nil, err
+			}
 		}
 		teamIDs = append(teamIDs, team.Id)
 	}

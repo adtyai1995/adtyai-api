@@ -148,6 +148,7 @@ func DecompressRequestMiddleware() gin.HandlerFunc {
 			defer func() { _ = lazy.Close() }()
 			c.Request.Body = wrapMaxBytes(lazy)
 			c.Request.Header.Del("Content-Encoding")
+			c.Request.ContentLength = -1
 		default:
 			// Even for uncompressed bodies, enforce a max size to avoid huge request allocations.
 			c.Request.Body = wrapMaxBytes(origBody)

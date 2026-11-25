@@ -15,10 +15,10 @@ func SetVideoRouter(router *gin.Engine) {
 	videoSharedRouter.POST(
 		"/video/generations",
 		middleware.AdtyRequireCurrentSiteTerms(),
-		middleware.PinTaskPluginEndpoint(),
-		middleware.TaskPluginEndpointOnly(middleware.ModelRequestRateLimit()),
+		middleware.ModelRequestRateLimit(),
 		middleware.AdtyUserLimit(), middleware.AdtyKeyRateLimit(), // 二开：任务 7.4
 		middleware.DecompressRequestMiddleware(),
+		middleware.PinTaskPluginEndpoint(),
 		middleware.PrepareTaskPluginEndpoint(),
 		middleware.Distribute(),
 		func(c *gin.Context) {
@@ -35,11 +35,11 @@ func SetVideoRouter(router *gin.Engine) {
 			"/videos/:video_id/remix",
 			middleware.AdtyRequireCurrentSiteTerms(),
 			middleware.SystemPerformanceCheck(),
-			middleware.PinTaskPluginEndpoint(),
-			middleware.TaskPluginEndpointOnly(middleware.ModelRequestRateLimit()),
+			middleware.ModelRequestRateLimit(),
 			middleware.AdtyUserLimit(),
 			middleware.AdtyKeyRateLimit(),
 			middleware.DecompressRequestMiddleware(),
+			middleware.PinTaskPluginEndpoint(),
 			middleware.PrepareTaskPluginEndpoint(),
 			middleware.Distribute(),
 			controller.RelayTask,

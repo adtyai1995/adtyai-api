@@ -534,13 +534,17 @@ func PostAdtyTeamEmployeeRegistration(c *gin.Context) {
 	siteID := 0
 	if site := service.AdtySiteForRequest(c); site != nil {
 		if site.Status != model.AdtySiteStatusActive {
-			common.ApiErrorT(c, "Invalid parameters")
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Site is not open for registration"))
 			return
 		}
 		siteID = site.Id
 	}
 	member, err := service.RegisterAdtyTeamEmployee(body.Code, body.Username, body.Password, body.DisplayName, siteID)
 	if err != nil {
+		if errors.Is(err, model.ErrSiteRegistrationUnavailable) {
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Site is not open for registration"))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -563,6 +567,10 @@ func PostAdtyTeamEmployee(c *gin.Context) {
 	}
 	member, err := service.CreateAdtyTeamEmployee(c.GetInt("id"), id, body.Username, body.Password, body.DisplayName)
 	if err != nil {
+		if errors.Is(err, model.ErrSiteRegistrationUnavailable) {
+			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Site is not open for registration"))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}

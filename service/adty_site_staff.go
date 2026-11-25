@@ -346,6 +346,16 @@ func AdtyStaffAccess(userID int, authVersion int64, permission string) (*model.A
 	if site.OwnerUserId != staff.OwnerUserId || !AdtySiteAgreementAccepted(site.AgreementVer) || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && site.Status != model.AdtySiteStatusClosing) {
 		return nil, nil, ErrAdtyStaffDenied
 	}
+	var owner model.User
+	if err := model.DB.Select("id", "status", "staff_site_id").First(&owner, site.OwnerUserId).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil, ErrAdtyStaffDenied
+		}
+		return nil, nil, err
+	}
+	if owner.Status != common.UserStatusEnabled || owner.StaffSiteId != 0 {
+		return nil, nil, ErrAdtyStaffDenied
+	}
 	grants := AdtyStaffViewOf(staff).Permissions
 	if permission != "" && (!slices.Contains(adtyStaffPermissions, permission) || !slices.Contains(grants, permission)) {
 		return nil, nil, ErrAdtyStaffDenied

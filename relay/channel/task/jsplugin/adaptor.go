@@ -401,7 +401,7 @@ func maxInlineFileBytes() int64 {
 func inlineJSONFilePlaceholders(c *gin.Context, body any) (any, error) {
 	cloned := jsonValue(body)
 	var form *multipart.Form
-	if c != nil && c.Request != nil && strings.Contains(c.GetHeader("Content-Type"), "multipart/form-data") {
+	if c != nil && c.Request != nil && common.NormalizedContentMediaType(c.GetHeader("Content-Type")) == gin.MIMEMultipartPOSTForm {
 		parsed, parseErr := common.ParseMultipartFormReusable(c)
 		if parseErr != nil {
 			return nil, parseErr
@@ -582,7 +582,7 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 	var responseBody any
 	var err error
 	streaming := a.submit != nil && a.submit.ResponseType == "sse"
-	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	mediaType := common.NormalizedContentMediaType(resp.Header.Get("Content-Type"))
 	eventStream := mediaType == "text/event-stream"
 	acceptedStream := streaming || eventStream
 	relayed := false
@@ -1817,7 +1817,7 @@ func (a *TaskAdaptor) submitContext(c *gin.Context, info *relaycommon.RelayInfo)
 			}
 			requestHeaders["Content-Type"] = c.GetHeader("Content-Type")
 			requestHeaders["Accept"] = c.GetHeader("Accept")
-			if strings.Contains(c.GetHeader("Content-Type"), "multipart/form-data") {
+			if common.NormalizedContentMediaType(c.GetHeader("Content-Type")) == gin.MIMEMultipartPOSTForm {
 				if form, err := common.ParseMultipartFormReusable(c); err == nil {
 					defer form.RemoveAll()
 					for field, headers := range form.File {

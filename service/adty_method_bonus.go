@@ -278,9 +278,13 @@ func ReserveAdtySiteGiftTx(tx *gorm.DB, ext *model.AdtyTopupOrder, marginAuthori
 		return pooledErr
 	}
 	if pooledSite {
-		owner, ownerErr := model.ResolveAdtySiteFinancialOwnerTx(tx, ext.SiteId, ext.SiteOwnerUserId)
-		if ownerErr != nil {
-			return ownerErr
+		owner := ext.SiteOwnerUserId
+		if owner <= 0 {
+			var ownerErr error
+			owner, ownerErr = model.CurrentAdtySiteFinancialOwnerTx(tx, ext.SiteId)
+			if ownerErr != nil {
+				return ownerErr
+			}
 		}
 		ownerAvail, _, availErr := ownerEarningsWalletTx(tx, ext.SiteId, owner, &earning)
 		if errors.Is(availErr, ErrAdtyOwnerWalletReview) {

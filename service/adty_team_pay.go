@@ -161,6 +161,9 @@ func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Dec
 	}
 	var team model.AdtyTeam
 	if err := model.DB.First(&team, teamID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrAdtyTeamForbidden
+		}
 		return nil, err
 	}
 	if team.Status != model.AdtyTeamStatusActive || team.LeaderUserId != leaderID {
@@ -168,6 +171,9 @@ func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Dec
 	}
 	var leader model.User
 	if err := model.DB.First(&leader, leaderID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrAdtyTeamForbidden
+		}
 		return nil, err
 	}
 	if leader.SiteId != team.SiteId {
@@ -191,6 +197,12 @@ func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Dec
 		if channelID > 0 {
 			return nil, ErrAdtyEpayChosenChannelUnavailable
 		}
+		if errors.Is(err, ErrAdtyEpayNoChannel) {
+			return nil, common.NewMessage("This payment method is not available")
+		}
+		if errors.Is(err, model.ErrAdtyEpayDailyLimit) {
+			return nil, ErrAdtyEpayChosenChannelUnavailable
+		}
 		return nil, err
 	}
 	payMoney, _ := quote.PayAmount.Float64()
@@ -210,6 +222,9 @@ func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Dec
 	if err := CreateAdtyPaymentOrder(topUp, ext, sceneKey, channel); err != nil {
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
 			return nil, ErrAdtyTeamInvalid
+		}
+		if errors.Is(err, model.ErrAdtyEpayDailyLimit) {
+			return nil, ErrAdtyEpayChosenChannelUnavailable
 		}
 		return nil, err
 	}
@@ -236,6 +251,9 @@ func startAdtyTeamBEpusdtTopup(leaderID int, teamID int64, amountUSD decimal.Dec
 	}
 	var team model.AdtyTeam
 	if err := model.DB.First(&team, teamID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrAdtyTeamForbidden
+		}
 		return nil, err
 	}
 	if team.Status != model.AdtyTeamStatusActive || team.LeaderUserId != leaderID {
@@ -243,6 +261,9 @@ func startAdtyTeamBEpusdtTopup(leaderID int, teamID int64, amountUSD decimal.Dec
 	}
 	var leader model.User
 	if err := model.DB.First(&leader, leaderID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrAdtyTeamForbidden
+		}
 		return nil, err
 	}
 	if leader.SiteId != team.SiteId {

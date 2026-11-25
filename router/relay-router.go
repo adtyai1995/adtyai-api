@@ -66,9 +66,15 @@ func SetRelayRouter(router *gin.Engine) {
 	relayV1Router.Use(middleware.TokenAuth())
 	relayV1Router.Use(middleware.AdtyRequireCurrentSiteTerms())
 	{
-		// Responses WebSocket route. Channel selection happens after the first
-		// response.create event; each event runs the ordinary request limiter.
-		relayV1Router.GET("/responses", controller.ResponsesWebSocket)
+		// Responses WebSocket route. Handshake is rate-limited; channel selection
+		// happens after the first response.create event and each event runs the
+		// ordinary request limiter (R10-09).
+		relayV1Router.GET("/responses",
+			middleware.ModelRequestRateLimit(),
+			middleware.AdtyUserLimit(),
+			middleware.AdtyKeyRateLimit(),
+			controller.ResponsesWebSocket,
+		)
 	}
 	relayV1Router.Use(middleware.ModelRequestRateLimit())
 	relayV1Router.Use(middleware.AdtyUserLimit()) // 二开：按用户限制（任务 7.4）
@@ -214,24 +220,35 @@ func SetRelayRouter(router *gin.Engine) {
 
 func registerMjRouterGroup(relayMjRouter *gin.RouterGroup) {
 	relayMjRouter.GET("/image/:id", relay.RelayMidjourneyImage)
-	relayMjRouter.Use(middleware.TokenAuth(), middleware.AdtyRequireCurrentSiteTerms(), middleware.DecompressRequestMiddleware(), middleware.Distribute())
-	// 二开：提交类路由按用户限制，查询类（fetch、image-seed、list-by-condition）不算（任务 7.4）
+	relayMjRouter.Use(middleware.TokenAuth(), middleware.AdtyRequireCurrentSiteTerms())
+	// 二开：提交类路由按用户限制，查询类（fetch、image-seed、list-by-condition）不占提交额度；
+	// R10-08: 统一写路由顺序 Auth -> Terms -> RateLimits -> Decompress -> Distribute -> Handler。
+	submitHandlers := func() []gin.HandlerFunc {
+		return []gin.HandlerFunc{
+			middleware.ModelRequestRateLimit(),
+			middleware.AdtyUserLimit(true),
+			middleware.AdtyKeyRateLimit(true),
+			middleware.DecompressRequestMiddleware(),
+			middleware.Distribute(),
+			controller.RelayMidjourney,
+		}
+	}
 	{
-		relayMjRouter.POST("/submit/action", middleware.AdtyUserLimit(true), middleware.AdtyKeyRateLimit(true), controller.RelayMidjourney)
-		relayMjRouter.POST("/submit/shorten", middleware.AdtyUserLimit(true), middleware.AdtyKeyRateLimit(true), controller.RelayMidjourney)
-		relayMjRouter.POST("/submit/modal", middleware.AdtyUserLimit(true), middleware.AdtyKeyRateLimit(true), controller.RelayMidjourney)
-		relayMjRouter.POST("/submit/imagine", middleware.AdtyUserLimit(true), middleware.AdtyKeyRateLimit(true), controller.RelayMidjourney)
-		relayMjRouter.POST("/submit/change", middleware.AdtyUserLimit(true), middleware.AdtyKeyRateLimit(true), controller.RelayMidjourney)
-		relayMjRouter.POST("/submit/simple-change", middleware.AdtyUserLimit(true), middleware.AdtyKeyRateLimit(true), controller.RelayMidjourney)
-		relayMjRouter.POST("/submit/describe", middleware.AdtyUserLimit(true), middleware.AdtyKeyRateLimit(true), controller.RelayMidjourney)
-		relayMjRouter.POST("/submit/blend", middleware.AdtyUserLimit(true), middleware.AdtyKeyRateLimit(true), controller.RelayMidjourney)
-		relayMjRouter.POST("/submit/edits", middleware.AdtyUserLimit(true), middleware.AdtyKeyRateLimit(true), controller.RelayMidjourney)
-		relayMjRouter.POST("/submit/video", middleware.AdtyUserLimit(true), middleware.AdtyKeyRateLimit(true), controller.RelayMidjourney)
+		relayMjRouter.POST("/submit/action", submitHandlers()...)
+		relayMjRouter.POST("/submit/shorten", submitHandlers()...)
+		relayMjRouter.POST("/submit/modal", submitHandlers()...)
+		relayMjRouter.POST("/submit/imagine", submitHandlers()...)
+		relayMjRouter.POST("/submit/change", submitHandlers()...)
+		relayMjRouter.POST("/submit/simple-change", submitHandlers()...)
+		relayMjRouter.POST("/submit/describe", submitHandlers()...)
+		relayMjRouter.POST("/submit/blend", submitHandlers()...)
+		relayMjRouter.POST("/submit/edits", submitHandlers()...)
+		relayMjRouter.POST("/submit/video", submitHandlers()...)
 		//relayMjRouter.POST("/notify", controller.RelayMidjourney)
-		relayMjRouter.GET("/task/:id/fetch", controller.RelayMidjourney)
-		relayMjRouter.GET("/task/:id/image-seed", controller.RelayMidjourney)
-		relayMjRouter.POST("/task/list-by-condition", controller.RelayMidjourney)
-		relayMjRouter.POST("/insight-face/swap", middleware.AdtyUserLimit(true), middleware.AdtyKeyRateLimit(true), controller.RelayMidjourney)
-		relayMjRouter.POST("/submit/upload-discord-images", middleware.AdtyUserLimit(true), middleware.AdtyKeyRateLimit(true), controller.RelayMidjourney)
+		relayMjRouter.GET("/task/:id/fetch", middleware.Distribute(), controller.RelayMidjourney)
+		relayMjRouter.GET("/task/:id/image-seed", middleware.Distribute(), controller.RelayMidjourney)
+		relayMjRouter.POST("/task/list-by-condition", middleware.ModelRequestRateLimit(), middleware.DecompressRequestMiddleware(), middleware.Distribute(), controller.RelayMidjourney)
+		relayMjRouter.POST("/insight-face/swap", submitHandlers()...)
+		relayMjRouter.POST("/submit/upload-discord-images", submitHandlers()...)
 	}
 }

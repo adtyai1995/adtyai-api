@@ -121,6 +121,61 @@ type responsesWSSession struct {
 	lockedRoute     dto.AdvancedCustomRoute
 }
 
+const (
+	responsesWSIdleReadTimeout            = 5 * time.Minute
+	responsesWSMaxConsecutiveInvalidFrame = 10
+)
+
+var responsesWSBillingSensitiveJSONPaths = []string{
+	"type",
+	"event_id",
+	"stream_id",
+	"generate",
+	"request",
+	"model",
+	"group",
+	"max_output_tokens",
+	"service_tier",
+	"reasoning",
+	"reasoning.effort",
+	"reasoning.summary",
+	"reasoning_effort",
+	"thinking",
+	"thinking.type",
+	"thinking.budget_tokens",
+	"tools",
+	"web_search_options",
+	"web_search_options.search_context_size",
+	"speed",
+	"verbosity",
+	"store",
+	"background",
+	"stream",
+	"stream_options",
+	"request.model",
+	"request.group",
+	"request.max_output_tokens",
+	"request.service_tier",
+	"request.reasoning",
+	"request.reasoning.effort",
+	"request.reasoning.summary",
+	"request.reasoning_effort",
+	"request.thinking",
+	"request.thinking.type",
+	"request.thinking.budget_tokens",
+	"request.tools",
+	"request.web_search_options",
+	"request.web_search_options.search_context_size",
+	"request.speed",
+	"request.verbosity",
+	"request.store",
+	"request.background",
+	"request.stream",
+	"request.stream_options",
+	"request.generate",
+	"request.stream_id",
+}
+
 func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn, runner ResponsesWSRequestRunner) *types.NewAPIError {
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	s := &responsesWSSession{ctx: ctx, cancel: cancel, client: client, runner: runner,
@@ -133,6 +188,18 @@ func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn, runner Res
 		maxMB = 128
 	}
 	client.SetReadLimit(int64(maxMB) << 20)
+	// R10-09: Enforce idle read deadline refreshed by ping/pong and valid frames,
+	// and close connections that flood consecutive invalid/unsupported frames.
+	_ = client.SetReadDeadline(time.Now().Add(responsesWSIdleReadTimeout))
+	client.SetPongHandler(func(string) error {
+		return client.SetReadDeadline(time.Now().Add(responsesWSIdleReadTimeout))
+	})
+	client.SetPingHandler(func(appData string) error {
+		_ = client.SetReadDeadline(time.Now().Add(responsesWSIdleReadTimeout))
+		s.clientWriteMu.Lock()
+		defer s.clientWriteMu.Unlock()
+		return client.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
+	})
 	defer func() {
 		// Unless an earlier shutdown ended the read, the client closed or left.
 		// Gorilla already answered a client close frame, so this tells the upstream.
@@ -140,7 +207,18 @@ func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn, runner Res
 		s.workers.Wait()
 	}()
 
+	consecutiveInvalid := 0
+	noteInvalidFrame := func() bool {
+		consecutiveInvalid++
+		if consecutiveInvalid >= responsesWSMaxConsecutiveInvalidFrame {
+			s.shutdown(websocket.ClosePolicyViolation, "too many invalid frames")
+			return true
+		}
+		return false
+	}
+
 	for {
+		_ = client.SetReadDeadline(time.Now().Add(responsesWSIdleReadTimeout))
 		_, message, err := client.ReadMessage()
 		if err != nil {
 			return nil
@@ -149,6 +227,9 @@ func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn, runner Res
 		eventType := envelope.Type
 		if err != nil {
 			s.sendError(envelope.EventID, streamID, newResponsesWSInvalidRequestError(err))
+			if noteInvalidFrame() {
+				return nil
+			}
 			continue
 		}
 		if eventType != responsesWSEventTypeResponseCreate {
@@ -157,8 +238,12 @@ func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn, runner Res
 			state := s.getCurrent()
 			if eventType != "response.cancel" || state == nil {
 				s.sendError(envelope.EventID, streamID, newResponsesWSInvalidRequestError(fmt.Errorf("unsupported websocket event %q", eventType)))
+				if noteInvalidFrame() {
+					return nil
+				}
 				continue
 			}
+			consecutiveInvalid = 0
 			select {
 			case state.controls <- responsesWSControl{body: message, eventID: envelope.EventID, streamID: streamID}:
 			case <-state.done:
@@ -169,6 +254,7 @@ func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn, runner Res
 			}
 			continue
 		}
+		consecutiveInvalid = 0
 		state := &responsesWSCallState{inbox: make(chan responsesWSMessage), controls: make(chan responsesWSControl, 1), done: make(chan struct{})}
 		if !s.tryReserveCurrent(state) {
 			s.sendError(envelope.EventID, streamID, types.NewErrorWithStatusCode(errors.New("another response.create is already in progress on this websocket connection"), types.ErrorCodeInvalidRequest, http.StatusConflict, types.ErrOptionWithSkipRetry()))
@@ -828,6 +914,9 @@ func (s *responsesWSSession) closeForPolicy(reason string) {
 // input, the top-level field takes precedence over response.stream_id.
 func parseResponsesWSEnvelope(message []byte) (responsesWSCreateEvent, string, error) {
 	var event responsesWSCreateEvent
+	if err := common.ValidateJSONNoDuplicateOrFoldedKeys(message, responsesWSBillingSensitiveJSONPaths); err != nil {
+		return event, "", err
+	}
 	if err := common.Unmarshal(message, &event); err != nil {
 		return event, "", fmt.Errorf("invalid websocket event json: %w", err)
 	}

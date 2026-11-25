@@ -32,10 +32,10 @@ const (
 )
 
 var (
-	ErrAccountPasswordLength       = errors.New("Password must contain between 8 and 128 characters.")
-	ErrAccountPasswordSame         = errors.New("New password must be different from current password")
-	ErrPasswordLegacyLimit         = errors.New("Long passwords are unavailable until the password storage upgrade is complete.")
-	ErrRandomAccountPasswordLength = errors.New("Random password length must be between 12 and 32 characters.")
+	ErrAccountPasswordLength       = NewMessage("Password must contain between 8 and 128 characters.")
+	ErrAccountPasswordSame         = NewMessage("New password must be different from current password")
+	ErrPasswordLegacyLimit         = NewMessage("Long passwords are unavailable until the password storage upgrade is complete.")
+	ErrRandomAccountPasswordLength = NewMessage("Random password length must be between 12 and 32 characters.")
 )
 
 func cryptoRandAlphabetByte(alphabet string) (byte, error) {

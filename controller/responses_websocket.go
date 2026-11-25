@@ -113,8 +113,70 @@ func newResponsesWSRequestRunner(c *gin.Context) relay.ResponsesWSRequestRunner 
 	}
 }
 
+const (
+	maxResponsesWSPerToken = 16
+	maxResponsesWSPerUser  = 32
+)
+
+var (
+	responsesWSSlotsMu       sync.Mutex
+	responsesWSTokenActive   = map[int]int{}
+	responsesWSUserActive    = map[int]int{}
+)
+
+func acquireResponsesWSSlot(userID, tokenID int) bool {
+	responsesWSSlotsMu.Lock()
+	defer responsesWSSlotsMu.Unlock()
+	if tokenID > 0 && responsesWSTokenActive[tokenID] >= maxResponsesWSPerToken {
+		return false
+	}
+	if userID > 0 && responsesWSUserActive[userID] >= maxResponsesWSPerUser {
+		return false
+	}
+	if tokenID > 0 {
+		responsesWSTokenActive[tokenID]++
+	}
+	if userID > 0 {
+		responsesWSUserActive[userID]++
+	}
+	return true
+}
+
+func releaseResponsesWSSlot(userID, tokenID int) {
+	responsesWSSlotsMu.Lock()
+	defer responsesWSSlotsMu.Unlock()
+	if tokenID > 0 {
+		if n := responsesWSTokenActive[tokenID] - 1; n <= 0 {
+			delete(responsesWSTokenActive, tokenID)
+		} else {
+			responsesWSTokenActive[tokenID] = n
+		}
+	}
+	if userID > 0 {
+		if n := responsesWSUserActive[userID] - 1; n <= 0 {
+			delete(responsesWSUserActive, userID)
+		} else {
+			responsesWSUserActive[userID] = n
+		}
+	}
+}
+
 func ResponsesWebSocket(c *gin.Context) {
 	requestID := c.GetString(common.RequestIdKey)
+	userID := common.GetContextKeyInt(c, constant.ContextKeyUserId)
+	tokenID := common.GetContextKeyInt(c, constant.ContextKeyTokenId)
+	if !acquireResponsesWSSlot(userID, tokenID) {
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error": gin.H{
+				"message": common.MessageWithRequestId("Too many concurrent websocket connections", requestID),
+				"type":    "rate_limit_error",
+				"code":    "too_many_websocket_connections",
+			},
+		})
+		return
+	}
+	defer releaseResponsesWSSlot(userID, tokenID)
+
 	runner := newResponsesWSRequestRunner(c)
 	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {

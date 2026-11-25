@@ -579,28 +579,48 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 		}
 		relayInfo.UserQuota = userQuota
-
-		if relayInfo.RequestId == "" {
-			relayInfo.RequestId = common.NewRequestId()
-		}
-		operationKey := "request:" + relayInfo.RequestId
-		session := &BillingSession{
-			relayInfo: relayInfo,
-			funding: &WalletFunding{
-				userId:       relayInfo.UserId,
-				operationKey: operationKey,
-			},
-			lang:           i18n.StatedLang(c),
-			operationKey:   operationKey,
-			requestContext: c,
-		}
-		if apiErr := session.preConsume(c, preConsumedQuota); apiErr != nil {
-			return nil, apiErr
-		}
-		return session, nil
+		return newDurableBillingSession(c, relayInfo, preConsumedQuota)
 	}
 
 	return tryWallet()
+}
+
+// NewFreeBillingSession creates a zero-reserve durable BillingSession for free
+// models so tool/audio surcharges settle through the root request operation and
+// failed free requests refund/close the root row immediately instead of leaving
+// an orphan reserved operation for RecoverBillingOperations (R10-01).
+func NewFreeBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo) (*BillingSession, *types.NewAPIError) {
+	if relayInfo == nil {
+		return nil, types.NewError(model.ErrBillingOperationConflict, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+	}
+	if relayInfo.UserId <= 0 {
+		return nil, types.NewError(model.ErrBillingOperationConflict, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
+	}
+	if AdtyTeamPriceBlocked(c) {
+		return nil, types.NewErrorWithStatusCode(ErrAdtyTeamInvalid, types.ErrorCodeModelPriceError, http.StatusForbidden, types.ErrOptionWithSkipRetry())
+	}
+	return newDurableBillingSession(c, relayInfo, 0)
+}
+
+func newDurableBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preConsumedQuota int) (*BillingSession, *types.NewAPIError) {
+	if relayInfo.RequestId == "" {
+		relayInfo.RequestId = common.NewRequestId()
+	}
+	operationKey := "request:" + relayInfo.RequestId
+	session := &BillingSession{
+		relayInfo: relayInfo,
+		funding: &WalletFunding{
+			userId:       relayInfo.UserId,
+			operationKey: operationKey,
+		},
+		lang:           i18n.StatedLang(c),
+		operationKey:   operationKey,
+		requestContext: c,
+	}
+	if apiErr := session.preConsume(c, preConsumedQuota); apiErr != nil {
+		return nil, apiErr
+	}
+	return session, nil
 }
 
 func (s *BillingSession) durableSpec() model.BillingOperation {

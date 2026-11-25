@@ -618,12 +618,29 @@ func AdtySiteLoginAllowed(c *gin.Context, userId int) bool {
 		return false
 	}
 	cfg := resellerSetting()
-	if !cfg.Enabled || !cfg.SiteLoginOnly {
+	if !cfg.Enabled {
 		return true
 	}
 	var users []model.User
-	if err := model.DB.Select("id", "site_id").Where("id = ?", userId).Limit(1).Find(&users).Error; err != nil || len(users) == 0 {
+	if err := model.DB.Select("id", "site_id", "staff_site_id").Where("id = ?", userId).Limit(1).Find(&users).Error; err != nil || len(users) == 0 {
 		return false
+	}
+	if users[0].StaffSiteId > 0 {
+		var staffSite model.AdtySite
+		if err := model.DB.Select("id", "owner_user_id", "status").First(&staffSite, users[0].StaffSiteId).Error; err != nil || !AdtySiteServesCustomers(&staffSite) {
+			return false
+		}
+		var owner model.User
+		if err := model.DB.Select("id", "status", "staff_site_id").First(&owner, staffSite.OwnerUserId).Error; err != nil || owner.Status != common.UserStatusEnabled || owner.StaffSiteId != 0 {
+			return false
+		}
+		var staffCount int64
+		if err := model.DB.Model(&model.AdtySiteStaff{}).Where("user_id = ? AND site_id = ? AND owner_user_id = ? AND status = ?", userId, staffSite.Id, staffSite.OwnerUserId, "enabled").Count(&staffCount).Error; err != nil || staffCount == 0 {
+			return false
+		}
+	}
+	if !cfg.SiteLoginOnly {
+		return true
 	}
 	current := 0
 	if site := AdtySiteForRequest(c); site != nil {

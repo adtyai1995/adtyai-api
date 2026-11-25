@@ -479,12 +479,12 @@ Telegram 通知解绑分别用 `DELETE /api/adty/telegram/me` 和 `DELETE /api/a
 **首页 SEO**：
 
 - 2 个正式语言首页网址：`/`（英文，另有 x-default 指向它）与 `/zh-cn`（简体中文）。用户选过语言、或者已登录且界面不是英文时，打开 `/` 跳到对应语言的首页，原来的查询参数保留；跳转用路由目标，不再把查询参数拼进路径，避免预加载反复请求 `/`。搜索引擎和第一次来的访客看到英文。
-- Go 返回首页时写进标题、描述、canonical（不带查询参数）、2 个正式语言的 hreflang（含 x-default）、Open Graph、Twitter 卡片，只在 `/` 写 WebSite 结构化数据；正文在构建时预渲染进 `web/dist/adty-home.json`，插在 `#root` 前面。
+- Go 返回首页时写进标题、描述、canonical（不带查询参数）、2 个正式语言的 hreflang（含 x-default）、Open Graph、Twitter 卡片，只在 `/` 写 WebSite 结构化数据；正文在构建时预渲染进 `web/dist/` 下的 `adty-home.json`，插在 `#root` 前面。
 - 首页启动：默认落地页不请求模型价格或官方价，也不计算价格表、折扣排行。启动前根据首页网址和已记住的选择加载一个正式语言包；其他页面继续使用界面语言规则。服务在创建首页路由时核实数据库中的 Root、安装记录及两项运行模式配置，确认已安装才在 HTML 中附带完成标记，前端据此省去首页的安装状态请求；未确认、旧页面和非首页入口保留 API 检查。新安装完成后直到服务重启仍使用 API 检查。
-- 分站首屏：构建同时生成 `web/dist/adty-site-home.json` 的中英文完整落地页模板；Go 根据当前分站填入转义后的名称、Logo 和专用 API 地址，没有 Logo 时显示站名。分站 HTML 保持 `private, no-store`，模板缺失时退回站名首屏，不使用主站 Logo。
+- 分站首屏：构建同时在 `web/dist/` 下生成 `adty-site-home.json` 的中英文完整落地页模板；Go 根据当前分站填入转义后的名称、Logo 和专用 API 地址，没有 Logo 时显示站名。分站 HTML 保持 `private, no-store`，模板缺失时退回站名首屏，不使用主站 Logo。
 - 后台「系统设置 → 站点 → Home Page SEO」：`adty_seo_setting.home_title`、`home_description`（按语言，没填用英文的，英文也没填时标题用 ADTY AI）、`og_image`（默认 `/adty-og.png`）。说明写明作用于 2 个正式语言首页网址（英文 `/` 与简体中文 `/zh-cn`）。一次保存多个字段时，不会因为中途刷新设置把还没保存的草稿覆盖掉；站点设置页也一样。
 - 其余页面一律 noindex。服务器地址（`ServerAddress`）没设或还是 `http://localhost:3000` 时，不写 canonical、hreflang 和结构化数据；请求的域名和服务器地址不同时首页加 noindex。分站见「站长分站」。
-- 落地页保持白底。页面只渲染五段：Hero（首屏）、Migration（迁移说明）、Endpoints（接入地址）、AffiliateBanner（返佣）、ClosingCta（收尾 CTA，标题是「Start with one request. / Decide about the invoice later.」），见 `web/src/features/adty-home/index.tsx:43-51` 和 `web/src/features/adty-home/components/closing-cta.tsx:47-49`。Hero 的「Read the docs」指向 `/docs`；三步、热门模型、卖点、常见问题等旧区块不在当前首页渲染。
+- 落地页保持白底（Logo 蓝强调）。页面按顺序渲染 8 段（见 `web/src/features/adty-home/index.tsx:48-58`）：`Hero`（首屏，点阵世界地图飞线与协议胶囊，「Read the docs」指向 `/docs`，`web/src/features/adty-home/components/hero.tsx`）、`ModelWall`（32 家模型厂商 Logo 滚动墙，链接至 `/pricing`，`web/src/features/adty-home/components/model-wall.tsx`）、`FeatureCards`（01–04 卖点卡，`web/src/features/adty-home/components/feature-cards.tsx`）、`BillingSection`（计费规则说明，`web/src/features/adty-home/components/billing-section.tsx`）、`CapabilityBento`（能力便当格，`web/src/features/adty-home/components/capability-bento.tsx`）、`FaqSection`（双栏常见问题，`web/src/features/adty-home/components/faq-section.tsx`）、`AffiliateBanner`（推广返佣卡，开启推广计划时显示，`web/src/features/adty-home/components/affiliate-banner.tsx`）、`QuickStart`（收尾深色快速开始卡，标题「Change one base URL, / keep everything else.」，提供四种协议 Base URL/鉴权表与客户端配置片段切换，地址为空时以 `<BASE_URL>` 占位，`web/src/features/adty-home/components/quick-start.tsx:169-172`）。
 - `/robots.txt` 和 `/sitemap.xml` 都由 Go 返回。主站 robots 屏蔽 `/api/`、`/v1/`、`/pay/`，sitemap 只列允许索引的首页语言网址并附 hreflang；没开 SEO 的分站整站 `Disallow: /`，不列入 sitemap。
 - 方案第八节原先要求在 Nginx 配置 robots 和 sitemap；当前由应用按主站、分站和 SEO 设置生成，反代无需复制固定文件。
 

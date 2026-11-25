@@ -83,7 +83,8 @@ func registerFreeReservationHeartbeat(c *gin.Context, opKey string) {
 }
 
 // FreezeRequestBillingPayer persists the acceptance identity even when the
-// model is free. A later violation fee must not select a new token binding.
+// model is free and attaches a zero-reserve durable BillingSession so later
+// surcharges settle on the root operation and failures close it cleanly (R10-01).
 // Zero reservation leaves genuinely free requests available at zero balance.
 func FreezeRequestBillingPayer(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
 	if AdtyTeamPriceBlocked(c) {
@@ -96,11 +97,17 @@ func FreezeRequestBillingPayer(c *gin.Context, info *relaycommon.RelayInfo) *typ
 		info.RequestId = common.NewRequestId()
 	}
 	AdtyFreezeRequestPriceSnapshot(c, info)
-	spec := buildRequestBillingSpec(c, info)
-	if _, err := model.ReserveBillingOperation(spec, 0); err != nil {
-		return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+	if info.Billing != nil {
+		return SyncBillingGroupSnapshotWithContext(c, info)
 	}
-	registerFreeReservationHeartbeat(c, spec.OperationKey)
+	session, apiErr := NewFreeBillingSession(c, info)
+	if apiErr != nil {
+		return apiErr
+	}
+	info.Billing = session
+	if snapErr := SyncBillingGroupSnapshotWithContext(c, info); snapErr != nil {
+		return snapErr
+	}
 	return nil
 }
 

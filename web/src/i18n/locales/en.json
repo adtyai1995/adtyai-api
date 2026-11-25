@@ -11512,6 +11512,8 @@
     "Reviewed gift fulfillment": "Reviewed gift fulfillment",
     "Withdrawal status has changed. Refresh and try again.": "Withdrawal status has changed. Refresh and try again.",
     "Withdrawal request not found": "Withdrawal request not found",
-    "Context length must be between 0 and 100000000": "Context length must be between 0 and 100000000"
+    "Context length must be between 0 and 100000000": "Context length must be between 0 and 100000000",
+    "Random password length must be between 12 and 32 characters.": "Random password length must be between 12 and 32 characters.",
+    "Related fund writes are restricted until the anomaly review is closed": "Related fund writes are restricted until the anomaly review is closed"
   }
 }

@@ -81,10 +81,15 @@ func GetAndValidAudioRequest(c *gin.Context, relayMode int) (*dto.AudioRequest, 
 			return nil, fmt.Errorf("failed to parse audio form request: %w", err)
 		}
 		defer form.RemoveAll()
+		keys := make([]string, 0, len(form.Value))
 		for key, values := range form.Value {
+			keys = append(keys, key)
 			if !strings.HasSuffix(key, "[]") && len(values) > 1 {
 				return nil, fmt.Errorf("duplicate form field %q is not allowed", key)
 			}
+		}
+		if err := common.ValidateFormFieldKeys(keys); err != nil {
+			return nil, err
 		}
 	}
 	audioRequest := &dto.AudioRequest{}
@@ -245,13 +250,20 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse image edit form request: %w", err)
 			}
-			// R6-013: Reject duplicate scalar multipart fields so upstream last-value-wins
-			// parsers cannot execute different quality/size/n/model than billed.
+			// R6-013 & R10-03: Reject duplicate scalar multipart fields and
+			// case/Unicode-folded field collisions so upstream last-value-wins
+			// or encoding/json SimpleFold cannot disagree with billing.
+			keys := make([]string, 0, len(form.Value))
 			for key, values := range form.Value {
+				keys = append(keys, key)
 				if !strings.HasSuffix(key, "[]") && !strings.HasPrefix(key, "image[") && len(values) > 1 {
 					_ = form.RemoveAll()
 					return nil, fmt.Errorf("duplicate form field %q is not allowed", key)
 				}
+			}
+			if err := common.ValidateFormFieldKeys(keys); err != nil {
+				_ = form.RemoveAll()
+				return nil, err
 			}
 			formData := url.Values(form.Value)
 			c.Request.MultipartForm = form

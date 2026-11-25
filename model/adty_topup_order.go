@@ -241,16 +241,19 @@ func CreateAdtyTopUpWithPolicy(topUp *TopUp, ext *AdtyTopupOrder, prepare, valid
 				return err
 			}
 		}
-		if validate != nil {
-			if err := validate(tx); err != nil {
-				return err
-			}
-		}
+		// R10-05: Freeze the current site financial owner before validate(tx)
+		// (which may call ReserveAdtySiteGiftTx) so transferred sites never
+		// attribute a new order's gift reserve to the legacy pre-handover owner.
 		owner, err := CurrentAdtySiteFinancialOwnerTx(tx, ext.SiteId)
 		if err != nil {
 			return err
 		}
 		ext.SiteOwnerUserId = owner
+		if validate != nil {
+			if err := validate(tx); err != nil {
+				return err
+			}
+		}
 		if err := tx.Create(topUp).Error; err != nil {
 			return err
 		}

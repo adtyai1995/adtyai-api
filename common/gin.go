@@ -431,7 +431,14 @@ func parseFormData(data []byte, v any) error {
 	if err != nil {
 		return err
 	}
-	formMap := make(map[string]any)
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	if err := ValidateFormFieldKeys(keys); err != nil {
+		return err
+	}
+	formMap := make(map[string]any, len(values))
 	for key, vals := range values {
 		if len(vals) == 1 {
 			formMap[key] = vals[0]
@@ -462,7 +469,14 @@ func parseMultipartFormData(c *gin.Context, data []byte, v any) error {
 		return err
 	}
 	defer form.RemoveAll()
-	formMap := make(map[string]any)
+	keys := make([]string, 0, len(form.Value))
+	for key := range form.Value {
+		keys = append(keys, key)
+	}
+	if err := ValidateFormFieldKeys(keys); err != nil {
+		return err
+	}
+	formMap := make(map[string]any, len(form.Value))
 	for key, vals := range form.Value {
 		if len(vals) == 1 {
 			formMap[key] = vals[0]

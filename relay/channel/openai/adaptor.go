@@ -9,7 +9,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
-	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -463,7 +462,9 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 		var requestBody bytes.Buffer
 		writer := multipart.NewWriter(&requestBody)
 
-		writer.WriteField("model", request.Model)
+		if err := writer.WriteField("model", request.Model); err != nil {
+			return nil, fmt.Errorf("error writing model field: %w", err)
+		}
 
 		formData, err2 := common.ParseMultipartFormReusable(c)
 		if err2 != nil {
@@ -471,16 +472,17 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 		}
 		defer formData.RemoveAll()
 
+		if err := validateMultipartFormFields(formData.Value, false); err != nil {
+			return nil, err
+		}
+
 		// 打印类似 curl 命令格式的信息
 		logger.LogDebug(c.Request.Context(), "--form 'model=\"%s\"'", request.Model)
 
-		// 遍历表单字段并打印输出（R6-013: 禁止重复标量字段绕过计费/格式校验；R7-013: 禁止流式音频转写绕过计费）
+		// 遍历表单字段并打印输出（R6-013: 禁止重复标量字段绕过计费/格式校验；R7-013: 禁止流式音频转写绕过计费；R10-03: 规范键校验与大小写折叠防护）
 		for key, values := range formData.Value {
-			if key == "model" {
+			if strings.EqualFold(key, "model") {
 				continue
-			}
-			if !strings.HasSuffix(key, "[]") && len(values) > 1 {
-				return nil, fmt.Errorf("duplicate form field %q is not allowed", key)
 			}
 			if strings.EqualFold(key, "stream") {
 				for _, value := range values {
@@ -491,7 +493,9 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 				}
 			}
 			for _, value := range values {
-				writer.WriteField(key, value)
+				if err := writer.WriteField(key, value); err != nil {
+					return nil, fmt.Errorf("error writing form field %q: %w", key, err)
+				}
 				logger.LogDebug(c.Request.Context(), "--form '%s=\"%s\"'", key, value)
 			}
 		}
@@ -522,7 +526,9 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 		}
 
 		// 关闭 multipart 编写器以设置分界线
-		writer.Close()
+		if err := writer.Close(); err != nil {
+			return nil, fmt.Errorf("error closing multipart writer: %w", err)
+		}
 		formContentType := writer.FormDataContentType()
 		logger.LogDebug(c.Request.Context(), "--header 'Content-Type: %s'", formContentType)
 		return channel.NewFormBody(&requestBody, formContentType), nil
@@ -539,7 +545,9 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 		var requestBody bytes.Buffer
 		writer := multipart.NewWriter(&requestBody)
 
-		writer.WriteField("model", request.Model)
+		if err := writer.WriteField("model", request.Model); err != nil {
+			return nil, fmt.Errorf("failed to write model field: %w", err)
+		}
 		// 使用已解析的 multipart 表单，避免重复解析
 		mf := c.Request.MultipartForm
 		if mf == nil {
@@ -547,22 +555,23 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse multipart form: %w", err)
 			}
-			c.Request.MultipartForm = form
-			c.Request.PostForm = url.Values(form.Value)
+			defer form.RemoveAll()
 			mf = form
 		}
 
-		// 写入所有非文件字段（R6-013: 禁止重复标量字段绕过 quality/size/n 计费校验）
+		// 写入所有非文件字段（R6-013: 禁止重复标量字段绕过 quality/size/n 计费校验；R10-03: 规范键校验与大小写折叠防护）
 		if mf != nil {
+			if err := validateMultipartFormFields(mf.Value, true); err != nil {
+				return nil, err
+			}
 			for key, values := range mf.Value {
-				if key == "model" {
+				if strings.EqualFold(key, "model") {
 					continue
 				}
-				if !strings.HasSuffix(key, "[]") && !strings.HasPrefix(key, "image[") && len(values) > 1 {
-					return nil, fmt.Errorf("duplicate form field %q is not allowed", key)
-				}
 				for _, value := range values {
-					writer.WriteField(key, value)
+					if err := writer.WriteField(key, value); err != nil {
+						return nil, fmt.Errorf("failed to write form field %q: %w", key, err)
+					}
 				}
 			}
 		}
@@ -659,7 +668,9 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 		}
 
 		// 关闭 multipart 编写器以设置分界线
-		writer.Close()
+		if err := writer.Close(); err != nil {
+			return nil, fmt.Errorf("failed to close multipart writer: %w", err)
+		}
 		return channel.NewFormBody(&requestBody, writer.FormDataContentType()), nil
 
 	default:
@@ -667,11 +678,48 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 	}
 }
 
+// validateMultipartFormFields enforces canonical ASCII field names, rejects
+// case-folded key collisions (e.g. "size" + "Size", "model" + "Model",
+// "image[]" + "Image[]"), and disallows duplicate scalar values while
+// preserving legitimate array fields (R6-013, R10-03).
+func validateMultipartFormFields(values map[string][]string, allowImageIndexPrefix bool) error {
+	seenFolded := make(map[string]string, len(values))
+	for key, fieldValues := range values {
+		if !isValidASCIIFormFieldName(key) {
+			return fmt.Errorf("invalid form field %q: only printable ASCII field names are allowed", key)
+		}
+		folded := strings.ToLower(key)
+		if prev, exists := seenFolded[folded]; exists {
+			return fmt.Errorf("duplicate form field %q conflicts with %q", key, prev)
+		}
+		seenFolded[folded] = key
+
+		isArrayField := strings.HasSuffix(key, "[]") || (allowImageIndexPrefix && strings.HasPrefix(key, "image["))
+		if !isArrayField && len(fieldValues) > 1 {
+			return fmt.Errorf("duplicate form field %q is not allowed", key)
+		}
+	}
+	return nil
+}
+
+func isValidASCIIFormFieldName(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		if key[i] < 0x20 || key[i] >= 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 func isJSONRequest(c *gin.Context) bool {
 	if c == nil || c.Request == nil {
 		return false
 	}
-	return strings.HasPrefix(c.Request.Header.Get("Content-Type"), "application/json")
+	mediaType := common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))
+	return mediaType == "" || mediaType == "application/json"
 }
 
 // detectImageMimeType determines the MIME type based on the file extension

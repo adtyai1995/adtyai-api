@@ -330,9 +330,8 @@ func isKnownTaskField(field string) bool {
 
 func ValidateBasicTaskRequest(c *gin.Context, info *RelayInfo, action string) *dto.TaskError {
 	var err error
-	contentType := c.GetHeader("Content-Type")
 	var req TaskSubmitReq
-	if strings.HasPrefix(contentType, "multipart/form-data") {
+	if common.NormalizedContentMediaType(c.GetHeader("Content-Type")) == gin.MIMEMultipartPOSTForm {
 		req, err = validateMultipartTaskRequest(c, info, action)
 		if err != nil {
 			return createTaskError(err, "invalid_multipart_form", http.StatusBadRequest, true)

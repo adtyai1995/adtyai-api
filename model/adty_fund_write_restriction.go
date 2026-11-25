@@ -5,12 +5,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
 )
 
 // ErrAdtyFundWriteRestricted is returned when a reviewing fund-anomaly
 // workbench item covers the write. The restriction lifts when the item is closed.
-var ErrAdtyFundWriteRestricted = errors.New("related fund writes are restricted until the anomaly review is closed")
+var ErrAdtyFundWriteRestricted = common.NewMessage("Related fund writes are restricted until the anomaly review is closed")
 
 // AdtyFundWrite is the account, order, and/or site a fund write belongs to.
 // Empty identifiers are omitted from matching so an order-scoped review does

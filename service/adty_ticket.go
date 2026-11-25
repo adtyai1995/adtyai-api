@@ -1773,7 +1773,14 @@ func loadAdtyTicketActorTx(tx *gorm.DB, userId int) (adtyTicketActor, error) {
 				if res.Error != nil {
 					return actor, res.Error
 				}
-				actor.StaffTickets = res.RowsAffected == 1 && AdtySiteAgreementAccepted(staffSite.AgreementVer)
+				if res.RowsAffected == 1 && AdtySiteAgreementAccepted(staffSite.AgreementVer) {
+					var owner model.User
+					ownerRes := tx.Select("id", "status", "staff_site_id").Where("id = ?", staffSite.OwnerUserId).Limit(1).Find(&owner)
+					if ownerRes.Error != nil {
+						return actor, ownerRes.Error
+					}
+					actor.StaffTickets = ownerRes.RowsAffected == 1 && owner.Status == common.UserStatusEnabled && owner.StaffSiteId == 0
+				}
 			}
 		}
 	}

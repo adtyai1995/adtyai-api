@@ -571,6 +571,11 @@ func IssueAdtyVoucherBatch(input AdtyVoucherIssueInput) (*AdtyVoucherBatchIssued
 				rows[i].FrozenMarginUSD = split.MarginUSD
 				rows[i].SourceSiteId = site.Id
 				rows[i].TargetSiteId = site.Id
+				// R10-06: Persist each voucher row immediately after freezing its funding
+				// so subsequent iterations in a batch see prior frozen earnings via ownerEarningsWalletTx.
+				if err := tx.Create(&rows[i]).Error; err != nil {
+					return err
+				}
 			}
 		case model.AdtyVoucherPurposeSiteOwner:
 			return ErrAdtyVoucherForbidden
@@ -582,8 +587,10 @@ func IssueAdtyVoucherBatch(input AdtyVoucherIssueInput) (*AdtyVoucherBatchIssued
 		totalFrozenEarnings := decimal.Zero
 		totalFrozenMargin := decimal.Zero
 		for i := range rows {
-			if err := tx.Create(&rows[i]).Error; err != nil {
-				return err
+			if rows[i].Id == 0 {
+				if err := tx.Create(&rows[i]).Error; err != nil {
+					return err
+				}
 			}
 			voucherIDs[i] = rows[i].Id
 			totalFrozenEarnings = totalFrozenEarnings.Add(rows[i].FrozenEarningsUSD)

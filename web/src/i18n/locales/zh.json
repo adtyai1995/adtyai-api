@@ -11512,6 +11512,8 @@
     "Reviewed gift fulfillment": "审核了赠金履约",
     "Withdrawal status has changed. Refresh and try again.": "提现状态已变更，请刷新后重试。",
     "Withdrawal request not found": "未找到该提现申请",
-    "Context length must be between 0 and 100000000": "上下文长度必须在 0 到 100000000 之间"
+    "Context length must be between 0 and 100000000": "上下文长度必须在 0 到 100000000 之间",
+    "Random password length must be between 12 and 32 characters.": "随机密码长度必须在 12 到 32 个字符之间。",
+    "Related fund writes are restricted until the anomaly review is closed": "异常复核结案前，相关资金写入已受限"
   }
 }

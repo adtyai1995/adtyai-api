@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/claude"
@@ -516,7 +517,8 @@ func isJSONRequest(c *gin.Context) bool {
 	if c == nil || c.Request == nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(c.Request.Header.Get("Content-Type")), "application/json")
+	mediaType := common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))
+	return mediaType == "" || mediaType == "application/json"
 }
 
 // convertCrossProtocolChatRequest converts a Claude, Gemini, or Responses request into an

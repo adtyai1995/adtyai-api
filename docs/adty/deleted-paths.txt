@@ -553,6 +553,7 @@ pkg/adtylimit/limit_test.go
 pkg/billingexpr/accepted_time_test.go
 pkg/billingexpr/billingexpr_test.go
 pkg/billingexpr/compile_usage_test.go
+pkg/billingexpr/eval_decimal_test.go
 pkg/billingexpr/run_validation_test.go
 pkg/billingexpr/settle_clamp_test.go
 pkg/billingexpr/settle_decimal_test.go
@@ -1251,12 +1252,17 @@ web/src/features/adty-home/__tests__/prerender-cleanup.test.tsx
 web/src/features/adty-home/__tests__/prerender.test.tsx
 web/src/features/adty-home/components/__tests__/code-card.test.tsx
 web/src/features/adty-home/components/client-guides.tsx
+web/src/features/adty-home/components/closing-cta.tsx
+web/src/features/adty-home/components/code-card.tsx
+web/src/features/adty-home/components/endpoints-section.tsx
 web/src/features/adty-home/components/faq.tsx
 web/src/features/adty-home/components/landing-section.tsx
+web/src/features/adty-home/components/migration-section.tsx
 web/src/features/adty-home/components/payment-strip.tsx
 web/src/features/adty-home/components/popular-models.tsx
 web/src/features/adty-home/components/price-compare-card.tsx
 web/src/features/adty-home/components/price-text.tsx
+web/src/features/adty-home/components/section-intro.tsx
 web/src/features/adty-home/components/selling-points.tsx
 web/src/features/adty-home/components/steps.tsx
 web/src/features/adty-home/lib/landing-data.ts
@@ -1351,6 +1357,7 @@ web/src/features/adty-team-registration/__tests__/links-panel.test.tsx
 web/src/features/adty-telegram/__tests__/admin-panel.test.tsx
 web/src/features/adty-telegram/__tests__/bind-card.test.tsx
 web/src/features/adty-ticket/__tests__/draft.test.ts
+web/src/features/adty-ticket/__tests__/ticket-center.test.tsx
 web/src/features/adty-ticket/__tests__/workspace.test.tsx
 web/src/features/adty-ticket/ticket-status.test.ts
 web/src/features/adty-translation/__tests__/admin-panel.test.tsx
@@ -1785,3 +1792,4 @@ web/src/routes/status.tsx
 web/src/stores/__tests__/system-config-store.test.ts
 web/src/styles/__tests__/theme.test.ts
 web/src/test-setup.ts
+web/vitest.config.ts

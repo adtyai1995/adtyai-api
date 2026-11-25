@@ -130,11 +130,12 @@ func productionPluginRouteHandlers(generation *jsplugin.RoutingGeneration, bindi
 	return []gin.HandlerFunc{
 		pinRoute,
 		middleware.TokenAuth(),
+		middleware.AdtyRequireCurrentSiteTerms(),
 		middleware.SystemPerformanceCheck(),
 		middleware.ModelRequestRateLimit(),
 		middleware.AdtyUserLimit(), middleware.AdtyKeyRateLimit(), // 二开：任务 7.4
+		middleware.DecompressRequestMiddleware(),
 		middleware.PrepareTaskPluginRoute(),
-		middleware.AdtyRequireCurrentSiteTerms(),
 		middleware.Distribute(),
 		controller.RelayTask,
 	}

@@ -258,7 +258,7 @@ func getModelFromRequest(c *gin.Context) (*ModelRequest, error) {
 	return &modelRequest, nil
 }
 
-var billingSensitiveTopLevelJSONKeys = []string{
+var billingSensitiveJSONPaths = []string{
 	"model",
 	"group",
 	"n",
@@ -269,6 +269,41 @@ var billingSensitiveTopLevelJSONKeys = []string{
 	"max_completion_tokens",
 	"max_output_tokens",
 	"parameters",
+	"parameters.size",
+	"parameters.n",
+	"parameters.quality",
+	"parameters.resolution",
+	"parameters.duration",
+	"service_tier",
+	"reasoning",
+	"reasoning.effort",
+	"reasoning.summary",
+	"reasoning_effort",
+	"thinking",
+	"thinking.type",
+	"thinking.budget_tokens",
+	"resolution",
+	"aspect_ratio",
+	"duration",
+	"speed",
+	"verbosity",
+	"audio",
+	"audio.voice",
+	"audio.format",
+	"modalities",
+	"tools",
+	"web_search_options",
+	"web_search_options.search_context_size",
+	"generationConfig",
+	"generationConfig.thinkingConfig",
+	"generationConfig.thinkingConfig.thinkingBudget",
+	"generationConfig.thinkingConfig.thinkingLevel",
+	"generationConfig.imageConfig",
+	"generationConfig.imageConfig.imageSize",
+	"generationConfig.imageConfig.aspectRatio",
+	"response_format",
+	"store",
+	"background",
 }
 
 func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
@@ -283,11 +318,12 @@ func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
 	if !gjson.ValidBytes(requestBody) {
 		return nil, errors.New("invalid JSON request body")
 	}
-	// R8-02 & R9-11: Reject duplicate or case/Unicode-folded top-level routing
-	// and billing keys in a single O(n) pass so encoding/json downstream or
-	// pass-through upstreams cannot disagree with distributor auth/billing.
-	if badKey := findDuplicateOrFoldedTopLevelJSONKey(requestBody, billingSensitiveTopLevelJSONKeys); badKey != "" {
-		return nil, fmt.Errorf("%s must be provided once", badKey)
+	// R8-02, R9-11 & R10-02: Validate the entire JSON tree in a single O(n) pass
+	// to reject duplicate keys, case/Unicode-folded collisions at any nesting depth,
+	// and non-canonical casing of routing/billing paths so gjson (billingexpr /
+	// distributor) and encoding/json (DTOs) can never diverge.
+	if err := common.ValidateJSONNoDuplicateOrFoldedKeys(requestBody, billingSensitiveJSONPaths); err != nil {
+		return nil, err
 	}
 
 	values := gjson.GetManyBytes(requestBody, "model", "group")
@@ -309,80 +345,6 @@ func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
 		Model: model,
 		Group: group,
 	}, nil
-}
-
-func findDuplicateOrFoldedTopLevelJSONKey(data []byte, targets []string) string {
-	exactCounts := make(map[string]int, len(targets))
-	depth := 0
-	arrayDepth := 0
-	inString := false
-	escaped := false
-	stringStart := 0
-	expectingKey := false
-	for index, current := range data {
-		if inString {
-			if escaped {
-				escaped = false
-				continue
-			}
-			if current == '\\' {
-				escaped = true
-				continue
-			}
-			if current != '"' {
-				continue
-			}
-			inString = false
-			if depth == 1 && arrayDepth == 0 && expectingKey {
-				key := string(data[stringStart:index])
-				var decodedKey string
-				if common.Unmarshal(data[stringStart-1:index+1], &decodedKey) == nil {
-					key = decodedKey
-				}
-				cursor := index + 1
-				for cursor < len(data) && (data[cursor] == ' ' || data[cursor] == '\t' || data[cursor] == '\r' || data[cursor] == '\n') {
-					cursor++
-				}
-				if cursor < len(data) && data[cursor] == ':' {
-					for _, target := range targets {
-						if key == target {
-							exactCounts[target]++
-							if exactCounts[target] > 1 {
-								return target
-							}
-							break
-						}
-						if strings.EqualFold(key, target) {
-							return target
-						}
-					}
-				}
-				expectingKey = false
-			}
-			continue
-		}
-		switch current {
-		case '"':
-			inString = true
-			stringStart = index + 1
-		case '[':
-			arrayDepth++
-		case ']':
-			arrayDepth--
-		case '{':
-			depth++
-			if depth == 1 && arrayDepth == 0 {
-				expectingKey = true
-			}
-		case '}':
-			depth--
-		case ',':
-			if depth == 1 && arrayDepth == 0 {
-				expectingKey = true
-			}
-		}
-	}
-	return ""
 }
 
 func getJSONStringValue(result gjson.Result, field string) (string, error) {
