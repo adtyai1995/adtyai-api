@@ -33,11 +33,11 @@ const HTML_WRAPPED_MARKER_EXPR = `(?:<(?:p|div|span|small|em|i)\\b[^>]*>\\s*${WR
 
 const TRAILING_NOT_READY_PATTERNS = [
   new RegExp(
-    `(?:[ \\t]*\\n+[ \\t]*)+(?:(?:[-_*—–]{3,}|<hr\\s*/?>)(?:[ \\t]*\\n+[ \\t]*)+)?${HTML_WRAPPED_MARKER_EXPR}[ \\t]*$`,
+    `[ \\t]*\\n[ \\t\\n]*(?:(?:[-_*—–]{3,}|<hr\\s*/?>)[ \\t]*\\n[ \\t\\n]*)?${HTML_WRAPPED_MARKER_EXPR}[ \\t]*$`,
     'i'
   ),
   new RegExp(
-    `(?:[ \\t]*(?:<br\\s*/?>|<hr\\s*/?>)[ \\t]*)+${HTML_WRAPPED_MARKER_EXPR}[ \\t]*$`,
+    `[ \\t]*(?:(?:<br\\s*/?>|<hr\\s*/?>)[ \\t]*)+${HTML_WRAPPED_MARKER_EXPR}[ \\t]*$`,
     'i'
   ),
   new RegExp(
@@ -45,7 +45,7 @@ const TRAILING_NOT_READY_PATTERNS = [
     'i'
   ),
   new RegExp(
-    `(?:(?:[ \\t]*\\n+[ \\t]*)+|(?:[ \\t]*<br\\s*/?>[ \\t]*)+)${WRAPPED_MARKER_EXPR}(?=[ \\t]*</(?:p|div)>\\s*$)`,
+    `[ \\t]*(?:\\n[ \\t\\n]*|(?:<br\\s*/?>[ \\t]*)+)${WRAPPED_MARKER_EXPR}(?=[ \\t]*</(?:p|div)>\\s*$)`,
     'i'
   ),
   new RegExp(
@@ -234,6 +234,85 @@ function stripTrailingSection(
   return trimmedContent
 }
 
+const TRAILING_MARKER_TAIL_RE = new RegExp(
+  `^${MARKER_CORE_EXPR}(?:\\s*[)）\\]】])?(?:\\s*</(?:p|div|span|small|em|i)>){0,2}$`,
+  'i'
+)
+const HTML_OPEN_WRAPPER_TAG_RE = /^<(?:p|div|span|small|em|i)\b[^>]*>$/i
+const HTML_BREAK_OR_RULE_TAG_RE = /^<(?:br|hr)\s*\/?>$/i
+
+function findLastNotReadyMarkerIndex(text: string): number {
+  const lower = text.toLowerCase()
+  let lastIndex = -1
+  for (const marker of TRANSLATION_NOT_READY_MARKERS) {
+    const idx = lower.lastIndexOf(marker.toLowerCase())
+    if (idx > lastIndex) {
+      lastIndex = idx
+    }
+  }
+  return lastIndex
+}
+
+function findTrailingNotReadyWindowStart(
+  text: string,
+  markerIndex: number
+): number {
+  let pos = markerIndex
+  while (pos > 0 && /\s/.test(text[pos - 1])) {
+    pos -= 1
+  }
+  if (pos > 0 && '([（【'.includes(text[pos - 1])) {
+    pos -= 1
+  }
+  let beforeWrapper = pos
+  while (beforeWrapper > 0 && /\s/.test(text[beforeWrapper - 1])) {
+    beforeWrapper -= 1
+  }
+  if (beforeWrapper > 0 && text[beforeWrapper - 1] === '>') {
+    const lt = text.lastIndexOf('<', beforeWrapper - 1)
+    if (
+      lt >= 0 &&
+      text.indexOf('>', lt) === beforeWrapper - 1 &&
+      HTML_OPEN_WRAPPER_TAG_RE.test(text.slice(lt, beforeWrapper))
+    ) {
+      pos = lt
+    }
+  }
+
+  let separatorConsumed = false
+  while (pos > 0) {
+    const prev = text[pos - 1]
+    if (prev === ' ' || prev === '\t' || prev === '\n') {
+      pos -= 1
+      continue
+    }
+    if (prev === '>') {
+      const lt = text.lastIndexOf('<', pos - 1)
+      if (
+        lt >= 0 &&
+        text.indexOf('>', lt) === pos - 1 &&
+        HTML_BREAK_OR_RULE_TAG_RE.test(text.slice(lt, pos))
+      ) {
+        pos = lt
+        continue
+      }
+      break
+    }
+    if ('-_*—–'.includes(prev)) {
+      pos -= 1
+      continue
+    }
+    if (!separatorConsumed && '|/·•'.includes(prev)) {
+      pos -= 1
+      separatorConsumed = true
+      continue
+    }
+    break
+  }
+
+  return pos
+}
+
 export function stripTranslationNotReadyMarkers(content: string): string {
   let current = content.trim().replaceAll('\r\n', '\n').replaceAll('\r', '\n')
   if (!current) return ''
@@ -246,8 +325,18 @@ export function stripTranslationNotReadyMarkers(content: string): string {
     for (const marker of TRANSLATION_NOT_READY_MARKERS) {
       next = stripTrailingSection(next, marker, true)
     }
-    for (const pattern of TRAILING_NOT_READY_PATTERNS) {
-      next = next.replace(pattern, '').trim()
+    const lastMarkerIdx = findLastNotReadyMarkerIndex(next)
+    if (
+      lastMarkerIdx >= 0 &&
+      TRAILING_MARKER_TAIL_RE.test(next.slice(lastMarkerIdx))
+    ) {
+      const windowStart = findTrailingNotReadyWindowStart(next, lastMarkerIdx)
+      const prefix = next.slice(0, windowStart)
+      let tail = next.slice(windowStart)
+      for (const pattern of TRAILING_NOT_READY_PATTERNS) {
+        tail = tail.replace(pattern, '')
+      }
+      next = (prefix + tail).trim()
     }
     if (isTranslationNotReadyMarker(next)) {
       return ''

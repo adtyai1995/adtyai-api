@@ -173,6 +173,9 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		return true
 	}
 	failResponsesStream := func(err error) bool {
+		if info == nil || info.SendResponseCount == 0 {
+			return false
+		}
 		failureResults, handled := state.FailResponsesStream("server_error", err.Error(), "")
 		if !handled {
 			return false
@@ -262,6 +265,12 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 
 	if streamErr != nil {
 		return nil, streamErr
+	}
+	if lastStreamData == "" && (info == nil || info.SendResponseCount == 0) {
+		if helper.ClientRequestCanceled(c) {
+			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
+		return nil, types.NewOpenAIError(fmt.Errorf("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
 	}
 
 	usage := state.Usage()

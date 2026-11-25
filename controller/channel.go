@@ -126,7 +126,7 @@ func restoreMultiKeyChannelIfAvailable(channel *model.Channel) {
 	// Manual key disables and request-driven key failures both record the
 	// all-keys reason; any later manual channel disable replaces it.
 	disabled := channel.Status == common.ChannelStatusManuallyDisabled || channel.Status == common.ChannelStatusAutoDisabled
-	if !disabled || !hasEnabledMultiKey(channel) {
+	if !disabled || !hasEnabledMultiKey(channel) || len(channel.GetGroups()) == 0 {
 		return
 	}
 	info := channel.GetOtherInfo()
@@ -1310,7 +1310,8 @@ func UpdateChannel(c *gin.Context) {
 				info := originChannel.GetOtherInfo()
 				if (originChannel.Status == common.ChannelStatusManuallyDisabled || originChannel.Status == common.ChannelStatusAutoDisabled) &&
 					info["status_reason"] == model.ChannelStatusReasonAllKeysDisabled &&
-					strings.TrimSpace(channel.Key) != "" && hasEnabledMultiKey(&channel.Channel) {
+					strings.TrimSpace(channel.Key) != "" && hasEnabledMultiKey(&channel.Channel) &&
+					(len(channel.GetGroups()) > 0 || (channel.Group == "" && len(originChannel.GetGroups()) > 0)) {
 					channel.Status = common.ChannelStatusEnabled
 					maps.Copy(info, channel.GetOtherInfo())
 					info["status_reason"] = ""
@@ -1377,7 +1378,11 @@ func UpdateChannelStatus(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	changed := model.UpdateChannelStatus(id, "", req.Status, "manual operation")
+	changed, err := model.UpdateChannelStatusWithError(id, "", req.Status, "manual operation")
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	if changed {
 		_ = model.RefreshChannelCache()
 		model.InvalidatePricingCache()
@@ -1403,10 +1408,32 @@ func BatchUpdateChannelStatus(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	if req.Status == common.ChannelStatusEnabled {
+		channels, err := model.GetChannelsByIds(req.Ids)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		for _, ch := range channels {
+			if ch != nil && len(ch.GetGroups()) == 0 {
+				common.ApiError(c, model.ErrChannelNoGroup)
+				return
+			}
+		}
+	}
 	changedCount := 0
 	var disabledIDs []int
 	for _, id := range req.Ids {
-		if model.UpdateChannelStatus(id, "", req.Status, "manual batch operation") {
+		changed, err := model.UpdateChannelStatusWithError(id, "", req.Status, "manual batch operation")
+		if err != nil {
+			if changedCount > 0 {
+				_ = model.RefreshChannelCache()
+				model.InvalidatePricingCache()
+			}
+			common.ApiError(c, err)
+			return
+		}
+		if changed {
 			changedCount++
 			if req.Status != common.ChannelStatusEnabled {
 				disabledIDs = append(disabledIDs, id)

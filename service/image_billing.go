@@ -91,7 +91,13 @@ func PrepareImageBillingForRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 	}
 	info.PriceData.FreeModel = false
 	if info.Billing == nil {
-		return PreConsumeBilling(c, quota, info)
+		if err := PreConsumeBilling(c, quota, info); err != nil {
+			return err
+		}
+		return SyncBillingGroupSnapshotWithContext(c, info)
+	}
+	if err := SyncBillingGroupSnapshotWithContext(c, info); err != nil {
+		return err
 	}
 	if err := info.Billing.Reserve(quota); err != nil {
 		var apiErr *types.NewAPIError

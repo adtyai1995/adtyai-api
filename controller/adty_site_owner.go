@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
@@ -163,7 +165,7 @@ func GetAdtyOwnerSite(c *gin.Context) {
 		"host": service.AdtySiteDisplayHost(site), "base_url": service.AdtySiteBaseURL(site), "api_base_url": service.AdtySiteAPIBaseURL(site),
 		"cost_factor":           d.String(),
 		"custom_domain_enabled": cfg.CustomDomainEnabled,
-		"sender_domain_enabled": cfg.SenderDomainEnabled, "brand": brand, "home_page_content": site.HomePageContent,
+		"sender_domain_enabled": false, "brand": brand, "home_page_content": site.HomePageContent,
 		"legal_docs":         service.AdtySiteLegalFor(site),
 		"bonus_methods":      service.AdtySiteBonusMethods(site),
 		"seo_index":          site.SeoIndex,
@@ -677,11 +679,22 @@ func GetAdtyOwnerExport(c *gin.Context) {
 	c.Data(http.StatusOK, "text/csv; charset=utf-8", []byte(b.String()))
 }
 
-// adtyCSVField 给 CSV 字段加引号，并防止表格软件把 =、+、-、@、控制字符或带前导空白的公式开头当公式执行。
+// adtyCSVField 给 CSV 字段加引号，并防止表格软件把 =、+、-、@、控制字符或带前导空白/控制字符的公式开头当公式执行。
 func adtyCSVField(value string) string {
-	trimmed := strings.TrimLeft(value, " \t\r\n")
-	if value != "" && (strings.ContainsAny(value[:1], "=+-@\t\r\n") || (trimmed != "" && strings.ContainsAny(trimmed[:1], "=+-@"))) {
-		value = "'" + value
+	if value != "" {
+		first, _ := utf8.DecodeRuneInString(value)
+		trimmed := strings.TrimLeftFunc(value, func(r rune) bool {
+			return unicode.IsSpace(r) || unicode.IsControl(r)
+		})
+		leadDangerous := unicode.IsControl(first) || strings.ContainsRune("=+-@", first)
+		trimmedDangerous := false
+		if trimmed != "" {
+			r, _ := utf8.DecodeRuneInString(trimmed)
+			trimmedDangerous = strings.ContainsRune("=+-@", r)
+		}
+		if leadDangerous || trimmedDangerous {
+			value = "'" + value
+		}
 	}
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }

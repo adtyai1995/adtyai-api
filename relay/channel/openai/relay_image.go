@@ -149,14 +149,26 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	usage := &dto.Usage{}
 	var lastStreamData []byte
 	var completedImages int64
+	var streamErr *types.NewAPIError
+	var lastErrorEventErr *types.NewAPIError
+	var sawErrorEvent bool
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		raw := common.StringToByteSlice(data)
 		lastStreamData = raw
 		if isOpenAIImageStreamErrorEvent(raw) {
+			sawErrorEvent = true
+			errMsg := extractOpenAIImageStreamErrorMessage(raw)
+			eventErr := buildOpenAIImageStreamError(raw, errMsg)
+			lastErrorEventErr = eventErr
+			if !helper.HasWrittenStreamPayload(c) {
+				streamErr = eventErr
+				sr.Stop(streamErr)
+				return
+			}
 			// Record the error as a soft error; the scanner drives the final
 			// EndReason. HasErrors() flags the failure for logging/handling.
-			sr.Error(fmt.Errorf("%s", extractOpenAIImageStreamErrorMessage(raw)))
+			sr.Error(fmt.Errorf("%s", errMsg))
 		}
 		var chunk struct {
 			Type  string    `json:"type"`
@@ -173,8 +185,32 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 		}
 		if err := writeOpenaiImageStreamChunk(c, raw); err != nil {
 			sr.Stop(err)
+			return
+		}
+		if info != nil {
+			info.SendResponseCount++
 		}
 	})
+
+	if streamErr != nil {
+		return nil, streamErr
+	}
+
+	// Preserve the ClientGone anti-abuse billing rule for image generation;
+	// for non-canceled streams, reject empty or error-only streams without
+	// delivered images/usage so retries or full refunds can run.
+	clientGone := (info != nil && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone) || helper.ClientRequestCanceled(c)
+	if !clientGone {
+		if len(lastStreamData) == 0 {
+			return nil, types.NewOpenAIError(fmt.Errorf("empty upstream image stream response"), types.ErrorCodeEmptyResponse, http.StatusBadGateway)
+		}
+		if sawErrorEvent && completedImages == 0 && !service.ValidUsage(usage) {
+			if lastErrorEventErr != nil {
+				return nil, lastErrorEventErr
+			}
+			return nil, types.NewOpenAIError(fmt.Errorf("upstream image stream returned error event"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		}
+	}
 
 	// StreamScannerHandler consumes the upstream [DONE]; re-emit it so the
 	// client still receives a terminal data: [DONE].
@@ -262,6 +298,20 @@ func extractOpenAIImageStreamErrorMessage(data []byte) string {
 		}
 	}
 	return "upstream image stream returned error event"
+}
+
+func buildOpenAIImageStreamError(raw []byte, fallbackMsg string) *types.NewAPIError {
+	var payload struct {
+		Error *types.OpenAIError `json:"error"`
+	}
+	if err := common.Unmarshal(raw, &payload); err == nil && payload.Error != nil && (strings.TrimSpace(payload.Error.Message) != "" || strings.TrimSpace(payload.Error.Type) != "") {
+		oaiErr := *payload.Error
+		if strings.TrimSpace(oaiErr.Message) == "" {
+			oaiErr.Message = fallbackMsg
+		}
+		return types.WithOpenAIError(oaiErr, http.StatusBadGateway)
+	}
+	return types.NewOpenAIError(fmt.Errorf("%s", fallbackMsg), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 }
 
 func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {

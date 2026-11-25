@@ -346,6 +346,10 @@ func CheckModelContextLimit(modelName string, tokenCount int) error {
 }
 
 func (mi *Model) Insert() error {
+	mi.ModelName = strings.TrimSpace(mi.ModelName)
+	if mi.ModelName == "" {
+		return common.NewMessage("Model name cannot be empty")
+	}
 	if err := ValidateModelContextLength(mi.ContextLength); err != nil {
 		return err
 	}
@@ -375,6 +379,7 @@ func (mi *Model) Insert() error {
 }
 
 func IsModelNameDuplicated(id int, name string) (bool, error) {
+	name = strings.TrimSpace(name)
 	if name == "" {
 		return false, nil
 	}
@@ -384,6 +389,10 @@ func IsModelNameDuplicated(id int, name string) (bool, error) {
 }
 
 func (mi *Model) Update() error {
+	mi.ModelName = strings.TrimSpace(mi.ModelName)
+	if mi.ModelName == "" {
+		return common.NewMessage("Model name cannot be empty")
+	}
 	if err := ValidateModelContextLength(mi.ContextLength); err != nil {
 		return err
 	}

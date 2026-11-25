@@ -194,12 +194,18 @@ func AccessTokenOwnerRouteScope(method, fullPath string) string {
 func AccessTokenCatalog(userID, role int) []AccessTokenCatalogGroup {
 	resources := map[string][]AccessTokenResource{}
 	isSiteOwner, ownerErr := isAccessTokenSiteOwner(userID)
+	canGrantOwnerScopes := false
+	if ownerErr == nil && isSiteOwner {
+		if activeOwner, activeErr := AdtyIsActiveSiteOwnerStrict(userID); activeErr == nil && activeOwner {
+			canGrantOwnerScopes = true
+		}
+	}
 	pureSiteOwner := (ownerErr != nil || isSiteOwner) && role < common.RoleAdminUser
 	for _, resource := range accessTokenStaticResources {
 		if role < resource.minRole {
 			continue
 		}
-		if resource.group == AccessTokenGroupOwner && (!isSiteOwner || ownerErr != nil) {
+		if resource.group == AccessTokenGroupOwner && !canGrantOwnerScopes {
 			continue
 		}
 		if pureSiteOwner && (resource.Resource == "api_key" || resource.Resource == "usage") {

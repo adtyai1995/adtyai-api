@@ -43,6 +43,11 @@ type BatchTaskPollingAdaptor interface {
 const taskPollTimeout = 30 * time.Second
 const taskPollMaxResponseBytes = 8 << 20
 
+// taskUsageExtractMaxRetries bounds how many polling passes a transient
+// extractUsageOnComplete failure may retry while upstream is already SUCCESS
+// before finalizing as SUCCESS with the reserved quota held for manual review.
+const taskUsageExtractMaxRetries = 3
+
 // TaskPollContext bounds the entire query, including plugin hooks and body reads.
 func TaskPollContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, taskPollTimeout)
@@ -393,6 +398,9 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 			if task.ChannelId != channelId {
 				return fmt.Errorf("task does not belong to polling channel %d", channelId)
 			}
+			if task.BillingInitialPending || task.BillingPending || strings.TrimSpace(task.PrivateData.BillingReviewReason) != "" {
+				continue
+			}
 			id := task.GetUpstreamTaskID()
 			if _, exists := channelTasks[id]; id == "" || exists {
 				return fmt.Errorf("ambiguous upstream task id in polling channel %d", channelId)
@@ -400,6 +408,9 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 			channelTasks[id] = task
 			tasks = append(tasks, task)
 		}
+	}
+	if len(tasks) == 0 {
+		return nil
 	}
 	// The channel type tells plugin adaptors whether the upstream is another
 	// New API gateway, the same signal submission derives from the request.
@@ -507,6 +518,16 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 				common.SysLog(common.LogText("UpdateSunoTask task error: %s", err.Error()))
 			}
 			continue
+		}
+		if parsedStatus == model.TaskStatusSuccess && strings.TrimSpace(responseItem.TaskInfo.UsageExtractError) != "" {
+			deferred, deferErr := deferSuccessForUsageExtractRetry(ctx, task, snap.Status, &responseItem.TaskInfo)
+			if deferErr != nil {
+				common.SysLog(common.LogText("UpdateBatchTasks defer usage retry error for task %s: %s", task.TaskID, deferErr.Error()))
+			}
+			if deferred {
+				continue
+			}
+			task.PrivateData.BillingReviewReason = strings.TrimSpace(responseItem.TaskInfo.UsageExtractError)
 		}
 		if isNonTerminalPollStatus(parsedStatus) {
 			task.PrivateData.PollFailures = 0
@@ -772,6 +793,13 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	if classifyPollHTTP(resp.StatusCode) == pollClassOtherClient && isNonTerminalPollStatus(parsedStatus) {
 		return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassUnrecognized, resp.StatusCode, unrecognizedPollDetail(taskResult.Reason, responseBody))
 	}
+	if parsedStatus == model.TaskStatusSuccess && strings.TrimSpace(taskResult.UsageExtractError) != "" {
+		deferred, deferErr := deferSuccessForUsageExtractRetry(ctx, task, snap.Status, taskResult)
+		if deferred || deferErr != nil {
+			return deferErr
+		}
+		task.PrivateData.BillingReviewReason = strings.TrimSpace(taskResult.UsageExtractError)
+	}
 
 	task.Data = redactVideoResponseBody(responseBody)
 	if len(taskResult.PluginState) > 0 {
@@ -933,6 +961,24 @@ func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor
 	if task.Status == model.TaskStatusFailure {
 		return false
 	}
+	if reviewReason := taskUsageBillingReviewReason(task, taskResult); reviewReason != "" {
+		logger.LogWarn(ctx, common.LogText("task %s completion usage extraction failed, keeping the pre-consumed quota for manual review: %s", task.TaskID, reviewReason))
+		if strings.TrimSpace(task.PrivateData.BillingReviewReason) == "" {
+			task.PrivateData.BillingReviewReason = reviewReason
+		}
+		RecalculateTaskQuota(ctx, task, task.Quota, common.NewMessage("Kept the reserved task charge pending manual billing review"))
+		if task.BillingPending {
+			flagTaskBillingManualReview(ctx, task, reviewReason)
+		} else if task.ID > 0 && model.DB != nil {
+			common.SysError(common.LogText("task billing review: %s, task %s platform %s user %d keeps its reserved charge and is flagged for manual review",
+				reviewReason, task.TaskID, task.Platform, task.UserId))
+			if err := model.DB.WithContext(ctx).Model(&model.Task{}).Where("id = ?", task.ID).
+				Update("private_data", task.PrivateData).Error; err != nil {
+				common.SysError(common.LogText("task billing review: failed to persist BillingReviewReason for task %s: %s", task.TaskID, err.Error()))
+			}
+		}
+		return true
+	}
 	if bc := task.PrivateData.BillingContext; bc != nil && bc.TieredSnapshot != nil {
 		result, usageFacts, err := EvaluateTaskCompletionUsage(bc.TieredSnapshot, taskResult.UsageFacts)
 		if err != nil {
@@ -967,6 +1013,46 @@ func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor
 		return RecalculateTaskQuotaByTokens(ctx, task, tokens)
 	}
 	return false
+}
+
+func taskUsageBillingReviewReason(task *model.Task, taskResult *relaycommon.TaskInfo) string {
+	if taskResult != nil {
+		if reason := strings.TrimSpace(taskResult.UsageExtractError); reason != "" {
+			return reason
+		}
+	}
+	if task != nil {
+		if reason := strings.TrimSpace(task.PrivateData.BillingReviewReason); reason != "" {
+			return reason
+		}
+	}
+	return ""
+}
+
+// deferSuccessForUsageExtractRetry retries transient extractUsageOnComplete
+// failures for a succeeded upstream task up to taskUsageExtractMaxRetries
+// times without ever transitioning the task to FAILURE or refunding it.
+func deferSuccessForUsageExtractRetry(ctx context.Context, task *model.Task, fromStatus model.TaskStatus, taskInfo *relaycommon.TaskInfo) (bool, error) {
+	if task == nil || taskInfo == nil {
+		return false, nil
+	}
+	reason := strings.TrimSpace(taskInfo.UsageExtractError)
+	if reason == "" {
+		return false, nil
+	}
+	if !taskInfo.UsageExtractRetryable || task.PrivateData.PollFailures >= taskUsageExtractMaxRetries {
+		return false, nil
+	}
+	if ctx.Err() != nil {
+		return true, ctx.Err()
+	}
+	task.PrivateData.PollFailures++
+	logger.LogWarn(ctx, common.LogText("task %s completion usage extraction failed transiently (failures=%d/%d), retrying without failing succeeded task: %s",
+		task.TaskID, task.PrivateData.PollFailures, taskUsageExtractMaxRetries, reason))
+	if _, err := task.UpdateWithStatus(fromStatus); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 func classifyPollHTTP(statusCode int) string {

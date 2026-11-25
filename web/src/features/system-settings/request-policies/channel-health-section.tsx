@@ -90,7 +90,7 @@ const createChannelHealthSchema = (
         auto_test_channel_enabled: z.boolean(),
         auto_test_channel_minutes: z.coerce
           .number()
-          .int()
+          .int(t('Enter a positive integer'))
           .min(1, t('Interval must be at least 1 minute')),
         channel_test_concurrency: z.coerce
           .number()

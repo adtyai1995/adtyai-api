@@ -427,7 +427,7 @@ func AddOwnerSelfUseToken(c *gin.Context) {
 func normalizeTokenName(raw string) (string, bool) {
 	trimmed := strings.TrimSpace(raw)
 	for _, r := range trimmed {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
 			return "", false
 		}
 	}

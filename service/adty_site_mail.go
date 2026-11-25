@@ -324,14 +324,7 @@ func AdtySenderFor(site *model.AdtySite) string {
 			name = AdtySiteDisplayHost(site)
 		}
 	}
-	platform, provider := adtyPlatformSender()
-	if site != nil && resellerSetting().SenderDomainEnabled && provider == "resend" &&
-		model.DB != nil && model.DB.Migrator().HasTable(&model.AdtySiteSenderDomain{}) {
-		var domain model.AdtySiteSenderDomain
-		if model.DB.Where("site_id = ? AND status = ?", site.Id, model.AdtySenderDomainVerified).Limit(1).Find(&domain).RowsAffected > 0 {
-			return adtyFormatSender(name, "noreply@"+domain.Domain)
-		}
-	}
+	platform, _ := adtyPlatformSender()
 	return adtyFormatSender(name, platform)
 }
 

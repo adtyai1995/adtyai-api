@@ -384,7 +384,10 @@ export function SiteDetailPage(props: { siteId: number }) {
                           </Button>
                         </CardHeader>
                         <CardContent>
-                          <SiteFundPanel siteId={site.id} />
+                          <SiteFundPanel
+                            siteId={site.id}
+                            siteStatus={site.status}
+                          />
                         </CardContent>
                       </Card>
                     </TabsContent>
@@ -405,7 +408,8 @@ export function SiteDetailPage(props: { siteId: number }) {
 
                   {isRoot && (
                     <TabsContent value='danger' className='flex flex-col gap-5'>
-                      {site.status !== 'closed' && (
+                      {site.status !== 'closed' &&
+                        site.status !== 'deleting' && (
                         <Card className='border-warning/40'>
                           <CardHeader>
                             <CardTitle className='flex items-center gap-2'>

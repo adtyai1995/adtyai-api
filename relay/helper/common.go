@@ -85,16 +85,82 @@ func (writer *streamKeepAliveWriter) ping() error {
 	return PingData(writer.pingContext)
 }
 
+// findActiveStreamKeepAlive walks c.Writer and its Unwrap chain to locate any
+// still-running streamKeepAliveWriter.
+func findActiveStreamKeepAlive(writer http.ResponseWriter) *streamKeepAliveWriter {
+	for writer != nil {
+		if ka, ok := writer.(*streamKeepAliveWriter); ok {
+			select {
+			case <-ka.done:
+			default:
+				return ka
+			}
+		}
+		unwrapper, ok := writer.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			break
+		}
+		next := unwrapper.Unwrap()
+		if next == writer {
+			break
+		}
+		writer = next
+	}
+	return nil
+}
+
+// StopStreamKeepAlive stops every streamKeepAliveWriter wrapped on c.Writer
+// (including nested wrappers reachable via Unwrap), waits for each keepalive
+// goroutine to exit, and unwraps leading streamKeepAliveWriter layers.
+func StopStreamKeepAlive(c *gin.Context) {
+	if c == nil || c.Writer == nil {
+		return
+	}
+	for {
+		ka, ok := c.Writer.(*streamKeepAliveWriter)
+		if !ok {
+			break
+		}
+		ka.stop()
+		c.Writer = ka.ResponseWriter
+	}
+	var writer http.ResponseWriter = c.Writer
+	for writer != nil {
+		if ka, ok := writer.(*streamKeepAliveWriter); ok {
+			ka.stop()
+		}
+		unwrapper, ok := writer.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			break
+		}
+		next := unwrapper.Unwrap()
+		if next == writer {
+			break
+		}
+		writer = next
+	}
+}
+
 // StartStreamKeepAlive 按 interval 发送心跳，覆盖请求准备和重试；业务写入开始后交给流处理器。
 // 内层请求复用外层的保活，内层清理不会提前结束它。
 func StartStreamKeepAlive(c *gin.Context, interval time.Duration) func() {
-	if previous, ok := c.Writer.(*streamKeepAliveWriter); ok {
+	if c == nil || c.Writer == nil {
+		return func() {}
+	}
+	for {
+		previous, ok := c.Writer.(*streamKeepAliveWriter)
+		if !ok {
+			break
+		}
 		select {
 		case <-previous.done:
 			c.Writer = previous.ResponseWriter
 		default:
 			return func() {}
 		}
+	}
+	if findActiveStreamKeepAlive(c.Writer) != nil {
+		return func() {}
 	}
 	if requestContextDone(c) {
 		return func() {}

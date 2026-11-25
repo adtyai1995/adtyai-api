@@ -36,10 +36,28 @@ func AdtyOwnerSite(userId int) (*model.AdtySite, error) {
 	return &sites[0], nil
 }
 
-// AdtyIsSiteOwnerStrict reports whether userId owns an open subsite
-// (active, paused, or closing) independently of the global reseller switch.
-// Security/isolation callers MUST use this and fail closed when err != nil.
+// AdtyIsSiteOwnerStrict reports whether userId owns an open or hard-deleting
+// subsite (active, paused, closing, or deleting) independently of the global
+// reseller switch. Security/isolation callers MUST use this and fail closed
+// when err != nil (R4-05).
 func AdtyIsSiteOwnerStrict(userId int) (bool, error) {
+	if userId <= 0 {
+		return false, nil
+	}
+	if model.DB == nil {
+		return false, errors.New("database is unavailable")
+	}
+	var count int64
+	if err := model.DB.Model(&model.AdtySite{}).Where("owner_user_id = ? AND status IN ?", userId,
+		[]string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing, model.AdtySiteStatusDeleting}).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// AdtyIsActiveSiteOwnerStrict reports whether userId currently owns an active,
+// paused, or closing subsite eligible to grant owner management scopes/navigation.
+func AdtyIsActiveSiteOwnerStrict(userId int) (bool, error) {
 	if userId <= 0 {
 		return false, nil
 	}
@@ -67,7 +85,7 @@ func AdtyIsSiteOwnerStrictTx(tx *gorm.DB, userId int) (bool, error) {
 	}
 	var count int64
 	if err := tx.Model(&model.AdtySite{}).Where("owner_user_id = ? AND status IN ?", userId,
-		[]string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).Count(&count).Error; err != nil {
+		[]string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing, model.AdtySiteStatusDeleting}).Count(&count).Error; err != nil {
 		return false, err
 	}
 	return count > 0, nil

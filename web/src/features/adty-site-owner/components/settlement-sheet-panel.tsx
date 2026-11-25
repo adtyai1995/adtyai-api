@@ -110,7 +110,29 @@ export type SettlementPrintHtmlOptions = {
 }
 
 const PURE_DECIMAL_RE = /^-?\d+(?:\.\d+)?$/
-const CSV_FORMULA_PREFIX_RE = /^[\s]*[=+\-@]|^[\t\r\n]/
+
+function isLeadingCsvWhitespaceOrControl(char: string): boolean {
+  const code = char.charCodeAt(0)
+  return code <= 0x20 || (code >= 0x7f && code <= 0x9f) || /\s/.test(char)
+}
+
+function needsCsvFormulaPrefix(value: string): boolean {
+  if (value.length === 0) return false
+  const firstCode = value.charCodeAt(0)
+  if (firstCode < 0x20 || (firstCode >= 0x7f && firstCode <= 0x9f)) {
+    return true
+  }
+  let index = 0
+  while (
+    index < value.length &&
+    isLeadingCsvWhitespaceOrControl(value[index])
+  ) {
+    index += 1
+  }
+  if (index >= value.length) return false
+  const lead = value[index]
+  return lead === '=' || lead === '+' || lead === '-' || lead === '@'
+}
 
 /** True when a numeric string or number represents zero (including empty / "-0.00"). */
 export function isZeroAmount(value: string | number | undefined): boolean {
@@ -329,7 +351,7 @@ function escapeCsvCell(value: string, numeric = false): string {
       return trimmed
     }
   }
-  const safe = CSV_FORMULA_PREFIX_RE.test(str) ? `'${str}` : str
+  const safe = needsCsvFormulaPrefix(str) ? `'${str}` : str
   if (
     safe.includes('"') ||
     safe.includes(',') ||

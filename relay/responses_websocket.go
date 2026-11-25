@@ -397,6 +397,9 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 			if incoming.err != nil {
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, incoming.err)
 				state.closeCode, state.closeReason = websocket.CloseInternalServerErr, "upstream connection closed"
+				if !accepted {
+					return types.NewError(incoming.err, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
+				}
 				return ConsumeResponsesQuota(c, info, accumulator.Finish())
 			}
 			info.SetFirstResponseTime()
@@ -510,9 +513,15 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 		case <-idle.C:
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, context.DeadlineExceeded)
 			state.closeCode, state.closeReason = websocket.CloseInternalServerErr, "upstream response timed out"
+			if !accepted {
+				return types.NewErrorWithStatusCode(context.DeadlineExceeded, types.ErrorCodeBadResponse, http.StatusGatewayTimeout, types.ErrOptionWithSkipRetry())
+			}
 			return ConsumeResponsesQuota(c, info, accumulator.Finish())
 		case <-s.ctx.Done():
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, s.ctx.Err())
+			if !accepted {
+				return types.NewError(s.ctx.Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+			}
 			return ConsumeResponsesQuota(c, info, accumulator.Finish())
 		}
 	}

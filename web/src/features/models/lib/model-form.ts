@@ -44,7 +44,7 @@ export const modelFormSchema = z.object({
     .min(0, 'Context length cannot be negative')
     .max(
       MAX_MODEL_CONTEXT_LENGTH,
-      `Context length cannot exceed ${MAX_MODEL_CONTEXT_LENGTH}`
+      'Context length cannot exceed 100,000,000'
     )
     .default(0),
   name_rule: z.number().min(0).max(3).default(0),

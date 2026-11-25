@@ -22,6 +22,11 @@ import { toast } from 'sonner'
 
 import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
+import {
+  extractAnnouncementPlainText,
+  resolveLocalizedAnnouncement,
+  stripTranslationNotReadyMarkers,
+} from '@/features/dashboard/lib/text'
 import { api } from '@/lib/api'
 import { handleServerError } from '@/lib/handle-server-error'
 import { requireServerSuccess } from '@/lib/server-error-message'
@@ -30,9 +35,23 @@ export type SevereTodo = {
   id: number
   key: string
   title: string
+  title_en?: string
   content: string
+  content_en?: string
+  english?: string
+  source?: string
+  translation_status?: string
+  content_format?: string
   status: string
   revision: number
+}
+
+function sanitizeTodoPlainText(raw: string): string {
+  if (!raw) return ''
+  const stripped = stripTranslationNotReadyMarkers(raw)
+  if (!stripped) return ''
+  const plain = extractAnnouncementPlainText(stripped)
+  return stripTranslationNotReadyMarkers(plain)
 }
 
 const todoListKey = ['adty-severe-todos'] as const
@@ -53,18 +72,24 @@ export function TodoItemCard(props: {
   onProgress: (key: string) => void
   onComplete: (key: string) => void
 }) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const item = props.item
+  const currentLanguage = i18n.resolvedLanguage || i18n.language
+  const resolved = resolveLocalizedAnnouncement(item, currentLanguage)
+  const displayTitle = sanitizeTodoPlainText(resolved.title) || item.key
+  const displayContent = sanitizeTodoPlainText(resolved.content)
   return (
     <article className='space-y-2 rounded-md border p-2'>
       <div className='flex items-start justify-between gap-2'>
-        <p className='text-sm font-medium'>{item.title || item.key}</p>
+        <p className='text-sm font-medium'>{displayTitle}</p>
         <span className='text-muted-foreground text-xs'>
           {statusLabel(item.status, t)}
         </span>
       </div>
-      {item.content ? (
-        <p className='text-muted-foreground text-xs'>{item.content}</p>
+      {displayContent ? (
+        <p className='text-muted-foreground text-xs whitespace-pre-line break-words'>
+          {displayContent}
+        </p>
       ) : null}
       <div className='flex gap-2'>
         {item.status === 'pending' && (

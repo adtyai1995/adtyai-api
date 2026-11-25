@@ -56,20 +56,24 @@ type OfficialAuditWrite struct {
 	Other       AuditOther
 }
 
-const auditSecretPEMExpr = `-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:(?:\r?\n|\\r?\\n)[A-Za-z0-9+/=]{16,})*`
-
-var auditSecretPEM = regexp.MustCompile(`(?is)` + auditSecretPEMExpr)
-
-var auditSecretJSONKV = regexp.MustCompile(`(?i)("(?:password|passwd|passphrase|secret|token|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|bot[_-]?token|telegram[_-]?bot[_-]?token|telegram[_-]?token|authorization|private[_-]?key|client[_-]?secret|verification[_-]?code|verify[_-]?code|otp|session[_-]?token|payment[_-]?secret|payment[_-]?key|epay[_-]?key|bepusdt[_-]?token|merchant[_-]?key|merchant[_-]?private[_-]?key|webhook[_-]?secret|refresh[_-]?token|bearer|backup[_-]?codes?|smtp[_-]?token|smtp[_-]?password|mail[_-]?password|resend[_-]?api[_-]?key|gotify[_-]?token|generated[_-]?password|new[_-]?password|old[_-]?password|original[_-]?password|totp[_-]?secret|recovery[_-]?codes?|reset[_-]?token|email[_-]?code|cf[_-]?api[_-]?token|alidns[_-]?access[_-]?key[_-]?secret|access[_-]?key[_-]?secret|epay[_-]?private[_-]?key|signing[_-]?secret|secret[_-]?key|key[_-]?secret|voucher[_-]?code|redemption[_-]?code)"\s*:\s*)"(?:[^"\\]|\\.)*"`)
-
 const (
+	auditSecretPEMExpr = `-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:(?:\r?\n|\\r?\\n)[A-Za-z0-9+/=]{16,})*`
+
+	auditSecretEnKeyNamesExpr = `password|passwd|passphrase|secret|token|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|bot[_-]?token|telegram[_-]?bot[_-]?token|telegram[_-]?token|authorization|private[_-]?key|client[_-]?secret|verification[_-]?code|verify[_-]?code|otp|session[_-]?token|payment[_-]?secret|payment[_-]?key|epay[_-]?key|bepusdt[_-]?token|merchant[_-]?key|merchant[_-]?private[_-]?key|webhook[_-]?secret|refresh[_-]?token|bearer|backup[_-]?codes?|smtp[_-]?token|smtp[_-]?password|mail[_-]?password|resend[_-]?api[_-]?key|gotify[_-]?token|generated[_-]?password|new[_-]?password|old[_-]?password|original[_-]?password|totp[_-]?secret|recovery[_-]?codes?|reset[_-]?token|email[_-]?code|cf[_-]?api[_-]?token|alidns[_-]?access[_-]?key[_-]?secret|access[_-]?key[_-]?secret|epay[_-]?private[_-]?key|signing[_-]?secret|secret[_-]?key|key[_-]?secret|voucher[_-]?code|redemption[_-]?code`
+	auditSecretZhKeyNamesExpr = `验证码|密码|口令|密钥|令牌|兑换码|充值码|支付密钥|商户私钥|私钥|发信密钥|接口密钥`
+
 	auditSecretTokenExpr = `sk-[A-Za-z0-9_\-]{8,}|nap_[A-Za-z0-9_\-]{12,}|pat-[A-Za-z0-9_\-]{10,}|re_[A-Za-z0-9_]{16,}|bot\d{6,}:[A-Za-z0-9_\-]{10,}|\d{6,12}:[A-Za-z0-9_\-]{20,}|Bearer\s+[A-Za-z0-9._\-]{16,}|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{8,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9\-]{10,}`
-	auditSecretKVValExpr = `(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(?:Bearer\s+)?[^\s,}\]]+)`
-	auditSecretEnKVExpr  = `["']?(?:api[_-]?key|apikey|password|passwd|passphrase|secret|token|authorization|private[_-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|bot[_-]?token|telegram[_-]?bot[_-]?token|telegram[_-]?token|epay[_-]?key|bepusdt[_-]?token|merchant[_-]?key|merchant[_-]?private[_-]?key|webhook[_-]?secret|signing[_-]?secret|smtp[_-]?token|smtp[_-]?password|mail[_-]?password|resend[_-]?api[_-]?key|cf[_-]?api[_-]?token|access[_-]?key[_-]?secret|totp[_-]?secret|verification[_-]?code|verify[_-]?code|email[_-]?code|otp|recovery[_-]?codes?|backup[_-]?codes?|voucher[_-]?code|redemption[_-]?code)["']?\s*[:：=＝]\s*` + auditSecretKVValExpr
-	auditSecretZhKVExpr  = `["']?(?:验证码|密码|口令|密钥|令牌|兑换码|充值码|支付密钥|商户私钥|私钥|发信密钥|接口密钥)["']?\s*[:：=＝]\s*` + auditSecretKVValExpr
+	auditSecretKVValExpr = `(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(?:Bearer\s+)?[^\s,}\]"]+)`
+	auditSecretEnKVExpr  = `(?:` + auditSecretEnKeyNamesExpr + `)\s*[:：=＝]\s*(` + auditSecretKVValExpr + `)`
+	auditSecretZhKVExpr  = `(?:` + auditSecretZhKeyNamesExpr + `)\s*[:：=＝]\s*(` + auditSecretKVValExpr + `)`
 )
 
-var auditSecretText = regexp.MustCompile(`(?i)(` + auditSecretTokenExpr + `|` + auditSecretEnKVExpr + `|` + auditSecretZhKVExpr + `)`)
+var (
+	auditSecretPEM    = regexp.MustCompile(`(?is)` + auditSecretPEMExpr)
+	auditSecretJSONKV = regexp.MustCompile(`(?i)("(?:` + auditSecretEnKeyNamesExpr + `|` + auditSecretZhKeyNamesExpr + `)"\s*:\s*)"(?:[^"\\]|\\.)*"`)
+	auditSecretToken  = regexp.MustCompile(`(?i)(?:` + auditSecretTokenExpr + `)`)
+	auditSecretText   = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_"'])(?:` + auditSecretEnKVExpr + `|` + auditSecretZhKVExpr + `)`)
+)
 
 // auditVoucherCodePattern matches candidate ADTY 26-character unpadded Base32 voucher codes
 // (mirroring service/adty_redact.go).
@@ -587,13 +591,41 @@ func isAuditVoucherCodeCandidate(token string) bool {
 	return true
 }
 
+func redactAuditSecretKVText(text string) string {
+	matches := auditSecretText.FindAllStringSubmatchIndex(text, -1)
+	if len(matches) == 0 {
+		return text
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	last := 0
+	for _, loc := range matches {
+		b.WriteString(text[last:loc[0]])
+		valStart, valEnd := loc[4], loc[5]
+		if valStart < 0 {
+			valStart, valEnd = loc[6], loc[7]
+		}
+		val := strings.TrimSpace(text[valStart:valEnd])
+		if strings.EqualFold(strings.Trim(val, `"'`), "[redacted]") {
+			b.WriteString(text[loc[0]:loc[1]])
+		} else {
+			b.WriteString(text[loc[2]:loc[3]])
+			b.WriteString("[redacted]")
+		}
+		last = loc[1]
+	}
+	b.WriteString(text[last:])
+	return b.String()
+}
+
 func redactAuditText(text string) string {
 	if text == "" {
 		return text
 	}
 	text = auditSecretPEM.ReplaceAllString(text, "[redacted]")
 	text = auditSecretJSONKV.ReplaceAllString(text, `$1"[redacted]"`)
-	text = auditSecretText.ReplaceAllString(text, "[redacted]")
+	text = redactAuditSecretKVText(text)
+	text = auditSecretToken.ReplaceAllString(text, "[redacted]")
 	return auditVoucherCodePattern.ReplaceAllStringFunc(text, func(match string) string {
 		if isAuditVoucherCodeCandidate(match) {
 			return "[redacted]"

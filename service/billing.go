@@ -1,9 +1,11 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -16,6 +18,35 @@ import (
 const (
 	BillingSourceWallet = "wallet"
 )
+
+var freeReservationHeartbeatStops sync.Map
+
+func stopFreeReservationHeartbeat(opKey string) {
+	if opKey == "" {
+		return
+	}
+	if prev, ok := freeReservationHeartbeatStops.LoadAndDelete(opKey); ok {
+		if stopFn, valid := prev.(func() bool); valid && stopFn != nil {
+			stopFn()
+		}
+	}
+}
+
+func registerFreeReservationHeartbeat(c *gin.Context, opKey string) {
+	if opKey == "" {
+		return
+	}
+	stopFreeReservationHeartbeat(opKey)
+	activeBillingReservations.Store(opKey, struct{}{})
+	if c != nil && c.Request != nil {
+		stopFn := context.AfterFunc(c.Request.Context(), func() {
+			if _, loaded := freeReservationHeartbeatStops.LoadAndDelete(opKey); loaded {
+				activeBillingReservations.Delete(opKey)
+			}
+		})
+		freeReservationHeartbeatStops.Store(opKey, stopFn)
+	}
+}
 
 // FreezeRequestBillingPayer persists the acceptance identity even when the
 // model is free. A later violation fee must not select a new token binding.
@@ -31,20 +62,33 @@ func FreezeRequestBillingPayer(c *gin.Context, info *relaycommon.RelayInfo) *typ
 		info.RequestId = common.NewRequestId()
 	}
 	AdtyFreezeRequestPriceSnapshot(c, info)
-	spec := model.BillingOperation{OperationKey: "request:" + info.RequestId, UserId: info.UserId,
-		TokenId: info.TokenId, TokenUnlimited: info.TokenUnlimited, LeaseOwner: billingProcessLeaseOwner}
-	if info.IsPlayground {
-		spec.TokenId = 0
-	}
-	if snap := AdtyFrozenPriceSnapshot(c); snap != nil {
-		applySnapshotToBillingOperation(&spec, snap)
-	} else if k, d, ok := AdtySiteMarkupFromContext(c); ok {
-		spec.SiteId, spec.SiteMarkup, spec.SiteCostFactor = c.GetInt(AdtySiteIdContextKey), k, d
-	}
+	spec := buildRequestBillingSpec(c, info)
 	if _, err := model.ReserveBillingOperation(spec, 0); err != nil {
 		return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 	}
+	registerFreeReservationHeartbeat(c, spec.OperationKey)
 	return nil
+}
+
+func buildRequestBillingSpec(c *gin.Context, info *relaycommon.RelayInfo) model.BillingOperation {
+	spec := model.BillingOperation{
+		OperationKey:   "request:" + info.RequestId,
+		UserId:         info.UserId,
+		TokenId:        info.TokenId,
+		TokenUnlimited: info.TokenUnlimited,
+		LeaseOwner:     billingProcessLeaseOwner,
+	}
+	if info.IsPlayground {
+		spec.TokenId = 0
+	}
+	if c != nil {
+		if snap := AdtyFrozenPriceSnapshot(c); snap != nil {
+			applySnapshotToBillingOperation(&spec, snap)
+		} else if k, d, ok := AdtySiteMarkupFromContext(c); ok {
+			spec.SiteId, spec.SiteMarkup, spec.SiteCostFactor = c.GetInt(AdtySiteIdContextKey), k, d
+		}
+	}
+	return spec
 }
 
 // PreConsumeBilling 创建 BillingSession 并执行预扣费。
@@ -109,6 +153,9 @@ func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycom
 		return apiErr
 	}
 	relayInfo.Billing = session
+	if snapErr := SyncBillingGroupSnapshotWithContext(c, relayInfo); snapErr != nil {
+		return snapErr
+	}
 	return nil
 }
 

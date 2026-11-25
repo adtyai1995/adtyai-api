@@ -344,6 +344,7 @@ func runWithLeaseHeartbeat(task *model.SystemTask, runnerID string, fn func(ctx 
 	cancelTicker := time.NewTicker(cancelInterval)
 	defer cancelTicker.Stop()
 	done := make(chan struct{})
+	defer close(done)
 
 	go func() {
 		cancelCheckedDone := ctx.Err() != nil
@@ -375,7 +376,6 @@ func runWithLeaseHeartbeat(task *model.SystemTask, runnerID string, fn func(ctx 
 	}()
 
 	fn(ctx)
-	close(done)
 }
 
 func runLogCleanupTask(ctx context.Context, task *model.SystemTask, runnerID string) {
@@ -479,7 +479,7 @@ func runLogCleanupTask(ctx context.Context, task *model.SystemTask, runnerID str
 }
 
 func handleLogCleanupQueryError(ctx context.Context, task *model.SystemTask, runnerID string, state LogCleanupState, err error) {
-	if errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.Canceled) || (ctx != nil && errors.Is(ctx.Err(), context.Canceled)) {
 		cancelled, checkErr := model.SystemTaskCancelRequested(task.TaskID)
 		if checkErr != nil {
 			logger.LogWarn(context.Background(), common.LogText("system task %s cancel check failed after context cancellation: %v", task.TaskID, checkErr))
@@ -489,7 +489,7 @@ func handleLogCleanupQueryError(ctx context.Context, task *model.SystemTask, run
 			_ = finishCancelledLogCleanup(task, runnerID, state)
 			return
 		}
-		logSystemTaskLockError(ctx, task, model.ErrSystemTaskLockLost)
+		logSystemTaskLockError(context.Background(), task, model.ErrSystemTaskLockLost)
 		return
 	}
 	failSystemTask(task, runnerID, err)
@@ -507,7 +507,7 @@ func stopLogCleanupIfCancelled(ctx context.Context, task *model.SystemTask, runn
 			if cancelled {
 				return true, finishCancelledLogCleanup(task, runnerID, state)
 			}
-			logSystemTaskLockError(ctx, task, model.ErrSystemTaskLockLost)
+			logSystemTaskLockError(context.Background(), task, model.ErrSystemTaskLockLost)
 			return true, nil
 		default:
 		}

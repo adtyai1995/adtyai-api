@@ -42,6 +42,15 @@ func RetryAdtyDomainAutomation(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	var site model.AdtySite
+	if err := model.DB.Select("id", "status").First(&site, domain.SiteId).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if site.Status == model.AdtySiteStatusDeleting {
+		common.ApiError(c, service.ErrAdtySiteStatus)
+		return
+	}
 	if err := model.DB.Model(&domain).Updates(map[string]any{"next_run_at": 0, "last_error": ""}).Error; err != nil {
 		common.ApiError(c, err)
 		return

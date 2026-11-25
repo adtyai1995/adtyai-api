@@ -479,6 +479,9 @@ func SyncUpstreamModels(c *gin.Context) {
 		if actions.Update {
 			permissions = append(permissions, authz.AdtyModelWrite)
 		}
+		if actions.Delete {
+			permissions = append(permissions, authz.AdtyModelDelete)
+		}
 		return adtyAuthorizeAdminActions(c, permissions...)
 	})
 	if err != nil {

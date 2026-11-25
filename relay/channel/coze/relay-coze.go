@@ -166,10 +166,10 @@ func cozeChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *ht
 	}
 
 	hadMidStreamErr := streamErr != nil || scanner.Err() != nil
-	if streamErr != nil && !(c.Writer.Written() || (info != nil && info.SendResponseCount > 0) || responseText != "") {
+	if streamErr != nil && !(helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) || responseText != "") {
 		return nil, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	if err := scanner.Err(); err != nil && !(c.Writer.Written() || (info != nil && info.SendResponseCount > 0) || responseText != "") {
+	if err := scanner.Err(); err != nil && !(helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) || responseText != "") {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	if !hadMidStreamErr {
@@ -218,7 +218,9 @@ func handleCozeEvent(c *gin.Context, event string, data string, responseText *st
 
 		finishReason := "stop"
 		stopResponse := helper.GenerateStopResponse(id, common.GetTimestamp(), info.UpstreamModelName, finishReason)
-		helper.ObjectData(c, stopResponse)
+		if err := helper.ObjectData(c, stopResponse); err == nil && info != nil {
+			info.SendResponseCount++
+		}
 
 	case "conversation.message.delta":
 		// 将 data 解析为 CozeChatV3MessageDetail
@@ -251,7 +253,9 @@ func handleCozeEvent(c *gin.Context, event string, data string, responseText *st
 		choice.Delta.SetContentString(content)
 		openaiResponse.Choices = append(openaiResponse.Choices, choice)
 
-		helper.ObjectData(c, openaiResponse)
+		if err := helper.ObjectData(c, openaiResponse); err == nil && info != nil {
+			info.SendResponseCount++
+		}
 
 	case "error":
 		var errorData CozeError

@@ -158,12 +158,26 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	generalSettings := operation_setting.GetGeneralSetting()
 	// 二开：所有流式格式在预扣准入通过后再开始保活，避免余额不足等准入失败被 SSE 200 头劫持；
 	// 同时推理模型首字慢时 Cloudflare 不会 524 断开（任务 7.5）。Realtime 走 WebSocket，不发 SSE 注释行。
-	stopKeepAlive := func() {}
+	// 此 defer 晚于第 94 行错误响应 defer 注册（LIFO 先执行），保证所有保活协程彻底退出后再写最终响应头/响应体。
+	var stopKeepAlives []func()
+	stopAllKeepAlive := func() {
+		for i := len(stopKeepAlives) - 1; i >= 0; i-- {
+			if stopKeepAlives[i] != nil {
+				stopKeepAlives[i]()
+			}
+		}
+		stopKeepAlives = nil
+		helper.StopStreamKeepAlive(c)
+	}
 	keepAliveEnabled := relayFormat != types.RelayFormatOpenAIRealtime && relayInfo.IsStream && generalSettings.PingIntervalEnabled
 	keepAliveInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
+	if relayFormat != types.RelayFormatOpenAIRealtime && relayInfo.IsStream {
+		defer stopAllKeepAlive()
+	}
 	if keepAliveEnabled {
-		stopKeepAlive = helper.StartStreamKeepAlive(c, keepAliveInterval)
-		defer func() { stopKeepAlive() }()
+		if stop := helper.StartStreamKeepAlive(c, keepAliveInterval); stop != nil {
+			stopKeepAlives = append(stopKeepAlives, stop)
+		}
 	}
 
 	retryParam := &service.RetryParam{
@@ -177,10 +191,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.LastError = nil
 
 	retryTimes := common.GetRetryTimes()
-	for ; retryParam.GetRetry() <= retryTimes; retryParam.IncreaseRetry() {
-		if retryParam.GetRetry() > 0 && keepAliveEnabled {
-			stopKeepAlive = helper.StartStreamKeepAlive(c, keepAliveInterval)
+	for attempt := 0; retryParam.GetRetry() <= retryTimes; retryParam.IncreaseRetry() {
+		if attempt > 0 && keepAliveEnabled {
+			if stop := helper.StartStreamKeepAlive(c, keepAliveInterval); stop != nil {
+				stopKeepAlives = append(stopKeepAlives, stop)
+			}
 		}
+		attempt++
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
 		relayInfo.PerformanceOutputTokens = 0

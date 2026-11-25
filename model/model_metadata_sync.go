@@ -73,6 +73,7 @@ type MetadataSyncResult struct {
 type MetadataSyncActions struct {
 	Create bool
 	Update bool
+	Delete bool
 }
 
 func MetadataRecordVersion(local *Model, localVendor, upstreamVendor *Vendor) string {
@@ -222,6 +223,9 @@ func ApplyMetadataSync(updates []MetadataSyncUpdate, upstreamVendors map[string]
 				actions.Create = true
 			} else {
 				actions.Update = true
+				if local != nil && local.Status != 0 && slices.Contains(update.Fields, "status") && update.Values.Status == 0 {
+					actions.Delete = true
+				}
 			}
 			if update.Values.Vendor != "" && (update.Create || slices.Contains(update.Fields, "vendor")) && FindMetadataVendor(vendors, update.Values.Vendor) == nil {
 				if _, ok := upstreamVendors[update.Values.Vendor]; !ok {

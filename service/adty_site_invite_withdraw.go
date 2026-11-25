@@ -2,6 +2,7 @@ package service
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -408,19 +409,28 @@ func lockSiteInviteWithdrawalCanonicalForActorTx(tx *gorm.DB, withdrawalID int64
 			return nil, err
 		}
 	}
-	if platform && (actorRole > 0 || denyAdminTarget) {
+	if stub.UserId > 0 {
+		// R4-10: Always lock users(stub.UserId) BEFORE AdtySiteInviteCommission to
+		// preserve canonical AdtySite -> User -> Commission -> Withdrawal lock order.
 		var target model.User
 		if err := model.AdtyLockForUpdate(tx).Select("id", "role").First(&target, stub.UserId).Error; err != nil {
-			return nil, err
-		}
-		if ownerID > 0 && ownerID == target.Id {
-			return nil, model.ErrUserQuotaPermission
-		}
-		if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= target.Role {
-			return nil, model.ErrUserQuotaPermission
-		}
-		if denyAdminTarget && target.Role >= common.RoleAdminUser {
-			return nil, model.ErrAdminTargetSessionRequired
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				if platform && (actorRole > 0 || denyAdminTarget) {
+					return nil, err
+				}
+			} else {
+				return nil, err
+			}
+		} else if platform && (actorRole > 0 || denyAdminTarget) {
+			if ownerID > 0 && ownerID == target.Id {
+				return nil, model.ErrUserQuotaPermission
+			}
+			if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= target.Role {
+				return nil, model.ErrUserQuotaPermission
+			}
+			if denyAdminTarget && target.Role >= common.RoleAdminUser {
+				return nil, model.ErrAdminTargetSessionRequired
+			}
 		}
 	}
 	if len(commIDs) > 0 {

@@ -40,7 +40,13 @@ export type ResellerUsage = {
   unassigned_domains: number
 }
 
-export type SiteStatus = 'pending' | 'active' | 'paused' | 'closing' | 'closed'
+export type SiteStatus =
+  | 'pending'
+  | 'active'
+  | 'paused'
+  | 'closing'
+  | 'closed'
+  | 'deleting'
 
 /** Brand fields stored in site.brand JSON. */
 export type AdminSiteBrand = {

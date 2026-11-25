@@ -128,6 +128,15 @@ func PrepareAdtySiteInviteCommissionSnapshotTx(tx *gorm.DB, topUp *model.TopUp, 
 		snap.Enabled = rateLookup.RowsAffected > 0 && siteRate.Enabled
 		snap.Rate = siteRate.Rate
 		if snap.InviterId > 0 {
+			activeReferrer, userErr := isActiveSiteReferrerUserTx(tx, siteID, snap.InviterId)
+			if userErr != nil {
+				return userErr
+			}
+			if !activeReferrer {
+				snap.InviterId = 0
+			}
+		}
+		if snap.InviterId > 0 {
 			aff, affFound, affErr := loadSiteReferralAffiliateTx(tx, siteID, snap.InviterId)
 			if affErr != nil {
 				return affErr
@@ -164,6 +173,23 @@ func PrepareAdtySiteInviteCommissionSnapshotTx(tx *gorm.DB, topUp *model.TopUp, 
 	}
 	ext.SiteReferralSnapshot = string(encoded)
 	return nil
+}
+
+// isActiveSiteReferrerUserTx verifies that inviterID is a live, enabled,
+// non-staff customer belonging to siteID (R4-11).
+func isActiveSiteReferrerUserTx(tx *gorm.DB, siteID, inviterID int) (bool, error) {
+	if tx == nil || siteID <= 0 || inviterID <= 0 {
+		return false, nil
+	}
+	var inviter model.User
+	res := tx.Select("id", "site_id", "staff_site_id", "status").Where("id = ?", inviterID).Limit(1).Find(&inviter)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return false, nil
+	}
+	return inviter.SiteId == siteID && inviter.StaffSiteId == 0 && inviter.Status == common.UserStatusEnabled, nil
 }
 
 func loadAdtySiteCommissionOrderSnapshotTx(ext *model.AdtyTopupOrder) (adtySiteCommissionOrderSnapshot, bool, error) {
@@ -305,6 +331,18 @@ func RecordAdtySiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder, no
 		return nil
 	}
 	if ext.CreatedAt > 0 && invite.CreatedAt > ext.CreatedAt {
+		return nil
+	}
+	activeReferrer, userErr := isActiveSiteReferrerUserTx(tx, ext.SiteId, invite.InviterId)
+	if userErr != nil {
+		return userErr
+	}
+	if !activeReferrer {
+		return nil
+	}
+	if aff, affFound, affErr := loadSiteReferralAffiliateTx(tx, ext.SiteId, invite.InviterId); affErr != nil {
+		return affErr
+	} else if affFound && aff.Status == model.AdtySiteAffiliateStatusDisabled {
 		return nil
 	}
 	var siteRate model.AdtySiteReferralRate
@@ -662,10 +700,12 @@ func adtySiteInviteCommissionAfterRefundTx(tx *gorm.DB, ext *model.AdtyTopupOrde
 	if ext.RefundRatio().IsZero() && ext.FaceQuota() > 0 && ext.RefundQuota <= 0 {
 		return nil
 	}
-	// R1-045 global lock order: lock inviter User before AdtySiteInviteCommission
-	// to match ConvertAdtySiteInviteCommission and avoid AB-BA deadlocks.
+	// R1-045 / R4-10 global lock order: lock inviter User BEFORE locking all
+	// potentially affected AdtySiteInviteCommission rows in ascending id order
+	// so auto-canceling a multi-commission pending withdrawal never locks an
+	// earlier commission row after holding a later commission + withdrawal lock.
 	var stub model.AdtySiteInviteCommission
-	if err := tx.Select("id", "inviter_id").Where("trade_no = ?", ext.TradeNo).Limit(1).Find(&stub).Error; err != nil {
+	if err := tx.Select("id", "site_id", "inviter_id").Where("trade_no = ?", ext.TradeNo).Limit(1).Find(&stub).Error; err != nil {
 		return err
 	}
 	if stub.Id == 0 {
@@ -674,6 +714,22 @@ func adtySiteInviteCommissionAfterRefundTx(tx *gorm.DB, ext *model.AdtyTopupOrde
 	if stub.InviterId > 0 && stub.InviterId != ext.UserId {
 		var inviter model.User
 		if err := model.AdtyLockForUpdate(tx).Select("id").First(&inviter, stub.InviterId).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
+	if stub.SiteId > 0 && stub.InviterId > 0 {
+		var preLocked []model.AdtySiteInviteCommission
+		frozenWithdrawalIDs := tx.Model(&model.AdtySiteInviteWithdrawalItem{}).
+			Select("withdrawal_id").
+			Where("commission_id = ? AND status = ?", stub.Id, model.AdtySiteInviteWithdrawItemFrozen)
+		siblingCommIDs := tx.Model(&model.AdtySiteInviteWithdrawalItem{}).
+			Select("commission_id").
+			Where("withdrawal_id IN (?) AND status = ?", frozenWithdrawalIDs, model.AdtySiteInviteWithdrawItemFrozen)
+		if err := model.AdtyLockForUpdate(tx).
+			Where("id = ? OR (site_id = ? AND inviter_id = ? AND frozen_usd > 0) OR id IN (?)",
+				stub.Id, stub.SiteId, stub.InviterId, siblingCommIDs).
+			Order("id ASC").
+			Find(&preLocked).Error; err != nil {
 			return err
 		}
 	}

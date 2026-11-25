@@ -855,6 +855,19 @@ func adtyWithDomainLifecycle(ctx context.Context, snapshot *model.AdtySiteDomain
 		if current.SiteId != snapshot.SiteId || current.Hostname != snapshot.Hostname || current.OwnershipToken != snapshot.OwnershipToken || current.DesiredState == "removed" || current.AutomationState != "" {
 			return nil
 		}
+		if current.LeaseUntil > time.Now().Unix() && current.LeaseToken != "" {
+			return nil
+		}
+		var site model.AdtySite
+		if err := tx.Select("id", "status").First(&site, current.SiteId).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if site.Status == model.AdtySiteStatusDeleting {
+			return nil
+		}
 		if err := action(tx, &current); err != nil {
 			return err
 		}
@@ -1172,8 +1185,11 @@ func RunAdtySiteDomainCheckOnce(ctx context.Context, now time.Time) error {
 		return nil
 	}
 	var domains []model.AdtySiteDomain
-	if err := model.DB.Where("automation_state = ?", "").Where("status IN ?",
-		[]string{model.AdtySiteDomainPending, model.AdtySiteDomainActive}).Find(&domains).Error; err != nil {
+	nonDeletingSites := model.DB.Model(&model.AdtySite{}).Select("id").Where("status <> ?", model.AdtySiteStatusDeleting)
+	if err := model.DB.WithContext(ctx).
+		Where("automation_state = ? AND lease_until <= ? AND site_id IN (?)", "", now.Unix(), nonDeletingSites).
+		Where("status IN ?", []string{model.AdtySiteDomainPending, model.AdtySiteDomainActive}).
+		Find(&domains).Error; err != nil {
 		return err
 	}
 	changed := false

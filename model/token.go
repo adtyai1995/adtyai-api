@@ -570,7 +570,7 @@ func (token *Token) UpdateWithKeyLimit(writeRemainQuota bool, keyLimitPatch Adty
 		return nil
 	}, func() []string {
 		if token.Status == common.TokenStatusDisabled {
-			return groups
+			return nil
 		}
 		return append(groups, token.Group)
 	}()...)

@@ -265,6 +265,9 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 			if !rate.Equal(input.ExpectedCNYRate) {
 				return &RateChangedError{Change: ReferralRateChange{Rate: rate.String(), CNYAmount: cny.StringFixed(2), UpdatedAt: updatedAt}}
 			}
+			if !cny.IsPositive() {
+				return common.NewMessage("Withdrawal payout amount must be positive")
+			}
 			withdrawal.CNYRate = rate.String()
 			withdrawal.CNYAmount = cny.StringFixed(2)
 		}
@@ -554,10 +557,21 @@ func reduceOrReleaseWithdrawalAfterClawbackTx(tx *gorm.DB, withdrawalId int, red
 	}
 	updates := withdrawalAmountUpdates(&withdrawal, amount)
 	netAfter := amount.Sub(moneyDec(withdrawal.FeeAmount))
+	payoutZero := false
+	if withdrawal.AccountType == model.ReferralWithdrawToAlipay {
+		cnyStr, _ := updates["cny_amount"].(string)
+		if cnyStr == "" {
+			cnyStr = withdrawal.CNYAmount
+		}
+		cnyDec, parseErr := decimal.NewFromString(strings.TrimSpace(cnyStr))
+		payoutZero = parseErr != nil || !cnyDec.IsPositive()
+	} else if withdrawal.AccountType == model.ReferralWithdrawToUSDT {
+		payoutZero = !netAfter.Round(6).IsPositive()
+	}
 	shouldCancel := !amount.IsPositive() ||
 		((withdrawal.Status == model.ReferralWithdrawalStatusPending || withdrawal.Status == model.ReferralWithdrawalStatusApproved) &&
 			withdrawal.AccountType != model.ReferralWithdrawToBalance &&
-			!netAfter.IsPositive())
+			(!netAfter.IsPositive() || payoutZero))
 	if shouldCancel {
 		now := time.Now().Unix()
 		updates["status"] = model.ReferralWithdrawalStatusCanceled
@@ -587,6 +601,21 @@ func reduceOrReleaseWithdrawalAfterClawbackTx(tx *gorm.DB, withdrawalId int, red
 		return nil
 	}
 	return tx.Model(&model.ReferralWithdrawal{}).Where("id = ?", withdrawal.Id).Updates(updates).Error
+}
+
+func referralWithdrawalHasPositivePayout(w *model.ReferralWithdrawal) bool {
+	if w == nil || !moneyDec(w.NetAmount).IsPositive() {
+		return false
+	}
+	switch w.AccountType {
+	case model.ReferralWithdrawToAlipay:
+		cny, err := decimal.NewFromString(strings.TrimSpace(w.CNYAmount))
+		return err == nil && cny.IsPositive()
+	case model.ReferralWithdrawToUSDT:
+		return moneyDec(w.NetAmount).Round(6).IsPositive()
+	default:
+		return true
+	}
 }
 
 func withdrawalAmountUpdates(withdrawal *model.ReferralWithdrawal, amount decimal.Decimal) map[string]any {
@@ -746,7 +775,7 @@ func (s *ReferralService) ReviewWithdrawalForActor(withdrawalId, adminId, actorR
 			if withdrawal.Status != model.ReferralWithdrawalStatusPending {
 				return common.NewMessage("Only pending withdrawals can be reviewed")
 			}
-			if !moneyDec(withdrawal.NetAmount).IsPositive() {
+			if !referralWithdrawalHasPositivePayout(&withdrawal) {
 				return common.NewMessage("Withdrawal net amount is no longer positive; reject or cancel instead")
 			}
 			if err := tx.Model(&model.ReferralWithdrawal{}).Where("id = ?", withdrawal.Id).Updates(map[string]any{
@@ -813,7 +842,7 @@ func (s *ReferralService) MarkWithdrawalPaidForActor(withdrawalId, adminId, acto
 		if withdrawal.Status != model.ReferralWithdrawalStatusApproved {
 			return common.NewMessage("This withdrawal cannot be marked as paid")
 		}
-		if !moneyDec(withdrawal.NetAmount).IsPositive() {
+		if !referralWithdrawalHasPositivePayout(&withdrawal) {
 			return common.NewMessage("Withdrawal net amount is no longer positive; reject or cancel instead")
 		}
 		account, err := lockReferralAccountTx(tx, withdrawal.AffiliateId)
@@ -1149,7 +1178,12 @@ func (s *ReferralService) SaveReferralSettings(values map[string]string, rawRate
 			return err
 		}
 		oldValues := map[string]string{}
+		sortedKeys := make([]string, 0, len(values))
 		for key := range values {
+			sortedKeys = append(sortedKeys, key)
+		}
+		slices.Sort(sortedKeys)
+		for _, key := range sortedKeys {
 			if raw, ok, readErr := model.ReadOptionForUpdate(tx, key); readErr != nil {
 				return readErr
 			} else if ok {

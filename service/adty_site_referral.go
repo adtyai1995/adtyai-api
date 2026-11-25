@@ -870,6 +870,13 @@ func ValidateAdtySiteInviteCode(siteID int, code string) (string, error) {
 	if lookup.RowsAffected == 0 || cust.UserId <= 0 {
 		return "", common.NewMessage("Invalid site invite code")
 	}
+	activeReferrer, userErr := isActiveSiteReferrerUserTx(model.DB, siteID, cust.UserId)
+	if userErr != nil {
+		return "", userErr
+	}
+	if !activeReferrer {
+		return "", common.NewMessage("Site referral is not enabled")
+	}
 	effectiveRate := rate.Rate
 	if aff, found, affErr := loadSiteReferralAffiliateTx(model.DB, siteID, cust.UserId); affErr == nil && found {
 		if aff.Status == model.AdtySiteAffiliateStatusDisabled {

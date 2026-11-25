@@ -934,34 +934,37 @@ export function TeamPanel() {
                         )}
                       {member.role !== 'leader' &&
                         member.independent_employee &&
+                        (member.status === 'active' ||
+                          member.status === 'disabled') && (
+                          <Button
+                            type='button'
+                            variant='outline'
+                            size='sm'
+                            disabled={pending}
+                            onClick={() => {
+                              setError('')
+                              setResetPassword('')
+                              setResetMember(member)
+                            }}
+                          >
+                            {t('Reset password')}
+                          </Button>
+                        )}
+                      {member.role !== 'leader' &&
+                        member.independent_employee &&
                         member.status !== 'deleted' && (
-                          <>
-                            <Button
-                              type='button'
-                              variant='outline'
-                              size='sm'
-                              disabled={pending}
-                              onClick={() => {
-                                setError('')
-                                setResetPassword('')
-                                setResetMember(member)
-                              }}
-                            >
-                              {t('Reset password')}
-                            </Button>
-                            <Button
-                              type='button'
-                              variant='outline'
-                              size='sm'
-                              disabled={pending}
-                              onClick={() => {
-                                setError('')
-                                setDeleteEmployee(member)
-                              }}
-                            >
-                              {t('Delete employee')}
-                            </Button>
-                          </>
+                          <Button
+                            type='button'
+                            variant='outline'
+                            size='sm'
+                            disabled={pending}
+                            onClick={() => {
+                              setError('')
+                              setDeleteEmployee(member)
+                            }}
+                          >
+                            {t('Delete employee')}
+                          </Button>
                         )}
                     </div>
                   </div>

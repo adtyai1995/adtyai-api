@@ -46,11 +46,38 @@ import { useSettingsForm } from '../hooks/use-settings-form'
 import { useUpdateOption } from '../hooks/use-update-option'
 import { isValidTaskPublicAddress } from './task-public-address'
 
+function isValidLogoUrl(value: string): boolean {
+  if (value === '') return true
+  if (value !== value.trim()) return false
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0
+    if (
+      codePoint <= 0x20 ||
+      (codePoint >= 0x7f && codePoint <= 0x9f) ||
+      /\s/.test(character)
+    ) {
+      return false
+    }
+  }
+  if (value.startsWith('/')) {
+    return !value.startsWith('//') && !value.includes('\\')
+  }
+  try {
+    const url = new URL(value)
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      url.hostname.length > 0
+    )
+  } catch {
+    return false
+  }
+}
+
 const _systemInfoSchema = z.object({
   SystemName: z.string().min(1),
   ServerAddress: z.string().optional(),
   TaskPublicAddress: z.string().refine(isValidTaskPublicAddress),
-  Logo: z.string().url().optional().or(z.literal('')),
+  Logo: z.string().refine(isValidLogoUrl).optional(),
   Footer: z.string().optional(),
   About: z.string().optional(),
   HomePageContent: z.string().optional(),
@@ -98,7 +125,15 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
           'Enter an absolute HTTP(S) URL without credentials, query parameters, or fragments'
         ),
     }),
-    Logo: z.string().url().optional().or(z.literal('')),
+    Logo: z
+      .string()
+      .refine(isValidLogoUrl, {
+        error: () =>
+          t(
+            'Enter a valid HTTP(S) URL or a site-relative path starting with /'
+          ),
+      })
+      .optional(),
     Footer: z.string().optional(),
     About: z.string().optional(),
     HomePageContent: z.string().optional(),

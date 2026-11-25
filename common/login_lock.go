@@ -38,8 +38,9 @@ var (
 	loginFailures   = map[string]loginFailure{}
 )
 
-// LoginLockUserKey returns the canonical per-account lockout key so username
-// and email logins, /api/verify, and password change share one counter (R2-007).
+// LoginLockUserKey returns the canonical per-account lockout identifier.
+// Prefer LoginLockedUser / RecordLoginFailureUser / ClearLoginFailuresUser so
+// user-supplied usernames can never collide with internal per-user lock keys.
 func LoginLockUserKey(userID int) string {
 	if userID <= 0 {
 		return ""
@@ -47,22 +48,30 @@ func LoginLockUserKey(userID int) string {
 	return fmt.Sprintf("uid:%d", userID)
 }
 
-func loginLockKey(username string) string {
-	return strings.ToLower(strings.TrimSpace(username))
+func loginLockNameKey(username string) string {
+	norm := strings.ToLower(strings.TrimSpace(username))
+	if norm == "" {
+		return ""
+	}
+	return "name:" + norm
 }
 
-func loginLockRedisKey(username string) string {
-	return "adty:login-fail:" + loginLockKey(username)
+func loginLockUserKey(userID int) string {
+	if userID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("uid:%d", userID)
+}
+
+func loginLockRedisKey(scopedKey string) string {
+	return "adty:login-fail:" + scopedKey
 }
 
 func loginLockUsesRedis() bool {
 	return RedisEnabled && RDB != nil
 }
 
-// LoginLocked reports whether this username has used up its password attempts.
-// 配了 Redis 却连不上时失败关闭：宁可拦下入口，也不能让猜口令无限次。
-func LoginLocked(username string) bool {
-	key := loginLockKey(username)
+func loginLockedScoped(key string) bool {
 	if key == "" {
 		return false
 	}
@@ -70,7 +79,7 @@ func LoginLocked(username string) bool {
 		return true
 	}
 	if loginLockUsesRedis() {
-		n, err := RDB.Get(context.Background(), loginLockRedisKey(username)).Int()
+		n, err := RDB.Get(context.Background(), loginLockRedisKey(key)).Int()
 		if err == redis.Nil {
 			return false
 		}
@@ -89,9 +98,7 @@ func LoginLocked(username string) bool {
 	return entry.count >= LoginLockLimit
 }
 
-// RecordLoginFailure 记一次口令猜错。存不上要报错，让调用方决定是否记录日志。
-func RecordLoginFailure(username string) error {
-	key := loginLockKey(username)
+func recordLoginFailureScoped(key string) error {
 	if key == "" {
 		return nil
 	}
@@ -100,7 +107,7 @@ func RecordLoginFailure(username string) error {
 	}
 	if loginLockUsesRedis() {
 		ctx := context.Background()
-		redisKey := loginLockRedisKey(username)
+		redisKey := loginLockRedisKey(key)
 		if err := RDB.Incr(ctx, redisKey).Err(); err != nil {
 			return err
 		}
@@ -128,15 +135,47 @@ func RecordLoginFailure(username string) error {
 	return nil
 }
 
-// ClearLoginFailures 在一个口令验证成功之后清掉这个用户名的失败计数。
-func ClearLoginFailures(username string) {
-	key := loginLockKey(username)
-	if loginLockUsesRedis() && key != "" {
-		_ = RDB.Del(context.Background(), loginLockRedisKey(username)).Err()
+func clearLoginFailuresScoped(key string) {
+	if key == "" {
+		return
+	}
+	if loginLockUsesRedis() {
+		_ = RDB.Del(context.Background(), loginLockRedisKey(key)).Err()
 	}
 	loginFailuresMu.Lock()
 	delete(loginFailures, key)
 	loginFailuresMu.Unlock()
+}
+
+// LoginLocked reports whether this user-supplied username/email has used up its password attempts.
+// 配了 Redis 却连不上时失败关闭：宁可拦下入口，也不能让猜口令无限次。
+func LoginLocked(username string) bool {
+	return loginLockedScoped(loginLockNameKey(username))
+}
+
+// LoginLockedUser reports whether this account ID has used up its password attempts.
+func LoginLockedUser(userID int) bool {
+	return loginLockedScoped(loginLockUserKey(userID))
+}
+
+// RecordLoginFailure 记一次口令猜错（按用户输入的登录标识隔离命名空间）。
+func RecordLoginFailure(username string) error {
+	return recordLoginFailureScoped(loginLockNameKey(username))
+}
+
+// RecordLoginFailureUser 记一次口令猜错（按内部账号 ID 隔离命名空间）。
+func RecordLoginFailureUser(userID int) error {
+	return recordLoginFailureScoped(loginLockUserKey(userID))
+}
+
+// ClearLoginFailures 在一个口令验证成功之后清掉这个用户名的失败计数。
+func ClearLoginFailures(username string) {
+	clearLoginFailuresScoped(loginLockNameKey(username))
+}
+
+// ClearLoginFailuresUser 在一个口令验证成功之后清掉该账号 ID 的失败计数。
+func ClearLoginFailuresUser(userID int) {
+	clearLoginFailuresScoped(loginLockUserKey(userID))
 }
 
 // ResetLoginFailuresForTest 清空进程内的失败计数（测试用，等价于换一个进程）。

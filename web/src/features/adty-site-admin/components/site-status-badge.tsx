@@ -34,6 +34,8 @@ export function SiteStatusBadge(props: { status: SiteStatus }) {
       return <StatusBadge label={t('Paused')} variant='neutral' />
     case 'closing':
       return <StatusBadge label={t('Closing')} variant='danger' />
+    case 'deleting':
+      return <StatusBadge label={t('Deleting')} variant='danger' />
     default:
       return <StatusBadge label={t('Closed')} variant='neutral' />
   }

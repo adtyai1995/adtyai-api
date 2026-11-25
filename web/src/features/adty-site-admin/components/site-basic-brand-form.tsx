@@ -333,6 +333,7 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
     canAdjust &&
     site.status !== 'closed' &&
     site.status !== 'closing' &&
+    site.status !== 'deleting' &&
     site.status !== 'pending'
   const busy =
     save.isPending ||

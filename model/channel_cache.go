@@ -76,7 +76,9 @@ func InitChannelCache() error {
 	}
 	groups := make(map[string]bool)
 	for _, ability := range abilities {
-		groups[ability.Group] = true
+		if group := strings.TrimSpace(ability.Group); group != "" {
+			groups[group] = true
+		}
 	}
 	newGroup2model2channels := make(map[string]map[string][]int)
 	for group := range groups {
@@ -86,8 +88,11 @@ func InitChannelCache() error {
 		if channel.Status != common.ChannelStatusEnabled {
 			continue // skip disabled channels
 		}
-		groups := strings.SplitSeq(channel.Group, ",")
-		for group := range groups {
+		for _, group := range channel.GetGroups() {
+			group = strings.TrimSpace(group)
+			if group == "" {
+				continue
+			}
 			// 能力表里还没有这个分组时也要建好，否则写路由会碰到空 map 并 panic，
 			// 同步协程退出后内存缓存就不再刷新。
 			if newGroup2model2channels[group] == nil {

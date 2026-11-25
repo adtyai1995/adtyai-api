@@ -14,12 +14,24 @@ func adtyLoginLocked(username string) bool {
 	return common.LoginLocked(username)
 }
 
+func adtyLoginLockedUser(userID int) bool {
+	return common.LoginLockedUser(userID)
+}
+
 func adtyRecordLoginFailure(username string) error {
 	return common.RecordLoginFailure(username)
 }
 
+func adtyRecordLoginFailureUser(userID int) error {
+	return common.RecordLoginFailureUser(userID)
+}
+
 func adtyClearLoginFailures(username string) {
 	common.ClearLoginFailures(username)
+}
+
+func adtyClearLoginFailuresUser(userID int) {
+	common.ClearLoginFailuresUser(userID)
 }
 
 func adtyLoginFailureResponse() *common.Message {

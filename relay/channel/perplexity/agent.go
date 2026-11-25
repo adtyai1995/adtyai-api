@@ -311,7 +311,7 @@ func agentStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.R
 			return
 		}
 		if event.Type == "response.failed" || event.Type == "response.error" || event.Type == "error" {
-			hadOutput := c.Writer.Written() || (info != nil && info.SendResponseCount > 0)
+			hadOutput := helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0)
 			upstreamError := types.OpenAIError{}
 			if event.Response != nil && event.Response.GetOpenAIError() != nil {
 				upstreamError = *event.Response.GetOpenAIError()
@@ -368,6 +368,9 @@ func agentStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.R
 			sr.Stop(err)
 			return
 		}
+		if info != nil {
+			info.SendResponseCount++
+		}
 		switch event.Type {
 		case "response.completed", "response.incomplete", "response.cancelled", "response.canceled":
 			sr.Done()
@@ -381,7 +384,7 @@ func agentStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.R
 	if reportedUsage != nil {
 		usage = reportedUsage
 	}
-	if streamErr != nil && (c.Writer.Written() || (info != nil && info.SendResponseCount > 0)) {
+	if streamErr != nil && (helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0)) {
 		common.SysLog(common.LogText("Perplexity Agent stream error after output written, billing delivered usage: %v", streamErr))
 		return usage, nil
 	}

@@ -45,9 +45,12 @@ type BillingSession struct {
 	realtimeShortfall int
 	heartbeatStop     func() bool
 	heartbeatTimer    *time.Timer
+	heartbeatDetached bool
 }
 
 func (s *BillingSession) stopReservationHeartbeatLocked() {
+	s.heartbeatDetached = false
+	stopFreeReservationHeartbeat(s.operationKey)
 	if s.heartbeatStop != nil {
 		s.heartbeatStop()
 		s.heartbeatStop = nil
@@ -74,6 +77,8 @@ func (s *BillingSession) DetachReservationHeartbeat(maxTTL time.Duration) {
 	if s.operationKey == "" || s.settled || s.refunded || s.fundingSettled {
 		return
 	}
+	s.heartbeatDetached = true
+	stopFreeReservationHeartbeat(s.operationKey)
 	if s.heartbeatStop != nil {
 		s.heartbeatStop()
 		s.heartbeatStop = nil
@@ -88,7 +93,11 @@ func (s *BillingSession) DetachReservationHeartbeat(maxTTL time.Duration) {
 	}
 	opKey := s.operationKey
 	s.heartbeatTimer = time.AfterFunc(maxTTL, func() {
-		activeBillingReservations.Delete(opKey)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.heartbeatDetached {
+			activeBillingReservations.Delete(opKey)
+		}
 	})
 }
 
@@ -338,10 +347,17 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 		c.Set(adtyBillingOperationContextKey, s.operationKey)
 		c.Set(usageBillingContextKey, row)
 		s.mu.Lock()
+		stopFreeReservationHeartbeat(s.operationKey)
 		activeBillingReservations.Store(s.operationKey, struct{}{})
-		if c.Request != nil {
+		if c != nil && c.Request != nil {
 			opKey := s.operationKey
-			s.heartbeatStop = context.AfterFunc(c.Request.Context(), func() { activeBillingReservations.Delete(opKey) })
+			s.heartbeatStop = context.AfterFunc(c.Request.Context(), func() {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				if !s.heartbeatDetached {
+					activeBillingReservations.Delete(opKey)
+				}
+			})
 		}
 		s.mu.Unlock()
 		return nil

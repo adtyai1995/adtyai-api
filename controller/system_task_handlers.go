@@ -58,19 +58,19 @@ type channelTestTaskPayload struct {
 func (channelTestHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	payload := channelTestTaskPayload{}
 	if err := task.DecodePayload(&payload); err != nil {
-		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		finishSystemTaskHandler(ctx, task, runnerID, model.SystemTaskStatusFailed, nil, err)
 		return
 	}
 	summary, err := runChannelTestTask(ctx, payload.Mode, payload.Notify, service.NewSystemTaskProgressReporter(task, runnerID))
 	if err != nil {
-		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		finishSystemTaskHandler(ctx, task, runnerID, model.SystemTaskStatusFailed, nil, err)
 		return
 	}
 	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
-		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, ctx.Err())
+		finishSystemTaskHandler(ctx, task, runnerID, model.SystemTaskStatusFailed, summary, ctx.Err())
 		return
 	}
-	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+	finishSystemTaskHandler(ctx, task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 
 // modelUpdateHandler runs the scheduled upstream model update detection job.
@@ -108,19 +108,19 @@ type modelUpdateTaskPayload struct {
 func (modelUpdateHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	payload := modelUpdateTaskPayload{}
 	if err := task.DecodePayload(&payload); err != nil {
-		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		finishSystemTaskHandler(ctx, task, runnerID, model.SystemTaskStatusFailed, nil, err)
 		return
 	}
 	summary, err := runChannelUpstreamModelUpdateTaskOnce(ctx, payload.Manual, !payload.Manual, service.NewSystemTaskProgressReporter(task, runnerID))
 	if err != nil {
-		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, err)
+		finishSystemTaskHandler(ctx, task, runnerID, model.SystemTaskStatusFailed, summary, err)
 		return
 	}
 	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
-		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, ctx.Err())
+		finishSystemTaskHandler(ctx, task, runnerID, model.SystemTaskStatusFailed, summary, ctx.Err())
 		return
 	}
-	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+	finishSystemTaskHandler(ctx, task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 
 // midjourneyPollHandler runs one Midjourney polling pass per scheduled run.
@@ -142,10 +142,10 @@ func (midjourneyPollHandler) NewPayload() any { return nil }
 func (midjourneyPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	summary := runMidjourneyTaskUpdateOnce(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
 	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
-		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, ctx.Err())
+		finishSystemTaskHandler(ctx, task, runnerID, model.SystemTaskStatusFailed, summary, ctx.Err())
 		return
 	}
-	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+	finishSystemTaskHandler(ctx, task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 
 // asyncTaskPollHandler runs one async-task (Suno/video) polling pass per
@@ -166,19 +166,19 @@ func (asyncTaskPollHandler) NewPayload() any { return nil }
 func (asyncTaskPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	summary := service.RunTaskPollingOnce(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
 	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
-		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, ctx.Err())
+		finishSystemTaskHandler(ctx, task, runnerID, model.SystemTaskStatusFailed, summary, ctx.Err())
 		return
 	}
-	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+	finishSystemTaskHandler(ctx, task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 
-func finishSystemTaskHandler(task *model.SystemTask, runnerID string, status model.SystemTaskStatus, result any, runErr error) {
+func finishSystemTaskHandler(ctx context.Context, task *model.SystemTask, runnerID string, status model.SystemTaskStatus, result any, runErr error) {
 	if task == nil {
 		return
 	}
 	errorMessage := ""
 	if runErr != nil {
-		if errors.Is(runErr, context.Canceled) {
+		if errors.Is(runErr, context.Canceled) || (ctx != nil && errors.Is(ctx.Err(), context.Canceled)) {
 			cancelled, checkErr := model.SystemTaskCancelRequested(task.TaskID)
 			if checkErr != nil {
 				common.SysLog(common.LogText("system task %s cancel check failed after context cancellation: %v", task.TaskID, checkErr))

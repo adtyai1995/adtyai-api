@@ -677,7 +677,10 @@ export function SiteSupplyDiscountCard(props: { site: AdminSite }) {
     parsedCostFactor !== null &&
     (!Number.isFinite(parsedCostFactor) || parsedCostFactor <= 0)
   const editable =
-    canAdjust && site.status !== 'closed' && site.status !== 'closing'
+    canAdjust &&
+    site.status !== 'closed' &&
+    site.status !== 'closing' &&
+    site.status !== 'deleting'
 
   const save = useMutation({
     mutationFn: () => {

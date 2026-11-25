@@ -1028,7 +1028,7 @@ func GetAdtyResellerSettings(c *gin.Context) {
 		CloseNoticeDays:            cfg.CloseNoticeDays,
 		SiteLoginOnly:              cfg.SiteLoginOnly,
 		CustomDomainEnabled:        cfg.CustomDomainEnabled,
-		SenderDomainEnabled:        cfg.SenderDomainEnabled,
+		SenderDomainEnabled:        false,
 		SelfUseCheckEnabled:        cfg.SelfUseCheckEnabled,
 		MigrationCheckEnabled:      cfg.MigrationCheckEnabled,
 		FingerprintWindowDays:      cfg.FingerprintWindowDays,

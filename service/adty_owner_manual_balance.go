@@ -611,7 +611,7 @@ func AdjustAdtySiteTierPrincipal(siteID, operatorID int, mode string, amountUSD 
 			}
 			return err
 		}
-		if site.Status == model.AdtySiteStatusClosed {
+		if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting {
 			return common.NewMessage("Site is closed")
 		}
 		var existing model.AdtySiteTierPrincipalAdjustment

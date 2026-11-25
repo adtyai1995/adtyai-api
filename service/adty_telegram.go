@@ -293,12 +293,12 @@ func SaveAdtyTelegramBot(purpose, token string, enabled bool, audits ...model.Au
 			}
 			var staleBindingIDs []int64
 			if err := tx.Model(&model.AdtyTelegramBinding{}).
-				Where("purpose = ? AND bot_identity <> ?", purpose, row.IdentityHash).
+				Where("purpose = ? AND bot_identity <> ? AND status = ?", purpose, row.IdentityHash, model.AdtyTelegramBindActive).
 				Pluck("id", &staleBindingIDs).Error; err != nil {
 				return err
 			}
 			if err := tx.Model(&model.AdtyTelegramBinding{}).
-				Where("purpose = ? AND bot_identity <> ?", purpose, row.IdentityHash).
+				Where("purpose = ? AND bot_identity <> ? AND status = ?", purpose, row.IdentityHash, model.AdtyTelegramBindActive).
 				Update("status", model.AdtyTelegramBindConfirm).Error; err != nil {
 				return err
 			}

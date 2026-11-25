@@ -769,7 +769,13 @@ func ApplyDueAdtySiteMarkups(now int64) (int64, error) {
 			// Match the save path's site -> price lock order. A concurrent save may cancel this due row.
 			var site model.AdtySite
 			if err := model.AdtyLockForUpdate(tx).First(&site, due.SiteId).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return tx.Model(&model.AdtySitePrice{}).Where("id = ?", due.Id).Updates(map[string]any{"pending_markup": 0, "pending_at": 0}).Error
+				}
 				return err
+			}
+			if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting {
+				return tx.Model(&model.AdtySitePrice{}).Where("id = ? AND pending_at > 0", due.Id).Updates(map[string]any{"pending_markup": 0, "pending_at": 0}).Error
 			}
 			var row model.AdtySitePrice
 			res := model.AdtyLockForUpdate(tx).Where("id = ? AND pending_at > 0 AND pending_at <= ?", due.Id, now).Limit(1).Find(&row)

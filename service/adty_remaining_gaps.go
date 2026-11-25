@@ -825,6 +825,45 @@ func lookupAdtyPublicationForTodoTx(tx *gorm.DB, key string, publicationID int) 
 	return nil
 }
 
+var adtyTodoHTMLTagPattern = regexp.MustCompile(`(?i)</?(?:p|br|div|ul|ol|li|strong|b|em|i|u|a|h[1-6]|blockquote|span|code|pre)\b[^>]*>`)
+
+func stripAdtyTodoNotReadySuffix(content string) string {
+	content = stripAdtyNotificationTranslationSuffix(content, "")
+	for {
+		trimmed := false
+		for _, sep := range []string{"\n\n", "\n"} {
+			if before, ok := strings.CutSuffix(content, sep+AdtyTranslationNotReady); ok {
+				content = strings.TrimSpace(before)
+				trimmed = true
+			}
+		}
+		if !trimmed {
+			break
+		}
+	}
+	return content
+}
+
+func formatAdtyTodoContentFromPublication(db *gorm.DB, pub *model.AdtyNotificationPublication) string {
+	if pub == nil {
+		return ""
+	}
+	content := normalizeAdtyNotificationSourceContentWithDB(db, pub.Id, pub.Content)
+	if strings.EqualFold(strings.TrimSpace(pub.ContentFormat), "html") {
+		content = AdtyNotificationHTMLToPlainText(content)
+	}
+	return stripAdtyTodoNotReadySuffix(content)
+}
+
+func sanitizeAdtyTodoStoredContent(content string) string {
+	content = stripAdtyTodoNotReadySuffix(content)
+	if adtyTodoHTMLTagPattern.MatchString(content) {
+		content = AdtyNotificationHTMLToPlainText(content)
+		content = stripAdtyTodoNotReadySuffix(content)
+	}
+	return strings.TrimSpace(content)
+}
+
 // UpsertAdtySevereTodo produces or updates a persistent severe todo item for userID.
 func UpsertAdtySevereTodo(userID, siteID int, key, title, content, business string, publicationID int) (*AdtyTodoItem, error) {
 	key = normalizeAdtyTodoKey(key)
@@ -891,11 +930,13 @@ func UpsertAdtySevereTodo(userID, siteID int, key, title, content, business stri
 				title = pub.Title
 			}
 			if strings.TrimSpace(pub.Content) != "" {
-				content = pub.Content
+				content = formatAdtyTodoContentFromPublication(tx, pub)
 			}
 			if strings.TrimSpace(pub.Business) != "" {
 				business = pub.Business
 			}
+		} else {
+			content = sanitizeAdtyTodoStoredContent(content)
 		}
 		var item AdtyTodoItem
 		// R5-058: When publicationID > 0, update any existing todo for (user_id, publication_id)
@@ -1347,14 +1388,34 @@ func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeComplet
 	if len(items) == 0 {
 		return items, nil
 	}
+	hasPubTable := model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyNotificationPublication{})
 	filtered := make([]AdtyTodoItem, 0, len(items))
 	for i := range items {
-		visible, err := adtyTodoItemVisibleForUserOnSite(model.DB, userID, site, &items[i], nil, tokenScopes...)
+		var pub *model.AdtyNotificationPublication
+		if hasPubTable {
+			pub = lookupAdtyPublicationForTodoTx(model.DB, items[i].Key, items[i].PublicationId)
+		}
+		visible, err := adtyTodoItemVisibleForUserOnSite(model.DB, userID, site, &items[i], pub, tokenScopes...)
 		if err != nil {
 			return nil, err
 		}
 		if !visible {
 			continue
+		}
+		if pub != nil {
+			if strings.TrimSpace(pub.Title) != "" {
+				items[i].Title = truncateAdtyRunes(pub.Title, 200)
+			}
+			if strings.TrimSpace(pub.Content) != "" {
+				items[i].Content = formatAdtyTodoContentFromPublication(model.DB, pub)
+			} else {
+				items[i].Content = sanitizeAdtyTodoStoredContent(items[i].Content)
+			}
+			if strings.TrimSpace(pub.Business) != "" {
+				items[i].Business = truncateAdtyRunes(pub.Business, 200)
+			}
+		} else {
+			items[i].Content = sanitizeAdtyTodoStoredContent(items[i].Content)
 		}
 		filtered = append(filtered, items[i])
 	}

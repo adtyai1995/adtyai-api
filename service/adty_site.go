@@ -464,13 +464,7 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 			userId = ownerUser.Id
 			site.OwnerUserId = userId
 		}
-		// Commission transfers lock the affiliate before the user wallet. Keep
-		// the same order; invalid openings roll this uncommitted marker back.
-		if status == model.AdtySiteStatusActive {
-			if err := markAffiliateSiteOwnerTx(tx, userId, now); err != nil {
-				return err
-			}
-		}
+		// Follow canonical User -> ReferralAffiliate -> ReferralCommissionAccount lock order (R4-09).
 		lockIDs := []int{userId}
 		if openKeyDigest != nil && preset.OperatorId > 0 && preset.OperatorId != userId {
 			lockIDs = append(lockIDs, preset.OperatorId)
@@ -478,6 +472,11 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 		var lockedUsers []model.User
 		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id", "staff_site_id", "status").Where("id IN ?", lockIDs).Order("id ASC").Find(&lockedUsers).Error; err != nil {
 			return err
+		}
+		if status == model.AdtySiteStatusActive {
+			if err := markAffiliateSiteOwnerTx(tx, userId, now); err != nil {
+				return err
+			}
 		}
 		if openKeyDigest != nil {
 			var existing model.AdtySite
@@ -698,14 +697,12 @@ func ReviewAdtySiteApplicationWithAudit(siteId, adminId int, approve bool, costF
 			if costFactor != nil {
 				updates["cost_factor"] = *costFactor
 			}
-			if err := markAffiliateSiteOwnerTx(tx, site.OwnerUserId, time.Now().Unix()); err != nil {
-				return err
-			}
-			// Keep the affiliate-before-user order used by commission transfers.
-			// The marker stays uncommitted until this identity lock allows activation
-			// to commit, so an earlier order retains its pre-opening snapshot.
+			// Follow canonical User -> ReferralAffiliate lock order (R4-09).
 			var owner model.User
 			if err := model.AdtyLockForUpdate(tx).Select("id").Where("id = ?", site.OwnerUserId).First(&owner).Error; err != nil {
+				return err
+			}
+			if err := markAffiliateSiteOwnerTx(tx, site.OwnerUserId, time.Now().Unix()); err != nil {
 				return err
 			}
 		} else {
@@ -839,7 +836,7 @@ func AdjustAdtySiteWithAuditForActor(siteId, adminId, actorRole int, denyAdminTa
 		if err := checkAdtySiteTargetActorTx(tx, &site, adminId, actorRole, denyAdminTarget); err != nil {
 			return err
 		}
-		if site.Status == model.AdtySiteStatusClosed {
+		if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting {
 			return ErrAdtySiteStatus
 		}
 		old := map[string]any{"cost_factor": site.CostFactor, "visibility": site.Visibility}
@@ -1238,6 +1235,9 @@ func scheduleAdtySiteCloseWithAudit(siteId, adminId int, plan AdtySiteClosePlan,
 		if requiredStatus != "" && site.Status != requiredStatus {
 			return ErrAdtySitePausedRepair
 		}
+		if site.Status == model.AdtySiteStatusDeleting {
+			return ErrAdtySiteStatus
+		}
 		if plan.TransferTo != 0 {
 			return ErrAdtySiteTransfer
 		}
@@ -1456,6 +1456,13 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 		}).Error; err != nil {
 			return err
 		}
+		if tx.Migrator().HasTable(&model.AdtySitePrice{}) {
+			if err := tx.Model(&model.AdtySitePrice{}).
+				Where("site_id = ? AND (pending_at > 0 OR pending_markup <> 0)", site.Id).
+				Updates(map[string]any{"pending_markup": 0, "pending_at": 0}).Error; err != nil {
+				return err
+			}
+		}
 		site.Status, site.ClosedAt, site.CloseTransferTo = model.AdtySiteStatusClosed, now, target
 		closed = site
 		if err := adtyCloseDomainIntentsTx(tx, site.Id); err != nil {
@@ -1649,6 +1656,9 @@ func ClearAdtySiteNoticeWithAuditForActor(siteId, adminId, actorRole int, denyAd
 		}
 		if err := checkAdtySiteTargetActorTx(tx, &site, adminId, actorRole, denyAdminTarget); err != nil {
 			return err
+		}
+		if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting {
+			return ErrAdtySiteStatus
 		}
 		brand := map[string]any{}
 		if strings.TrimSpace(site.Brand) != "" {

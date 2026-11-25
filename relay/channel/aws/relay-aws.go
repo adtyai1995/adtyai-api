@@ -317,7 +317,7 @@ streamLoop:
 				info.SetFirstResponseTime()
 				respErr := claude.HandleStreamResponseData(c, info, claudeInfo, string(v.Value.Bytes))
 				if respErr != nil {
-					if c.Writer.Written() || (info != nil && info.SendResponseCount > 0) {
+					if helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) {
 						common.SysLog(common.LogText("AWS stream error after output written, billing delivered usage: %v", respErr))
 						break streamLoop
 					}
@@ -325,13 +325,13 @@ streamLoop:
 				}
 			case *bedrockruntimeTypes.UnknownUnionMember:
 				fmt.Println(common.LogText("unknown tag: %v", v.Tag))
-				if c.Writer.Written() || (info != nil && info.SendResponseCount > 0) {
+				if helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) {
 					break streamLoop
 				}
 				return types.NewError(errors.New("unknown response type"), types.ErrorCodeInvalidRequest), nil
 			default:
 				fmt.Println(common.LogText("union is nil or unknown type"))
-				if c.Writer.Written() || (info != nil && info.SendResponseCount > 0) {
+				if helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) {
 					break streamLoop
 				}
 				return types.NewError(errors.New("nil or unknown response type"), types.ErrorCodeInvalidRequest), nil
@@ -342,7 +342,7 @@ streamLoop:
 	_ = stream.Close()
 	streamErr := stream.Err()
 	ctxErr := ctx.Err()
-	if !c.Writer.Written() && (info == nil || info.SendResponseCount == 0) {
+	if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
 		if streamErr != nil {
 			return newAwsInvokeError(requestContext, streamErr, "InvokeModelWithResponseStream"), nil
 		}

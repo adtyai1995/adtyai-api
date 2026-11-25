@@ -38,15 +38,14 @@ func ChangeUserPassword(identity AuthSessionIdentity, update *User, firstPasswor
 			return ErrAccountPasswordState
 		}
 		if !firstPassword {
-			uidKey := common.LoginLockUserKey(current.Id)
-			if common.LoginLocked(uidKey) || common.LoginLocked(current.Username) {
+			if common.LoginLockedUser(current.Id) || common.LoginLocked(current.Username) {
 				return ErrPasswordVerificationLocked
 			}
 			if !common.ValidatePasswordAndHash(update.OriginalPassword, current.Password) {
-				_ = common.RecordLoginFailure(uidKey)
+				_ = common.RecordLoginFailureUser(current.Id)
 				return ErrCurrentPasswordInvalid
 			}
-			common.ClearLoginFailures(uidKey)
+			common.ClearLoginFailuresUser(current.Id)
 			common.ClearLoginFailures(current.Username)
 		}
 		if current.Password != "" && common.ValidatePasswordAndHash(update.Password, current.Password) {

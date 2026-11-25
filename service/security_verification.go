@@ -699,25 +699,25 @@ func VerifySecurityInput(identity AuthIdentity, input VerificationInput) (*Secur
 		if err != nil {
 			return nil, err
 		}
-		// R1-017 / R2-007: Share canonical uid:<userID> password lockout across Login,
-		// /api/verify, and ChangeUserPassword so username/email aliases cannot bypass it.
-		uidKey := common.LoginLockUserKey(user.Id)
-		if common.LoginLocked(uidKey) || common.LoginLocked(user.Username) {
+		// R1-017 / R2-007 / R4-07: Share isolated per-userID password lockout across
+		// Login, /api/verify, and ChangeUserPassword so aliases cannot bypass it and
+		// raw username input cannot collide with uid:<id>.
+		if common.LoginLockedUser(user.Id) || common.LoginLocked(user.Username) {
 			return nil, model.ErrPasswordVerificationLocked
 		}
 		password := input.Password
 		if common.PasswordLoginEncryptionEnabled {
 			password, err = common.DecryptPassword(input.PasswordEncrypted, input.EncryptionKeyID)
 			if err != nil {
-				_ = common.RecordLoginFailure(uidKey)
+				_ = common.RecordLoginFailureUser(user.Id)
 				return nil, ErrVerificationFailed
 			}
 		}
 		if password == "" || user.Password == "" || !common.ValidatePasswordAndHash(password, user.Password) {
-			_ = common.RecordLoginFailure(uidKey)
+			_ = common.RecordLoginFailureUser(user.Id)
 			return nil, ErrVerificationFailed
 		}
-		common.ClearLoginFailures(uidKey)
+		common.ClearLoginFailuresUser(user.Id)
 		common.ClearLoginFailures(user.Username)
 	case VerificationMethodTwoFA:
 		if input.Scope == VerificationScopeTwoFABackupCodes {

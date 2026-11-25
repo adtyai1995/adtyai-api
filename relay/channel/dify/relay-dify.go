@@ -268,9 +268,11 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		if err := helper.ObjectData(c, openaiResponse); err != nil {
 			common.SysLog(err.Error())
 			sr.Error(err)
+		} else if info != nil {
+			info.SendResponseCount++
 		}
 	})
-	if streamErr != nil && !hasOutput && !c.Writer.Written() && (info == nil || info.SendResponseCount == 0) {
+	if streamErr != nil && !hasOutput && !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
 		return nil, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
 	if streamErr == nil {

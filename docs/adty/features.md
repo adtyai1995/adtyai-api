@@ -388,7 +388,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 - 总览、风控复核和举报、经营数据均已接入实际接口；站点列表显示本月充值、营业额和收益，排序由后端执行。
 - 站点明细提供自定义域名、发件域名停用操作。域名生命周期使用数据库锁，并在恢复外部创建操作时核验站点、域名和 generation 所有权。
 - 站长可以申请关站，后台和站长中心展示关站中状态；关站中的站点仍可进入站长中心处理已有业务。
-- 分站客户注册表单展示当前条款并记录接受版本和时间；条款升级后，提交任务、协议请求和 WebSocket 消息也校验当前版本。
+- 平台级分站客户条款（`site_customer_terms`）已随 `R-32 (#9)` 退役：分站不再强制校验平台级客户条款版本，`POST /api/adty/site/terms/accept` 固定返回 410。
 - `customer_usage` 客户列表字段是累计用量；请求记录按客户查询，经营数据另按模型和日期统计。
 
 任务 11.1–11.11。和方案不一致的还有：方案的键名 `cloudflare_api_token` 在代码里是 `cloudflare_apiToken`；方案写分站设置只有超级管理员能改，代码按「分站·设置」权限；推广佣金的首次提现人工审核已经去掉（a75c8b3da，用户 2026-11-01）；站长收益不走推广佣金，改走独立的收益提现，每笔经 Root 审核后打款（见「站长收益提现」）；退款时站长加赠按收回比例还（见「充值退款」）。
@@ -529,13 +529,13 @@ Root 和获授用户读取权限的管理员在统一用户列表、搜索及详
 
 **接入文档**（`/docs`、`/docs/<页>`，公开）：快速开始、Claude Code、Codex CLI、Cherry Studio、OpenAI SDK、模型说明、角色使用说明、Agent 接入、错误和限制、常见问题。正式维护简体中文和英文，是仓库里的 Markdown（`web/src/features/adty-docs/content/`），改内容要改代码后重新构建。其他语言目录如仍存在，不在前台承诺。文中的接入地址取当前站点配置，没填用服务器地址。示例密钥使用占位符。任务 8.6。
 
-**条款**：后台「系统设置 → 内容 → 多语言条款」可编辑用户协议、隐私政策、退款政策和分站客户条款（开站协议已退役，`/api/adty/legal/site-agreement` 与 `adty_legal_setting.site_agreement*` 写入均拒绝）。正式文本是简体中文和英文。旧的其他语言字段可以保留，但不作为正式语言。分站客户条款另有非负整数版本号；修改已发布条款后提高版本号，以要求相关用户重新接受。保存仅提交当前文档和对应版本，其他文档的未保存内容继续保留，离开页面时会提示。`GET /api/adty/legal/:doc?lang=` 按「本语言 → 英文 → 上游的 `legal.*`」回退；退款政策由 `refund_policy_enabled` 控制显示。主站发布用户协议或隐私政策后，注册必须带 `agreement_accepted: true`，否则拒绝并不建账号；接受后写系统日志。分站客户使用受保护的接口、任务和长连接时核对当前客户条款版本。任务 8.6、11.1。
+**条款**：后台「系统设置 → 内容 → 多语言条款」仅编辑用户协议（`user_agreement`）、隐私政策（`privacy_policy`）和退款政策（`refund_policy`）。开站协议与平台级分站客户条款（`site_customer_terms`）均已退役（后者随 `R-32 (#9)` 退役）：`/api/adty/legal/site-agreement` 与 `adty_legal_setting.site_agreement*` 写入均拒绝，`POST /api/adty/site/terms/accept` 固定返回 410。正式文本是简体中文和英文，旧的其他语言字段可以保留，但不作为正式语言。保存仅提交当前文档，其他文档的未保存内容继续保留，离开页面时会提示。`GET /api/adty/legal/:doc?lang=` 按「本语言 → 英文 → 上游的 `legal.*`」回退；退款政策由 `refund_policy_enabled` 控制显示。主站发布用户协议或隐私政策后，注册必须带 `agreement_accepted: true`，否则拒绝并不建账号；接受后写系统日志。任务 8.6、11.1。
 
 ## 品牌和 Logo
 
 **站名**：ADTY AI，正式语言和保留语言包都不翻译；程序对外的技术名字是 adtyai。代码里只在 `common/adty_brand.go`（`AdtyBrandName`、`AdtyBrandSlug`、`AdtyBrandURL`）和 `web/src/lib/adty-brand.ts`（`ADTY_BRAND_NAME` 等）两处写字面量。后台的系统名称默认就是 ADTY AI。
 
-**Logo**：方案 H「层叠网关」。原稿和生成脚本在仓库外的 `C:\Users\Administrator\ai\adtyai-logo`（`source/build.py` 生成全部文件，说明见那里的 README.md）。`web/public` 里的文件：
+**Logo**：方案 H「层叠网关」。矢量原稿与导出脚本由独立设计资源仓库维护（生成全部位图后同步至 `web/public`）。`web/public` 里的文件：
 
 | 文件 | 尺寸 / 格式 | 用途 |
 |---|---|---|

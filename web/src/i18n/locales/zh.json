@@ -11222,6 +11222,13 @@
     "Approve or reject referral withdrawals.": "通过或驳回推广提现申请。",
     "This group is the only allowed group for an active reseller site. Update the site's allowed groups first": "该分组是某运营中分站唯一允许使用的分组，请先调整该分站的允许分组后再删除",
     "Withdrawal state changed concurrently, please retry": "提现单状态已发生并发变更，请重试",
-    "Content-Type must be application/json": "请求头 Content-Type 必须为 application/json"
+    "Content-Type must be application/json": "请求头 Content-Type 必须为 application/json",
+    "Deleting": "删除中",
+    "Context length must be an integer": "上下文长度必须为整数",
+    "Context length cannot exceed 100,000,000": "上下文长度不能超过 100,000,000",
+    "Enter a non-negative number or leave empty": "请输入非负数或留空",
+    "Enter a valid HTTP(S) URL or a site-relative path starting with /": "请输入有效的 HTTP(S) URL 或以 / 开头的站内相对路径",
+    "Cannot enable a channel without any group": "渠道未配置任何分组，无法启用",
+    "Withdrawal payout amount must be positive": "提现实付金额必须大于 0"
   }
 }

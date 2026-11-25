@@ -216,12 +216,19 @@ func filterAbilitiesByConstraints(abilities []Ability, modelName string, filters
 }
 
 func (channel *Channel) AddAbilities(tx *gorm.DB) error {
-	models_ := strings.Split(channel.Models, ",")
-	groups_ := strings.Split(channel.Group, ",")
+	models_ := channel.GetModels()
+	groups_ := channel.GetGroups()
 	abilitySet := make(map[string]struct{})
 	abilities := make([]Ability, 0, len(models_))
 	for _, model := range models_ {
+		if model == "" {
+			continue
+		}
 		for _, group := range groups_ {
+			group = strings.TrimSpace(group)
+			if group == "" {
+				continue
+			}
 			key := group + "|" + model
 			if _, exists := abilitySet[key]; exists {
 				continue
@@ -289,11 +296,18 @@ func (channel *Channel) UpdateAbilities(tx *gorm.DB) error {
 
 	// Then add new abilities
 	models_ := channel.GetModels()
-	groups_ := strings.Split(channel.Group, ",")
+	groups_ := channel.GetGroups()
 	abilitySet := make(map[string]struct{})
 	abilities := make([]Ability, 0, len(models_))
 	for _, model := range models_ {
+		if model == "" {
+			continue
+		}
 		for _, group := range groups_ {
+			group = strings.TrimSpace(group)
+			if group == "" {
+				continue
+			}
 			key := group + "|" + model
 			if _, exists := abilitySet[key]; exists {
 				continue

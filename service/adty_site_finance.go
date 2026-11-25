@@ -743,9 +743,6 @@ func CreditAdtySiteMarginByRootWithAudit(siteID, rootUserID int, amount decimal.
 	if len(scopedKey) > 128 {
 		return nil, "", false, ErrAdtySiteWalletIdempotencyKey
 	}
-	if err := EnsureAdtySiteWallets(siteID); err != nil {
-		return nil, "", false, err
-	}
 	var ledger *model.AdtySiteWalletLedger
 	var auditEvent *model.AuditLog
 	var replayed bool
@@ -754,8 +751,11 @@ func CreditAdtySiteMarginByRootWithAudit(siteID, rootUserID int, amount decimal.
 		if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
 			return err
 		}
-		if site.Status == model.AdtySiteStatusClosed {
+		if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting {
 			return common.NewMessage("Site is closed")
+		}
+		if err := ensureAdtySiteWalletsTx(tx, siteID); err != nil {
+			return err
 		}
 		var margin model.AdtySiteWallet
 		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND kind = ?", siteID, model.AdtySiteWalletMargin).First(&margin).Error; err != nil {
@@ -1019,7 +1019,7 @@ func saveAdtySiteTiers(tiers []model.AdtySiteTier, existingOnly bool) error {
 			var openSites int64
 			if tx.Migrator().HasTable(&model.AdtySite{}) {
 				if err := tx.Model(&model.AdtySite{}).
-					Where("status <> ?", model.AdtySiteStatusClosed).
+					Where("status NOT IN ?", []string{model.AdtySiteStatusClosed, model.AdtySiteStatusDeleting}).
 					Count(&openSites).Error; err != nil {
 					return err
 				}

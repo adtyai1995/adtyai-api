@@ -1055,15 +1055,26 @@ func (a *TaskAdaptor) ParseBatchResult(pollCtx context.Context, tasks []*model.T
 					break
 				}
 			}
-			facts, hookErr := a.plugin.Engine.Call(pluginruntime.WithFetcher(pollCtx, a.hookFetcher(baseURL, proxy)), "extractUsageOnComplete", itemCtx, jsonValue(&info), usageBody)
+			// Isolate per-item extractUsageOnComplete failures so one bad task never
+			// poisons or discards other succeeded/running tasks in the same batch.
+			usageCtx, cancelUsage := context.WithTimeout(pollCtx, 10*time.Second)
+			facts, hookErr := a.plugin.Engine.Call(pluginruntime.WithFetcher(usageCtx, a.hookFetcher(baseURL, proxy)), "extractUsageOnComplete", itemCtx, jsonValue(&info), usageBody)
+			cancelUsage()
 			if hookErr != nil {
+				if pollCtx.Err() != nil {
+					return nil, pollCtx.Err()
+				}
 				logger.LogWarn(pollCtx, common.LogText("task plugin %s extractUsageOnComplete failed for task %s: %v", a.plugin.Meta.Key, item.TaskID, hookErr))
-				return nil, fmt.Errorf("extractUsageOnComplete failed for task %s: %w", item.TaskID, hookErr)
-			}
-			upstreamModel, _ := itemCtx["upstreamModel"].(string)
-			originModel, _ := itemCtx["model"].(string)
-			if usageErr := a.applyCompletionUsageFacts(&info, facts, upstreamModel, originModel); usageErr != nil {
-				return nil, fmt.Errorf("extractUsageOnComplete invalid usage for task %s: %w", item.TaskID, usageErr)
+				info.UsageExtractError = fmt.Sprintf("extractUsageOnComplete failed: %v", hookErr)
+				info.UsageExtractRetryable = true
+			} else {
+				upstreamModel, _ := itemCtx["upstreamModel"].(string)
+				originModel, _ := itemCtx["model"].(string)
+				if usageErr := a.applyCompletionUsageFacts(&info, facts, upstreamModel, originModel); usageErr != nil {
+					logger.LogWarn(pollCtx, common.LogText("task plugin %s extractUsageOnComplete invalid usage for task %s: %v", a.plugin.Meta.Key, item.TaskID, usageErr))
+					info.UsageExtractError = fmt.Sprintf("extractUsageOnComplete invalid usage: %v", usageErr)
+					info.UsageExtractRetryable = false
+				}
 			}
 		}
 		results[item.TaskID] = &service.BatchTaskResult{TaskInfo: info, Action: item.Action, SubmitTime: item.SubmitTime, StartTime: item.StartTime, FinishTime: item.FinishTime, Data: item.Data}
@@ -1128,16 +1139,27 @@ func (a *TaskAdaptor) ParseTaskResult(pollCtx context.Context, task *model.Task,
 	}
 	// The raw polling response only exists at this boundary. Capture upstream
 	// units here so the host settlement path can consume them from TaskInfo.
+	// Once upstream reports SUCCESS, never surface usage-hook failures as a
+	// generic poll error (which would eventually mark a succeeded task FAILURE
+	// and refund it); instead pass the failure detail on TaskInfo for bounded
+	// retry / manual billing review in service/task_polling.go.
 	if a.hasHook(pollCtx, "extractUsageOnComplete") && model.TaskStatus(result.Status) == model.TaskStatusSuccess {
 		facts, hookErr := a.plugin.Engine.Call(pluginruntime.WithFetcher(pollCtx, a.hookFetcher(baseURL, proxy)), "extractUsageOnComplete", ctx, jsonValue(result), input)
 		if hookErr != nil {
+			if pollCtx.Err() != nil {
+				return nil, pollCtx.Err()
+			}
 			logger.LogWarn(pollCtx, common.LogText("task plugin %s extractUsageOnComplete failed: %v", a.plugin.Meta.Key, hookErr))
-			return nil, fmt.Errorf("extractUsageOnComplete failed: %w", hookErr)
-		}
-		upstreamModel, _ := ctx["upstreamModel"].(string)
-		originModel, _ := ctx["model"].(string)
-		if usageErr := a.applyCompletionUsageFacts(result, facts, upstreamModel, originModel); usageErr != nil {
-			return nil, fmt.Errorf("extractUsageOnComplete invalid usage: %w", usageErr)
+			result.UsageExtractError = fmt.Sprintf("extractUsageOnComplete failed: %v", hookErr)
+			result.UsageExtractRetryable = true
+		} else {
+			upstreamModel, _ := ctx["upstreamModel"].(string)
+			originModel, _ := ctx["model"].(string)
+			if usageErr := a.applyCompletionUsageFacts(result, facts, upstreamModel, originModel); usageErr != nil {
+				logger.LogWarn(pollCtx, common.LogText("task plugin %s extractUsageOnComplete invalid usage: %v", a.plugin.Meta.Key, usageErr))
+				result.UsageExtractError = fmt.Sprintf("extractUsageOnComplete invalid usage: %v", usageErr)
+				result.UsageExtractRetryable = false
+			}
 		}
 	}
 	taskStatus := model.TaskStatus(result.Status)

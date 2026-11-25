@@ -134,7 +134,7 @@ func tencentStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *htt
 			badFrames++
 			common.SysLog(common.LogText("error unmarshalling stream response: %s", err.Error()))
 			if badFrames >= tencentStreamMaxBadFrames {
-				if c.Writer.Written() || responseText.Len() > 0 {
+				if helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) || responseText.Len() > 0 {
 					return service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens()), nil
 				}
 				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
@@ -148,7 +148,7 @@ func tencentStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *htt
 		// 不检查就会把失败帧当成「一个没有 choices 的正常 chunk」推给客户端，
 		// 最后以 [DONE] 和成功结账收场。
 		if tencentResponse.Error.Code != 0 {
-			if c.Writer.Written() || responseText.Len() > 0 {
+			if helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) || responseText.Len() > 0 {
 				common.SysLog(common.LogText("Tencent stream error after output written, billing delivered usage: code=%d msg=%s", tencentResponse.Error.Code, tencentResponse.Error.Message))
 				return service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens()), nil
 			}
@@ -166,6 +166,8 @@ func tencentStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *htt
 		err = helper.ObjectData(c, response)
 		if err != nil {
 			common.SysLog(err.Error())
+		} else if info != nil {
+			info.SendResponseCount++
 		}
 	}
 

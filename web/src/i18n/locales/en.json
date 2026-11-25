@@ -11222,6 +11222,13 @@
     "Approve or reject referral withdrawals.": "Approve or reject referral withdrawals.",
     "This group is the only allowed group for an active reseller site. Update the site's allowed groups first": "This group is the only allowed group for an active reseller site. Update the site's allowed groups first",
     "Withdrawal state changed concurrently, please retry": "Withdrawal state changed concurrently, please retry",
-    "Content-Type must be application/json": "Content-Type must be application/json"
+    "Content-Type must be application/json": "Content-Type must be application/json",
+    "Deleting": "Deleting",
+    "Context length must be an integer": "Context length must be an integer",
+    "Context length cannot exceed 100,000,000": "Context length cannot exceed 100,000,000",
+    "Enter a non-negative number or leave empty": "Enter a non-negative number or leave empty",
+    "Enter a valid HTTP(S) URL or a site-relative path starting with /": "Enter a valid HTTP(S) URL or a site-relative path starting with /",
+    "Cannot enable a channel without any group": "Cannot enable a channel without any group",
+    "Withdrawal payout amount must be positive": "Withdrawal payout amount must be positive"
   }
 }

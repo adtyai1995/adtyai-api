@@ -44,6 +44,7 @@ import {
   reviewAdminAnomalyDisposition,
   siteAdminKeys,
 } from '../api'
+import type { SiteStatus } from '../types'
 
 function fundAnomalyKindLabel(
   kind: string,
@@ -94,10 +95,15 @@ function dispositionStatusLabel(
 }
 
 /** Root sees site wallets, direct margin credit, wallet ledger, anomalies, and review history. */
-export function SiteFundPanel(props: { siteId: number }) {
+export function SiteFundPanel(props: {
+  siteId: number
+  siteStatus?: SiteStatus
+}) {
   const { t } = useTranslation()
   const isRoot =
     useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
+  const directMarginLocked =
+    props.siteStatus === 'closed' || props.siteStatus === 'deleting'
   const client = useQueryClient()
   const [directAmount, setDirectAmount] = useState('')
   const [directReason, setDirectReason] = useState('')
@@ -212,6 +218,7 @@ export function SiteFundPanel(props: { siteId: number }) {
               value={directAmount}
               inputMode='decimal'
               autoComplete='off'
+              disabled={directMarginLocked || directCredit.isPending}
               onChange={(event) => setDirectAmount(event.target.value)}
             />
           </div>
@@ -220,20 +227,27 @@ export function SiteFundPanel(props: { siteId: number }) {
             <Input
               id='direct-margin-reason'
               value={directReason}
+              disabled={directMarginLocked || directCredit.isPending}
               onChange={(event) => setDirectReason(event.target.value)}
             />
           </div>
         </div>
+        {directMarginLocked && (
+          <p className='text-muted-foreground text-xs'>{t('Site is closed')}</p>
+        )}
         <div>
           <Button
             type='button'
             variant='outline'
             disabled={
+              directMarginLocked ||
               directCredit.isPending ||
               directAmount.trim() === '' ||
               directReason.trim() === ''
             }
-            onClick={() => directCredit.mutate()}
+            onClick={() => {
+              if (!directMarginLocked) directCredit.mutate()
+            }}
           >
             {t('Credit margin directly')}
           </Button>

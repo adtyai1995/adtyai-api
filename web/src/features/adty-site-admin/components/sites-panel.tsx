@@ -79,7 +79,13 @@ import type { AdminSite, SiteStatus } from '../types'
 import { OpenSiteDialog } from './open-site-dialog'
 import { SiteStatusBadge } from './site-status-badge'
 
-const STATUSES: SiteStatus[] = ['active', 'closing', 'closed', 'pending']
+const STATUSES: SiteStatus[] = [
+  'active',
+  'closing',
+  'closed',
+  'deleting',
+  'pending',
+]
 
 /** Column header that sorts the loaded page; aria-sort sits on the header cell. */
 function SortHeader(props: {
@@ -225,6 +231,7 @@ export function SitesPanel(props: {
     paused: t('Paused'),
     closing: t('Closing'),
     closed: t('Closed'),
+    deleting: t('Deleting'),
   }
 
   const siteCounts = overviewQuery.data?.sites ?? {}

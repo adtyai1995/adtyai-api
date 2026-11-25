@@ -678,24 +678,91 @@ func reclaimConvertedReferralCommissionTx(tx *gorm.DB, commission *model.Referra
 			if err != nil {
 				return decimal.Zero, err
 			}
-			var siblingCommIDs []int
-			if err := tx.Model(&model.ReferralWithdrawalItem{}).
-				Where("withdrawal_id = ? AND commission_id > 0 AND commission_id <> ?", item.WithdrawalId, commission.Id).
-				Pluck("commission_id", &siblingCommIDs).Error; err != nil {
+			var siblingItems []model.ReferralWithdrawalItem
+			if err := tx.Where("withdrawal_id = ? AND commission_id > 0 AND commission_id <> ?", item.WithdrawalId, commission.Id).
+				Find(&siblingItems).Error; err != nil {
 				return decimal.Zero, err
 			}
 			var siblingClawed int64
-			if len(siblingCommIDs) > 0 && tx.Migrator().HasTable(&model.AdtyBalanceLedger{}) {
+			if len(siblingItems) > 0 && tx.Migrator().HasTable(&model.AdtyBalanceLedger{}) {
+				allocThisByComm := make(map[int]int64, len(siblingItems))
+				siblingCommIDs := make([]int, 0, len(siblingItems))
+				for _, sib := range siblingItems {
+					q, qErr := common.WalletQuotaFromDecimalStrict(moneyDec(sib.AllocatedAmount).Mul(common.QuotaPerUnitDecimal()).Floor())
+					if qErr != nil {
+						return decimal.Zero, qErr
+					}
+					if _, exists := allocThisByComm[sib.CommissionId]; !exists {
+						siblingCommIDs = append(siblingCommIDs, sib.CommissionId)
+					}
+					allocThisByComm[sib.CommissionId] += int64(q)
+				}
+				allocOthersByComm := make(map[int]int64, len(siblingCommIDs))
+				var otherItems []model.ReferralWithdrawalItem
+				if err := tx.Where("commission_id IN ? AND withdrawal_id <> ? AND status = ?",
+					siblingCommIDs, item.WithdrawalId, model.ReferralWithdrawalItemStatusWithdrawn).
+					Find(&otherItems).Error; err != nil {
+					return decimal.Zero, err
+				}
+				if len(otherItems) > 0 {
+					otherWIDs := make([]int, 0, len(otherItems))
+					seenWID := make(map[int]struct{}, len(otherItems))
+					for _, oi := range otherItems {
+						if _, ok := seenWID[oi.WithdrawalId]; !ok {
+							seenWID[oi.WithdrawalId] = struct{}{}
+							otherWIDs = append(otherWIDs, oi.WithdrawalId)
+						}
+					}
+					var balanceWIDs []int
+					if err := tx.Model(&model.ReferralWithdrawal{}).
+						Where("id IN ? AND account_type = ?", otherWIDs, model.ReferralWithdrawToBalance).
+						Pluck("id", &balanceWIDs).Error; err != nil {
+						return decimal.Zero, err
+					}
+					isBalanceWID := make(map[int]struct{}, len(balanceWIDs))
+					for _, wid := range balanceWIDs {
+						isBalanceWID[wid] = struct{}{}
+					}
+					for _, oi := range otherItems {
+						if _, ok := isBalanceWID[oi.WithdrawalId]; !ok {
+							continue
+						}
+						q, qErr := common.WalletQuotaFromDecimalStrict(moneyDec(oi.AllocatedAmount).Mul(common.QuotaPerUnitDecimal()).Floor())
+						if qErr != nil {
+							return decimal.Zero, qErr
+						}
+						allocOthersByComm[oi.CommissionId] += int64(q)
+					}
+				}
 				refIDs := make([]string, 0, len(siblingCommIDs))
 				for _, cid := range siblingCommIDs {
 					refIDs = append(refIDs, strconv.Itoa(cid))
 				}
+				type clawSumRow struct {
+					RefId string
+					Total int64
+				}
+				var clawRows []clawSumRow
 				if err := tx.Model(&model.AdtyBalanceLedger{}).
-					Select("COALESCE(SUM(-delta_quota), 0)").
-					Where("user_id = ? AND ref_type = ? AND ref_id IN ? AND delta_quota < 0",
-						commission.AffiliateUserId, "referral_commission_clawback", refIDs).
-					Scan(&siblingClawed).Error; err != nil {
+					Select("ref_id, COALESCE(SUM(-delta_quota), 0) AS total").
+					Where("user_id = ? AND type = ? AND ref_type = ? AND ref_id IN ? AND delta_quota < 0",
+						commission.AffiliateUserId, model.AdtyLedgerTypeCommissionTransfer, "referral_commission_clawback", refIDs).
+					Group("ref_id").
+					Scan(&clawRows).Error; err != nil {
 					return decimal.Zero, err
+				}
+				totalClawedByComm := make(map[int]int64, len(clawRows))
+				for _, cr := range clawRows {
+					if cid, convErr := strconv.Atoi(cr.RefId); convErr == nil {
+						totalClawedByComm[cid] = cr.Total
+					}
+				}
+				// R4-12: Sum only the mathematically provable lower bound of clawbacks
+				// attributable to this specific merged withdrawal batch:
+				// min(max(totalClawed - allocInOthers, 0), allocInThis).
+				for _, cid := range siblingCommIDs {
+					provableFromThis := min(max(totalClawedByComm[cid]-allocOthersByComm[cid], 0), allocThisByComm[cid])
+					siblingClawed += provableFromThis
 				}
 			}
 			otherProtected := max(lot.Original-int64(own)-siblingClawed, 0)

@@ -868,12 +868,93 @@ func ApplyManagedUserAccessTx(tx *gorm.DB, user *User) (bool, error) {
 	return ApplyManagedUserAccessForActorTx(tx, user, common.RoleRootUser, false)
 }
 
+// ValidateUsernameNoControl reports whether username contains no ASCII or C1
+// control characters (< 0x20 or 0x7f..0x9f) that could break CSV exports or logs (R4-30).
+func ValidateUsernameNoControl(username string) bool {
+	for _, r := range username {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return false
+		}
+	}
+	return true
+}
+
+// PreLockScopedEmployeeRowsTx acquires row locks on any subsite staff and
+// independent team employee rows for userID BEFORE locking users(userID),
+// matching canonical AdtySiteStaff / AdtyTeamMember -> User lock order (R4-06).
+func PreLockScopedEmployeeRowsTx(tx *gorm.DB, userID int) error {
+	if tx == nil || userID <= 0 {
+		return nil
+	}
+	if tx.Migrator().HasTable(&AdtySiteStaff{}) {
+		var staffs []AdtySiteStaff
+		if err := lockForUpdate(tx).Select("id").Where("user_id = ?", userID).Order("id ASC").Find(&staffs).Error; err != nil {
+			return err
+		}
+	}
+	if tx.Migrator().HasTable(&AdtyTeamMember{}) {
+		var members []AdtyTeamMember
+		if err := lockForUpdate(tx).Select("id").Where("user_id = ? AND independent_employee = ?", userID, true).Order("id ASC").Find(&members).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SyncStaffAndTeamDisabledAuthVersionTx advances disabled_auth_version on
+// owner-disabled site staff or leader-disabled independent team employee rows
+// whose previous version matched prevAuthVersion, so routine admin maintenance
+// (password reset, group edit, 2FA/Passkey reset) never locks out re-enable (R4-06).
+func SyncStaffAndTeamDisabledAuthVersionTx(tx *gorm.DB, userID int, prevAuthVersion, nextAuthVersion int64) error {
+	if tx == nil || userID <= 0 || prevAuthVersion <= 0 || nextAuthVersion <= 0 || prevAuthVersion == nextAuthVersion {
+		return nil
+	}
+	if tx.Migrator().HasTable(&AdtySiteStaff{}) {
+		if err := tx.Model(&AdtySiteStaff{}).
+			Where("user_id = ? AND status = ? AND disabled_auth_version = ?", userID, "disabled", prevAuthVersion).
+			Update("disabled_auth_version", nextAuthVersion).Error; err != nil {
+			return err
+		}
+	}
+	if tx.Migrator().HasTable(&AdtyTeamMember{}) {
+		if err := tx.Model(&AdtyTeamMember{}).
+			Where("user_id = ? AND independent_employee = ? AND status = ? AND disabled_auth_version = ?",
+				userID, true, AdtyTeamMemberDisabled, prevAuthVersion).
+			Update("disabled_auth_version", nextAuthVersion).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DisableDeletedUserAffiliatesWithTx disables both main-site and subsite
+// referral affiliate permissions when deleting an account.
+func DisableDeletedUserAffiliatesWithTx(tx *gorm.DB, userId int) error {
+	return disableDeletedUserAffiliatesTx(tx, userId)
+}
+
+// ReleaseSoftDeletedIdentityWithTx clears unique login identifiers and personal
+// profile fields before soft-deleting a user row.
+func ReleaseSoftDeletedIdentityWithTx(tx *gorm.DB, userId int) error {
+	return releaseSoftDeletedIdentity(tx, userId)
+}
+
+// PublishCommittedUserAuthVersion records the durable auth_version tombstone
+// after deleting a user account.
+func PublishCommittedUserAuthVersion(userId int, authVersion int64) error {
+	return publishCommittedUserAuthVersion(userId, authVersion)
+}
+
 func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, denyAdminTarget bool) (bool, error) {
 	if tx == nil || user == nil || user.Id <= 0 {
 		return false, fmt.Errorf("invalid managed user update")
 	}
+	// R4-06: Pre-lock scoped employee tables before locking users(id).
+	if err := PreLockScopedEmployeeRowsTx(tx, user.Id); err != nil {
+		return false, err
+	}
 	var current User
-	if err := lockForUpdate(tx).Select("id", "role", "status", "site_id", "staff_site_id").Where("id = ?", user.Id).First(&current).Error; err != nil {
+	if err := lockForUpdate(tx).Select("id", "role", "status", "site_id", "staff_site_id", "auth_version").Where("id = ?", user.Id).First(&current).Error; err != nil {
 		return false, err
 	}
 	if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= current.Role {
@@ -916,10 +997,48 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 		}
 		updates["role"] = user.Role
 	}
-	if user.Status != 0 && user.Status != current.Status {
-		// R2-31: Prevent admin enable from resurrecting disabled/deleted subsite
-		// staff accounts or staff accounts belonging to a closed/closing subsite.
+	clearScopedDisableVersions := false
+	rebindStaffDisableVersion := false
+	rebindTeamDisableVersion := false
+	if user.Status == common.UserStatusDisabled {
+		if current.Status != common.UserStatusDisabled {
+			updates["status"] = common.UserStatusDisabled
+		}
+		// R4-06: Even if already disabled by a site owner or team leader, a platform
+		// disable must revoke owner/leader re-enable authority by clearing disabled_auth_version.
+		if current.StaffSiteId > 0 && tx.Migrator().HasTable(&AdtySiteStaff{}) {
+			var stamped int64
+			if err := tx.Model(&AdtySiteStaff{}).Where("user_id = ? AND disabled_auth_version <> 0", current.Id).Count(&stamped).Error; err != nil {
+				return false, err
+			}
+			if stamped > 0 {
+				clearScopedDisableVersions = true
+			}
+		}
+		if tx.Migrator().HasTable(&AdtyTeamMember{}) {
+			var stamped int64
+			if err := tx.Model(&AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ? AND disabled_auth_version <> 0", current.Id, true).Count(&stamped).Error; err != nil {
+				return false, err
+			}
+			if stamped > 0 {
+				clearScopedDisableVersions = true
+			}
+		}
+	} else if user.Status != 0 && user.Status != current.Status {
+		// R2-31 / R4-06: Prevent admin enable from resurrecting deleted staff or
+		// bypassing owner-only disable; if platform-banned while owner-disabled
+		// (or legacy disabled_auth_version == 0), lift only the platform ban by
+		// rebinding disabled_auth_version so the site owner regains enable control.
 		if user.Status == common.UserStatusEnabled && current.StaffSiteId > 0 {
+			if tx.Migrator().HasTable(&AdtySite{}) {
+				var site AdtySite
+				if err := tx.Select("id", "status").Where("id = ?", current.StaffSiteId).Limit(1).Find(&site).Error; err != nil {
+					return false, err
+				}
+				if site.Id == 0 || (site.Status != AdtySiteStatusActive && site.Status != AdtySiteStatusPaused) {
+					return false, common.NewMessage("Cannot enable a staff account of a closed site")
+				}
+			}
 			if tx.Migrator().HasTable(&AdtySiteStaff{}) {
 				var staff AdtySiteStaff
 				res := tx.Where("user_id = ?", current.Id).Limit(1).Find(&staff)
@@ -930,21 +1049,15 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 					return false, common.NewMessage("Deleted site staff accounts cannot be re-enabled")
 				}
 				if staff.Status != "enabled" {
-					return false, common.NewMessage("Disabled site staff accounts must be re-enabled by the site owner")
-				}
-			}
-			if tx.Migrator().HasTable(&AdtySite{}) {
-				var site AdtySite
-				if err := tx.Select("id", "status").Where("id = ?", current.StaffSiteId).Limit(1).Find(&site).Error; err != nil {
-					return false, err
-				}
-				if site.Id == 0 || (site.Status != AdtySiteStatusActive && site.Status != AdtySiteStatusPaused) {
-					return false, common.NewMessage("Cannot enable a staff account of a closed site")
+					if current.Status == common.UserStatusDisabled && (staff.DisabledAuthVersion == 0 || staff.DisabledAuthVersion != current.AuthVersion) {
+						rebindStaffDisableVersion = true
+					} else {
+						return false, common.NewMessage("Disabled site staff accounts must be re-enabled by the site owner")
+					}
 				}
 			}
 		}
-		// R3-022: Prevent admin enable from resurrecting permanently deleted/left
-		// independent team employees or employees belonging to a non-active team.
+		// R3-022 / R4-06: Same dual-control lift for independent team employees.
 		if user.Status == common.UserStatusEnabled && tx.Migrator().HasTable(&AdtyTeamMember{}) {
 			var empMembers []AdtyTeamMember
 			if err := tx.Where("user_id = ? AND independent_employee = ?", current.Id, true).Find(&empMembers).Error; err != nil {
@@ -953,9 +1066,6 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 			for _, m := range empMembers {
 				if m.Status == AdtyTeamMemberDeleted || m.Status == AdtyTeamMemberLeft || m.DeletedAt != 0 {
 					return false, common.NewMessage("Deleted or removed team employee accounts cannot be re-enabled")
-				}
-				if m.Status == AdtyTeamMemberDisabled {
-					return false, common.NewMessage("Team-disabled employee accounts must be re-enabled by the team leader")
 				}
 				if tx.Migrator().HasTable(&AdtyTeam{}) && m.TeamId > 0 {
 					var team AdtyTeam
@@ -966,18 +1076,52 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 						return false, common.NewMessage("Cannot enable an employee account of a closed team")
 					}
 				}
+				if m.Status == AdtyTeamMemberDisabled {
+					if current.Status == common.UserStatusDisabled && (m.DisabledAuthVersion == 0 || m.DisabledAuthVersion != current.AuthVersion) {
+						rebindTeamDisableVersion = true
+					} else {
+						return false, common.NewMessage("Team-disabled employee accounts must be re-enabled by the team leader")
+					}
+				}
 			}
 		}
-		updates["status"] = user.Status
+		if rebindStaffDisableVersion || rebindTeamDisableVersion {
+			// Lift platform ban without activating an owner/leader-disabled employee.
+			user.Status = current.Status
+		} else {
+			updates["status"] = user.Status
+		}
 	}
-	if len(updates) == 0 {
+	if len(updates) == 0 && !clearScopedDisableVersions && !rebindStaffDisableVersion && !rebindTeamDisableVersion {
 		return false, nil
 	}
 	next, err := IncrementUserAuthVersionWithTx(tx, user.Id)
 	if err != nil {
 		return false, err
 	}
-	if (user.Status == common.UserStatusDisabled && user.Status != current.Status) ||
+	if clearScopedDisableVersions || (user.Status == common.UserStatusDisabled && user.Status != current.Status) {
+		if current.StaffSiteId > 0 && tx.Migrator().HasTable(&AdtySiteStaff{}) {
+			if err := tx.Model(&AdtySiteStaff{}).Where("user_id = ?", current.Id).Update("disabled_auth_version", 0).Error; err != nil {
+				return false, err
+			}
+		}
+		if tx.Migrator().HasTable(&AdtyTeamMember{}) {
+			if err := tx.Model(&AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ?", current.Id, true).Update("disabled_auth_version", 0).Error; err != nil {
+				return false, err
+			}
+		}
+	}
+	if rebindStaffDisableVersion && tx.Migrator().HasTable(&AdtySiteStaff{}) {
+		if err := tx.Model(&AdtySiteStaff{}).Where("user_id = ? AND status = ?", current.Id, "disabled").Update("disabled_auth_version", next).Error; err != nil {
+			return false, err
+		}
+	}
+	if rebindTeamDisableVersion && tx.Migrator().HasTable(&AdtyTeamMember{}) {
+		if err := tx.Model(&AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ? AND status = ?", current.Id, true, AdtyTeamMemberDisabled).Update("disabled_auth_version", next).Error; err != nil {
+			return false, err
+		}
+	}
+	if (user.Status == common.UserStatusDisabled && (user.Status != current.Status || clearScopedDisableVersions)) ||
 		(user.Role != 0 && user.Role < current.Role) {
 		if _, err := DeleteUserAccessTokensWithTx(tx, user.Id); err != nil {
 			return false, err
@@ -985,8 +1129,10 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 		updates["access_token"] = nil
 		updates["access_token_created_at"] = nil
 	}
-	if err := tx.Model(&User{}).Where("id = ?", user.Id).Updates(updates).Error; err != nil {
-		return false, err
+	if len(updates) > 0 {
+		if err := tx.Model(&User{}).Where("id = ?", user.Id).Updates(updates).Error; err != nil {
+			return false, err
+		}
 	}
 	user.AuthVersion = next
 	return true, nil
@@ -1024,7 +1170,7 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 	newUser := *user
 	newUser.Username = strings.TrimSpace(newUser.Username)
 	user.Username = newUser.Username
-	if newUser.Username == "" {
+	if newUser.Username == "" || !ValidateUsernameNoControl(newUser.Username) {
 		return common.NewMessage("Invalid parameters")
 	}
 	updates := map[string]any{
@@ -1037,8 +1183,11 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 		updates["password"] = newUser.Password
 	}
 
+	if err = PreLockScopedEmployeeRowsTx(tx, user.Id); err != nil {
+		return err
+	}
 	current := User{}
-	if err = tx.First(&current, user.Id).Error; err != nil {
+	if err = lockForUpdate(tx).First(&current, user.Id).Error; err != nil {
 		return err
 	}
 	if err = EnsureUsernameAvailableWithTx(tx, newUser.Username, user.Id); err != nil {
@@ -1054,6 +1203,9 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 	if authChanged {
 		newUser.AuthVersion, err = IncrementUserAuthVersionWithTx(tx, user.Id)
 		if err != nil {
+			return err
+		}
+		if err = SyncStaffAndTeamDisabledAuthVersionTx(tx, user.Id, current.AuthVersion, newUser.AuthVersion); err != nil {
 			return err
 		}
 	}
@@ -1359,6 +1511,30 @@ func disableDeletedUserAffiliatesTx(tx *gorm.DB, userId int) error {
 				"disabled_at": now,
 			}).Error; err != nil {
 			return err
+		}
+		var u User
+		if err := tx.Unscoped().Select("id", "site_id").Where("id = ?", userId).Limit(1).Find(&u).Error; err != nil {
+			return err
+		}
+		if u.SiteId > 0 {
+			disabledRow := AdtySiteReferralAffiliate{
+				SiteId:            u.SiteId,
+				UserId:            userId,
+				Status:            AdtySiteAffiliateStatusDisabled,
+				SettlementEnabled: false,
+				WithdrawalEnabled: false,
+				DisabledAt:        now,
+				CreatedAt:         now,
+			}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "site_id"}, {Name: "user_id"}},
+				DoUpdates: clause.Assignments(map[string]any{
+					"status":      AdtySiteAffiliateStatusDisabled,
+					"disabled_at": now,
+				}),
+			}).Create(&disabledRow).Error; err != nil {
+				return err
+			}
 		}
 	}
 	return nil

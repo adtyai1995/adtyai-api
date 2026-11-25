@@ -575,7 +575,7 @@ func ResetAdtyTeamEmployeePassword(leaderId int, teamId int64, memberUserId int,
 		if lookup.Error != nil {
 			return lookup.Error
 		}
-		if lookup.RowsAffected == 0 || !member.IndependentEmployee || member.Role == model.AdtyTeamRoleLeader || member.Status == model.AdtyTeamMemberDeleted || member.DeletedAt != 0 {
+		if lookup.RowsAffected == 0 || !member.IndependentEmployee || member.Role == model.AdtyTeamRoleLeader || (member.Status != model.AdtyTeamMemberActive && member.Status != model.AdtyTeamMemberDisabled) || member.DeletedAt != 0 {
 			return ErrAdtyTeamForbidden
 		}
 		// R2-031: Allow resetting password for disabled (non-deleted) independent employees too.

@@ -225,11 +225,25 @@ func refreshTieredBillingGroup(relayInfo *relaycommon.RelayInfo) (*billingexpr.B
 // SyncBillingGroupSnapshot refreshes the persisted billing_operations price_snapshot
 // when an auto-group retry switches to another group (R3-009).
 func SyncBillingGroupSnapshot(relayInfo *relaycommon.RelayInfo) *types.NewAPIError {
+	return SyncBillingGroupSnapshotWithContext(nil, relayInfo)
+}
+
+// SyncBillingGroupSnapshotWithContext refreshes the persisted billing_operations
+// price_snapshot both when a BillingSession already exists and when only a zero-quota
+// free-group reservation ("request:" + RequestId) exists (R4-15).
+func SyncBillingGroupSnapshotWithContext(c *gin.Context, relayInfo *relaycommon.RelayInfo) *types.NewAPIError {
 	if relayInfo == nil {
 		return nil
 	}
 	if session, ok := relayInfo.Billing.(*BillingSession); ok && session.operationKey != "" {
 		if err := model.UpdateBillingOperationGroupSnapshot(session.durableSpec()); err != nil {
+			return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+		}
+		return nil
+	}
+	if relayInfo.RequestId != "" && c != nil {
+		spec := buildRequestBillingSpec(c, relayInfo)
+		if err := model.UpdateBillingOperationGroupSnapshot(spec); err != nil {
 			return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 		}
 	}
@@ -244,7 +258,7 @@ func PrepareTieredBillingForSelectedGroup(c *gin.Context, relayInfo *relaycommon
 	if AdtyTeamPriceBlocked(c) {
 		return types.NewErrorWithStatusCode(ErrAdtyTeamInvalid, types.ErrorCodeModelPriceError, http.StatusForbidden, types.ErrOptionWithSkipRetry())
 	}
-	if err := SyncBillingGroupSnapshot(relayInfo); err != nil {
+	if err := SyncBillingGroupSnapshotWithContext(c, relayInfo); err != nil {
 		return err
 	}
 	snap, err := refreshTieredBillingGroup(relayInfo)

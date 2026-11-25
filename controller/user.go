@@ -81,7 +81,7 @@ func Login(c *gin.Context) {
 	}
 	siteID := service.AdtyRequestSiteID(c)
 	candID, hasCand := model.LookupLoginCandidateUserID(username, siteID)
-	if adtyLoginLocked(username) || (hasCand && adtyLoginLocked(common.LoginLockUserKey(candID))) {
+	if adtyLoginLocked(username) || (hasCand && adtyLoginLockedUser(candID)) {
 		common.ApiError(c, adtyLoginFailureResponse())
 		return
 	}
@@ -105,7 +105,7 @@ func Login(c *gin.Context) {
 				common.SysLog(common.LogText("login failure lock unavailable: %s", err.Error()))
 			}
 			if hasCand {
-				if err := adtyRecordLoginFailure(common.LoginLockUserKey(candID)); err != nil {
+				if err := adtyRecordLoginFailureUser(candID); err != nil {
 					common.SysLog(common.LogText("login failure lock unavailable: %s", err.Error()))
 				}
 			}
@@ -114,7 +114,7 @@ func Login(c *gin.Context) {
 		return
 	}
 	adtyClearLoginFailures(username)
-	adtyClearLoginFailures(common.LoginLockUserKey(user.Id))
+	adtyClearLoginFailuresUser(user.Id)
 	if user.Username != "" {
 		adtyClearLoginFailures(user.Username)
 	}
@@ -275,7 +275,7 @@ func Register(c *gin.Context) {
 	}
 	user.Username = strings.TrimSpace(user.Username)
 	user.Email = model.NormalizeEmail(user.Email)
-	if user.Username == "" {
+	if user.Username == "" || !model.ValidateUsernameNoControl(user.Username) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
@@ -941,7 +941,7 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 	updatedUser.Username = strings.TrimSpace(updatedUser.Username)
-	if updatedUser.Username == "" {
+	if updatedUser.Username == "" || !model.ValidateUsernameNoControl(updatedUser.Username) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
@@ -1003,6 +1003,9 @@ func UpdateUser(c *gin.Context) {
 			if err := model.PreLockAdtyGroupsTx(tx, updatedUser.Group); err != nil {
 				return err
 			}
+		}
+		if err := model.PreLockScopedEmployeeRowsTx(tx, updatedUser.Id); err != nil {
+			return err
 		}
 		var current model.User
 		if err := model.AdtyLockForUpdate(tx).First(&current, updatedUser.Id).Error; err != nil {
@@ -1156,6 +1159,9 @@ func AdminResetUserPassword(c *gin.Context) {
 	var targetUsername string
 	var auditEvent model.AuditLog
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := model.PreLockScopedEmployeeRowsTx(tx, id); err != nil {
+			return err
+		}
 		var current model.User
 		if err := model.AdtyLockForUpdate(tx).First(&current, id).Error; err != nil {
 			return err
@@ -1166,7 +1172,11 @@ func AdminResetUserPassword(c *gin.Context) {
 		if isAccessTokenRequest(c) && current.Role >= common.RoleAdminUser {
 			return errAdtyAdminActionDenied
 		}
-		if _, err := model.IncrementUserAuthVersionWithTx(tx, current.Id); err != nil {
+		nextAuthVersion, err := model.IncrementUserAuthVersionWithTx(tx, current.Id)
+		if err != nil {
+			return err
+		}
+		if err := model.SyncStaffAndTeamDisabledAuthVersionTx(tx, current.Id, current.AuthVersion, nextAuthVersion); err != nil {
 			return err
 		}
 		if _, err := model.DeleteUserAccessTokensWithTx(tx, current.Id); err != nil {
@@ -1370,6 +1380,10 @@ func UpdateSelf(c *gin.Context) {
 	}
 
 	user.Username = strings.TrimSpace(user.Username)
+	if !model.ValidateUsernameNoControl(user.Username) {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
 	if err := common.Validate.StructExcept(&user, "Password"); err != nil {
 		common.ApiErrorT(c, "Invalid input")
 		return
@@ -1589,7 +1603,7 @@ func CreateUser(c *gin.Context) {
 	var user model.User
 	err := common.DecodeJson(c.Request.Body, &user)
 	user.Username = strings.TrimSpace(user.Username)
-	if err != nil || user.Username == "" || user.Password == "" {
+	if err != nil || user.Username == "" || !model.ValidateUsernameNoControl(user.Username) || user.Password == "" {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
@@ -1945,6 +1959,9 @@ func ManageUser(c *gin.Context) {
 		}
 		common.ApiError(c, err)
 		return
+	}
+	if delta.Status != 0 {
+		user.Status = delta.Status
 	}
 	if changed {
 		if err := model.PublishUserAuthCache(user.Id); err != nil {

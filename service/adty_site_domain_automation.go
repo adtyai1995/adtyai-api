@@ -76,7 +76,11 @@ func adtyCloseDomainIntentsTx(tx *gorm.DB, siteID int) error {
 func RunAdtyDomainAutomationOnce(ctx context.Context, now time.Time) error {
 	started := time.Now()
 	var rows []model.AdtySiteDomain
-	if err := model.DB.WithContext(ctx).Where("automation_state <> ? AND status <> ? AND next_run_at <= ? AND lease_until <= ?", "", model.AdtySiteDomainRemoved, now.Unix(), now.Unix()).Order("next_run_at, id").Limit(50).Find(&rows).Error; err != nil {
+	nonDeletingSites := model.DB.Model(&model.AdtySite{}).Select("id").Where("status <> ?", model.AdtySiteStatusDeleting)
+	if err := model.DB.WithContext(ctx).
+		Where("automation_state <> ? AND status <> ? AND next_run_at <= ? AND lease_until <= ? AND site_id IN (?)",
+			"", model.AdtySiteDomainRemoved, now.Unix(), now.Unix(), nonDeletingSites).
+		Order("next_run_at, id").Limit(50).Find(&rows).Error; err != nil {
 		return err
 	}
 	var failures []error
@@ -145,9 +149,10 @@ func adtyBackfillActiveCustomBaseURLTurnstile(ctx context.Context, now time.Time
 	}
 	started := time.Now()
 	var rows []model.AdtySiteDomain
+	nonDeletingSites := model.DB.Model(&model.AdtySite{}).Select("id").Where("status <> ?", model.AdtySiteStatusDeleting)
 	if err := model.DB.WithContext(ctx).
-		Where("status = ? AND role = ? AND managed_by <> ? AND turnstile_widget = ? AND desired_state IN ? AND lease_until <= ?",
-			model.AdtySiteDomainActive, model.AdtySiteDomainRoleBaseURL, "platform", "", []string{"", "serve"}, now.Unix()).
+		Where("status = ? AND role = ? AND managed_by <> ? AND turnstile_widget = ? AND desired_state IN ? AND lease_until <= ? AND site_id IN (?)",
+			model.AdtySiteDomainActive, model.AdtySiteDomainRoleBaseURL, "platform", "", []string{"", "serve"}, now.Unix(), nonDeletingSites).
 		Order("id ASC").Limit(50).Find(&rows).Error; err != nil {
 		return err
 	}
@@ -188,6 +193,16 @@ func adtyBackfillActiveCustomBaseURLTurnstile(ctx context.Context, now time.Time
 				current.ManagedBy == "platform" ||
 				current.TurnstileWidget != "" ||
 				(current.DesiredState != "" && current.DesiredState != "serve") {
+				return nil
+			}
+			var site model.AdtySite
+			if err := tx.Select("id", "status").First(&site, current.SiteId).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil
+				}
+				return err
+			}
+			if site.Status == model.AdtySiteStatusDeleting {
 				return nil
 			}
 			var assignErr error
@@ -244,6 +259,16 @@ func adtySaveDomainResource(row *model.AdtySiteDomain, values map[string]any) er
 }
 
 func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
+	var site model.AdtySite
+	if err := model.DB.WithContext(ctx).Select("id", "status").First(&site, row.SiteId).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	if site.Status == model.AdtySiteStatusDeleting {
+		return nil
+	}
 	cfg := resellerSetting()
 	if row.ProviderZone == "" {
 		row.ProviderZone = cfg.CloudflareZoneId

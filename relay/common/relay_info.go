@@ -309,6 +309,7 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	} else {
 		info.FirstResponseTime = time.Time{}
 	}
+	info.DisablePing = false
 	info.SendResponseCount = 0
 	info.ReceivedResponseCount = 0
 	info.ClaudeToChatStreamState = nil
@@ -1189,17 +1190,19 @@ func (t *TaskSubmitReq) UnmarshalMetadata(v any) error {
 }
 
 type TaskInfo struct {
-	Code             int             `json:"code"`
-	TaskID           string          `json:"task_id"`
-	Status           string          `json:"status"`
-	Reason           string          `json:"reason,omitempty"`
-	Url              string          `json:"url,omitempty"`
-	RemoteUrl        string          `json:"remote_url,omitempty"`
-	Progress         string          `json:"progress,omitempty"`
-	CompletionTokens int             `json:"completion_tokens,omitempty"` // 用于按倍率计费
-	TotalTokens      int             `json:"total_tokens,omitempty"`      // 用于按倍率计费
-	UsageFacts       map[string]any  `json:"usage_facts,omitempty"`
-	PluginState      json.RawMessage `json:"plugin_state,omitempty"`
+	Code                  int             `json:"code"`
+	TaskID                string          `json:"task_id"`
+	Status                string          `json:"status"`
+	Reason                string          `json:"reason,omitempty"`
+	Url                   string          `json:"url,omitempty"`
+	RemoteUrl             string          `json:"remote_url,omitempty"`
+	Progress              string          `json:"progress,omitempty"`
+	CompletionTokens      int             `json:"completion_tokens,omitempty"` // 用于按倍率计费
+	TotalTokens           int             `json:"total_tokens,omitempty"`      // 用于按倍率计费
+	UsageFacts            map[string]any  `json:"usage_facts,omitempty"`
+	PluginState           json.RawMessage `json:"plugin_state,omitempty"`
+	UsageExtractError     string          `json:"usage_extract_error,omitempty"`     // 上游已 SUCCESS 但用量提取/校验失败的原因
+	UsageExtractRetryable bool            `json:"usage_extract_retryable,omitempty"` // 短暂 hook/网络异常标记，允许有限次轮询重试
 }
 
 func FailTaskInfo(reason string) *TaskInfo {

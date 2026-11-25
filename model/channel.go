@@ -326,9 +326,14 @@ func (channel *Channel) GetGroups() []string {
 	if channel.Group == "" {
 		return []string{}
 	}
-	groups := strings.Split(strings.Trim(channel.Group, ","), ",")
-	for i, group := range groups {
-		groups[i] = strings.TrimSpace(group)
+	rawGroups := strings.Split(strings.Trim(channel.Group, ","), ",")
+	groups := make([]string, 0, len(rawGroups))
+	for _, group := range rawGroups {
+		group = strings.TrimSpace(group)
+		if group == "" {
+			continue
+		}
+		groups = append(groups, group)
 	}
 	return groups
 }
@@ -804,7 +809,15 @@ func hasEnabledMultiKey(keys []string, statusList map[int]int) bool {
 	return false
 }
 
+// ErrChannelNoGroup is returned when attempting to enable a channel that has no assigned groups.
+var ErrChannelNoGroup = common.NewMessage("Cannot enable a channel without any group")
+
 func UpdateChannelStatus(channelId int, usingKey string, status int, reason string) bool {
+	changed, _ := UpdateChannelStatusWithError(channelId, usingKey, status, reason)
+	return changed
+}
+
+func UpdateChannelStatusWithError(channelId int, usingKey string, status int, reason string) (bool, error) {
 	if common.MemoryCacheEnabled {
 		channelStatusLock.Lock()
 		defer channelStatusLock.Unlock()
@@ -834,13 +847,16 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 	}()
 	channel, err := GetChannelById(channelId, true)
 	if err != nil {
-		return false
+		return false, nil
 	} else {
+		if status == common.ChannelStatusEnabled && len(channel.GetGroups()) == 0 {
+			return false, ErrChannelNoGroup
+		}
 		// Check the stored row too, since this node's cache may be stale.
 		if status == common.ChannelStatusAutoDisabled && channel.Status == common.ChannelStatusManuallyDisabled {
 			// Refresh from the stored row so auto-probe cannot reopen it.
 			refreshNeeded = common.MemoryCacheEnabled
-			return false
+			return false, nil
 		}
 		// A manual channel operation must replace the exhaustion reason even
 		// when the status value is already manually disabled.
@@ -873,7 +889,7 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 					refreshNeeded = true
 				}
 			}
-			return false
+			return false, nil
 		}
 
 		if channel.ChannelInfo.IsMultiKey {
@@ -894,7 +910,7 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 		err = channel.saveStatusState()
 		if err != nil {
 			common.SysLog(common.LogText("failed to update channel status: channel_id=%d, status=%d, error=%v", channel.Id, status, err))
-			return false
+			return false, nil
 		}
 		if common.MemoryCacheEnabled {
 			CacheUpdateChannel(channel)
@@ -903,7 +919,7 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 			}
 		}
 	}
-	return true
+	return true, nil
 }
 
 func EnableChannelByTag(tag string) error {
@@ -911,13 +927,22 @@ func EnableChannelByTag(tag string) error {
 	if err := DB.Where("tag = ?", tag).Find(&channels).Error; err != nil {
 		return err
 	}
+	for _, channel := range channels {
+		if len(channel.GetGroups()) == 0 {
+			return ErrChannelNoGroup
+		}
+	}
 	defer func() { _ = RefreshChannelCache() }()
 	for _, channel := range channels {
 		keysBlocked := channel.ChannelInfo.IsMultiKey && !hasEnabledMultiKey(channel.GetKeys(), channel.ChannelInfo.MultiKeyStatusList)
 		if channel.Status == common.ChannelStatusEnabled && !keysBlocked {
 			continue
 		}
-		if !UpdateChannelStatus(channel.Id, "", common.ChannelStatusEnabled, "manual tag operation") {
+		changed, err := UpdateChannelStatusWithError(channel.Id, "", common.ChannelStatusEnabled, "manual tag operation")
+		if err != nil {
+			return err
+		}
+		if !changed {
 			return fmt.Errorf("failed to enable channel #%d by tag", channel.Id)
 		}
 	}

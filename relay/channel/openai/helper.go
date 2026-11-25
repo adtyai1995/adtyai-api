@@ -21,10 +21,14 @@ import (
 func HandleStreamFormat(c *gin.Context, info *relaycommon.RelayInfo, data string, forceFormat bool, thinkToContent bool) error {
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
-		info.SendResponseCount++
-		return sendStreamData(c, info, data, forceFormat, thinkToContent)
+		if err := sendStreamData(c, info, data, forceFormat, thinkToContent); err != nil {
+			return err
+		}
+		if data != "" && info != nil {
+			info.SendResponseCount++
+		}
+		return nil
 	case types.RelayFormatClaude:
-		info.SendResponseCount++
 		return handleClaudeFormat(c, data, info)
 	case types.RelayFormatGemini:
 		// The stateful relaykit path owns its chunk counter so multi-hop and
@@ -51,8 +55,18 @@ func handleClaudeFormat(c *gin.Context, data string, info *relaycommon.RelayInfo
 	if !ok {
 		return fmt.Errorf("expected Claude stream responses, got %T", result.Value)
 	}
+	wrote := false
 	for _, resp := range claudeResponses {
-		helper.ClaudeData(c, *resp)
+		if resp == nil {
+			continue
+		}
+		_ = helper.ClaudeData(c, *resp)
+		if resp.Type != "ping" && (c == nil || c.Request == nil || c.Request.Context().Err() == nil) {
+			wrote = true
+		}
+	}
+	if wrote && info != nil && helper.HasWrittenStreamPayload(c) {
+		info.SendResponseCount++
 	}
 	return nil
 }
@@ -72,7 +86,7 @@ func handleGeminiFormat(c *gin.Context, data string, info *relaycommon.RelayInfo
 	if err != nil {
 		return err
 	}
-	return sendGeminiStreamResults(c, results)
+	return sendGeminiStreamResults(c, info, results)
 }
 
 func chatToGeminiStreamState(info *relaycommon.RelayInfo, streamResponse *dto.ChatCompletionsStreamResponse) (*relayconvert.ResponseStreamState, error) {
@@ -98,7 +112,7 @@ func chatToGeminiStreamState(info *relaycommon.RelayInfo, streamResponse *dto.Ch
 	return state, nil
 }
 
-func sendGeminiStreamResults(c *gin.Context, results []relayconvert.ResponseResult) error {
+func sendGeminiStreamResults(c *gin.Context, info *relaycommon.RelayInfo, results []relayconvert.ResponseResult) error {
 	for _, result := range results {
 		geminiResponse, ok := result.Value.(*dto.GeminiChatResponse)
 		if !ok {
@@ -113,7 +127,12 @@ func sendGeminiStreamResults(c *gin.Context, results []relayconvert.ResponseResu
 			return err
 		}
 		c.Render(-1, common.CustomEvent{Data: "data: " + string(data)})
-		_ = helper.FlushWriter(c)
+		if flushErr := helper.FlushWriter(c); flushErr == nil {
+			helper.MarkStreamPayloadWritten(c)
+			if info != nil {
+				info.SendResponseCount++
+			}
+		}
 	}
 	return nil
 }
@@ -265,7 +284,7 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 			common.SysLog(common.LogText("error converting final Gemini stream response: %s", err.Error()))
 			return
 		}
-		if err := sendGeminiStreamResults(c, results); err != nil {
+		if err := sendGeminiStreamResults(c, info, results); err != nil {
 			common.SysLog(common.LogText("error sending final Gemini stream response: %s", err.Error()))
 			return
 		}
@@ -275,7 +294,7 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 			common.SysLog(common.LogText("error finalizing Gemini stream response: %s", err.Error()))
 			return
 		}
-		if err := sendGeminiStreamResults(c, results); err != nil {
+		if err := sendGeminiStreamResults(c, info, results); err != nil {
 			common.SysLog(common.LogText("error sending finalized Gemini stream response: %s", err.Error()))
 		}
 	}

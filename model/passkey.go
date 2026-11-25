@@ -279,13 +279,22 @@ func deletePasskeyWithAuthVersion(userID int, identity *AuthSessionIdentity, act
 		return errors.New("failed to delete the Passkey, please try again")
 	}
 	if err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := PreLockScopedEmployeeRowsTx(tx, userID); err != nil {
+			return err
+		}
+		var prevAuthVersion int64
 		if identity != nil {
 			if err := ValidateAuthSessionWithTx(tx, *identity); err != nil {
 				return err
 			}
+			var target User
+			if err := lockForUpdate(tx).Select("id", "auth_version").First(&target, userID).Error; err != nil {
+				return err
+			}
+			prevAuthVersion = target.AuthVersion
 		} else {
 			var target User
-			if err := lockForUpdate(tx).Select("id", "role").First(&target, userID).Error; err != nil {
+			if err := lockForUpdate(tx).Select("id", "role", "auth_version").First(&target, userID).Error; err != nil {
 				return err
 			}
 			if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= target.Role {
@@ -294,6 +303,7 @@ func deletePasskeyWithAuthVersion(userID int, identity *AuthSessionIdentity, act
 			if denyAdminTarget && target.Role >= common.RoleAdminUser {
 				return ErrAdminTargetSessionRequired
 			}
+			prevAuthVersion = target.AuthVersion
 		}
 		var credential PasskeyCredential
 		if err := lockForUpdate(tx).Where("user_id = ?", userID).First(&credential).Error; err != nil {
@@ -302,7 +312,11 @@ func deletePasskeyWithAuthVersion(userID int, identity *AuthSessionIdentity, act
 			}
 			return err
 		}
-		if _, err := IncrementUserAuthVersionWithTx(tx, userID); err != nil {
+		nextAuthVersion, err := IncrementUserAuthVersionWithTx(tx, userID)
+		if err != nil {
+			return err
+		}
+		if err := SyncStaffAndTeamDisabledAuthVersionTx(tx, userID, prevAuthVersion, nextAuthVersion); err != nil {
 			return err
 		}
 		result := tx.Unscoped().Delete(&credential)

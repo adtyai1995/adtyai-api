@@ -133,6 +133,7 @@ func CreateModelMeta(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	m.ModelName = strings.TrimSpace(m.ModelName)
 	if m.ModelName == "" {
 		common.ApiErrorT(c, "Model name cannot be empty")
 		return
@@ -176,6 +177,7 @@ func UpdateModelMeta(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	m.ModelName = strings.TrimSpace(m.ModelName)
 	if m.Id == 0 {
 		common.ApiErrorT(c, "Missing model ID")
 		return
@@ -198,7 +200,7 @@ func UpdateModelMeta(c *gin.Context) {
 			return
 		}
 	} else {
-		if strings.TrimSpace(m.ModelName) == "" {
+		if m.ModelName == "" {
 			common.ApiErrorT(c, "Model name cannot be empty")
 			return
 		}

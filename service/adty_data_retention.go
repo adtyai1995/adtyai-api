@@ -562,7 +562,7 @@ func applyDataRetentionCategory(ctx context.Context, checkCancel func() error, s
 		cleared, err := model.ClearCancelledAccountProfileLeftovers(ctx, retentionCutoffUnix(now, effectiveDays), dataRetentionCleanupBatchSize)
 		item.DeidentifyCount = cleared
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
+			if errors.Is(err, context.Canceled) || (ctx != nil && errors.Is(ctx.Err(), context.Canceled)) {
 				item.SkipReason = "cancelled"
 				return item, context.Canceled
 			}
@@ -577,7 +577,7 @@ func applyDataRetentionCategory(ctx context.Context, checkCancel func() error, s
 	}
 	deleted, failed, err := executeDataRetentionDelete(ctx, checkCancel, spec.Category, effectiveDays, now)
 	item.DeleteCount = deleted
-	if errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.Canceled) || (ctx != nil && errors.Is(ctx.Err(), context.Canceled)) {
 		item.FailureCount = 0
 		item.SkipReason = "cancelled"
 		return item, context.Canceled
@@ -981,12 +981,12 @@ func (dataRetentionHandler) Run(ctx context.Context, task *model.SystemTask, run
 	if totalFailures > 0 {
 		errMsg := fmt.Sprintf("data retention cleanup completed with %d failure(s) in %s", totalFailures, strings.Join(failedCategories, "; "))
 		if finishErr := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusFailed, result, errMsg); finishErr != nil {
-			logSystemTaskLockError(ctx, task, finishErr)
+			logSystemTaskLockError(context.Background(), task, finishErr)
 		}
 		return
 	}
 	if err := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusSucceeded, result, ""); err != nil {
-		logSystemTaskLockError(ctx, task, err)
+		logSystemTaskLockError(context.Background(), task, err)
 	}
 }
 

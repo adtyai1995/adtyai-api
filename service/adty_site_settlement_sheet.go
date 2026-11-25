@@ -121,9 +121,11 @@ func CatchUpAdtySiteSettlementSheets(now time.Time) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	day, start, _ := previousBusinessWindow(now, loc)
+	day, start, end := previousBusinessWindow(now, loc)
 	var sites []model.AdtySite
-	if err := model.DB.Select("id").Find(&sites).Error; err != nil {
+	if err := model.DB.Select("id").
+		Where("status NOT IN ?", []string{model.AdtySiteStatusDeleting, model.AdtySiteStatusPending}).
+		Find(&sites).Error; err != nil {
 		return 0, err
 	}
 	written := 0
@@ -132,8 +134,14 @@ func CatchUpAdtySiteSettlementSheets(now time.Time) (int, error) {
 		count := 0
 		err := model.DB.Transaction(func(tx *gorm.DB) error {
 			var locked model.AdtySite
-			if err := model.AdtyLockForUpdate(tx).Select("id").First(&locked, site.Id).Error; err != nil {
+			if err := model.AdtyLockForUpdate(tx).Select("id", "status", "created_at").First(&locked, site.Id).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil
+				}
 				return err
+			}
+			if locked.Status == model.AdtySiteStatusDeleting || locked.Status == model.AdtySiteStatusPending {
+				return nil
 			}
 			scan := model.AdtySettlementScan{SiteId: site.Id}
 			if err := tx.Where("site_id = ?", site.Id).Limit(1).Find(&scan).Error; err != nil {
@@ -142,7 +150,16 @@ func CatchUpAdtySiteSettlementSheets(now time.Time) (int, error) {
 			var cursor time.Time
 			var err error
 			if scan.NextDay == "" {
-				cursor, err = firstAdtySettlementDay(tx, site.Id, start, loc)
+				var hasPriorFacts bool
+				cursor, hasPriorFacts, err = firstAdtySettlementDay(tx, site.Id, start, loc)
+				if err != nil {
+					return err
+				}
+				// R4-04: Do not generate an immutable zero-row settlement sheet for the day
+				// BEFORE a brand-new site even existed when it has no historical facts.
+				if !hasPriorFacts && locked.CreatedAt >= end.Unix() {
+					return nil
+				}
 			} else {
 				cursor, err = time.ParseInLocation("2006-01-02", scan.NextDay, loc)
 			}
@@ -224,10 +241,10 @@ func writeAdtyCatchUpDay(tx *gorm.DB, siteID int, date time.Time, zone string, g
 	return writeAdtySiteSettlementSheetTx(tx, siteID, day, begin, end, zone, generatedAt)
 }
 
-func firstAdtySettlementDay(tx *gorm.DB, siteID int, yesterday time.Time, loc *time.Location) (time.Time, error) {
+func firstAdtySettlementDay(tx *gorm.DB, siteID int, yesterday time.Time, loc *time.Location) (time.Time, bool, error) {
 	var opened model.AdtySite
 	if err := tx.Select("created_at").First(&opened, siteID).Error; err != nil {
-		return time.Time{}, err
+		return time.Time{}, false, err
 	}
 	first := yesterday
 	if opened.CreatedAt > 0 {
@@ -250,20 +267,24 @@ func firstAdtySettlementDay(tx *gorm.DB, siteID int, yesterday time.Time, loc *t
  UNION ALL SELECT MIN(r.completed_at) FROM adty_manual_refunds r JOIN adty_topup_orders o ON o.trade_no=r.trade_no WHERE o.site_id=? AND r.completed_at>0
  UNION ALL SELECT MIN(created_at) FROM adty_anomaly_dispositions WHERE site_id=? AND created_at>0
  ) AS stamps`, siteID, siteID, siteID, siteID, siteID, siteID, siteID, siteID, siteID).Scan(&ts).Error; err != nil {
-		return first, err
+		return first, false, err
 	}
+	hasPriorFacts := ts > 0
 	if ts > 0 && ts < first.Unix() {
 		d := time.Unix(ts, 0).In(loc)
 		first = time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, loc)
 	}
 	var recorded string
 	if err := tx.Model(&model.AdtySiteEarningDaily{}).Where("site_id = ? AND day <> ''", siteID).Select("COALESCE(MIN(day),'')").Scan(&recorded).Error; err != nil {
-		return first, err
+		return first, hasPriorFacts, err
+	}
+	if strings.TrimSpace(recorded) != "" {
+		hasPriorFacts = true
 	}
 	if d, err := time.ParseInLocation("2006-01-02", adtyEarningDayOf(recorded), loc); err == nil && d.Before(first) {
 		first = d
 	}
-	return first, nil
+	return first, hasPriorFacts, nil
 }
 
 func revisitAdtySettlement(tx *gorm.DB, siteID int, day string, now int64) error {

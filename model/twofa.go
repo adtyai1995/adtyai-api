@@ -325,13 +325,22 @@ func DisableTwoFAForSession(identity AuthSessionIdentity) error {
 
 func disableTwoFAWithAuthVersion(userId int, identity *AuthSessionIdentity, actorRole int, denyAdminTarget bool) error {
 	if err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := PreLockScopedEmployeeRowsTx(tx, userId); err != nil {
+			return err
+		}
+		var prevAuthVersion int64
 		if identity != nil {
 			if err := ValidateAuthSessionWithTx(tx, *identity); err != nil {
 				return err
 			}
+			var target User
+			if err := lockForUpdate(tx).Select("id", "auth_version").First(&target, userId).Error; err != nil {
+				return err
+			}
+			prevAuthVersion = target.AuthVersion
 		} else {
 			var target User
-			if err := lockForUpdate(tx).Select("id", "role").First(&target, userId).Error; err != nil {
+			if err := lockForUpdate(tx).Select("id", "role", "auth_version").First(&target, userId).Error; err != nil {
 				return err
 			}
 			if actorRole > 0 && actorRole != common.RoleRootUser && actorRole <= target.Role {
@@ -340,6 +349,7 @@ func disableTwoFAWithAuthVersion(userId int, identity *AuthSessionIdentity, acto
 			if denyAdminTarget && target.Role >= common.RoleAdminUser {
 				return ErrAdminTargetSessionRequired
 			}
+			prevAuthVersion = target.AuthVersion
 		}
 		var twoFA TwoFA
 		if err := lockForUpdate(tx).Where("user_id = ? AND is_enabled = ?", userId, true).First(&twoFA).Error; err != nil {
@@ -348,7 +358,11 @@ func disableTwoFAWithAuthVersion(userId int, identity *AuthSessionIdentity, acto
 			}
 			return err
 		}
-		if _, err := IncrementUserAuthVersionWithTx(tx, userId); err != nil {
+		nextAuthVersion, err := IncrementUserAuthVersionWithTx(tx, userId)
+		if err != nil {
+			return err
+		}
+		if err := SyncStaffAndTeamDisabledAuthVersionTx(tx, userId, prevAuthVersion, nextAuthVersion); err != nil {
 			return err
 		}
 		if err := tx.Unscoped().Where("user_id = ?", userId).Delete(&TwoFABackupCode{}).Error; err != nil {
