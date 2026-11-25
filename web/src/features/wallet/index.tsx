@@ -36,6 +36,8 @@ import type { UserWalletData } from './types'
 interface WalletProps {
   /** Scrolls to the top-up history. */
   initialShowHistory?: boolean
+  returnTradeNo?: string
+  onReturnClosed?: () => void
 }
 
 export function Wallet(props: WalletProps) {
@@ -117,6 +119,8 @@ export function Wallet(props: WalletProps) {
           />
           {userError && <ErrorState onRetry={() => void fetchUser()} />}
           <AdtyOnlineTopup
+            returnTradeNo={props.returnTradeNo}
+            onReturnClosed={props.onReturnClosed}
             onSettled={fetchUser}
             afterRechargeSlot={
               <VoucherRedeemCard

@@ -1304,6 +1304,9 @@ func CreateAdtyTeamTopupOrder(leaderID int, teamID int64, amountUSD decimal.Deci
 func ListAdtyTeamTopups(leaderID int, teamID int64, pendingOnly ...bool) ([]model.AdtyTopupOrder, error) {
 	var team model.AdtyTeam
 	if err := model.DB.First(&team, teamID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrAdtyTeamForbidden
+		}
 		return nil, err
 	}
 	if team.LeaderUserId != leaderID {
@@ -1312,10 +1315,129 @@ func ListAdtyTeamTopups(leaderID int, teamID int64, pendingOnly ...bool) ([]mode
 	var rows []model.AdtyTopupOrder
 	query := model.DB.Model(&model.AdtyTopupOrder{}).Where("adty_topup_orders.team_id = ?", teamID)
 	if len(pendingOnly) > 0 && pendingOnly[0] {
-		query = query.Select("adty_topup_orders.*").Joins("JOIN top_ups t ON t.trade_no = adty_topup_orders.trade_no").Where("t.status = ? AND adty_topup_orders.user_id = ?", common.TopUpStatusPending, leaderID)
+		now := time.Now().Unix()
+		query = query.Select("adty_topup_orders.*").
+			Joins("JOIN top_ups t ON t.trade_no = adty_topup_orders.trade_no").
+			Where("t.status = ? AND adty_topup_orders.user_id = ? AND (adty_topup_orders.expire_at = 0 OR adty_topup_orders.expire_at > ?)", common.TopUpStatusPending, leaderID, now)
 	}
 	err := query.Order("adty_topup_orders.id desc").Limit(20).Find(&rows).Error
 	return rows, err
+}
+
+// ListAdtyTeamTopupsPage returns a paginated list of team top-up orders (enriched with TopUp status/amount/timestamps)
+// for the team leader. When status=="pending", only active unexpired pending orders are returned.
+func ListAdtyTeamTopupsPage(leaderID int, teamID int64, status string, page, pageSize int) ([]model.AdtyTopUpView, int64, error) {
+	if leaderID <= 0 || teamID <= 0 {
+		return nil, 0, ErrAdtyTeamForbidden
+	}
+	var team model.AdtyTeam
+	if err := model.DB.First(&team, teamID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, 0, ErrAdtyTeamForbidden
+		}
+		return nil, 0, err
+	}
+	if team.LeaderUserId != leaderID {
+		return nil, 0, ErrAdtyTeamForbidden
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	normalizedStatus := strings.ToLower(strings.TrimSpace(status))
+	if normalizedStatus == "cancelled" {
+		normalizedStatus = model.TopUpStatusCanceled
+	}
+	if normalizedStatus == "all" {
+		normalizedStatus = ""
+	}
+	base := model.DB.Table("adty_topup_orders AS a").
+		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
+		Where("a.team_id = ?", teamID)
+	if normalizedStatus == common.TopUpStatusPending {
+		now := time.Now().Unix()
+		base = base.Where("t.status = ? AND a.user_id = ? AND (a.expire_at = 0 OR a.expire_at > ?)", common.TopUpStatusPending, leaderID, now)
+	} else if normalizedStatus != "" {
+		base = base.Where("LOWER(t.status) = ?", normalizedStatus)
+	}
+	var total int64
+	if err := base.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return []model.AdtyTopUpView{}, 0, nil
+	}
+	var exts []model.AdtyTopupOrder
+	offset := (page - 1) * pageSize
+	if err := base.Session(&gorm.Session{}).Select("a.*").Order("a.id DESC").Offset(offset).Limit(pageSize).Scan(&exts).Error; err != nil {
+		return nil, 0, err
+	}
+	tradeNos := make([]string, 0, len(exts))
+	for i := range exts {
+		tradeNos = append(tradeNos, exts[i].TradeNo)
+	}
+	topUpsByTradeNo := make(map[string]model.TopUp, len(tradeNos))
+	if len(tradeNos) > 0 {
+		var topUps []model.TopUp
+		if err := model.DB.Where("trade_no IN ?", tradeNos).Find(&topUps).Error; err != nil {
+			return nil, 0, err
+		}
+		for _, t := range topUps {
+			topUpsByTradeNo[t.TradeNo] = t
+		}
+	}
+	views := make([]model.AdtyTopUpView, 0, len(exts))
+	for i := range exts {
+		extCopy := exts[i]
+		views = append(views, model.AdtyTopUpView{
+			TopUp: topUpsByTradeNo[extCopy.TradeNo],
+			Ext:   &extCopy,
+		})
+	}
+	return views, total, nil
+}
+
+// ListAdtyTeamLedgersForLeader returns a paginated list of shared-balance ledger
+// entries for a team, accessible only to that team's leader.
+func ListAdtyTeamLedgersForLeader(leaderID int, teamID int64, page, pageSize int) ([]model.AdtyTeamLedger, int64, error) {
+	if leaderID <= 0 || teamID <= 0 {
+		return nil, 0, ErrAdtyTeamForbidden
+	}
+	var team model.AdtyTeam
+	if err := model.DB.First(&team, teamID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, 0, ErrAdtyTeamForbidden
+		}
+		return nil, 0, err
+	}
+	if team.LeaderUserId != leaderID {
+		return nil, 0, ErrAdtyTeamForbidden
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	var total int64
+	if err := model.DB.Model(&model.AdtyTeamLedger{}).Where("team_id = ?", teamID).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return []model.AdtyTeamLedger{}, 0, nil
+	}
+	var rows []model.AdtyTeamLedger
+	offset := (page - 1) * pageSize
+	err := model.DB.Where("team_id = ?", teamID).Order("id DESC").Offset(offset).Limit(pageSize).Find(&rows).Error
+	return rows, total, err
 }
 
 func CreditAdtyTeam(leaderId, teamId int64, quota int64, ref string) error {

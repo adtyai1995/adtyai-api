@@ -18,10 +18,10 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { SiteWallet } from '@/features/adty-ledger/site-wallet-labels'
 
-const EIGHT_DECIMAL_PATTERN = /^\d+(?:\.\d{1,8})?$/
+const TWO_DECIMAL_PATTERN = /^\d+(?:\.\d{1,2})?$/
 const SCALE_DIGITS = 8
 const SCALE = 100_000_000n
-const MAX_SINGLE_WALLET_USD_UNITS = 10_000_000n * SCALE
+const MAX_SINGLE_WALLET_USD_UNITS = 100_000n * SCALE
 
 export type OwnerFundingPreview = {
   valid: boolean
@@ -113,7 +113,7 @@ export function computeOwnerFundingPreview(
   )
 
   const trimmed = amountRaw.trim()
-  if (!EIGHT_DECIMAL_PATTERN.test(trimmed)) {
+  if (!TWO_DECIMAL_PATTERN.test(trimmed)) {
     return {
       valid: false,
       exceedsMax: false,

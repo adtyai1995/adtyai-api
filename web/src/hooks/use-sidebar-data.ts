@@ -21,6 +21,7 @@ import {
   Bell,
   Box,
   ClipboardList,
+  CreditCard,
   FileSpreadsheet,
   FileText,
   Gift,
@@ -129,6 +130,14 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
       canAdmin(state.auth.user, ADTY_PERMISSIONS.TICKET_MANAGE) ||
       canAdmin(state.auth.user, ADTY_PERMISSIONS.TICKET_MANAGE_ALL)
   )
+  const showStandalonePaymentChannels = useAuthStore((state) => {
+    const user = state.auth.user
+    if (!user || user.role >= ROLE.SUPER_ADMIN) return false
+    return (
+      canAdmin(user, ADTY_PERMISSIONS.PAYMENT_READ) ||
+      canAdmin(user, ADTY_PERMISSIONS.PAYMENT_OPERATE)
+    )
+  })
   const userRole = useAuthStore((state) => state.auth.user?.role ?? ROLE.GUEST)
   const isAdmin = userRole >= ROLE.ADMIN
   const hasArchivedSite = useAuthStore(
@@ -475,6 +484,15 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               badge: orderManagementBadge,
               requiredPermission: ADTY_PERMISSIONS.FINANCE_READ,
             },
+            ...(showStandalonePaymentChannels
+              ? [
+                  {
+                    title: t('Payment channels'),
+                    url: '/payment-channels',
+                    icon: CreditCard,
+                  },
+                ]
+              : []),
             {
               title: t('Recharge Bonus'),
               url: '/recharge-bonus',
@@ -515,6 +533,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
   }, [
     t,
     platformTickets,
+    showStandalonePaymentChannels,
     staffWorkspaceBadge,
     personalTicketsBadge,
     ownerTicketsBadge,

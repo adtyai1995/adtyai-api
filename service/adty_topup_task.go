@@ -88,27 +88,41 @@ func RunAdtyTopUpMaintenanceOnce(now int64) {
 	}
 }
 
+const (
+	adtyPreExpireVerifyWindowSeconds     int64 = 24 * 60 * 60
+	adtyPreExpireVerifyMaxQueriesPerTick       = 20
+	adtyPreExpireVerifyMaxTickDuration         = 30 * time.Second
+)
+
 // verifyExpiredOrdersUnpaidBeforeExpire confirms via remote query outside row
 // locks that expired gateway-backed orders have not paid before ExpireAdtyTopUps
 // releases their gift guarantee reserves (ISS-R1-0010).
+// Bounded to orders expired within the last 24h and capped per tick so a dead
+// gateway cannot permanently starve the maintenance loop.
 func verifyExpiredOrdersUnpaidBeforeExpire(now int64) {
 	if model.DB == nil {
 		return
 	}
 	cutoff := now - adtyExpireReleaseBufferSeconds
+	windowStart := now - adtyPreExpireVerifyWindowSeconds
 	var orders []model.AdtyTopupOrder
 	err := model.DB.Table("adty_topup_orders AS a").Select("a.*").
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no AND t.user_id = a.user_id AND t.payment_provider = a.provider").
-		Where("t.status = ? AND a.expire_at > 0 AND a.expire_at <= ? AND (a.last_query_at < a.expire_at OR a.last_query_at <= ?)",
-			common.TopUpStatusPending, cutoff, now-60).
+		Where("t.status = ? AND a.expire_at > 0 AND a.expire_at <= ? AND a.expire_at >= ? AND (a.last_query_at < a.expire_at OR a.last_query_at <= ?)",
+			common.TopUpStatusPending, cutoff, windowStart, now-60).
 		Order("a.last_query_at asc, a.expire_at asc, a.id asc").Limit(200).Scan(&orders).Error
 	if err != nil {
 		common.SysError(common.LogText("list adty pre-expire query orders: %s", err.Error()))
 		return
 	}
+	started := time.Now()
+	queried := 0
 	for i := range orders {
+		if queried >= adtyPreExpireVerifyMaxQueriesPerTick || time.Since(started) >= adtyPreExpireVerifyMaxTickDuration {
+			break
+		}
 		ext := &orders[i]
-		requiresRemote, checkErr := adtyOrderRequiresRemoteUnpaidConfirm(model.DB, ext)
+		requiresRemote, checkErr := adtyOrderRequiresRemoteUnpaidConfirmAt(model.DB, ext, now)
 		if checkErr != nil || !requiresRemote {
 			continue
 		}
@@ -124,6 +138,7 @@ func verifyExpiredOrdersUnpaidBeforeExpire(now int64) {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		_ = RecoverAdtyHostedPayment(ctx, ext)
 		cancel()
+		queried++
 	}
 }
 

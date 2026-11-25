@@ -513,6 +513,7 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 	quote := &AdtyQuote{TeamID: ext.TeamId, Business: ext.Business, SiteID: ext.SiteId, FaceUSD: ext.FaceUSD, PayAmount: ext.PayAmount, PayCurrency: ext.PayCurrency}
 	config := &AdtyPaymentScenes{}
 	bonusValues := map[string]string{}
+	lockedSiteStatus := ""
 	prepare := func(tx *gorm.DB) error {
 		for _, key := range []string{adty_setting.TopupSettingKeyMethodBonus, adty_setting.TopupSettingKeySiteBonusMarginFill, adty_setting.TopupSettingKeySiteMethodBonus} {
 			value, err := model.LockOptionValueTx(tx, key)
@@ -536,6 +537,7 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 			if err := model.AdtyLockForUpdate(tx).First(&site, ext.SiteId).Error; err != nil {
 				return err
 			}
+			lockedSiteStatus = site.Status
 		}
 		if ext.Provider == model.PaymentProviderAdtyEpay {
 			var channel model.AdtyEpayChannel
@@ -591,7 +593,8 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 		var rule adty_setting.MethodBonusRule
 		authorized, marginAllowed := false, false
 		bonusMethod := AdtyBonusMethod(method)
-		if bonusMethod != "" && ext.TeamId == 0 && !ext.IsOwnerBusiness() {
+		siteActive := ext.SiteId == 0 || lockedSiteStatus == model.AdtySiteStatusActive
+		if bonusMethod != "" && ext.TeamId == 0 && !ext.IsOwnerBusiness() && siteActive {
 			if ext.SiteId == 0 {
 				rule, authorized, err = adty_setting.ParseMainMethodBonus(bonusValues[adty_setting.TopupSettingKeyMethodBonus], bonusMethod)
 			} else {
@@ -601,7 +604,7 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 				return err
 			}
 		}
-		if ext.SiteId > 0 {
+		if ext.SiteId > 0 && siteActive {
 			marginAllowed, err = adty_setting.ParseSiteBonusMarginFillAllowed(bonusValues[adty_setting.TopupSettingKeySiteBonusMarginFill], ext.SiteId)
 			if err != nil {
 				return err
@@ -637,6 +640,9 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 			return err
 		}
 		ext.PaymentScene, ext.PaymentSceneName, ext.PaymentSceneVersion, ext.PaymentSceneSnapshot = scene.Key, scene.Name, config.Version, string(snapshot)
+		if !siteActive {
+			return nil
+		}
 		return ReserveAdtySiteGiftTx(tx, ext, marginAllowed)
 	}
 	return model.CreateAdtyTopUpWithPolicy(topUp, ext, prepare, validate)

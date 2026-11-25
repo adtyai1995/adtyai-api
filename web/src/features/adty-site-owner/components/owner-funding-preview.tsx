@@ -50,7 +50,7 @@ export function OwnerFundingPreviewBox(props: {
       </p>
       {preview.exceedsMax && (
         <p className='text-destructive font-medium'>
-          {t('Amount exceeds the maximum single wallet limit of 10,000,000 USD.')}
+          {t('Amount exceeds the maximum limit of 100,000 USD.')}
         </p>
       )}
       {preview.valid && (

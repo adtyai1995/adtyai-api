@@ -254,6 +254,7 @@ export type BillingSettings = {
   'adty_bepusdt.base_url': string
   'adty_bepusdt.secret': string
   'adty_bepusdt.trade_types': string
+  BEpusdtSecretConfigured: boolean
 }
 
 export type OperationsSettings = {

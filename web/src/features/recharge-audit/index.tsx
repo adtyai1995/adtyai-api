@@ -70,6 +70,7 @@ const STATUSES: AdtyOrderStatus[] = [
   'canceled',
   'failed',
   'refunded',
+  'replaced',
 ]
 
 /** Shared order list; the owner center uses site-scoped read-only endpoints. */

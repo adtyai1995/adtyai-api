@@ -217,13 +217,13 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		return
 	}
 	var body struct {
-		SiteID         int              `json:"site_id"`
-		AmountUSD      string           `json:"amount_usd"`
-		Method         string           `json:"method"`
-		Network        string           `json:"network"`
-		AccountNo      string           `json:"account_no"`
-		AccountName    string           `json:"account_name"`
-		QRImageURL     string           `json:"qr_image_url"`
+		SiteID         int                    `json:"site_id"`
+		AmountUSD      string                 `json:"amount_usd"`
+		Method         string                 `json:"method"`
+		Network        string                 `json:"network"`
+		AccountNo      string                 `json:"account_no"`
+		AccountName    string                 `json:"account_name"`
+		QRImageURL     string                 `json:"qr_image_url"`
 		ExpectedRate   string                 `json:"expected_rate"`
 		ExpectedPayout *common.BoundedDecimal `json:"expected_payout"`
 	}
@@ -248,7 +248,7 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	expected, err := common.ParseBoundedDecimalString(body.ExpectedRate, 6, 6)
+	expected, err := common.ParseBoundedDecimalString(body.ExpectedRate, 12, 8)
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return

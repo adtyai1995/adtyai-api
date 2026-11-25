@@ -20,10 +20,13 @@ import dayjs from '@/lib/dayjs'
 
 import type { VoucherBatchIssued, VoucherBatchItem } from './api'
 
-const DECIMAL_PATTERN = /^\d+(?:\.\d{1,8})?$/
+const DECIMAL_PATTERN = /^\d+(?:\.\d{1,2})?$/
+const STORED_DECIMAL_PATTERN = /^\d+(?:\.\d{1,8})?$/
 const SCALE_DIGITS = 8
 const SCALE = 100_000_000n
 
+export const VOUCHER_MAX_AMOUNT_USD = 100_000
+const MAX_VOUCHER_AMOUNT_UNITS = BigInt(VOUCHER_MAX_AMOUNT_USD) * SCALE
 export const VOUCHER_BATCH_MIN_COUNT = 1
 export const VOUCHER_BATCH_MAX_COUNT = 100
 
@@ -54,9 +57,9 @@ export type NormalizedVoucherBatch = {
   items: NormalizedVoucherBatchItem[]
 }
 
-function parseUnits(raw: string): bigint | null {
+function parseUnits(raw: string, pattern = DECIMAL_PATTERN): bigint | null {
   const trimmed = raw.trim()
-  if (!DECIMAL_PATTERN.test(trimmed)) return null
+  if (!pattern.test(trimmed)) return null
   const [wholePart, fracPart = ''] = trimmed.split('.')
   const paddedFrac = fracPart.slice(0, SCALE_DIGITS).padEnd(SCALE_DIGITS, '0')
   return BigInt(wholePart) * SCALE + BigInt(paddedFrac)
@@ -99,7 +102,10 @@ export function computeVoucherBatchTotal(
   totalAmountUsd: string
 } {
   const unitUnits = parseUnits(amountRaw)
-  const validAmount = unitUnits !== null && unitUnits > 0n
+  const validAmount =
+    unitUnits !== null &&
+    unitUnits > 0n &&
+    unitUnits <= MAX_VOUCHER_AMOUNT_UNITS
   const parsedCount = parseVoucherBatchCount(countRaw)
   const validCount = parsedCount !== null
   const count = parsedCount ?? 0
@@ -166,7 +172,7 @@ export function normalizeVoucherBatchResult(
   if (items.length === 0) return null
 
   const unitAmount = items[0].amount_usd || issued.amount_usd
-  const unitUnits = parseUnits(unitAmount)
+  const unitUnits = parseUnits(unitAmount, STORED_DECIMAL_PATTERN)
   const fallbackTotal =
     unitUnits !== null ? formatUnits(unitUnits * BigInt(items.length)) : unitAmount
 

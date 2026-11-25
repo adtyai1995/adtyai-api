@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -55,13 +56,18 @@ func GetAdtyTopUpInfo(c *gin.Context) {
 	}
 	methodBonusRates := service.AdtyActiveMethodBonusRates(c.GetInt("id"), service.AdtyRequestSiteID(c), business)
 	var pending *model.AdtyTopUpView
+	pendingOrders := make([]model.AdtyTopUpView, 0)
 	ownerSiteID := 0
 	if isOwnerBiz {
 		ownerSiteID = service.ResolveAdtyOwnerTopupSiteID(c.GetInt("id"), service.AdtyRequestSiteID(c))
 	}
-	if business != model.AdtyBusinessTeamTopup {
-		if view, err := model.GetUserPendingAdtyTopUpForBusiness(c.GetInt("id"), time.Now().Unix(), ownerSiteID, business); err == nil {
-			pending = view
+	if business != model.AdtyBusinessTeamTopup && (!isOwnerBiz || ownerSiteID > 0) {
+		if views, err := model.ListUserActivePendingAdtyTopUpViewsForBusiness(c.GetInt("id"), time.Now().Unix(), ownerSiteID, business); err == nil {
+			pendingOrders = views
+			if len(views) > 0 {
+				first := views[0]
+				pending = &first
+			}
 		}
 	}
 	common.ApiSuccess(c, gin.H{
@@ -75,6 +81,7 @@ func GetAdtyTopUpInfo(c *gin.Context) {
 		"usdt_order_minutes": setting.USDTOrderMinutes,
 		"epay_order_minutes": setting.EpayOrderMinutes,
 		"pending":            pending,
+		"pending_orders":     pendingOrders,
 	})
 }
 
@@ -94,6 +101,7 @@ func PostAdtyTopUpQuote(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	req.Method = strings.TrimSpace(req.Method)
 	var (
 		quote *service.AdtyQuote
 		err   error
@@ -218,7 +226,7 @@ func GetAdtyTopUpPending(c *gin.Context) {
 	common.ApiSuccess(c, view)
 }
 
-var listUserAdtyTopUpsFn = model.ListUserAdtyTopUps
+var listUserAdtyTopUpsFilteredFn = model.ListUserAdtyTopUpsFiltered
 
 type adtyTopUpSelfFilter struct {
 	OwnerSiteID    int
@@ -230,32 +238,6 @@ type adtyTopUpSelfFilter struct {
 	Keyword        string
 	StartTimestamp int64
 	EndTimestamp   int64
-}
-
-func (f adtyTopUpSelfFilter) Active() bool {
-	return f.Business != "" || f.Status != "" ||
-		f.PaymentMethod != "" ||
-		f.PaymentScene != "" ||
-		f.TradeNo != "" ||
-		f.Keyword != "" ||
-		f.StartTimestamp > 0 ||
-		f.EndTimestamp > 0
-}
-
-type adtyTopUpFilterRow struct {
-	UserID          int    `json:"user_id"`
-	TradeNo         string `json:"trade_no"`
-	PaymentMethod   string `json:"payment_method"`
-	PaymentProvider string `json:"payment_provider"`
-	Status          string `json:"status"`
-	CreateTime      int64  `json:"create_time"`
-	Ext             *struct {
-		Method           string `json:"method"`
-		MethodLabel      string `json:"method_label"`
-		PaymentScene     string `json:"payment_scene"`
-		PaymentSceneName string `json:"payment_scene_name"`
-		GatewayTradeID   string `json:"gateway_trade_id"`
-	} `json:"ext"`
 }
 
 func firstAdtyQuery(c *gin.Context, keys ...string) string {
@@ -312,6 +294,12 @@ func normalizeAdtyOrderStatus(s string) string {
 }
 
 func parseAdtyTopUpSelfFilter(c *gin.Context) (adtyTopUpSelfFilter, error) {
+	business := strings.TrimSpace(c.Query("business"))
+	if business == "" {
+		business = model.AdtyBusinessWalletTopup
+	} else if strings.EqualFold(business, "all") {
+		business = ""
+	}
 	status := strings.TrimSpace(c.Query("status"))
 	if strings.EqualFold(status, "all") {
 		status = ""
@@ -338,8 +326,8 @@ func parseAdtyTopUpSelfFilter(c *gin.Context) (adtyTopUpSelfFilter, error) {
 		return adtyTopUpSelfFilter{}, fmt.Errorf("start timestamp after end timestamp")
 	}
 	return adtyTopUpSelfFilter{
-		Business:       strings.TrimSpace(c.Query("business")),
-		Status:         status,
+		Business:       business,
+		Status:         normalizeAdtyOrderStatus(status),
 		PaymentMethod:  paymentMethod,
 		PaymentScene:   paymentScene,
 		TradeNo:        tradeNo,
@@ -349,140 +337,7 @@ func parseAdtyTopUpSelfFilter(c *gin.Context) (adtyTopUpSelfFilter, error) {
 	}, nil
 }
 
-func matchAdtyTopUpSelfFilter(userID int, item model.AdtyTopUpView, filter adtyTopUpSelfFilter) bool {
-	if filter.OwnerSiteID != 0 && (item.Ext == nil || item.Ext.SiteId != filter.OwnerSiteID) {
-		return false
-	}
-	if filter.Business != "" {
-		effectiveBusiness := ""
-		if item.Ext != nil {
-			effectiveBusiness = item.Ext.Business
-			if item.Ext.Provider == model.AdtyVoucherProvider && item.Ext.Method == model.AdtyVoucherPurposeSiteMargin {
-				effectiveBusiness = model.AdtyBusinessOwnerMarginTopup
-			}
-		}
-		if effectiveBusiness != filter.Business {
-			return false
-		}
-	}
-	raw, err := common.Marshal(item)
-	if err != nil {
-		return false
-	}
-	var row adtyTopUpFilterRow
-	if err := common.Unmarshal(raw, &row); err != nil {
-		return false
-	}
-	if row.UserID != 0 && row.UserID != userID {
-		return false
-	}
-	if filter.Status != "" && normalizeAdtyOrderStatus(row.Status) != normalizeAdtyOrderStatus(filter.Status) {
-		return false
-	}
-	if filter.PaymentMethod != "" {
-		wantMethod := strings.ToLower(filter.PaymentMethod)
-		gotMethod := strings.ToLower(row.PaymentMethod)
-		extMethod := ""
-		extLabel := ""
-		if row.Ext != nil {
-			extMethod = strings.ToLower(row.Ext.Method)
-			extLabel = strings.ToLower(row.Ext.MethodLabel)
-		}
-		methodMatched := gotMethod == wantMethod ||
-			extMethod == wantMethod ||
-			(extLabel != "" && extLabel == wantMethod) ||
-			(wantMethod == "usdt" && (strings.HasPrefix(gotMethod, "usdt.") || strings.HasPrefix(extMethod, "usdt.") || strings.EqualFold(row.PaymentProvider, service.AdtyProviderBEpusdt)))
-		if !methodMatched {
-			return false
-		}
-	}
-	if filter.PaymentScene != "" {
-		if row.Ext == nil {
-			return false
-		}
-		if !strings.EqualFold(row.Ext.PaymentScene, filter.PaymentScene) &&
-			!strings.EqualFold(row.Ext.PaymentSceneName, filter.PaymentScene) {
-			return false
-		}
-	}
-	if filter.TradeNo != "" && !strings.Contains(strings.ToLower(row.TradeNo), strings.ToLower(filter.TradeNo)) {
-		return false
-	}
-	if filter.Keyword != "" {
-		kw := strings.ToLower(filter.Keyword)
-		candidates := []string{
-			row.TradeNo,
-			row.PaymentMethod,
-			row.PaymentProvider,
-			row.Status,
-		}
-		if row.Ext != nil {
-			candidates = append(
-				candidates,
-				row.Ext.Method,
-				row.Ext.MethodLabel,
-				row.Ext.PaymentScene,
-				row.Ext.PaymentSceneName,
-				row.Ext.GatewayTradeID,
-			)
-		}
-		matchedKeyword := false
-		for _, candidate := range candidates {
-			if candidate != "" && strings.Contains(strings.ToLower(candidate), kw) {
-				matchedKeyword = true
-				break
-			}
-		}
-		if !matchedKeyword {
-			return false
-		}
-	}
-	if filter.StartTimestamp > 0 && row.CreateTime < filter.StartTimestamp {
-		return false
-	}
-	if filter.EndTimestamp > 0 && row.CreateTime > filter.EndTimestamp {
-		return false
-	}
-	return true
-}
-
-func newAdtyScanPageInfo(page, pageSize int) *common.PageInfo {
-	var info common.PageInfo
-	raw, _ := common.Marshal(map[string]int{
-		"page":      page,
-		"page_size": pageSize,
-	})
-	_ = common.Unmarshal(raw, &info)
-	return &info
-}
-
-func collectUserAdtyTopUpsForFilter(userID int) ([]model.AdtyTopUpView, error) {
-	const batchSize = 500
-	firstPage := newAdtyScanPageInfo(1, batchSize)
-	items, total, err := listUserAdtyTopUpsFn(userID, firstPage)
-	if err != nil {
-		return nil, err
-	}
-	if int(total) <= len(items) || len(items) == 0 {
-		return items, nil
-	}
-	all := make([]model.AdtyTopUpView, 0, int(total))
-	all = append(all, items...)
-	for page := 2; len(all) < int(total); page++ {
-		nextPage := newAdtyScanPageInfo(page, batchSize)
-		batch, _, err := listUserAdtyTopUpsFn(userID, nextPage)
-		if err != nil {
-			return nil, err
-		}
-		if len(batch) == 0 {
-			break
-		}
-		all = append(all, batch...)
-	}
-	return all, nil
-}
-
-// GetAdtyTopUpSelf 分页列出本人的充值记录，支持按状态、支付方式、订单号、关键字与时间范围筛选。
+// GetAdtyTopUpSelf 分页列出本人的充值记录，支持按业务域、状态、支付方式、订单号、关键字与时间范围在 SQL 层筛选。
 func GetAdtyTopUpSelf(c *gin.Context) {
 	userID := c.GetInt("id")
 	pageInfo := common.GetPageQuery(c)
@@ -497,40 +352,59 @@ func GetAdtyTopUpSelf(c *gin.Context) {
 			filter.OwnerSiteID = -1
 		}
 	}
-	if !filter.Active() {
-		items, total, err := listUserAdtyTopUpsFn(userID, pageInfo)
-		if err != nil {
-			writeAdtyTopUpError(c, err)
-			return
-		}
-		pageInfo.SetTotal(int(total))
-		pageInfo.SetItems(items)
-		common.ApiSuccess(c, pageInfo)
-		return
-	}
-	allItems, err := collectUserAdtyTopUpsForFilter(userID)
+	items, total, err := listUserAdtyTopUpsFilteredFn(userID, model.AdtyUserTopUpListFilter{
+		OwnerSiteID:    filter.OwnerSiteID,
+		Business:       filter.Business,
+		Status:         filter.Status,
+		Method:         filter.PaymentMethod,
+		PaymentScene:   filter.PaymentScene,
+		TradeNo:        filter.TradeNo,
+		Keyword:        filter.Keyword,
+		StartTimestamp: filter.StartTimestamp,
+		EndTimestamp:   filter.EndTimestamp,
+		Offset:         pageInfo.GetStartIdx(),
+		Limit:          pageInfo.GetPageSize(),
+	})
 	if err != nil {
 		writeAdtyTopUpError(c, err)
 		return
 	}
-	matched := make([]model.AdtyTopUpView, 0, len(allItems))
-	for _, item := range allItems {
-		if matchAdtyTopUpSelfFilter(userID, item, filter) {
-			matched = append(matched, item)
-		}
-	}
-	start := pageInfo.GetStartIdx()
-	pageSize := pageInfo.GetPageSize()
-	var pageItems []model.AdtyTopUpView
-	if start >= 0 && start < len(matched) {
-		end := start + min(pageSize, len(matched)-start)
-		pageItems = matched[start:end]
-	} else {
-		pageItems = make([]model.AdtyTopUpView, 0)
-	}
-	pageInfo.SetTotal(len(matched))
-	pageInfo.SetItems(pageItems)
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(items)
 	common.ApiSuccess(c, pageInfo)
+}
+
+var (
+	adtyUserCheckoutLocks     sync.Map
+	adtyUserCheckoutLockGuard sync.Mutex
+)
+
+// lockAdtyUserCheckout serializes per-user checkout reuse checks and order creation
+// so concurrent clicks cannot race past pending reuse or the active pending cap.
+func lockAdtyUserCheckout(userID int) func() {
+	adtyUserCheckoutLockGuard.Lock()
+	var rcm *refCountedMutex
+	if v, ok := adtyUserCheckoutLocks.Load(userID); ok {
+		rcm = v.(*refCountedMutex)
+	} else {
+		rcm = &refCountedMutex{}
+		adtyUserCheckoutLocks.Store(userID, rcm)
+	}
+	rcm.refCount++
+	adtyUserCheckoutLockGuard.Unlock()
+	rcm.mu.Lock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			rcm.mu.Unlock()
+			adtyUserCheckoutLockGuard.Lock()
+			rcm.refCount--
+			if rcm.refCount == 0 {
+				adtyUserCheckoutLocks.Delete(userID)
+			}
+			adtyUserCheckoutLockGuard.Unlock()
+		})
+	}
 }
 
 // adtyOrderDraft 是下单时要的数据，P4 和 P5 共用 createAdtyOrder。
@@ -556,7 +430,7 @@ func newAdtyTradeNo(prefix string, userID int) (string, error) {
 }
 
 const (
-	maxActivePendingAdtyTopUps  = 10
+	maxActivePendingAdtyTopUps  = model.MaxActivePendingAdtyTopUps
 	reusablePendingMinRemaining = int64(60)
 )
 
@@ -564,6 +438,7 @@ type adtyPendingReuseFilter struct {
 	paymentScene     string
 	provider         string
 	method           string
+	device           string
 	quote            *service.AdtyQuote
 	requestedChannel int
 	allowedChannels  []int
@@ -597,6 +472,10 @@ func findReusablePendingOrCheckCap(c *gin.Context, filter adtyPendingReuseFilter
 			expectedSiteID = site.Id
 		}
 	}
+	device := filter.device
+	if device != "mobile" {
+		device = "pc"
+	}
 	for i := range pendingList {
 		ext := &pendingList[i]
 		if !adtyPendingOrderReusable(ext, filter, expectedSiteID, now) {
@@ -609,12 +488,42 @@ func findReusablePendingOrCheckCap(c *gin.Context, filter adtyPendingReuseFilter
 			}
 			return nil, err
 		}
-		if view != nil && view.Status == common.TopUpStatusPending && view.Ext != nil && view.Ext.ExpireAt > now+reusablePendingMinRemaining {
-			return view, nil
+		if view == nil || view.Status != common.TopUpStatusPending || view.Ext == nil || view.Ext.ExpireAt <= now+reusablePendingMinRemaining {
+			continue
 		}
+		if view.Ext.Provider == model.PaymentProviderAdtyEpay && view.Ext.ChannelId > 0 {
+			channel, chErr := model.GetAdtyEpayChannel(view.Ext.ChannelId)
+			if chErr == nil && channel != nil && channel.IsRSA() && channel.OrderMode == model.AdtyEpayOrderModeSubmit {
+				chMethod := channel.MethodFor(view.Ext.Method)
+				if chMethod == nil {
+					continue
+				}
+				callback := strings.TrimRight(service.GetCallbackAddress(), "/")
+				newPayURL, refreshed, refreshErr := service.RefreshAdtyEpaySubmitURL(channel, chMethod, service.AdtyEpayCreateRequest{
+					TradeNo:   view.Ext.TradeNo,
+					Name:      "Top-up " + view.Ext.TradeNo,
+					ClientIP:  c.ClientIP(),
+					Device:    device,
+					MoneyCNY:  view.Ext.PayAmount,
+					NotifyURL: callback + "/api/user/epay/notify/" + strconv.Itoa(channel.Id),
+					ReturnURL: service.AdtyPayResultURLForHost(view.Ext.TradeNo, view.Ext.Business == model.AdtyBusinessOwnerMarginTopup && service.AdtyRequestSiteID(c) == 0),
+				}, view.Ext.PayURL)
+				if refreshErr != nil {
+					common.SysLog(common.LogText("refresh reusable epay submit url failed trade_no=%s: %s", view.Ext.TradeNo, refreshErr.Error()))
+					continue
+				}
+				if refreshed && newPayURL != "" {
+					if err := model.UpdateAdtyTopupOrderFields(view.Ext.TradeNo, map[string]any{"pay_url": newPayURL}); err != nil {
+						return nil, err
+					}
+					view.Ext.PayURL = newPayURL
+				}
+			}
+		}
+		return view, nil
 	}
 	if len(pendingList) >= maxActivePendingAdtyTopUps {
-		return nil, common.NewMessage("Too many pending payment orders. Please complete or cancel an existing order first")
+		return nil, model.ErrAdtyTooManyPendingOrders
 	}
 	return nil, nil
 }
@@ -697,24 +606,25 @@ func createAdtyOrder(c *gin.Context, draft adtyOrderDraft) (*model.TopUp, *model
 		Status:          common.TopUpStatusPending,
 	}
 	ext := &model.AdtyTopupOrder{
-		Business:        quote.Business,
-		TradeNo:         tradeNo,
-		UserId:          userID,
-		Provider:        draft.provider,
-		Method:          draft.method,
-		BonusMethod:     service.AdtyBonusMethod(draft.method),
-		BonusExpiresAt:  0,
-		FaceUSD:         quote.FaceUSD,
-		BonusRate:       quote.BonusRate,
-		BonusUSD:        quote.BonusUSD,
-		CreditQuota:     quote.CreditQuota,
-		PayAmount:       quote.PayAmount,
-		PayCurrency:     quote.PayCurrency,
-		PriceSnapshot:   quote.PriceCNYPerUSD,
-		TopupGroupRatio: quote.TopupGroupRatio,
-		ExpireAt:        draft.expireAt,
-		ChannelId:       draft.channelID,
-		MethodLabel:     draft.methodLabel,
+		Business:         quote.Business,
+		TradeNo:          tradeNo,
+		UserId:           userID,
+		Provider:         draft.provider,
+		Method:           draft.method,
+		BonusMethod:      service.AdtyBonusMethod(draft.method),
+		BonusExpiresAt:   0,
+		FaceUSD:          quote.FaceUSD,
+		BonusRate:        quote.BonusRate,
+		BonusUSD:         quote.BonusUSD,
+		CreditQuota:      quote.CreditQuota,
+		PayAmount:        quote.PayAmount,
+		PayCurrency:      quote.PayCurrency,
+		PriceSnapshot:    quote.PriceCNYPerUSD,
+		TopupGroupRatio:  quote.TopupGroupRatio,
+		ExpireAt:         draft.expireAt,
+		ChannelId:        draft.channelID,
+		MethodLabel:      draft.methodLabel,
+		MaxActivePending: maxActivePendingAdtyTopUps,
 	}
 	if quote.Business == model.AdtyBusinessOwnerSelfUseTopup || quote.Business == model.AdtyBusinessOwnerMarginTopup {
 		ext.SiteId = quote.SiteID

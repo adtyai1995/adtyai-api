@@ -429,11 +429,12 @@ export async function getAdminGiftFulfillments(
 
 export async function reviewAdminGiftFulfillment(
   id: number,
-  body: { action: 'approve' | 'reject'; note: string }
+  body: { action: 'approve' | 'reject'; note: string },
+  proofToken?: string
 ) {
   const res = await api.post<
     ApiResponse<{ item: GiftFulfillment; fulfilled: boolean }>
-  >(`/api/adty/admin/gift-fulfillments/${id}/review`, body)
+  >(`/api/adty/admin/gift-fulfillments/${id}/review`, body, proofHeaders(proofToken))
   return requireServerSuccess(res.data).data
 }
 

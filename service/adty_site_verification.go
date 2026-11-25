@@ -150,7 +150,7 @@ func normalizeAdtyOwnerWithdrawalDigestInput(in AdtyOwnerWithdrawalDigestInput) 
 		amt = d.String()
 	}
 	rate := strings.TrimSpace(in.ExpectedRate)
-	if d, err := common.ParseBoundedDecimalString(rate, 6, 6); err == nil {
+	if d, err := common.ParseBoundedDecimalString(rate, 12, 8); err == nil {
 		rate = d.String()
 	}
 	method := strings.ToLower(strings.TrimSpace(in.Method))

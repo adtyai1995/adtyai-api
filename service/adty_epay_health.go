@@ -38,8 +38,16 @@ var (
 	adtyEpayProbe = ProbeAdtyEpayChannel
 )
 
+func adtyEpayChannelHTTPSQueryable(channel *model.AdtyEpayChannel) bool {
+	if channel == nil || channel.Status == model.AdtyEpayStatusRevoked || strings.TrimSpace(channel.MerchantId) == "" || !channel.HasCredentials() {
+		return false
+	}
+	endpoint, err := url.Parse(strings.TrimSpace(channel.GatewayURL))
+	return err == nil && endpoint != nil && endpoint.Scheme == "https" && endpoint.Host != "" && endpoint.User == nil
+}
+
 // runAdtyEpayFollowUpQueries 找下单超过 query_after_seconds、距上次查询超过 1 分钟的易支付订单去查单。
-// 未过期的 pending，以及过期后仍在 expired_query_seconds 内的 expired，都会查。
+// 未过期的 pending、过期后仍在 expired_query_seconds 内的 expired、以及宽限窗口内的 canceled/failed 订单都会查。
 // 与手动补查共用 provider Query 核验订单、商户及付款凭据；只对 https 网关这样入账。
 func runAdtyEpayFollowUpQueries(now int64) {
 	after := int64(adty_setting.GetEpaySetting().QueryAfterSeconds)
@@ -50,23 +58,35 @@ func runAdtyEpayFollowUpQueries(now int64) {
 	if grace < 0 {
 		grace = 0
 	}
+	canceledFailedWindow := max(grace, int64(3600))
 	var exts []model.AdtyTopupOrder
 	err := model.DB.Table("adty_topup_orders AS a").Select("a.*").
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
-		Where(`a.provider = ? AND a.created_at <= ? AND a.last_query_at <= ? AND (
+		Where(`a.provider = ? AND a.channel_id > 0 AND a.created_at <= ? AND a.last_query_at <= ? AND (
 			(t.status = ? AND (a.expire_at > ? OR (a.expire_at <= ? AND a.expire_at > ?))) OR
 			(t.status = ? AND a.expire_at <= ? AND a.expire_at > ?) OR
-      (a.team_id>0 AND t.status IN ? AND (a.expire_at=0 OR (a.expire_at<=? AND a.last_query_at<a.expire_at)))
+			(t.status IN ? AND a.created_at >= ?) OR
+			(a.team_id>0 AND t.status IN ? AND (a.expire_at=0 OR (a.expire_at<=? AND a.last_query_at<a.expire_at)))
 		)`,
 			model.PaymentProviderAdtyEpay, now-after, now-60,
 			common.TopUpStatusPending, now, now, now-grace,
-			common.TopUpStatusExpired, now, now-grace, []string{common.TopUpStatusPending, common.TopUpStatusExpired}, now).
+			common.TopUpStatusExpired, now, now-grace,
+			[]string{model.TopUpStatusCanceled, common.TopUpStatusFailed}, now-canceledFailedWindow,
+			[]string{common.TopUpStatusPending, common.TopUpStatusExpired}, now).
 		Order("a.last_query_at, a.id").Limit(50).Scan(&exts).Error
 	if err != nil {
 		common.SysError(common.LogText("epay follow-up query scan: %s", err.Error()))
 		return
 	}
 	for _, ext := range exts {
+		if ext.ChannelId <= 0 {
+			continue
+		}
+		channel, chErr := model.GetAdtyEpayChannel(ext.ChannelId)
+		if chErr != nil || channel == nil || strings.TrimSpace(channel.GatewayURL) == "" {
+			continue
+		}
+		httpsQueryable := adtyEpayChannelHTTPSQueryable(channel)
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		facts, err := (adtyEpayProvider{}).Query(ctx, &ext)
 		cancel()
@@ -79,8 +99,12 @@ func runAdtyEpayFollowUpQueries(now int64) {
 			err = nil
 		}
 		finalTeamCheck := ext.TeamId > 0 && (legacy || now >= deadline)
-		if err != nil && finalTeamCheck {
-			if reviewErr := model.RecordPaymentOrphanEvent(&model.PaymentOrphanEvent{Provider: ext.Provider, EventType: "team_payment_query", ReferenceID: ext.TradeNo, SessionID: ext.GatewayTradeId, Reason: "Team payment could not be verified", Error: err.Error()}); reviewErr != nil {
+		if err != nil && finalTeamCheck && httpsQueryable {
+			if reviewErr := model.RecordPaymentOrphanEvent(&model.PaymentOrphanEvent{
+				Provider: ext.Provider, EventID: "team-query:" + ext.TradeNo, EventType: "team_payment_query",
+				ReferenceID: ext.TradeNo, SessionID: ext.GatewayTradeId,
+				Reason: "Team payment could not be verified", Error: err.Error(),
+			}); reviewErr != nil {
 				continue
 			}
 		}
@@ -112,7 +136,9 @@ func runAdtyEpayFollowUpQueries(now int64) {
 					return txErr
 				}
 				return tx.Model(&model.PaymentOrphanEvent{}).
-					Where("event_id = ? AND status = ?", "epay-query:"+ext.TradeNo, model.PaymentOrphanStatusPendingReview).
+					Where("event_id IN ? AND status = ?",
+						[]string{"hosted-query:" + ext.TradeNo, "epay-query:" + ext.TradeNo, "team-query:" + ext.TradeNo},
+						model.PaymentOrphanStatusPendingReview).
 					Updates(map[string]any{
 						"status":          model.PaymentOrphanStatusCredited,
 						"resolution":      model.PaymentOrphanStatusCredited,
@@ -126,6 +152,10 @@ func runAdtyEpayFollowUpQueries(now int64) {
 				if isPermanentAdtyTopUpCreditReject(creditErr) {
 					encodedFacts, _ := common.Marshal(facts)
 					if reviewErr := adtyQueuePaymentReview(ext.TradeNo, facts.GatewayTradeId, creditErr.Error(), string(encodedFacts)); reviewErr != nil {
+						continue
+					}
+					if recordErr := model.RecordAdtyPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, "rejected", 0); recordErr != nil {
+						common.SysError("payment attempt history could not be recorded")
 						continue
 					}
 				} else {
@@ -144,7 +174,7 @@ func runAdtyEpayFollowUpQueries(now int64) {
 func adtyQueuePaymentReview(tradeNo, sessionID, cause, payload string) error {
 	if err := model.RecordPaymentOrphanEvent(&model.PaymentOrphanEvent{
 		Provider:    model.PaymentProviderAdtyEpay,
-		EventID:     "epay-query:" + tradeNo,
+		EventID:     "hosted-query:" + tradeNo,
 		EventType:   "payment_query",
 		ReferenceID: tradeNo,
 		SessionID:   sessionID,
@@ -391,11 +421,8 @@ func init() {
 		}
 		countAdtyEpayUnpaid(tradeNos)
 	}
-	AdtyCanceledHook = func(ext *model.AdtyTopupOrder) {
-		if ext != nil {
-			countAdtyEpayUnpaid([]string{ext.TradeNo})
-		}
-	}
+	// Do NOT increment unpaid_streak on user-initiated cancellations (AdtyCanceledHook)
+	// so a single user cannot push healthy channels into maintenance via repeated cancel DoS.
 	model.AdtyAfterTopUpCompleted = func(topUp *model.TopUp, ext *model.AdtyTopupOrder) {
 		resetAdtyEpayUnpaid(topUp, ext)
 		if ext != nil && ext.IsOwnerMargin() && ext.SiteId > 0 {

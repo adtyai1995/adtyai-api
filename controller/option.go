@@ -166,14 +166,53 @@ func readCurrentOptionRawValueLocked(tx *gorm.DB, key string) (string, error) {
 }
 
 func readCurrentOptionRawValue(db *gorm.DB, key string) string {
+	if raw, ok := readCurrentOptionRow(db, key); ok {
+		return raw
+	}
+	return readOptionFallbackFromMap(key)
+}
+
+func readCurrentOptionRow(db *gorm.DB, key string) (string, bool) {
 	if db != nil && db.Migrator().HasTable(&model.Option{}) {
 		var row model.Option
 		lookup := db.Where(&model.Option{Key: key}).Limit(1).Find(&row)
 		if lookup.Error == nil && lookup.RowsAffected > 0 {
-			return row.Value
+			return row.Value, true
 		}
 	}
-	return readOptionFallbackFromMap(key)
+	return "", false
+}
+
+func isBEpusdtCurrentlyEnabled() bool {
+	if raw, ok := readCurrentOptionRow(model.DB, setting.BEpusdtOptionKeyEnabled); ok {
+		return strings.EqualFold(strings.TrimSpace(raw), "true")
+	}
+	return setting.GetBEpusdtSetting().Enabled
+}
+
+func effectiveBEpusdtConfigForValidation() (baseURL string, hasSecret bool, tradeTypes []string) {
+	cfg := setting.GetBEpusdtSetting()
+	baseURL = cfg.BaseURL
+	if raw, ok := readCurrentOptionRow(model.DB, setting.BEpusdtOptionKeyBaseURL); ok {
+		baseURL = raw
+	} else if strings.TrimSpace(baseURL) == "" {
+		baseURL = readOptionFallbackFromMap(setting.BEpusdtOptionKeyBaseURL)
+	}
+	if raw, ok := readCurrentOptionRow(model.DB, setting.BEpusdtOptionKeySecret); ok {
+		hasSecret = strings.TrimSpace(raw) != ""
+	} else {
+		hasSecret = strings.TrimSpace(cfg.Secret) != "" || strings.TrimSpace(readOptionFallbackFromMap(setting.BEpusdtOptionKeySecret)) != ""
+	}
+	tradeTypes = cfg.TradeTypes
+	if raw, ok := readCurrentOptionRow(model.DB, setting.BEpusdtOptionKeyTradeTypes); ok {
+		var parsed []string
+		if err := common.UnmarshalJsonStr(raw, &parsed); err == nil {
+			tradeTypes = parsed
+		} else {
+			tradeTypes = nil
+		}
+	}
+	return baseURL, hasSecret, tradeTypes
 }
 
 func isGroupConfigOptionKey(key string) bool {
@@ -267,7 +306,7 @@ func GetOptions(c *gin.Context) {
 	optionValues := make(map[string]string)
 	common.OptionMapRWMutex.RLock()
 	for k, v := range common.OptionMap {
-		if strings.HasPrefix(k, "model_deployment.") || k == "theme.frontend" || k == "billing_setting.billing_mode" || k == "billing_setting.billing_expr" || k == "ResendKeyConfigured" || k == "TurnstileSecretConfigured" || isRetiredOptionKey(k) {
+		if strings.HasPrefix(k, "model_deployment.") || k == "theme.frontend" || k == "billing_setting.billing_mode" || k == "billing_setting.billing_expr" || k == "ResendKeyConfigured" || k == "TurnstileSecretConfigured" || k == "BEpusdtSecretConfigured" || isRetiredOptionKey(k) {
 			continue
 		}
 		value := common.Interface2String(v)
@@ -286,6 +325,8 @@ func GetOptions(c *gin.Context) {
 		Key: "ResendKeyConfigured", Value: strconv.FormatBool(strings.TrimSpace(common.OptionMap["ResendApiKey"]) != ""),
 	}, &model.Option{
 		Key: "TurnstileSecretConfigured", Value: strconv.FormatBool(strings.TrimSpace(common.OptionMap["TurnstileSecretKey"]) != ""),
+	}, &model.Option{
+		Key: "BEpusdtSecretConfigured", Value: strconv.FormatBool(strings.TrimSpace(common.OptionMap[setting.BEpusdtOptionKeySecret]) != ""),
 	})
 	common.OptionMapRWMutex.RUnlock()
 	// Display the same effective expressions used by pricing and settlement,
@@ -600,6 +641,39 @@ func UpdateOption(c *gin.Context) {
 			}
 		}
 		option.Value = rawURL
+	case "BEpusdtSecretConfigured":
+		common.ApiErrorT(c, "BEpusdt secret configuration status is read-only")
+		return
+	case adty_setting.TopupSettingKeyUSDTOrderMinutes:
+		normalized, valErr := adty_setting.ValidateUSDTOrderMinutes(option.Value.(string))
+		if valErr != nil {
+			common.ApiError(c, valErr)
+			return
+		}
+		option.Value = normalized
+	case adty_setting.TopupSettingKeyEpayOrderMinutes:
+		normalized, valErr := adty_setting.ValidateEpayOrderMinutes(option.Value.(string))
+		if valErr != nil {
+			common.ApiError(c, valErr)
+			return
+		}
+		option.Value = normalized
+	case setting.BEpusdtOptionKeyBaseURL:
+		normalized, valErr := setting.ValidateBEpusdtBaseURL(option.Value.(string))
+		if valErr != nil {
+			common.ApiError(c, valErr)
+			return
+		}
+		option.Value = normalized
+	case setting.BEpusdtOptionKeyTradeTypes:
+		normalized, valErr := setting.ValidateBEpusdtTradeTypes(option.Value.(string))
+		if valErr != nil {
+			common.ApiError(c, valErr)
+			return
+		}
+		option.Value = normalized
+	case setting.BEpusdtOptionKeySecret:
+		option.Value = strings.TrimSpace(option.Value.(string))
 	case "console_setting.uptime_kuma_groups":
 		err = console_setting.ValidateConsoleSettings(option.Value.(string), "UptimeKumaGroups")
 		if err != nil {
@@ -740,6 +814,33 @@ func UpdateOption(c *gin.Context) {
 			if err = service.ValidateMainSiteDomainSeparation(system_setting.GetServerAddress(), valueStr); err != nil {
 				common.ApiError(c, err)
 				return
+			}
+		case setting.BEpusdtOptionKeyEnabled:
+			if strings.EqualFold(strings.TrimSpace(valueStr), "true") {
+				baseURL, hasSecret, tradeTypes := effectiveBEpusdtConfigForValidation()
+				validatedURL, urlErr := setting.ValidateBEpusdtBaseURL(baseURL)
+				if urlErr != nil || validatedURL == "" || !hasSecret || !setting.BEpusdtHasValidTradeType(tradeTypes) {
+					common.ApiErrorT(c, "Cannot enable USDT payments. Configure a valid gateway URL, API secret, and at least one supported chain first.")
+					return
+				}
+			}
+		case setting.BEpusdtOptionKeyBaseURL:
+			if isBEpusdtCurrentlyEnabled() && strings.TrimSpace(valueStr) == "" {
+				common.ApiErrorT(c, "Cannot clear the BEpusdt gateway URL while USDT payments are enabled.")
+				return
+			}
+		case setting.BEpusdtOptionKeySecret:
+			if isBEpusdtCurrentlyEnabled() && strings.TrimSpace(valueStr) == "" {
+				common.ApiErrorT(c, "Cannot clear the BEpusdt API secret while USDT payments are enabled.")
+				return
+			}
+		case setting.BEpusdtOptionKeyTradeTypes:
+			if isBEpusdtCurrentlyEnabled() {
+				var parsed []string
+				if err := common.UnmarshalJsonStr(valueStr, &parsed); err != nil || !setting.BEpusdtHasValidTradeType(parsed) {
+					common.ApiErrorT(c, "At least one supported USDT chain must remain enabled while USDT payments are enabled.")
+					return
+				}
 			}
 		}
 		err = model.UpdateOptionWithAudit(option.Key, valueStr, auditEvent, func(beforeRaw string) model.AuditLog {

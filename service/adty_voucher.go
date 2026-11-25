@@ -71,6 +71,8 @@ var (
 	ErrAdtyVoucherFrozen         = common.NewMessage("Voucher code is frozen")
 	ErrAdtyVoucherCancelled      = common.NewMessage("Voucher code is cancelled")
 	ErrAdtyVoucherWrongAccount   = common.NewMessage("This voucher cannot be used on this account")
+	ErrAdtyVoucherDenied         = common.NewMessage("Please redeem margin vouchers from Site Owner Wallets")
+	ErrAdtyVoucherMarginOnly     = common.NewMessage("Only margin vouchers can be redeemed from Site Owner Wallets")
 	ErrAdtyVoucherLimit          = common.NewMessage("Issuance limit is not configured")
 	ErrAdtyVoucherFunds          = common.NewMessage("Insufficient available funds")
 	ErrAdtyVoucherRate           = common.NewMessage("Too many voucher attempts. Try again later")
@@ -868,6 +870,23 @@ func adtyVoucherIntentMatches(existing model.AdtyVoucher, input AdtyVoucherIssue
 }
 
 func RedeemAdtyVoucher(userId int, code string) (*AdtyVoucherRedeemed, error) {
+	return RedeemAdtyVoucherWithScope(userId, 0, code, nil)
+}
+
+func checkAdtyVoucherPurposeScope(purpose string, allowedPurposes []string) error {
+	if len(allowedPurposes) == 0 {
+		return nil
+	}
+	if slices.Contains(allowedPurposes, purpose) {
+		return nil
+	}
+	if purpose == model.AdtyVoucherPurposeSiteMargin {
+		return ErrAdtyVoucherDenied
+	}
+	return ErrAdtyVoucherMarginOnly
+}
+
+func RedeemAdtyVoucherWithScope(userId, requestSiteID int, code string, allowedPurposes []string) (*AdtyVoucherRedeemed, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	if userId <= 0 || len(code) < 8 || len(code) > 64 {
 		return nil, ErrAdtyVoucherInvalid
@@ -881,7 +900,7 @@ func RedeemAdtyVoucher(userId int, code string) (*AdtyVoucherRedeemed, error) {
 	var marginResumedSiteID int
 	var err error
 	for attempt := 0; attempt < adtyVoucherTradeNoAttempts; attempt++ {
-		result, credit, marginResumedSiteID, err = redeemAdtyVoucherOnce(userId, hash, attempt)
+		result, credit, marginResumedSiteID, err = redeemAdtyVoucherOnce(userId, requestSiteID, hash, attempt, allowedPurposes)
 		if err == nil {
 			break
 		}
@@ -889,7 +908,7 @@ func RedeemAdtyVoucher(userId int, code string) (*AdtyVoucherRedeemed, error) {
 			noteAdtyVoucherGuess(userId, time.Now().Unix())
 			return nil, err
 		}
-		replay, lookErr := loadAdtyVoucherRedeemReplay(userId, hash)
+		replay, lookErr := loadAdtyVoucherRedeemReplay(userId, requestSiteID, hash, allowedPurposes)
 		if lookErr != nil {
 			noteAdtyVoucherGuess(userId, time.Now().Unix())
 			return nil, lookErr
@@ -920,7 +939,7 @@ func RedeemAdtyVoucher(userId int, code string) (*AdtyVoucherRedeemed, error) {
 	return result, nil
 }
 
-func redeemAdtyVoucherOnce(userId int, hash string, attempt int) (*AdtyVoucherRedeemed, int64, int, error) {
+func redeemAdtyVoucherOnce(userId, requestSiteID int, hash string, attempt int, allowedPurposes []string) (*AdtyVoucherRedeemed, int64, int, error) {
 	var result *AdtyVoucherRedeemed
 	var credit int64
 	var voucherHint model.AdtyVoucher
@@ -967,6 +986,12 @@ func redeemAdtyVoucherOnce(userId int, hash string, attempt int) (*AdtyVoucherRe
 		}
 		if voucher.Status == model.AdtyVoucherStatusRedeemed {
 			if voucher.RedeemerId == user.Id {
+				if requestSiteID > 0 && voucher.Purpose == model.AdtyVoucherPurposeSiteMargin && voucher.TargetSiteId != requestSiteID {
+					return ErrAdtyVoucherWrongAccount
+				}
+				if err := checkAdtyVoucherPurposeScope(voucher.Purpose, allowedPurposes); err != nil {
+					return err
+				}
 				result = &AdtyVoucherRedeemed{TradeNo: voucher.TradeNo, Purpose: voucher.Purpose, AmountUSD: voucher.AmountUSD, Quota: voucher.Quota, Replayed: true}
 				return nil
 			}
@@ -982,6 +1007,12 @@ func redeemAdtyVoucherOnce(userId int, hash string, attempt int) (*AdtyVoucherRe
 			return ErrAdtyVoucherInvalid
 		}
 		if err := adtyVoucherRedeemAllowed(tx, user, &voucher, lockedSite); err != nil {
+			return err
+		}
+		if requestSiteID > 0 && voucher.Purpose == model.AdtyVoucherPurposeSiteMargin && voucher.TargetSiteId != requestSiteID {
+			return ErrAdtyVoucherWrongAccount
+		}
+		if err := checkAdtyVoucherPurposeScope(voucher.Purpose, allowedPurposes); err != nil {
 			return err
 		}
 		trade, err := allocateAdtyVoucherTradeNo(tx, hash, attempt)
@@ -1067,7 +1098,7 @@ func redeemAdtyVoucherOnce(userId int, hash string, attempt int) (*AdtyVoucherRe
 	return result, credit, marginResumedSiteID, err
 }
 
-func loadAdtyVoucherRedeemReplay(userId int, hash string) (*AdtyVoucherRedeemed, error) {
+func loadAdtyVoucherRedeemReplay(userId, requestSiteID int, hash string, allowedPurposes []string) (*AdtyVoucherRedeemed, error) {
 	var voucher model.AdtyVoucher
 	lookup := model.DB.Where("code_hash = ?", hash).Limit(1).Find(&voucher)
 	if lookup.Error != nil {
@@ -1077,6 +1108,12 @@ func loadAdtyVoucherRedeemReplay(userId int, hash string) (*AdtyVoucherRedeemed,
 		return nil, nil
 	}
 	if voucher.RedeemerId == userId {
+		if requestSiteID > 0 && voucher.Purpose == model.AdtyVoucherPurposeSiteMargin && voucher.TargetSiteId != requestSiteID {
+			return nil, ErrAdtyVoucherWrongAccount
+		}
+		if err := checkAdtyVoucherPurposeScope(voucher.Purpose, allowedPurposes); err != nil {
+			return nil, err
+		}
 		return &AdtyVoucherRedeemed{TradeNo: voucher.TradeNo, Purpose: voucher.Purpose, AmountUSD: voucher.AmountUSD, Quota: voucher.Quota, Replayed: true}, nil
 	}
 	return nil, ErrAdtyVoucherUsed

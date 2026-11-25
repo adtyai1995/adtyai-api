@@ -31,24 +31,31 @@ func RequestBEpusdtPay(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	req.Chain = strings.TrimSpace(req.Chain)
 	if !setting.BEpusdtConfigured() || !setting.BEpusdtChainEnabled(req.Chain) || !service.IsAdtyUSDTMethod(req.Chain) {
 		common.ApiErrorT(c, "This payment method is not available")
 		return
 	}
-	quote, err := service.AdtyQuoteForPayment(c.GetInt("id"), service.AdtyRequestSiteID(c), c.GetString("group"), req.Business, req.Amount, req.Chain)
+	userID := c.GetInt("id")
+	quote, err := service.AdtyQuoteForPayment(userID, service.AdtyRequestSiteID(c), c.GetString("group"), req.Business, req.Amount, req.Chain)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if err := model.ValidateTopUpQuotaCapacity(c.GetInt("id"), int(quote.CreditQuota)); err != nil {
-		common.ApiError(c, err)
-		return
+	if quote.Business != model.AdtyBusinessOwnerMarginTopup {
+		if err := model.ValidateTopUpQuotaCapacity(userID, int(quote.CreditQuota)); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 	}
-	scene, err := service.AuthorizeAdtyPaymentScene(c.GetInt("id"), req.PaymentScene, model.PaymentProviderAdtyBEpusdt, req.Chain, quote)
+	scene, err := service.AuthorizeAdtyPaymentScene(userID, req.PaymentScene, model.PaymentProviderAdtyBEpusdt, req.Chain, quote)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	unlockCheckout := lockAdtyUserCheckout(userID)
+	defer unlockCheckout()
+
 	reused, err := findReusablePendingOrCheckCap(c, adtyPendingReuseFilter{
 		paymentScene: scene.Key,
 		provider:     model.PaymentProviderAdtyBEpusdt,
@@ -67,18 +74,27 @@ func RequestBEpusdtPay(c *gin.Context) {
 	if minutes <= 0 {
 		minutes = 15
 	}
+	timeoutSeconds := minutes * 60
+	if timeoutSeconds < 180 {
+		timeoutSeconds = 180
+	}
+	if timeoutSeconds > 3600 {
+		timeoutSeconds = 3600
+	}
 	topUp, _, err := createAdtyOrder(c, adtyOrderDraft{
 		paymentScene: req.PaymentScene,
 		prefix:       "EPU",
 		provider:     model.PaymentProviderAdtyBEpusdt,
 		method:       req.Chain,
 		quote:        quote,
-		expireAt:     time.Now().Unix() + int64(minutes*60),
+		expireAt:     time.Now().Unix() + int64(timeoutSeconds),
 	})
 	if err != nil {
 		writeAdtyTopUpError(c, err)
 		return
 	}
+	unlockCheckout()
+
 	callback := strings.TrimRight(service.GetCallbackAddress(), "/")
 	order, err := service.CreateBEpusdtOrder(service.BEpusdtCreateRequest{
 		OrderID:     topUp.TradeNo,
@@ -87,7 +103,7 @@ func RequestBEpusdtPay(c *gin.Context) {
 		NotifyURL:   callback + "/api/user/bepusdt/notify",
 		RedirectURL: service.AdtyPayResultURLForHost(topUp.TradeNo, quote.Business == model.AdtyBusinessOwnerMarginTopup && service.AdtyRequestSiteID(c) == 0),
 		Name:        common.GetSystemName(),
-		Timeout:     minutes * 60,
+		Timeout:     timeoutSeconds,
 	})
 	if err != nil {
 		common.SysLog(common.LogText("bepusdt create order failed trade_no=%s: %s", topUp.TradeNo, err.Error()))
@@ -106,6 +122,14 @@ func RequestBEpusdtPay(c *gin.Context) {
 		"pay_url":          order.PaymentURL,
 	})
 	if err != nil {
+		if order.TradeId != "" {
+			if cancelErr := service.CancelBEpusdtOrder(order.TradeId); cancelErr != nil {
+				common.SysError(common.LogText("bepusdt cancel order after writeback error trade_no=%s gateway_id=%s failed: %s", topUp.TradeNo, order.TradeId, cancelErr.Error()))
+			}
+		}
+		if failErr := model.FailPendingAdtyTopUp(topUp.TradeNo, model.PaymentProviderAdtyBEpusdt); failErr != nil {
+			common.SysError(common.LogText("bepusdt fail pending order %s after writeback error failed: %s", topUp.TradeNo, failErr.Error()))
+		}
 		writeAdtyTopUpError(c, err)
 		return
 	}
@@ -115,7 +139,7 @@ func RequestBEpusdtPay(c *gin.Context) {
 				common.SysError(common.LogText("bepusdt cancel stale order trade_no=%s gateway_id=%s failed: %s", topUp.TradeNo, order.TradeId, cancelErr.Error()))
 			}
 		}
-		writeAdtyTopUpError(c, model.ErrAdtyTopUpNotCancel)
+		common.ApiErrorT(c, "Order status changed before checkout finished. Please try again")
 		return
 	}
 	view, err := model.GetUserAdtyTopUp(topUp.TradeNo, topUp.UserId)
@@ -134,7 +158,8 @@ func bepusdtPermanentError(err error) bool {
 		errors.Is(err, model.ErrTopUpStatusInvalid) ||
 		errors.Is(err, model.ErrPaymentOrphanNotCredit) ||
 		errors.Is(err, model.ErrTopUpQuotaLimitExceeded) ||
-		errors.Is(err, model.ErrInvalidTopUpQuota)
+		errors.Is(err, model.ErrInvalidTopUpQuota) ||
+		errors.Is(err, service.ErrAdtyTeamInvalid)
 }
 
 // BEpusdtTopUpNotify 处理 BEpusdt 的回调：验签、只认 status=2、入账。只看 HTTP 200 和 ok。

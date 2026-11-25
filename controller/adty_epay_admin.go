@@ -136,6 +136,7 @@ func (req *adtyEpayChannelRequest) toChannel() (*model.AdtyEpayChannel, error) {
 	}
 	enabled := 0
 	seenMethods := map[string]struct{}{}
+	seenTypeCodes := map[string]struct{}{}
 	for _, m := range req.Methods {
 		if !service.IsAdtyEpayMethod(m.Method) {
 			return nil, common.NewMessage("Unsupported payment method")
@@ -144,6 +145,15 @@ func (req *adtyEpayChannelRequest) toChannel() (*model.AdtyEpayChannel, error) {
 			return nil, common.NewMessage("Duplicate payment method")
 		}
 		seenMethods[m.Method] = struct{}{}
+		typeCode := strings.TrimSpace(m.TypeCode)
+		effectiveTypeCode := typeCode
+		if effectiveTypeCode == "" {
+			effectiveTypeCode = m.Method
+		}
+		if _, dup := seenTypeCodes[effectiveTypeCode]; dup {
+			return nil, common.NewMessage("Duplicate payment method type code")
+		}
+		seenTypeCodes[effectiveTypeCode] = struct{}{}
 		minCNY := m.MinCNY.Round(2)
 		maxCNY := m.MaxCNY.Round(2)
 		dailyLimitCNY := m.DailyLimitCNY.Round(2)
@@ -158,7 +168,7 @@ func (req *adtyEpayChannelRequest) toChannel() (*model.AdtyEpayChannel, error) {
 			return nil, common.NewMessage("The display name can be at most 32 characters")
 		}
 		channel.Methods = append(channel.Methods, model.AdtyEpayChannelMethod{
-			Method: m.Method, DisplayName: displayName, TypeCode: strings.TrimSpace(m.TypeCode),
+			Method: m.Method, DisplayName: displayName, TypeCode: typeCode,
 			MinCNY: minCNY, MaxCNY: maxCNY, DailyLimitCNY: dailyLimitCNY,
 			Enabled: m.Enabled, ReturnType: strings.TrimSpace(m.ReturnType),
 		})
@@ -321,6 +331,17 @@ func SetAdtyEpayChannelStatus(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	if body.Status == model.AdtyEpayStatusEnabled {
+		channel, getErr := model.GetAdtyEpayChannel(id)
+		if getErr != nil {
+			writeAdtyEpayAdminError(c, getErr)
+			return
+		}
+		if channel.CredentialDecryptErr {
+			common.ApiErrorT(c, "Cannot enable this payment channel because its stored credentials cannot be decrypted. Re-enter the credentials first")
+			return
+		}
+	}
 	if err := model.SetAdtyEpayChannelStatus(id, body.Status, model.AdtyEpayReasonManual); err != nil {
 		writeAdtyEpayAdminError(c, err)
 		return
@@ -396,10 +417,27 @@ func TestAdtyEpayChannel(c *gin.Context) {
 	common.ApiSuccess(c, results)
 }
 
-// adtyEpayMethodNotOpen 判断网关的报错是不是「这种方式没开通」。各家措辞不同，按常见关键词匹配。
+// adtyEpayMethodNotOpen 判断网关的报错是不是「这种方式没开通」。各家措辞不同，只匹配明确的未开通/不支持表述，避免误关方式。
 func adtyEpayMethodNotOpen(err error) bool {
+	if err == nil {
+		return false
+	}
 	text := strings.ToLower(err.Error())
-	for _, word := range []string{"未开通", "未开启", "不支持", "not open", "not enabled", "not supported", "支付方式"} {
+	for _, word := range []string{
+		"不支持该支付方式",
+		"支付方式未开启",
+		"支付方式未开通",
+		"支付方式不存在",
+		"通道未开启",
+		"通道未开通",
+		"未开通",
+		"未开启",
+		"不支持",
+		"not open",
+		"not enabled",
+		"not supported",
+		"unsupported payment",
+	} {
 		if strings.Contains(text, word) {
 			return true
 		}

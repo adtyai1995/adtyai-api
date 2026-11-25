@@ -93,8 +93,14 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
   const decreases = mode === 'subtract' || (mode === 'override' && overrideQuota < props.currentQuota)
   const provenanceValid = orderRef.trim() !== '' && orderRef.trim().length <= 64 &&
     (decreases ? batchKind !== '' && batchSource.trim() !== '' : fundingSource !== '')
-  const amountValid = amount.trim() !== '' && Number.isFinite(Number(amount)) &&
-    (mode === 'override' ? amountValue >= 0 : amountValue > 0 && quotaValue > 0)
+  const noOpOverride =
+    mode === 'override' && overrideQuota === props.currentQuota
+  const amountValid =
+    amount.trim() !== '' &&
+    Number.isFinite(Number(amount)) &&
+    (mode === 'override'
+      ? amountValue >= 0 && !noOpOverride
+      : amountValue > 0 && quotaValue > 0)
 
   const getPreviewText = () => {
     if (floorBlocked) return t('Adjustment cannot make the balance negative')

@@ -184,6 +184,13 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
     (user.staff_site_id ?? 0) === 0 &&
     !user.is_team_employee &&
     !isActiveSiteOwner(user)
+  const canGrantGift =
+    operatorIsRoot &&
+    !isAdmin &&
+    user.status === USER_STATUS.ENABLED &&
+    (user.staff_site_id ?? 0) === 0 &&
+    !user.is_team_employee &&
+    !isActiveSiteOwner(user)
   const canResetPassword =
     canWrite &&
     !isRoot &&
@@ -266,7 +273,7 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           </DropdownMenuShortcut>
         </DropdownMenuItem>
 
-        {operatorIsRoot && !isAdmin && (
+        {canGrantGift && (
           <DropdownMenuItem onClick={() => setGiftOpen(true)}>
             {t('Grant expiring gift')}
             <DropdownMenuShortcut>

@@ -53,6 +53,7 @@ export type AdtyOrderStatus =
   | 'canceled'
   | 'failed'
   | 'refunded'
+  | 'replaced'
 
 export type AdtyOrderExt = {
   team_id?: number
@@ -109,6 +110,7 @@ export type AdtyTopupInfo = {
   usdt_order_minutes: number
   epay_order_minutes: number
   pending: AdtyOrder | null
+  pending_orders?: AdtyOrder[]
 }
 
 export type AdtyQuote = {

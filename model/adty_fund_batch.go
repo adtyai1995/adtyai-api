@@ -338,11 +338,26 @@ func GrantAdtyRootExpiringGiftWithReplayTx(tx *gorm.DB, input AdtyRootExpiringGi
 		return nil, false, err
 	}
 	var customer User
-	if err := tx.Select("id", "site_id", "staff_site_id", "role").First(&customer, input.UserID).Error; err != nil {
+	if err := tx.Select("id", "site_id", "staff_site_id", "role", "status").First(&customer, input.UserID).Error; err != nil {
 		return nil, false, err
 	}
-	if customer.Role >= common.RoleAdminUser || customer.StaffSiteId > 0 || input.SiteID != nil && *input.SiteID != customer.SiteId {
+	if customer.Status != common.UserStatusEnabled {
+		return nil, false, errors.New("gift target must be an active customer")
+	}
+	if customer.Role >= common.RoleAdminUser || customer.StaffSiteId > 0 || (input.SiteID != nil && *input.SiteID != customer.SiteId) {
 		return nil, false, errors.New("gift target must be a customer in the selected site")
+	}
+	if tx.Migrator().HasTable(&AdtySite{}) {
+		var ownerCount int64
+		if err := tx.Model(&AdtySite{}).
+			Where("owner_user_id = ? AND status IN ?", customer.Id, []string{
+				AdtySiteStatusActive, AdtySiteStatusPaused, AdtySiteStatusClosing, AdtySiteStatusDeleting,
+			}).Count(&ownerCount).Error; err != nil {
+			return nil, false, err
+		}
+		if ownerCount > 0 {
+			return nil, false, errors.New("gift target must be a customer in the selected site")
+		}
 	}
 	if tx.Migrator().HasTable(&AdtyTeamMember{}) {
 		var empCount int64
@@ -1395,21 +1410,51 @@ func SumAdtyFundBatchRemainingByKindForUsers(userIDs []int) (map[int]AdtyFundBat
 		Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	for _, row := range rows {
+	heldByBatch := map[int64]int64{}
+	if DB.Migrator().HasTable(&AdtyFundAllocation{}) {
+		var allocRows []struct {
+			BatchId int64
+			Held    int64
+		}
+		if err := DB.Model(&AdtyFundAllocation{}).
+			Select("batch_id, coalesce(sum(held - settled),0) as held").
+			Where("user_id IN ? AND held > settled", ids).
+			Group("batch_id").
+			Scan(&allocRows).Error; err != nil {
+			return nil, err
+		}
+		for _, alloc := range allocRows {
+			if alloc.Held > 0 {
+				heldByBatch[alloc.BatchId] = alloc.Held
+			}
+		}
+	}
+	loc := AdtyBusinessLocation(DB)
+	nowUnix := time.Now().In(loc).Unix()
+	for i := range rows {
+		row := rows[i]
 		current := out[row.UserId]
 		current.HasLots = true
+		if row.Status == AdtyFundBatchStatusExpired || isAdtyFundBatchExpiredAt(&row, nowUnix, loc) {
+			out[row.UserId] = current
+			continue
+		}
+		avail := row.Remaining - heldByBatch[row.Id]
+		if avail < 0 {
+			avail = 0
+		}
 		switch {
 		case row.Kind == AdtyFundBatchKindPrincipal:
-			current.Principal += row.Remaining
+			current.Principal += avail
 		case row.IsExpiringGift():
-			current.ExpiringBonus += row.Remaining
-			if row.Remaining > 0 && row.ExpiresAt != nil && *row.ExpiresAt > 0 {
+			current.ExpiringBonus += avail
+			if avail > 0 && row.ExpiresAt != nil && *row.ExpiresAt > 0 {
 				if current.NextExpiresAt == 0 || *row.ExpiresAt < current.NextExpiresAt {
 					current.NextExpiresAt = *row.ExpiresAt
 				}
 			}
 		default:
-			current.Bonus += row.Remaining
+			current.Bonus += avail
 		}
 		out[row.UserId] = current
 	}

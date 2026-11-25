@@ -47,7 +47,8 @@ export function AdtyOnlineTopup(props: {
   const [dismissedTradeNo, setDismissedTradeNo] = useState<string>()
   const tradeNo = props.returnTradeNo
   const returning = Boolean(tradeNo && tradeNo !== dismissedTradeNo)
-  const filters = { business: props.business, trade_no: tradeNo }
+  const normalizedBusiness = props.business ?? 'wallet_topup'
+  const filters = { business: normalizedBusiness, trade_no: tradeNo }
   // Resolve the return through the history scoped to this business and host.
   const returned = useQuery({
     queryKey: ['adty-topup', 'return', filters],
@@ -57,7 +58,8 @@ export function AdtyOnlineTopup(props: {
       return (
         page.items?.find(
           (order) =>
-            order.trade_no === tradeNo && order.ext?.business === props.business
+            order.trade_no === tradeNo &&
+            (order.ext?.business || 'wallet_topup') === normalizedBusiness
         ) ?? null
       )
     },
@@ -70,8 +72,13 @@ export function AdtyOnlineTopup(props: {
       : adtyTopupQueryKeys.info,
     queryFn: () => getAdtyTopupInfo(props.business),
   })
-  const pending = info.data?.pending
-  const pendingBusiness = pending?.ext?.business || 'wallet_topup'
+  const rawPendingOrders =
+    info.data?.pending_orders ??
+    (info.data?.pending ? [info.data.pending] : [])
+  const pendingOrders = rawPendingOrders.filter(
+    (order) =>
+      (order.ext?.business || 'wallet_topup') === normalizedBusiness
+  )
   const refreshOrders = () =>
     client.invalidateQueries({ queryKey: ['adty-topup'] })
 
@@ -84,12 +91,9 @@ export function AdtyOnlineTopup(props: {
         <p role='status'>{t('This order was not found for this site.')}</p>
       )}
       <AdtyPendingBanner
-        order={
-          pendingBusiness === (props.business ?? 'wallet_topup')
-            ? pending
-            : null
-        }
+        orders={pendingOrders}
         onResume={(order) => setPayment(resumePayment(order))}
+        onOrderChanged={() => void refreshOrders()}
       />
       <div
         id={
@@ -123,7 +127,11 @@ export function AdtyOnlineTopup(props: {
         )}
       </div>
       {props.afterRechargeSlot}
-      <AdtyTopupHistory business={props.business} />
+      <AdtyTopupHistory
+        business={props.business}
+        onResumeOrder={(order) => setPayment(resumePayment(order))}
+        onOrderChanged={() => void refreshOrders()}
+      />
       <AdtyPaymentDialogs
         business={props.business}
         payment={payment ?? returnedPayment}

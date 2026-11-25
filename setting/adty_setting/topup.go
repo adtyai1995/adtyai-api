@@ -3,6 +3,8 @@ package adty_setting
 import (
 	"maps"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/config"
@@ -20,7 +22,35 @@ type TopupSetting struct {
 }
 
 // TopupSettingKeyBonusRates 是已退役的金额档位配置键，保留用于写入拒绝（controller/option.go）。
-const TopupSettingKeyBonusRates = "adty_topup_setting.bonus_rates"
+const (
+	TopupSettingKeyBonusRates       = "adty_topup_setting.bonus_rates"
+	TopupSettingKeyUSDTOrderMinutes = "adty_topup_setting.usdt_order_minutes"
+	TopupSettingKeyEpayOrderMinutes = "adty_topup_setting.epay_order_minutes"
+
+	// Official BEpusdt CalcTradeExpiredAt accepts 180..3600 seconds (3..60 minutes).
+	MinUSDTOrderMinutes = 3
+	MaxUSDTOrderMinutes = 60
+	MinEpayOrderMinutes = 1
+	MaxEpayOrderMinutes = 120
+)
+
+// ValidateUSDTOrderMinutes validates adty_topup_setting.usdt_order_minutes in [3, 60].
+func ValidateUSDTOrderMinutes(raw string) (string, error) {
+	minutes, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || minutes < MinUSDTOrderMinutes || minutes > MaxUSDTOrderMinutes {
+		return "", common.NewMessage("USDT order validity must be an integer between 3 and 60 minutes")
+	}
+	return strconv.Itoa(minutes), nil
+}
+
+// ValidateEpayOrderMinutes validates adty_topup_setting.epay_order_minutes in [1, 120].
+func ValidateEpayOrderMinutes(raw string) (string, error) {
+	minutes, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || minutes < MinEpayOrderMinutes || minutes > MaxEpayOrderMinutes {
+		return "", common.NewMessage("Epay order validity must be an integer between 1 and 120 minutes")
+	}
+	return strconv.Itoa(minutes), nil
+}
 
 // 加赠没有内置档位（约定 I）：后台没设时不加赠，档位金额沿用上游的 payment_setting.amount_options。
 var topupSetting = TopupSetting{

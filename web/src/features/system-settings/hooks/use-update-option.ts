@@ -154,6 +154,13 @@ export function useUpdateOption() {
                 stringValue.trim() !== '' ? 'true' : 'false'
               )
             }
+            if (variables.key === 'adty_bepusdt.secret') {
+              nextData = upsertSystemOption(
+                nextData,
+                'BEpusdtSecretConfigured',
+                stringValue.trim() !== '' ? 'true' : 'false'
+              )
+            }
             if (nextData === current.data) return current
             return { ...current, data: nextData }
           }
@@ -167,6 +174,7 @@ export function useUpdateOption() {
           queryKey: ['system-options'],
           refetchType: 'none',
         })
+        queryClient.invalidateQueries({ queryKey: ['adty-topup'] })
 
         if (
           variables.key.startsWith('adty_site_setting.') ||

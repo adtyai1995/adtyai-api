@@ -19,6 +19,7 @@ const (
 	VerificationScopeAdtyTopUpQuery            = "adty.topup.query"
 	VerificationScopeAdtySiteEarningReview     = "adty.site_earning.review"
 	VerificationScopeAdtyRootGiftGrant         = "adty.root_gift.grant"
+	VerificationScopeAdtyGiftFulfillmentReview = "adty.gift_fulfillment.review"
 	VerificationScopeAdtyOwnerOrderRefund      = "site.order.refund"
 	VerificationScopeAdtyOwnerOrderRefundStep  = "site.order.refund_step"
 )
@@ -95,8 +96,17 @@ type AdtySiteEarningReviewContext struct {
 	Reason         string `json:"reason"`
 }
 
+// AdtyGiftFulfillmentReviewContext binds a review proof to one pending_review
+// gift fulfillment record, the action ("approve" or "reject"), and optional note.
+type AdtyGiftFulfillmentReviewContext struct {
+	ID     int64  `json:"id"`
+	Action string `json:"action"`
+	Note   string `json:"note,omitempty"`
+}
+
 var adtyTopUpVerificationPermissions = map[string]authz.Permission{
 	VerificationScopeAdtyRootGiftGrant:         authz.AdtyFinanceManualCredit,
+	VerificationScopeAdtyGiftFulfillmentReview: authz.AdtyFinanceManualCredit,
 	VerificationScopeAdtyTopUpRefund:           authz.AdtyFinanceRefund,
 	VerificationScopeAdtyTopUpManualComplete:   authz.AdtyFinanceManualCredit,
 	VerificationScopeAdtyTopUpManualRefundStep: authz.AdtyFinanceRefund,
@@ -115,7 +125,7 @@ func adtyIsTopUpVerificationScope(scope string) bool {
 }
 
 func adtyTopUpVerificationForbidden(identity AuthIdentity, role int, scope string) bool {
-	if scope == VerificationScopeAdtyRootGiftGrant {
+	if scope == VerificationScopeAdtyRootGiftGrant || scope == VerificationScopeAdtyGiftFulfillmentReview {
 		return role != common.RoleRootUser
 	}
 	permission, ok := adtyTopUpVerificationPermissions[scope]
@@ -333,6 +343,29 @@ func adtyBindTopUpOperation(scope string, fields map[string]json.RawMessage, raw
 			return nil, false
 		}
 		return context, true
+	case VerificationScopeAdtyGiftFulfillmentReview:
+		var context AdtyGiftFulfillmentReviewContext
+		if common.Unmarshal(raw, &context) != nil || fields["id"] == nil || fields["action"] == nil {
+			return nil, false
+		}
+		for key := range fields {
+			switch key {
+			case "id", "action", "note":
+			default:
+				return nil, false
+			}
+		}
+		context.Action = strings.ToLower(strings.TrimSpace(context.Action))
+		context.Note = strings.TrimSpace(context.Note)
+		if context.ID <= 0 || len(context.Note) > adtyTopUpTextMaxLen {
+			return nil, false
+		}
+		switch context.Action {
+		case "approve", "reject":
+		default:
+			return nil, false
+		}
+		return context, true
 	default:
 		return nil, false
 	}
@@ -428,10 +461,22 @@ func AdtySiteEarningReviewOperation(operationKey, originalCharge, reason string)
 	return VerificationOperation{Scope: VerificationScopeAdtySiteEarningReview, Context: payload}
 }
 
+// AdtyGiftFulfillmentReviewOperation builds the step-up operation for reviewing
+// a pending_review gift fulfillment record.
+func AdtyGiftFulfillmentReviewOperation(id int64, action, note string) VerificationOperation {
+	payload, _ := common.Marshal(AdtyGiftFulfillmentReviewContext{
+		ID:     id,
+		Action: strings.ToLower(strings.TrimSpace(action)),
+		Note:   strings.TrimSpace(note),
+	})
+	return VerificationOperation{Scope: VerificationScopeAdtyGiftFulfillmentReview, Context: payload}
+}
+
 func init() {
 	accessTokenVerificationScopes[VerificationScopeAdtyOwnerOrderRefund] = AccessTokenResourceSiteOwnerOrder + ":write"
 	accessTokenVerificationScopes[VerificationScopeAdtyOwnerOrderRefundStep] = AccessTokenResourceSiteOwnerOrder + ":write"
 	accessTokenVerificationScopes[VerificationScopeAdtyRootGiftGrant] = AccessTokenScopeOf(authz.AdtyFinanceManualCredit)
+	accessTokenVerificationScopes[VerificationScopeAdtyGiftFulfillmentReview] = AccessTokenScopeOf(authz.AdtyFinanceManualCredit)
 	accessTokenVerificationScopes[VerificationScopeAdtyTopUpRefund] = AccessTokenScopeOf(authz.AdtyFinanceRefund)
 	accessTokenVerificationScopes[VerificationScopeAdtyTopUpManualComplete] = AccessTokenScopeOf(authz.AdtyFinanceManualCredit)
 	accessTokenVerificationScopes[VerificationScopeAdtyTopUpManualRefundStep] = AccessTokenScopeOf(authz.AdtyFinanceRefund)

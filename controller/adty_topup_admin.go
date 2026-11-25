@@ -463,8 +463,59 @@ func redactAdtyManualRefundResultForViewer(c *gin.Context, result *model.AdtyMan
 	redactAdtyManualRefundFactsForViewer(c, result.Facts)
 }
 
+// authorizeAdtyTopUpReadTarget enforces target role-hierarchy and PAT
+// admin-target restrictions on admin refund read endpoints, matching
+// QueryAdtyTopUp and lockAdtyRefundOrderForActorTx.
+func authorizeAdtyTopUpReadTarget(c *gin.Context, tradeNo string) bool {
+	tradeNo = strings.TrimSpace(tradeNo)
+	if tradeNo == "" {
+		return true
+	}
+	var userID int
+	if topUp, err := model.LookupTopUpByTradeNo(tradeNo); err == nil && topUp != nil {
+		userID = topUp.UserId
+	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		writeAdtyFinanceError(c, err)
+		return false
+	}
+	if userID <= 0 {
+		ext, err := model.GetAdtyTopupOrder(tradeNo)
+		if err != nil {
+			writeAdtyFinanceError(c, err)
+			return false
+		}
+		if ext != nil {
+			userID = ext.UserId
+		}
+	}
+	if userID <= 0 {
+		return true
+	}
+	var users []model.User
+	if err := model.DB.Unscoped().Select("id", "role").Where("id = ?", userID).Limit(1).Find(&users).Error; err != nil {
+		writeAdtyFinanceError(c, err)
+		return false
+	}
+	if len(users) == 0 {
+		return true
+	}
+	targetUser := users[0]
+	if !canManageTargetRole(c.GetInt("role"), targetUser.Role) {
+		writeAdtyFinanceError(c, model.ErrUserQuotaPermission)
+		return false
+	}
+	if isAccessTokenRequest(c) && targetUser.Role >= common.RoleAdminUser {
+		writeAdtyFinanceError(c, model.ErrAdminTargetSessionRequired)
+		return false
+	}
+	return true
+}
+
 func PreviewAdtyTopUpRefund(c *gin.Context) {
 	tradeNo := c.Param("trade_no")
+	if !authorizeAdtyTopUpReadTarget(c, tradeNo) {
+		return
+	}
 	result, err := model.PreviewAdtyTopUpRefund(tradeNo)
 	if err != nil {
 		writeAdtyFinanceError(c, err)
@@ -586,7 +637,11 @@ func RefundAdtyTopUp(c *gin.Context) {
 }
 
 func ListAdtyTopUpManualRefunds(c *gin.Context) {
-	result, err := model.ListAdtyTopUpManualRefunds(c.Param("trade_no"))
+	tradeNo := c.Param("trade_no")
+	if !authorizeAdtyTopUpReadTarget(c, tradeNo) {
+		return
+	}
+	result, err := model.ListAdtyTopUpManualRefunds(tradeNo)
 	if err != nil {
 		writeAdtyFinanceError(c, err)
 		return
@@ -596,7 +651,11 @@ func ListAdtyTopUpManualRefunds(c *gin.Context) {
 }
 
 func GetAdtyTopUpManualRefund(c *gin.Context) {
-	result, err := model.GetAdtyTopUpManualRefund(c.Param("trade_no"), c.Param("refund_id"))
+	tradeNo := c.Param("trade_no")
+	if !authorizeAdtyTopUpReadTarget(c, tradeNo) {
+		return
+	}
+	result, err := model.GetAdtyTopUpManualRefund(tradeNo, c.Param("refund_id"))
 	if err != nil {
 		writeAdtyFinanceError(c, err)
 		return
@@ -784,6 +843,10 @@ func GetAdtyGiftFulfillments(c *gin.Context) {
 
 // PostAdtyGiftFulfillmentReview resolves a pending_review gift fulfillment record (R2-039).
 func PostAdtyGiftFulfillmentReview(c *gin.Context) {
+	if c.GetInt("role") != common.RoleRootUser {
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("You do not have permission to perform this action."))
+		return
+	}
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || id <= 0 {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -797,7 +860,25 @@ func PostAdtyGiftFulfillmentReview(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	row, fulfilled, eventID, err := service.ReviewAdtyGiftFulfillmentWithAudit(id, body.Action, body.Note, c.GetInt("id"))
+	normalizedAction := strings.ToLower(strings.TrimSpace(body.Action))
+	trimmedNote := strings.TrimSpace(body.Note)
+	if normalizedAction != "approve" && normalizedAction != "reject" {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if normalizedAction == "reject" && trimmedNote == "" {
+		common.ApiErrorT(c, "Please enter a review reason")
+		return
+	}
+	operation := service.AdtyGiftFulfillmentReviewOperation(id, normalizedAction, trimmedNote)
+	if _, err := service.BindVerificationOperation(operation); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if middleware.RequireSecurityProof(c, operation) == nil {
+		return
+	}
+	row, fulfilled, eventID, err := service.ReviewAdtyGiftFulfillmentWithAudit(id, normalizedAction, trimmedNote, c.GetInt("id"))
 	if err != nil {
 		writeAdtyFinanceError(c, err)
 		return

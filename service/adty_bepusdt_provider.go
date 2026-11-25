@@ -16,8 +16,24 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// ErrAdtyPaymentConfirming indicates the gateway observed an on-chain transfer
+// that has not yet reached final confirmation (BEpusdt OrderStatusConfirming = 5).
+var ErrAdtyPaymentConfirming = errors.New("payment is confirming on-chain")
+
 // adtyBEpusdtProvider 把 BEpusdt 登记进钱包的支付商（任务 4.2）。
 type adtyBEpusdtProvider struct{}
+
+func bepusdtTokenMatches(method, got, want string) bool {
+	if got == "" || want == "" {
+		return false
+	}
+	switch method {
+	case AdtyMethodUSDTBEP20, AdtyMethodUSDTPolygon, AdtyMethodUSDTXLayer:
+		return strings.EqualFold(got, want)
+	default:
+		return got == want
+	}
+}
 
 func (adtyBEpusdtProvider) Name() string { return AdtyProviderBEpusdt }
 
@@ -115,14 +131,14 @@ func (adtyBEpusdtProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder)
 	var result struct {
 		StatusCode int `json:"status_code"`
 		Data       struct {
-			TradeID      string          `json:"trade_id"`
-			OrderID      string          `json:"order_id"`
-			TradeType    string          `json:"trade_type"`
-			Status       *int            `json:"status"`
+			TradeID      string            `json:"trade_id"`
+			OrderID      string            `json:"order_id"`
+			TradeType    string            `json:"trade_type"`
+			Status       *int              `json:"status"`
 			Money        common.RawMessage `json:"money"`
 			ActualAmount common.RawMessage `json:"actual_amount"`
-			Token        string          `json:"token"`
-			Fiat         string          `json:"fiat"`
+			Token        string            `json:"token"`
+			Fiat         string            `json:"fiat"`
 		} `json:"data"`
 	}
 	if common.Unmarshal(raw, &result) != nil || result.StatusCode != http.StatusOK || result.Data.Status == nil ||
@@ -130,8 +146,11 @@ func (adtyBEpusdtProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder)
 		return nil, errors.New("BEpusdt order query returned an invalid response")
 	}
 	data := result.Data
-	if data.TradeID != ext.GatewayTradeId || data.OrderID != ext.TradeNo || data.TradeType != ext.Method || data.Token != ext.PayAddress || data.Fiat != "USD" {
+	if data.TradeID != ext.GatewayTradeId || data.OrderID != ext.TradeNo || data.TradeType != ext.Method || !bepusdtTokenMatches(ext.Method, data.Token, ext.PayAddress) || data.Fiat != "USD" {
 		return nil, model.ErrPaymentMethodMismatch
+	}
+	if *data.Status == 5 {
+		return nil, ErrAdtyPaymentConfirming
 	}
 	if *data.Status != 2 {
 		return nil, nil
@@ -143,7 +162,7 @@ func (adtyBEpusdtProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder)
 		ratio = decimal.NewFromInt(1)
 	}
 	if fiatErr != nil || amountErr != nil || !fiat.IsPositive() || !amount.IsPositive() ||
-		!fiat.Equal(ext.FaceUSD.Mul(ratio).Round(2)) || !amount.Equal(ext.PayAmount) {
+		!fiat.Equal(ext.FaceUSD.Mul(ratio).Round(2)) || amount.LessThan(ext.PayAmount) {
 		return nil, model.ErrPaymentAmountMismatch
 	}
 	return &model.AdtyPaymentFacts{

@@ -162,6 +162,7 @@ const BILLING_SECTIONS = [
           baseUrl: settings['adty_bepusdt.base_url'],
           tradeTypes: settings['adty_bepusdt.trade_types'],
           orderMinutes: settings['adty_topup_setting.usdt_order_minutes'],
+          secretConfigured: settings.BEpusdtSecretConfigured,
         }}
       />
     ),

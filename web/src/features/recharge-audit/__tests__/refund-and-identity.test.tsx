@@ -39,6 +39,7 @@ const {
   getOrderTraceMock,
   refundTopupMock,
   getAdminGiftFulfillmentsMock,
+  reviewAdminGiftFulfillmentMock,
   requestVerificationMock,
 } = vi.hoisted(() => ({
   listTopupManualRefundsMock: vi.fn(),
@@ -46,6 +47,7 @@ const {
   getOrderTraceMock: vi.fn(),
   refundTopupMock: vi.fn(),
   getAdminGiftFulfillmentsMock: vi.fn(),
+  reviewAdminGiftFulfillmentMock: vi.fn(),
   requestVerificationMock: vi.fn(),
 }))
 
@@ -60,6 +62,8 @@ vi.mock('../api', async () => {
     refundTopup: (...args: unknown[]) => refundTopupMock(...args),
     getAdminGiftFulfillments: (...args: unknown[]) =>
       getAdminGiftFulfillmentsMock(...args),
+    reviewAdminGiftFulfillment: (...args: unknown[]) =>
+      reviewAdminGiftFulfillmentMock(...args),
   }
 })
 
@@ -420,5 +424,65 @@ describe('Recharge audit manual refund reconciliation & operator/customer identi
     })
     expect(screen.getByText(/1 \/ root/)).toBeTruthy()
     expect(screen.getByText('4 / finance_ops')).toBeTruthy()
+  })
+
+  it('requires step-up verification proof when reviewing a gift fulfillment', async () => {
+    getAdminGiftFulfillmentsMock.mockResolvedValue({
+      total: 1,
+      page: 1,
+      page_size: 20,
+      items: [
+        {
+          id: 42,
+          trade_no: 'ORD-GIFT-42',
+          user_id: 55,
+          username: 'carol',
+          site_id: 2,
+          bonus_usd: '5.00',
+          bonus_quota: 2500000,
+          original_source: 'earnings',
+          original_earning: '5.00',
+          original_margin: '0',
+          status: 'pending_review',
+          reason: 'late callback',
+          created_at: 1700000000,
+          updated_at: 1700000000,
+        },
+      ],
+    })
+    reviewAdminGiftFulfillmentMock.mockResolvedValue({
+      item: { id: 42, status: 'fulfilled' },
+      fulfilled: true,
+    })
+
+    renderWithQuery(<GiftFulfillmentsPanel />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Review' })).toBeTruthy()
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Review' }))
+
+    fireEvent.change(screen.getByLabelText('Decision'), {
+      target: { value: 'approve' },
+    })
+    fireEvent.change(screen.getByLabelText('Review note'), {
+      target: { value: '  verified payment  ' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+
+    await waitFor(() => {
+      expect(reviewAdminGiftFulfillmentMock).toHaveBeenCalledTimes(1)
+    })
+    expect(requestVerificationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'adty.gift_fulfillment.review',
+        context: { id: 42, action: 'approve', note: 'verified payment' },
+      })
+    )
+    expect(reviewAdminGiftFulfillmentMock).toHaveBeenCalledWith(
+      42,
+      { action: 'approve', note: 'verified payment' },
+      'proof-123'
+    )
   })
 })

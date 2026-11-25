@@ -83,6 +83,7 @@ func isPermanentAdtyTopUpCreditReject(err error) bool {
 		errors.Is(err, model.ErrAdtyDuplicatePayment) ||
 		errors.Is(err, model.ErrAdtyOwnerTopupReview) ||
 		errors.Is(err, model.ErrPaymentOrphanNotCredit) ||
+		errors.Is(err, model.ErrTopUpQuotaLimitExceeded) ||
 		errors.Is(err, model.ErrInvalidTopUpQuota) ||
 		errors.Is(err, model.ErrTopUpNotFound)
 }
@@ -97,6 +98,25 @@ func RecoverAdtyHostedPaymentForActor(ctx context.Context, ext *model.AdtyTopupO
 	}
 	facts, err := queryAdtyHostedPaymentFacts(ctx, provider, ext)
 	if err != nil {
+		if errors.Is(err, ErrAdtyPaymentConfirming) {
+			if recordErr := recordAdtyHostedPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, "confirming", operatorID); recordErr != nil {
+				return recordErr
+			}
+			return ErrAdtyPaymentConfirming
+		}
+		if (errors.Is(err, model.ErrPaymentMethodMismatch) || errors.Is(err, model.ErrPaymentAmountMismatch)) && model.DB != nil {
+			if reviewErr := model.RecordPaymentOrphanEvent(&model.PaymentOrphanEvent{
+				Provider:    ext.Provider,
+				EventID:     "hosted-query:" + ext.TradeNo,
+				EventType:   "payment_query",
+				ReferenceID: ext.TradeNo,
+				SessionID:   strings.TrimSpace(ext.GatewayTradeId),
+				Reason:      "Payment recovery query detected conflicting gateway facts",
+				Error:       err.Error(),
+			}); reviewErr != nil {
+				return reviewErr
+			}
+		}
 		if recordErr := recordAdtyHostedPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, "failed", operatorID); recordErr != nil {
 			return recordErr
 		}
@@ -119,7 +139,9 @@ func RecoverAdtyHostedPaymentForActor(ctx context.Context, ext *model.AdtyTopupO
 		if err != nil {
 			return err
 		}
-		return tx.Model(&model.PaymentOrphanEvent{}).Where("event_id = ? AND status = ?", "hosted-query:"+ext.TradeNo, model.PaymentOrphanStatusPendingReview).Updates(map[string]any{
+		return tx.Model(&model.PaymentOrphanEvent{}).Where("event_id IN ? AND status = ?",
+			[]string{"hosted-query:" + ext.TradeNo, "epay-query:" + ext.TradeNo, "team-query:" + ext.TradeNo},
+			model.PaymentOrphanStatusPendingReview).Updates(map[string]any{
 			"status": model.PaymentOrphanStatusCredited, "resolution": model.PaymentOrphanStatusCredited,
 			"resolution_note": "Recovered by authenticated provider query", "resolved_at": common.GetTimestamp(), "update_time": common.GetTimestamp(),
 		}).Error
@@ -160,7 +182,7 @@ func RecoverAdtyHostedPaymentForActor(ctx context.Context, ext *model.AdtyTopupO
 func recoverAdtyHostedPayments(now int64) {
 	var orders []model.AdtyTopupOrder
 	err := model.DB.Table("adty_topup_orders AS a").Select("a.*").Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
-		Where("a.provider IN ? AND a.created_at <= ? AND a.created_at >= ? AND a.last_query_at <= ? AND t.status IN ?", []string{
+		Where("a.provider IN ? AND a.gateway_trade_id <> '' AND a.pay_address <> '' AND a.pay_url <> '' AND a.created_at <= ? AND a.created_at >= ? AND a.last_query_at <= ? AND t.status IN ?", []string{
 			model.PaymentProviderAdtyBEpusdt,
 		}, now-120, now-7*24*60*60, now-60, []string{common.TopUpStatusPending, common.TopUpStatusExpired, common.TopUpStatusFailed, model.TopUpStatusCanceled}).
 		Order("a.last_query_at, a.id").Limit(20).Scan(&orders).Error
@@ -176,8 +198,14 @@ func recoverAdtyHostedPayments(now int64) {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		err := RecoverAdtyHostedPayment(ctx, &ext)
 		cancel()
-		if err != nil && !isPermanentAdtyTopUpCreditReject(err) {
-			common.SysLog(common.LogText("hosted payment recovery transient error trade_no=%s: %s", ext.TradeNo, err.Error()))
+		if err != nil {
+			if errors.Is(err, ErrAdtyPaymentConfirming) {
+				common.SysLog(common.LogText("hosted payment recovery confirming on-chain trade_no=%s", ext.TradeNo))
+			} else if isPermanentAdtyTopUpCreditReject(err) {
+				common.SysLog(common.LogText("hosted payment recovery conflict queued for review trade_no=%s: %s", ext.TradeNo, err.Error()))
+			} else {
+				common.SysLog(common.LogText("hosted payment recovery transient error trade_no=%s: %s", ext.TradeNo, err.Error()))
+			}
 		}
 	}
 }

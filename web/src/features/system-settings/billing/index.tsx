@@ -68,6 +68,7 @@ const defaultBillingSettings: BillingSettings = {
   'adty_bepusdt.base_url': '',
   'adty_bepusdt.secret': '',
   'adty_bepusdt.trade_types': '["usdt.trc20"]',
+  BEpusdtSecretConfigured: false,
 }
 
 export function BillingSettings() {

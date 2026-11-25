@@ -48,7 +48,13 @@ type adtyTeamLedgerResponse struct {
 
 type adtyTeamTopupResponse struct {
 	model.AdtyTopupOrder
-	Username string `json:"username,omitempty"`
+	Status       string                `json:"status,omitempty"`
+	Amount       int64                 `json:"amount,omitempty"`
+	Money        float64               `json:"money,omitempty"`
+	CreateTime   int64                 `json:"create_time,omitempty"`
+	CompleteTime int64                 `json:"complete_time,omitempty"`
+	Username     string                `json:"username,omitempty"`
+	Ext          *model.AdtyTopupOrder `json:"ext,omitempty"`
 }
 
 type adtyTeamInviteResponse struct {
@@ -146,9 +152,50 @@ func enrichAdtyTeamTopups(rows []model.AdtyTopupOrder) []adtyTeamTopupResponse {
 	}
 	names := model.LookupUsernamesByIDs(model.DB, ids)
 	for i, row := range rows {
+		extCopy := row
 		out[i] = adtyTeamTopupResponse{
 			AdtyTopupOrder: row,
 			Username:       names[row.UserId],
+			Ext:            &extCopy,
+		}
+	}
+	return out
+}
+
+func enrichAdtyTeamTopupViews(views []model.AdtyTopUpView) []adtyTeamTopupResponse {
+	out := make([]adtyTeamTopupResponse, len(views))
+	ids := make([]int, 0, len(views))
+	for _, view := range views {
+		uid := view.UserId
+		if uid <= 0 && view.Ext != nil {
+			uid = view.Ext.UserId
+		}
+		if uid > 0 {
+			ids = append(ids, uid)
+		}
+	}
+	names := model.LookupUsernamesByIDs(model.DB, ids)
+	for i, view := range views {
+		var ext model.AdtyTopupOrder
+		var extPtr *model.AdtyTopupOrder
+		if view.Ext != nil {
+			ext = *view.Ext
+			extCopy := *view.Ext
+			extPtr = &extCopy
+		}
+		uid := view.UserId
+		if uid <= 0 {
+			uid = ext.UserId
+		}
+		out[i] = adtyTeamTopupResponse{
+			AdtyTopupOrder: ext,
+			Status:         view.Status,
+			Amount:         view.Amount,
+			Money:          view.Money,
+			CreateTime:     view.CreateTime,
+			CompleteTime:   view.CompleteTime,
+			Username:       names[uid],
+			Ext:            extPtr,
 		}
 	}
 	return out
@@ -329,6 +376,56 @@ func PutAdtyMainTeamAgreementPrice(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"updated": true, "discount": decimal.RequireFromString(strings.TrimSpace(body.Discount)).String()})
 }
 
+func writeAdtyTeamTopupError(c *gin.Context, err error) {
+	var message *common.Message
+	var bepusdtErr service.BEpusdtGatewayError
+	switch {
+	case errors.As(err, &message):
+		common.ApiError(c, err)
+	case errors.Is(err, model.ErrTopUpNotFound):
+		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Order not found"))
+	case errors.Is(err, model.ErrPaymentMethodMismatch):
+		common.ApiErrorT(c, "This payment method is not available")
+	case errors.Is(err, service.ErrAdtyPaymentDetected):
+		common.ApiErrorT(c, "A transfer has been detected. Please wait")
+	case errors.As(err, &bepusdtErr) || errors.Is(err, service.ErrAdtyPaymentGatewayUnavailable):
+		common.SysLog(common.LogText("adty team topup gateway error: %s", err.Error()))
+		common.ApiErrorT(c, "The payment gateway is unavailable. Please try again later")
+	default:
+		common.SysLog(common.LogText("adty team topup error: %s", err.Error()))
+		common.ApiErrorT(c, "The payment gateway is unavailable. Please try again later")
+	}
+}
+
+func parseAdtyTeamListPage(c *gin.Context, defaultPageSize int) (int, int) {
+	page := 1
+	if raw := strings.TrimSpace(c.Query("p")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			page = parsed
+		}
+	} else if raw := strings.TrimSpace(c.Query("page")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			page = parsed
+		}
+	}
+	pageSize := defaultPageSize
+	for _, key := range []string{"page_size", "ps", "size"} {
+		if raw := strings.TrimSpace(c.Query(key)); raw != "" {
+			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+				pageSize = parsed
+			}
+			break
+		}
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return page, pageSize
+}
+
 func PostAdtyTeamTopup(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || id <= 0 {
@@ -340,6 +437,7 @@ func PostAdtyTeamTopup(c *gin.Context) {
 		AmountUSD    string `json:"amount_usd"`
 		Method       string `json:"method"`
 		ChannelId    int    `json:"channel_id"` // 易支付：负责人选的通道，0 表示自动挑
+		Device       string `json:"device"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -350,10 +448,25 @@ func PostAdtyTeamTopup(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	device := "pc"
+	if strings.TrimSpace(body.Device) == "mobile" {
+		device = "mobile"
+	}
 	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
-	order, err := service.StartAdtyTeamTopupPayment(c.GetInt("id"), id, amount, body.Method, body.ChannelId, key, c.ClientIP(), body.PaymentScene)
+	order, err := service.StartAdtyTeamTopupPaymentWithOptions(service.AdtyTeamTopupStartOptions{
+		LeaderID:      c.GetInt("id"),
+		TeamID:        id,
+		RequestSiteID: service.AdtyRequestSiteID(c),
+		AmountUSD:     amount,
+		Method:        body.Method,
+		ChannelID:     body.ChannelId,
+		Key:           key,
+		ClientIP:      c.ClientIP(),
+		PaymentScene:  body.PaymentScene,
+		Device:        device,
+	})
 	if err != nil {
-		common.ApiError(c, err)
+		writeAdtyTeamTopupError(c, err)
 		return
 	}
 	common.ApiSuccess(c, order)
@@ -365,9 +478,24 @@ func ResumeAdtyTeamTopup(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	order, err := service.ResumeAdtyTeamTopupPayment(c.GetInt("id"), id, c.Param("trade_no"), c.ClientIP())
+	device := strings.TrimSpace(c.Query("device"))
+	if device == "" && c.Request.Body != nil {
+		raw, readErr := io.ReadAll(io.LimitReader(c.Request.Body, 4096))
+		if readErr == nil && len(bytes.TrimSpace(raw)) > 0 {
+			var body struct {
+				Device string `json:"device"`
+			}
+			if common.Unmarshal(bytes.TrimSpace(raw), &body) == nil {
+				device = strings.TrimSpace(body.Device)
+			}
+		}
+	}
+	if device != "mobile" {
+		device = "pc"
+	}
+	order, err := service.ResumeAdtyTeamTopupPayment(c.GetInt("id"), id, c.Param("trade_no"), c.ClientIP(), device)
 	if err != nil {
-		common.ApiError(c, err)
+		writeAdtyTeamTopupError(c, err)
 		return
 	}
 	common.ApiSuccess(c, order)
@@ -379,12 +507,39 @@ func GetAdtyTeamTopups(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	rows, err := service.ListAdtyTeamTopups(c.GetInt("id"), id, c.Query("status") == "pending")
+	page, pageSize := parseAdtyTeamListPage(c, 20)
+	views, total, err := service.ListAdtyTeamTopupsPage(c.GetInt("id"), id, c.Query("status"), page, pageSize)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"items": enrichAdtyTeamTopups(rows)})
+	common.ApiSuccess(c, gin.H{
+		"items":     enrichAdtyTeamTopupViews(views),
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
+}
+
+// GetAdtyTeamLedgers returns paginated shared-balance ledger records for the team leader.
+func GetAdtyTeamLedgers(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	page, pageSize := parseAdtyTeamListPage(c, 20)
+	rows, total, err := service.ListAdtyTeamLedgersForLeader(c.GetInt("id"), id, page, pageSize)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"items":     enrichAdtyTeamLedgers(rows),
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
 }
 
 func PostAdtyTeam(c *gin.Context) {

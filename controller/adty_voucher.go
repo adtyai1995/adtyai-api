@@ -10,7 +10,10 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 )
+
+var adtyVoucherMaxAmountUSD = decimal.NewFromInt(100000)
 
 func PostAdtyVoucherRedeem(c *gin.Context) {
 	var body struct {
@@ -20,9 +23,34 @@ func PostAdtyVoucherRedeem(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	result, err := service.RedeemAdtyVoucher(c.GetInt("id"), body.Code)
+	result, err := service.RedeemAdtyVoucherWithScope(c.GetInt("id"), 0, body.Code, []string{
+		model.AdtyVoucherPurposeMainUser,
+		model.AdtyVoucherPurposeSiteCustomer,
+	})
 	if err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, result)
+}
+
+func PostAdtySiteMarginVoucherRedeem(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	result, err := service.RedeemAdtyVoucherWithScope(c.GetInt("id"), site.Id, body.Code, []string{
+		model.AdtyVoucherPurposeSiteMargin,
+	})
+	if err != nil {
+		writeAdtyVoucherError(c, err)
 		return
 	}
 	common.ApiSuccess(c, result)
@@ -47,8 +75,8 @@ func PostAdtySiteVoucher(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	amount, err := common.ParseBoundedDecimalString(body.AmountUSD, 12, 8)
-	if err != nil {
+	amount, err := common.ParseBoundedDecimalString(strings.TrimSpace(body.AmountUSD), 12, 2)
+	if err != nil || !amount.IsPositive() || amount.GreaterThan(adtyVoucherMaxAmountUSD) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
@@ -114,8 +142,8 @@ func PostAdtyAdminVoucher(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	amount, err := common.ParseBoundedDecimalString(body.AmountUSD, 12, 8)
-	if err != nil {
+	amount, err := common.ParseBoundedDecimalString(strings.TrimSpace(body.AmountUSD), 12, 2)
+	if err != nil || !amount.IsPositive() || amount.GreaterThan(adtyVoucherMaxAmountUSD) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}

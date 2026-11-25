@@ -590,13 +590,13 @@ func LoadAdtyRefundPageFactsWithReconcile(tradeNo string, requestUSD decimal.Dec
 		RefundUnknownUSD:          occupancy.UnknownUSD,
 		RefundExternalOffsetUSD:   occupancy.ExternalOffsetUSD,
 		RefundRemainingUSD:        occupancy.RemainingUSD,
-		ManualShortfallQuota:  shortfall,
-		ManualShortfallUSD:    adtyQuotaUSDString(shortfall),
-		BonusUSD:              ext.BonusUSD.String(),
-		CumulativeRefundUSD:   occupancy.CompletedUSD,
-		RefundProof:           ext.RefundProof,
-		ManualRefunds:         refunds,
-		Occupancy:             occupancy,
+		ManualShortfallQuota:      shortfall,
+		ManualShortfallUSD:        adtyQuotaUSDString(shortfall),
+		BonusUSD:                  ext.BonusUSD.String(),
+		CumulativeRefundUSD:       occupancy.CompletedUSD,
+		RefundProof:               ext.RefundProof,
+		ManualRefunds:             refunds,
+		Occupancy:                 occupancy,
 	}
 	if ext.TeamId > 0 {
 		facts.TeamID = ext.TeamId
@@ -648,22 +648,38 @@ func LoadAdtyRefundPageFactsWithReconcile(tradeNo string, requestUSD decimal.Dec
 		if err := DB.Where("user_id = ? AND source = ?", ext.UserId, tradeNo).Find(&lots).Error; err != nil {
 			return nil, err
 		}
-		var principalOriginal, principalRemaining, bonusOriginal, bonusRemaining int64
+		heldByBatch, err := outstandingAdtyFundAllocationByBatchTx(DB, ext.UserId)
+		if err != nil {
+			return nil, err
+		}
+		var alreadyRefundedPrincipal int64
+		for _, row := range refunds {
+			if row.Status != AdtyManualRefundStatusTerminated && row.ReclaimedAt > 0 && row.DeductedPrincipalQuota > 0 {
+				alreadyRefundedPrincipal += row.DeductedPrincipalQuota
+			}
+		}
+		var principalOriginal, principalRemaining, heldPrincipal, bonusOriginal, bonusRemaining int64
 		var sawPrincipal, sawBonus bool
 		for _, lot := range lots {
 			switch lot.Kind {
-			case "principal":
+			case AdtyFundBatchKindPrincipal:
 				principalOriginal += lot.Original
-				principalRemaining += lot.Remaining
+				held := max(int64(0), heldByBatch[lot.Id])
+				if held > lot.Remaining {
+					held = lot.Remaining
+				}
+				heldPrincipal += held
+				principalRemaining += max(int64(0), lot.Remaining-held)
 				sawPrincipal = true
-			case "bonus":
+			case AdtyFundBatchKindBonus, AdtyFundBatchKindExpiringBonus:
 				bonusOriginal += lot.Original
 				bonusRemaining += lot.Remaining
 				sawBonus = true
 			}
 		}
 		if sawPrincipal {
-			facts.PrincipalConsumedUSD = decimal.NewFromInt(principalOriginal - principalRemaining).Div(common.QuotaPerUnitDecimal()).String()
+			principalConsumed := max(int64(0), principalOriginal-principalRemaining-alreadyRefundedPrincipal-heldPrincipal)
+			facts.PrincipalConsumedUSD = decimal.NewFromInt(principalConsumed).Div(common.QuotaPerUnitDecimal()).String()
 			facts.PrincipalRemainingUSD = decimal.NewFromInt(principalRemaining).Div(common.QuotaPerUnitDecimal()).String()
 		}
 		if sawBonus {

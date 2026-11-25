@@ -72,6 +72,7 @@ func RequestAdtyEpayPay(c *gin.Context) {
 	if req.Method == "" {
 		req.Method = req.PaymentMethod
 	}
+	req.Method = strings.TrimSpace(req.Method)
 	if !service.IsAdtyEpayMethod(req.Method) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
@@ -79,16 +80,19 @@ func RequestAdtyEpayPay(c *gin.Context) {
 	if req.Device != "mobile" {
 		req.Device = "pc"
 	}
-	quote, err := service.AdtyQuoteForPayment(c.GetInt("id"), service.AdtyRequestSiteID(c), c.GetString("group"), req.Business, req.Amount, req.Method)
+	userID := c.GetInt("id")
+	quote, err := service.AdtyQuoteForPayment(userID, service.AdtyRequestSiteID(c), c.GetString("group"), req.Business, req.Amount, req.Method)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if err := model.ValidateTopUpQuotaCapacity(c.GetInt("id"), int(quote.CreditQuota)); err != nil {
-		common.ApiError(c, err)
-		return
+	if quote.Business != model.AdtyBusinessOwnerMarginTopup {
+		if err := model.ValidateTopUpQuotaCapacity(userID, int(quote.CreditQuota)); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 	}
-	scene, err := service.AuthorizeAdtyPaymentScene(c.GetInt("id"), req.PaymentScene, model.PaymentProviderAdtyEpay, req.Method, quote)
+	scene, err := service.AuthorizeAdtyPaymentScene(userID, req.PaymentScene, model.PaymentProviderAdtyEpay, req.Method, quote)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -99,16 +103,32 @@ func RequestAdtyEpayPay(c *gin.Context) {
 		return
 	}
 	// DEC-027 (R1-035): Never auto-switch payment channels on gateway failure.
-	// Always attempt at most one channel and let the user manually choose another.
+	// On local daily-limit races during auto-pick (ChannelId == 0), try the next
+	// eligible channel before any gateway call is made.
 	maxAttempts := 1
+	if req.ChannelId == 0 {
+		maxAttempts = adtyEpayMaxAttempts
+	}
 	exclude := map[int]bool{}
 	for _, id := range req.ExcludeChannelIds {
 		exclude[id] = true
 	}
+	channelTimeout, totalTimeout, err := adtyEpayTimeouts()
+	if err != nil {
+		writeAdtyTopUpError(c, err)
+		return
+	}
+	deadline := time.Now().Add(totalTimeout)
+	callback := strings.TrimRight(service.GetCallbackAddress(), "/")
+
+	unlockCheckout := lockAdtyUserCheckout(userID)
+	defer unlockCheckout()
+
 	reused, err := findReusablePendingOrCheckCap(c, adtyPendingReuseFilter{
 		paymentScene:     scene.Key,
 		provider:         model.PaymentProviderAdtyEpay,
 		method:           req.Method,
+		device:           req.Device,
 		quote:            quote,
 		requestedChannel: req.ChannelId,
 		allowedChannels:  allowedChannels,
@@ -122,89 +142,102 @@ func RequestAdtyEpayPay(c *gin.Context) {
 		common.ApiSuccess(c, reused)
 		return
 	}
-	channelTimeout, totalTimeout, err := adtyEpayTimeouts()
-	if err != nil {
-		writeAdtyTopUpError(c, err)
-		return
-	}
-	deadline := time.Now().Add(totalTimeout)
-	callback := strings.TrimRight(service.GetCallbackAddress(), "/")
 	attemptFailed := false
+	var (
+		topUp   *model.TopUp
+		channel *model.AdtyEpayChannel
+		method  *model.AdtyEpayChannelMethod
+	)
 	for attempt := 0; attempt < maxAttempts && time.Now().Before(deadline); attempt++ {
-		channel, method, err := service.PickAdtyEpayChannel(req.Method, quote.PayAmount, req.Device, exclude, time.Now().Unix(), allowedChannels)
-		if err != nil {
+		pickedChannel, pickedMethod, pickErr := service.PickAdtyEpayChannel(req.Method, quote.PayAmount, req.Device, exclude, time.Now().Unix(), allowedChannels)
+		if pickErr != nil {
 			break
 		}
-		exclude[channel.Id] = true
-		topUp, _, err := createAdtyOrder(c, adtyOrderDraft{
+		exclude[pickedChannel.Id] = true
+		createdTopUp, _, createErr := createAdtyOrder(c, adtyOrderDraft{
 			paymentScene: req.PaymentScene,
 			prefix:       "EPY",
 			provider:     model.PaymentProviderAdtyEpay,
 			method:       req.Method,
 			quote:        quote,
 			expireAt:     service.AdtyEpayExpiry(time.Now().Unix()),
-			channelID:    channel.Id,
-			channel:      channel,
-			methodLabel:  method.DisplayName,
+			channelID:    pickedChannel.Id,
+			channel:      pickedChannel,
+			methodLabel:  pickedMethod.DisplayName,
 		})
-		if errors.Is(err, model.ErrAdtyEpayDailyLimit) {
+		if errors.Is(createErr, model.ErrAdtyEpayDailyLimit) {
 			attemptFailed = true
-			break
-		}
-		if err != nil {
-			writeAdtyTopUpError(c, err)
-			return
-		}
-		timeout := min(channelTimeout, time.Until(deadline))
-		ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
-		result, err := service.CreateAdtyEpayOrder(ctx, channel, method, service.AdtyEpayCreateRequest{
-			TradeNo:   topUp.TradeNo,
-			Name:      "Top-up " + topUp.TradeNo,
-			ClientIP:  c.ClientIP(),
-			Device:    req.Device,
-			MoneyCNY:  quote.PayAmount,
-			NotifyURL: callback + "/api/user/epay/notify/" + strconv.Itoa(channel.Id),
-			ReturnURL: service.AdtyPayResultURLForHost(topUp.TradeNo, quote.Business == model.AdtyBusinessOwnerMarginTopup && service.AdtyRequestSiteID(c) == 0), // 主站的支付结果页，按订单所属站点与发起域跳回（任务 11.3）
-		})
-		cancel()
-		if err != nil {
-			common.SysLog(common.LogText("epay channel %d order failed trade_no=%s: %s", channel.Id, topUp.TradeNo, err.Error()))
-			if failErr := model.FailPendingAdtyTopUp(topUp.TradeNo, model.PaymentProviderAdtyEpay); failErr != nil {
-				common.SysError(common.LogText("epay fail pending order %s failed: %s", topUp.TradeNo, failErr.Error()))
+			if req.ChannelId > 0 {
+				break
 			}
-			attemptFailed = true
-			break
+			continue
 		}
-		if result.Mode != "submit" && result.Mode != method.ReturnType {
-			_ = model.UpdateAdtyEpayMethodReturnType(method.Id, result.Mode)
-		}
-		updated, err := model.UpdatePendingAdtyTopupOrderCheckout(topUp.TradeNo, nil, map[string]any{
-			"qr_code":          result.QRCode,
-			"pay_url":          result.PayURL,
-			"url_scheme":       result.URLScheme,
-			"gateway_trade_id": result.GatewayTradeNo,
-		})
-		if err != nil {
-			writeAdtyTopUpError(c, err)
+		if createErr != nil {
+			writeAdtyTopUpError(c, createErr)
 			return
 		}
-		if !updated {
-			writeAdtyTopUpError(c, model.ErrAdtyTopUpNotCancel)
+		topUp = createdTopUp
+		channel = pickedChannel
+		method = pickedMethod
+		break
+	}
+	unlockCheckout()
+
+	if topUp == nil {
+		if req.ChannelId > 0 || attemptFailed {
+			common.ApiError(c, service.ErrAdtyEpayChosenChannelUnavailable)
 			return
 		}
-		view, err := model.GetUserAdtyTopUp(topUp.TradeNo, topUp.UserId)
-		if err != nil {
-			writeAdtyTopUpError(c, err)
-			return
-		}
-		common.ApiSuccess(c, view)
+		common.ApiErrorT(c, "This payment method is not available")
 		return
 	}
-	if req.ChannelId > 0 || attemptFailed {
+
+	timeout := min(channelTimeout, time.Until(deadline))
+	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+	result, err := service.CreateAdtyEpayOrder(ctx, channel, method, service.AdtyEpayCreateRequest{
+		TradeNo:   topUp.TradeNo,
+		Name:      "Top-up " + topUp.TradeNo,
+		ClientIP:  c.ClientIP(),
+		Device:    req.Device,
+		MoneyCNY:  quote.PayAmount,
+		NotifyURL: callback + "/api/user/epay/notify/" + strconv.Itoa(channel.Id),
+		ReturnURL: service.AdtyPayResultURLForHost(topUp.TradeNo, quote.Business == model.AdtyBusinessOwnerMarginTopup && service.AdtyRequestSiteID(c) == 0), // 主站的支付结果页，按订单所属站点与发起域跳回（任务 11.3）
+	})
+	cancel()
+	if err != nil {
+		common.SysLog(common.LogText("epay channel %d order failed trade_no=%s: %s", channel.Id, topUp.TradeNo, err.Error()))
+		if failErr := model.FailPendingAdtyTopUp(topUp.TradeNo, model.PaymentProviderAdtyEpay); failErr != nil {
+			common.SysError(common.LogText("epay fail pending order %s failed: %s", topUp.TradeNo, failErr.Error()))
+		}
 		common.ApiError(c, service.ErrAdtyEpayChosenChannelUnavailable)
 		return
 	}
-	common.ApiErrorT(c, "This payment method is not available")
+	if result.Mode != "submit" && result.Mode != method.ReturnType {
+		_ = model.UpdateAdtyEpayMethodReturnType(method.Id, result.Mode)
+	}
+	updated, err := model.UpdatePendingAdtyTopupOrderCheckout(topUp.TradeNo, nil, map[string]any{
+		"qr_code":          result.QRCode,
+		"pay_url":          result.PayURL,
+		"url_scheme":       result.URLScheme,
+		"gateway_trade_id": result.GatewayTradeNo,
+	})
+	if err != nil {
+		if failErr := model.FailPendingAdtyTopUp(topUp.TradeNo, model.PaymentProviderAdtyEpay); failErr != nil {
+			common.SysError(common.LogText("epay fail pending order %s after writeback error failed: %s", topUp.TradeNo, failErr.Error()))
+		}
+		writeAdtyTopUpError(c, err)
+		return
+	}
+	if !updated {
+		common.ApiErrorT(c, "Order status changed before checkout finished. Please try again")
+		return
+	}
+	view, err := model.GetUserAdtyTopUp(topUp.TradeNo, topUp.UserId)
+	if err != nil {
+		writeAdtyTopUpError(c, err)
+		return
+	}
+	common.ApiSuccess(c, view)
 }
 
 // adtyEpayCallbackParams 读回调参数：GET 读 query，POST 读表单。
@@ -305,6 +338,10 @@ func completeAdtyEpayCallback(channel *model.AdtyEpayChannel, tradeNo string, pa
 	if method == nil || method.Method != ext.Method {
 		return errors.Join(model.ErrPaymentMethodMismatch, errors.New("payment type does not match the order"))
 	}
+	gatewayTradeNo := strings.TrimSpace(params["trade_no"])
+	if gatewayTradeNo == "" {
+		return errors.Join(model.ErrPaymentMethodMismatch, errors.New("missing gateway trade number"))
+	}
 	money, err := service.AdtyDecimalFromAny(params["money"])
 	if err != nil {
 		return model.ErrPaymentAmountMismatch
@@ -318,8 +355,8 @@ func completeAdtyEpayCallback(channel *model.AdtyEpayChannel, tradeNo string, pa
 		Method:         ext.Method,
 		PaidAmount:     money,
 		PaidCurrency:   "CNY",
-		GatewayTradeId: params["trade_no"],
-		TxHash:         params["trade_no"],
+		GatewayTradeId: gatewayTradeNo,
+		TxHash:         gatewayTradeNo,
 		Payload:        payload,
 		Source:         model.AdtyPaymentSourceCallback,
 	}, callerIP)

@@ -32,6 +32,8 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
+import { SecureVerificationDialog } from '@/features/auth/secure-verification/components/secure-verification-dialog'
+import { useSecureVerification } from '@/features/auth/secure-verification/hooks/use-secure-verification'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
 import { toIntlLocale } from '@/i18n/languages'
@@ -254,15 +256,34 @@ function GiftFulfillmentReviewDialog(props: {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const id = useId()
+  const verification = useSecureVerification()
   const [action, setAction] = useState<'approve' | 'reject' | ''>('')
   const [note, setNote] = useState('')
   const mutation = useMutation({
     mutationFn: async () => {
       if (!action) return null
-      return reviewAdminGiftFulfillment(props.record.id, {
-        action,
-        note: note.trim(),
+      const trimmedNote = note.trim()
+      const proof = await verification.requestVerification({
+        scope: 'adty.gift_fulfillment.review',
+        context: {
+          id: props.record.id,
+          action,
+          ...(trimmedNote ? { note: trimmedNote } : {}),
+        },
+        title: t('Confirm it is you'),
+        description: t(
+          'Reviewing a gift fulfillment requires a fresh verification.'
+        ),
       })
+      if (!proof?.proof_token) return null
+      return reviewAdminGiftFulfillment(
+        props.record.id,
+        {
+          action,
+          note: trimmedNote,
+        },
+        proof.proof_token
+      )
     },
     onSuccess: (res) => {
       if (!res) return
@@ -313,6 +334,7 @@ function GiftFulfillmentReviewDialog(props: {
       }
     >
       <div className='flex flex-col gap-3'>
+        <SecureVerificationDialog {...verification.dialogProps} />
         <div className='flex flex-col gap-1'>
           <Label htmlFor={`${id}-action`}>{t('Decision')}</Label>
           <NativeSelect

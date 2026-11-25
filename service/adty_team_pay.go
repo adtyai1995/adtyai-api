@@ -3,8 +3,11 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -15,6 +18,46 @@ import (
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
+
+const (
+	maxActivePendingAdtyTeamTopUps  = model.MaxActivePendingAdtyTopUps
+	reusableTeamPendingMinRemaining = int64(60)
+)
+
+// ErrAdtyPaymentGatewayUnavailable wraps upstream payment gateway failures so
+// controllers can log the raw cause and return a sanitized user-facing error.
+var ErrAdtyPaymentGatewayUnavailable = errors.New("payment gateway unavailable")
+
+var (
+	adtyTeamCheckoutLocks     sync.Map
+	adtyTeamCheckoutLockGuard sync.Mutex
+)
+
+func lockAdtyTeamCheckout(teamID int64) func() {
+	adtyTeamCheckoutLockGuard.Lock()
+	var entry *adtyTeamTopupRefLock
+	if v, ok := adtyTeamCheckoutLocks.Load(teamID); ok {
+		entry = v.(*adtyTeamTopupRefLock)
+	} else {
+		entry = &adtyTeamTopupRefLock{}
+		adtyTeamCheckoutLocks.Store(teamID, entry)
+	}
+	entry.refs++
+	adtyTeamCheckoutLockGuard.Unlock()
+	entry.mu.Lock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			entry.mu.Unlock()
+			adtyTeamCheckoutLockGuard.Lock()
+			entry.refs--
+			if entry.refs == 0 {
+				adtyTeamCheckoutLocks.Delete(teamID)
+			}
+			adtyTeamCheckoutLockGuard.Unlock()
+		})
+	}
+}
 
 func AdtyEpayExpiry(created int64) int64 {
 	minutes := adty_setting.GetTopupSetting().EpayOrderMinutes
@@ -29,10 +72,24 @@ func adtyUSDTOrderTimeoutSeconds() int64 {
 	if minutes <= 0 {
 		return bepusdtTimeoutSeconds
 	}
-	return int64(minutes) * 60
+	seconds := int64(minutes) * 60
+	if seconds < 180 {
+		seconds = 180
+	}
+	if seconds > 3600 {
+		seconds = 3600
+	}
+	return seconds
 }
 
-func adtyTeamQuote(userGroup string, face int64, method string) (*AdtyQuote, error) {
+func normalizeAdtyTeamDevice(raw string) string {
+	if strings.TrimSpace(raw) == "mobile" {
+		return "mobile"
+	}
+	return "pc"
+}
+
+func adtyTeamQuote(team *model.AdtyTeam, userGroup string, face int64, method string) (*AdtyQuote, error) {
 	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
 		return nil, common.NewMessage("Top-up is unavailable while quota is displayed as tokens")
 	}
@@ -48,6 +105,12 @@ func adtyTeamQuote(userGroup string, face int64, method string) (*AdtyQuote, err
 	creditQuota := faceUSD.Mul(common.QuotaPerUnitDecimal()).Floor()
 	if _, err := common.WalletQuotaFromDecimalStrict(creditQuota); err != nil || !creditQuota.IsPositive() {
 		return nil, common.NewMessage("Top-up quota exceeds the range the system can represent")
+	}
+	if team != nil {
+		shared := max(team.SharedQuota, int64(0))
+		if creditQuota.IntPart() > int64(common.MaxWalletQuota)-shared {
+			return nil, model.ErrTopUpQuotaLimitExceeded
+		}
 	}
 	quote := &AdtyQuote{
 		FaceUSD:         faceUSD,
@@ -100,7 +163,7 @@ func AdtyQuoteForTeamPayment(leaderID, requestSiteID int, teamID int64, userGrou
 	if strings.TrimSpace(group) == "" {
 		group = leader.Group
 	}
-	quote, err := adtyTeamQuote(group, face, method)
+	quote, err := adtyTeamQuote(&team, group, face, method)
 	if err != nil {
 		return nil, err
 	}
@@ -110,12 +173,56 @@ func AdtyQuoteForTeamPayment(leaderID, requestSiteID int, teamID int64, userGrou
 	return quote, nil
 }
 
+// AdtyTeamTopupStartOptions carries all parameters for starting a team checkout.
+type AdtyTeamTopupStartOptions struct {
+	LeaderID      int
+	TeamID        int64
+	RequestSiteID int
+	AmountUSD     decimal.Decimal
+	Method        string
+	ChannelID     int
+	Key           string
+	ClientIP      string
+	PaymentScene  string
+	Device        string
+}
+
 // StartAdtyTeamTopupPayment opens an epay or USDT order for a team.
 // The payable amount uses the configured top-up price. The order has no gift.
 // A positive channelID pins the Epay order to that channel: if it cannot take
 // the order, the leader is asked to choose another payment method.
 func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Decimal, method string, channelID int, key, clientIP string, paymentScene ...string) (*model.AdtyTopupOrder, error) {
-	method, key = strings.TrimSpace(method), strings.TrimSpace(key)
+	sceneKey := ""
+	if len(paymentScene) > 0 {
+		sceneKey = strings.TrimSpace(paymentScene[0])
+	}
+	return StartAdtyTeamTopupPaymentWithOptions(AdtyTeamTopupStartOptions{
+		LeaderID:     leaderID,
+		TeamID:       teamID,
+		AmountUSD:    amountUSD,
+		Method:       method,
+		ChannelID:    channelID,
+		Key:          key,
+		ClientIP:     clientIP,
+		PaymentScene: sceneKey,
+		Device:       "pc",
+	})
+}
+
+// StartAdtyTeamTopupPaymentWithOptions opens an Epay or BEpusdt checkout for a team,
+// verifying request site scope, enforcing the per-team active pending order cap,
+// reusing matching ready pending orders, and forwarding device preference.
+func StartAdtyTeamTopupPaymentWithOptions(opts AdtyTeamTopupStartOptions) (*model.AdtyTopupOrder, error) {
+	leaderID := opts.LeaderID
+	teamID := opts.TeamID
+	amountUSD := opts.AmountUSD
+	method := strings.TrimSpace(opts.Method)
+	channelID := opts.ChannelID
+	key := strings.TrimSpace(opts.Key)
+	clientIP := opts.ClientIP
+	sceneKey := strings.TrimSpace(opts.PaymentScene)
+	device := normalizeAdtyTeamDevice(opts.Device)
+
 	if leaderID <= 0 || teamID <= 0 || channelID < 0 || key == "" || !amountUSD.IsPositive() {
 		return nil, ErrAdtyTeamInvalid
 	}
@@ -129,17 +236,13 @@ func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Dec
 	if len(key) > adtyTeamTopupKeyMaxLen {
 		return nil, ErrAdtyTeamIdempotencyKey
 	}
-	sceneKey := ""
-	if len(paymentScene) > 0 {
-		sceneKey = strings.TrimSpace(paymentScene[0])
-	}
 	unlock := lockAdtyTeamTopupKey(teamID, key)
 	defer unlock()
 	if IsAdtyUSDTMethod(method) {
 		if channelID > 0 {
 			return nil, ErrAdtyTeamInvalid
 		}
-		return startAdtyTeamBEpusdtTopup(leaderID, teamID, amountUSD, method, key, sceneKey)
+		return startAdtyTeamBEpusdtTopup(leaderID, teamID, opts.RequestSiteID, amountUSD, method, key, sceneKey)
 	}
 	if !IsAdtyEpayMethod(method) {
 		return nil, ErrAdtyTeamInvalid
@@ -157,7 +260,10 @@ func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Dec
 		return nil, ErrAdtyTeamInvalid
 	}
 	if existing != nil {
-		return ResumeAdtyTeamTopupPayment(leaderID, teamID, existing.TradeNo, clientIP)
+		if opts.RequestSiteID > 0 && opts.RequestSiteID != existing.SiteId {
+			return nil, ErrAdtyTeamForbidden
+		}
+		return ResumeAdtyTeamTopupPayment(leaderID, teamID, existing.TradeNo, clientIP, device)
 	}
 	var team model.AdtyTeam
 	if err := model.DB.First(&team, teamID).Error; err != nil {
@@ -169,6 +275,9 @@ func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Dec
 	if team.Status != model.AdtyTeamStatusActive || team.LeaderUserId != leaderID {
 		return nil, ErrAdtyTeamForbidden
 	}
+	if opts.RequestSiteID > 0 && opts.RequestSiteID != team.SiteId {
+		return nil, ErrAdtyTeamForbidden
+	}
 	var leader model.User
 	if err := model.DB.First(&leader, leaderID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -176,10 +285,10 @@ func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Dec
 		}
 		return nil, err
 	}
-	if leader.SiteId != team.SiteId {
+	if leader.Status != common.UserStatusEnabled || leader.StaffSiteId != 0 || leader.SiteId != team.SiteId {
 		return nil, ErrAdtyTeamForbidden
 	}
-	quote, err := adtyTeamQuote(leader.Group, amountUSD.IntPart(), method)
+	quote, err := adtyTeamQuote(&team, leader.Group, amountUSD.IntPart(), method)
 	if err != nil {
 		return nil, err
 	}
@@ -192,46 +301,88 @@ func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Dec
 	if !ok {
 		return nil, ErrAdtyEpayChosenChannelUnavailable
 	}
-	channel, channelMethod, err := PickAdtyEpayChannel(method, quote.PayAmount, "pc", nil, time.Now().Unix(), allowed)
+
+	unlockCheckout := lockAdtyTeamCheckout(teamID)
+	defer unlockCheckout()
+
+	now := time.Now().Unix()
+	pendingList, err := model.ListTeamActivePendingAdtyTopUps(teamID, now)
 	if err != nil {
-		if channelID > 0 {
-			return nil, ErrAdtyEpayChosenChannelUnavailable
-		}
-		if errors.Is(err, ErrAdtyEpayNoChannel) {
-			return nil, common.NewMessage("This payment method is not available")
-		}
-		if errors.Is(err, model.ErrAdtyEpayDailyLimit) {
-			return nil, ErrAdtyEpayChosenChannelUnavailable
-		}
 		return nil, err
 	}
-	payMoney, _ := quote.PayAmount.Float64()
-	topUp := &model.TopUp{
-		UserId: leaderID, Amount: quote.FaceUSD.IntPart(), Money: payMoney, TradeNo: tradeNo,
-		PaymentMethod: method, PaymentProvider: model.PaymentProviderAdtyEpay,
-		CreateTime: time.Now().Unix(), Status: common.TopUpStatusPending,
+	if reusable := findReusableTeamPendingOrder(pendingList, leaderID, teamID, model.PaymentProviderAdtyEpay, method, scene.Key, quote, channelID, allowed, now); reusable != nil {
+		unlockCheckout()
+		return ResumeAdtyTeamTopupPayment(leaderID, teamID, reusable.TradeNo, clientIP, device)
 	}
-	ext := &model.AdtyTopupOrder{
-		Business: model.AdtyBusinessTeamTopup, TradeNo: tradeNo, UserId: leaderID, TeamId: teamID, SiteId: team.SiteId,
-		ExpireAt: AdtyEpayExpiry(topUp.CreateTime), CheckoutStage: "local", Provider: model.PaymentProviderAdtyEpay, Method: method,
-		FaceUSD: quote.FaceUSD, BonusRate: decimal.Zero, BonusUSD: decimal.Zero,
-		CreditQuota: quote.CreditQuota, PayAmount: quote.PayAmount,
-		PayCurrency: quote.PayCurrency, PriceSnapshot: quote.PriceCNYPerUSD, TopupGroupRatio: quote.TopupGroupRatio,
-		ChannelId: channel.Id, MethodLabel: channelMethod.DisplayName,
+	if len(pendingList) >= maxActivePendingAdtyTeamTopUps {
+		return nil, model.ErrAdtyTooManyPendingOrders
 	}
-	if err := CreateAdtyPaymentOrder(topUp, ext, sceneKey, channel); err != nil {
-		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			return nil, ErrAdtyTeamInvalid
+
+	maxAttempts := 1
+	if channelID == 0 {
+		maxAttempts = 5
+	}
+	exclude := map[int]bool{}
+	var createErr error
+	created := false
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		channel, channelMethod, pickErr := PickAdtyEpayChannel(method, quote.PayAmount, device, exclude, time.Now().Unix(), allowed)
+		if pickErr != nil {
+			if attempt > 0 && errors.Is(createErr, model.ErrAdtyEpayDailyLimit) {
+				return nil, ErrAdtyEpayChosenChannelUnavailable
+			}
+			if channelID > 0 {
+				return nil, ErrAdtyEpayChosenChannelUnavailable
+			}
+			if errors.Is(pickErr, ErrAdtyEpayNoChannel) {
+				return nil, common.NewMessage("This payment method is not available")
+			}
+			if errors.Is(pickErr, model.ErrAdtyEpayDailyLimit) {
+				return nil, ErrAdtyEpayChosenChannelUnavailable
+			}
+			return nil, pickErr
 		}
-		if errors.Is(err, model.ErrAdtyEpayDailyLimit) {
-			return nil, ErrAdtyEpayChosenChannelUnavailable
+		exclude[channel.Id] = true
+		payMoney, _ := quote.PayAmount.Float64()
+		createTime := time.Now().Unix()
+		topUp := &model.TopUp{
+			UserId: leaderID, Amount: quote.FaceUSD.IntPart(), Money: payMoney, TradeNo: tradeNo,
+			PaymentMethod: method, PaymentProvider: model.PaymentProviderAdtyEpay,
+			CreateTime: createTime, Status: common.TopUpStatusPending,
 		}
-		return nil, err
+		ext := &model.AdtyTopupOrder{
+			Business: model.AdtyBusinessTeamTopup, TradeNo: tradeNo, UserId: leaderID, TeamId: teamID, SiteId: team.SiteId,
+			ExpireAt: AdtyEpayExpiry(createTime), CheckoutStage: "local", Provider: model.PaymentProviderAdtyEpay, Method: method,
+			FaceUSD: quote.FaceUSD, BonusRate: decimal.Zero, BonusUSD: decimal.Zero,
+			CreditQuota: quote.CreditQuota, PayAmount: quote.PayAmount,
+			PayCurrency: quote.PayCurrency, PriceSnapshot: quote.PriceCNYPerUSD, TopupGroupRatio: quote.TopupGroupRatio,
+			ChannelId: channel.Id, MethodLabel: channelMethod.DisplayName,
+			MaxActivePending: maxActivePendingAdtyTeamTopUps,
+		}
+		createErr = CreateAdtyPaymentOrder(topUp, ext, sceneKey, channel)
+		if errors.Is(createErr, model.ErrAdtyEpayDailyLimit) {
+			if channelID > 0 {
+				return nil, ErrAdtyEpayChosenChannelUnavailable
+			}
+			continue
+		}
+		if createErr != nil {
+			if errors.Is(createErr, model.ErrAdtyIdempotencyConflict) {
+				return nil, ErrAdtyTeamInvalid
+			}
+			return nil, createErr
+		}
+		created = true
+		break
 	}
-	return ResumeAdtyTeamTopupPayment(leaderID, teamID, tradeNo, clientIP)
+	unlockCheckout()
+	if !created {
+		return nil, ErrAdtyEpayChosenChannelUnavailable
+	}
+	return ResumeAdtyTeamTopupPayment(leaderID, teamID, tradeNo, clientIP, device)
 }
 
-func startAdtyTeamBEpusdtTopup(leaderID int, teamID int64, amountUSD decimal.Decimal, method, key, sceneKey string) (*model.AdtyTopupOrder, error) {
+func startAdtyTeamBEpusdtTopup(leaderID int, teamID int64, requestSiteID int, amountUSD decimal.Decimal, method, key, sceneKey string) (*model.AdtyTopupOrder, error) {
 	tradeNo := adtyTeamTopupTradeNo("TTU", teamID, key)
 	existing, conflict, err := adtyClaimTeamTopupReplay(tradeNo, adtyTeamTopupLegacyTradeNo("TTU", key), teamID, func(o *model.AdtyTopupOrder) bool {
 		return o.TeamId == teamID && o.UserId == leaderID && o.FaceUSD.Equal(amountUSD) && (sceneKey == "" || o.PaymentScene == sceneKey || (o.PaymentScene == "" && sceneKey == model.AdtyBusinessWalletTopup)) &&
@@ -244,6 +395,9 @@ func startAdtyTeamBEpusdtTopup(leaderID int, teamID int64, amountUSD decimal.Dec
 		return nil, ErrAdtyTeamInvalid
 	}
 	if existing != nil {
+		if requestSiteID > 0 && requestSiteID != existing.SiteId {
+			return nil, ErrAdtyTeamForbidden
+		}
 		return ResumeAdtyTeamTopupPayment(leaderID, teamID, existing.TradeNo, "")
 	}
 	if !setting.BEpusdtConfigured() || !setting.BEpusdtChainEnabled(method) {
@@ -259,6 +413,9 @@ func startAdtyTeamBEpusdtTopup(leaderID int, teamID int64, amountUSD decimal.Dec
 	if team.Status != model.AdtyTeamStatusActive || team.LeaderUserId != leaderID {
 		return nil, ErrAdtyTeamForbidden
 	}
+	if requestSiteID > 0 && requestSiteID != team.SiteId {
+		return nil, ErrAdtyTeamForbidden
+	}
 	var leader model.User
 	if err := model.DB.First(&leader, leaderID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -266,29 +423,51 @@ func startAdtyTeamBEpusdtTopup(leaderID int, teamID int64, amountUSD decimal.Dec
 		}
 		return nil, err
 	}
-	if leader.SiteId != team.SiteId {
+	if leader.Status != common.UserStatusEnabled || leader.StaffSiteId != 0 || leader.SiteId != team.SiteId {
 		return nil, ErrAdtyTeamForbidden
 	}
-	quote, err := adtyTeamQuote(leader.Group, amountUSD.IntPart(), method)
+	quote, err := adtyTeamQuote(&team, leader.Group, amountUSD.IntPart(), method)
 	if err != nil {
 		return nil, err
 	}
 	quote.TeamID, quote.Business, quote.SiteID = teamID, model.AdtyBusinessTeamTopup, team.SiteId
-	if _, err := AuthorizeAdtyPaymentScene(leaderID, sceneKey, model.PaymentProviderAdtyBEpusdt, method, quote); err != nil {
+	scene, err := AuthorizeAdtyPaymentScene(leaderID, sceneKey, model.PaymentProviderAdtyBEpusdt, method, quote)
+	if err != nil {
 		return nil, err
 	}
+
+	unlockCheckout := lockAdtyTeamCheckout(teamID)
+	defer unlockCheckout()
+
+	now := time.Now().Unix()
+	pendingList, err := model.ListTeamActivePendingAdtyTopUps(teamID, now)
+	if err != nil {
+		return nil, err
+	}
+	if reusable := findReusableTeamPendingOrder(pendingList, leaderID, teamID, model.PaymentProviderAdtyBEpusdt, method, scene.Key, quote, 0, nil, now); reusable != nil {
+		unlockCheckout()
+		return ResumeAdtyTeamTopupPayment(leaderID, teamID, reusable.TradeNo, "")
+	}
+	if len(pendingList) >= maxActivePendingAdtyTeamTopUps {
+		return nil, model.ErrAdtyTooManyPendingOrders
+	}
+
 	payMoney, _ := quote.PayAmount.Float64()
+	createTime := time.Now().Unix()
 	topUp := &model.TopUp{
 		UserId: leaderID, Amount: quote.FaceUSD.IntPart(), Money: payMoney, TradeNo: tradeNo,
 		PaymentMethod: method, PaymentProvider: model.PaymentProviderAdtyBEpusdt,
-		CreateTime: time.Now().Unix(), Status: common.TopUpStatusPending,
+		CreateTime: createTime, Status: common.TopUpStatusPending,
 	}
 	ext := &model.AdtyTopupOrder{
 		Business: model.AdtyBusinessTeamTopup, TradeNo: tradeNo, UserId: leaderID, TeamId: teamID, SiteId: team.SiteId,
-		ExpireAt: time.Now().Unix() + adtyUSDTOrderTimeoutSeconds(), CheckoutStage: "local", CheckoutGateway: strings.TrimRight(setting.GetBEpusdtSetting().BaseURL, "/"), Provider: model.PaymentProviderAdtyBEpusdt, Method: method,
+		ExpireAt: createTime + adtyUSDTOrderTimeoutSeconds(), CheckoutStage: "local",
+		CheckoutGateway: strings.TrimRight(strings.TrimSpace(setting.GetBEpusdtSetting().BaseURL), "/"),
+		Provider:        model.PaymentProviderAdtyBEpusdt, Method: method,
 		FaceUSD: quote.FaceUSD, BonusRate: decimal.Zero, BonusUSD: decimal.Zero,
 		CreditQuota: quote.CreditQuota, PayAmount: quote.PayAmount,
 		PayCurrency: quote.PayCurrency, PriceSnapshot: quote.PriceCNYPerUSD, TopupGroupRatio: quote.TopupGroupRatio,
+		MaxActivePending: maxActivePendingAdtyTeamTopUps,
 	}
 	if err := CreateAdtyPaymentOrder(topUp, ext, sceneKey); err != nil {
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
@@ -296,13 +475,141 @@ func startAdtyTeamBEpusdtTopup(leaderID int, teamID int64, amountUSD decimal.Dec
 		}
 		return nil, err
 	}
+	unlockCheckout()
 	return ResumeAdtyTeamTopupPayment(leaderID, teamID, tradeNo, "")
+}
+
+func findReusableTeamPendingOrder(pendingList []model.AdtyTopupOrder, leaderID int, teamID int64, provider, method, sceneKey string, quote *AdtyQuote, requestedChannel int, allowedChannels []int, now int64) *model.AdtyTopupOrder {
+	if quote == nil {
+		return nil
+	}
+	currentBEpusdtGateway := strings.TrimRight(strings.TrimSpace(setting.GetBEpusdtSetting().BaseURL), "/")
+	for i := range pendingList {
+		ext := &pendingList[i]
+		if ext.TeamId != teamID || ext.UserId != leaderID || ext.Provider != provider || ext.Method != method {
+			continue
+		}
+		if ext.PaymentScene != sceneKey && !(ext.PaymentScene == "" && sceneKey == model.AdtyBusinessWalletTopup) {
+			continue
+		}
+		if !ext.FaceUSD.Equal(quote.FaceUSD) || ext.CreditQuota != quote.CreditQuota || ext.PayCurrency != quote.PayCurrency {
+			continue
+		}
+		if ext.ExpireAt > 0 && ext.ExpireAt <= now+reusableTeamPendingMinRemaining {
+			continue
+		}
+		if !teamCheckoutReady(ext) {
+			continue
+		}
+		switch provider {
+		case model.PaymentProviderAdtyBEpusdt:
+			storedGW := strings.TrimRight(strings.TrimSpace(ext.CheckoutGateway), "/")
+			if storedGW != "" && storedGW != currentBEpusdtGateway {
+				continue
+			}
+			return ext
+		case model.PaymentProviderAdtyEpay:
+			if !ext.PayAmount.Equal(quote.PayAmount) || ext.ChannelId <= 0 {
+				continue
+			}
+			if requestedChannel > 0 && ext.ChannelId != requestedChannel {
+				continue
+			}
+			if len(allowedChannels) > 0 && !slices.Contains(allowedChannels, ext.ChannelId) {
+				continue
+			}
+			channel, err := model.GetAdtyEpayChannel(ext.ChannelId)
+			if err != nil || channel == nil || channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || channel.MethodFor(method) == nil {
+				continue
+			}
+			return ext
+		}
+	}
+	return nil
+}
+
+func adtyTeamTopupTerminalStatusError(status string) error {
+	switch status {
+	case common.TopUpStatusExpired:
+		return common.NewMessage("Order expired")
+	case model.TopUpStatusCanceled:
+		return common.NewMessage("Order has been canceled")
+	case common.TopUpStatusFailed:
+		return common.NewMessage("Order checkout failed. Please create a new order")
+	case model.TopUpStatusRefunded:
+		return common.NewMessage("Order has been refunded")
+	case common.TopUpStatusSuccess:
+		return common.NewMessage("Order has already been paid")
+	default:
+		return common.NewMessage("Order is no longer payable")
+	}
+}
+
+func adtyTeamOrderExpired(ext *model.AdtyTopupOrder, now int64) bool {
+	if ext == nil {
+		return false
+	}
+	deadline := ext.ExpireAt
+	if deadline == 0 {
+		switch ext.Provider {
+		case model.PaymentProviderAdtyEpay:
+			if ext.CreatedAt > 0 {
+				deadline = AdtyEpayExpiry(ext.CreatedAt)
+			}
+		case model.PaymentProviderAdtyBEpusdt:
+			if ext.CreatedAt > 0 {
+				deadline = ext.CreatedAt + adtyUSDTOrderTimeoutSeconds()
+			}
+		}
+	}
+	return deadline > 0 && deadline <= now
+}
+
+func refreshTeamEpaySubmitURLIfNeeded(ext *model.AdtyTopupOrder, clientIP, device string) error {
+	if ext == nil || ext.Provider != model.PaymentProviderAdtyEpay || ext.ChannelId <= 0 {
+		return nil
+	}
+	channel, err := model.GetAdtyEpayChannel(ext.ChannelId)
+	if err != nil || channel == nil {
+		return nil
+	}
+	if !channel.IsRSA() || channel.OrderMode != model.AdtyEpayOrderModeSubmit {
+		return nil
+	}
+	method := channel.MethodFor(ext.Method)
+	if method == nil || channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() {
+		return ErrAdtyEpayChosenChannelUnavailable
+	}
+	callback := strings.TrimRight(GetCallbackAddress(), "/") + "/api/user/"
+	newURL, refreshed, err := RefreshAdtyEpaySubmitURL(channel, method, AdtyEpayCreateRequest{
+		TradeNo:   ext.TradeNo,
+		Name:      "Team top-up " + ext.TradeNo,
+		ClientIP:  clientIP,
+		Device:    normalizeAdtyTeamDevice(device),
+		MoneyCNY:  ext.PayAmount,
+		NotifyURL: callback + "epay/notify/" + strconv.Itoa(channel.Id),
+		ReturnURL: AdtyPayResultURL(ext.TradeNo),
+	}, ext.PayURL)
+	if err != nil {
+		return ErrAdtyEpayChosenChannelUnavailable
+	}
+	if refreshed && newURL != "" {
+		if err := model.UpdateAdtyTopupOrderFields(ext.TradeNo, map[string]any{"pay_url": newURL}); err != nil {
+			return err
+		}
+		ext.PayURL = newURL
+	}
+	return nil
 }
 
 // Resume the original merchant order. The committed submitting marker survives
 // loss of the gateway response. The order lock serializes gateway calls with
 // other workers, cancellation, and final credit.
-func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP string) (*model.AdtyTopupOrder, error) {
+func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP string, device ...string) (*model.AdtyTopupOrder, error) {
+	dev := "pc"
+	if len(device) > 0 {
+		dev = normalizeAdtyTeamDevice(device[0])
+	}
 	view, err := model.GetUserAdtyTopUp(tradeNo, leaderID)
 	if err != nil {
 		return nil, err
@@ -311,16 +618,16 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 	if teamID <= 0 || ext.TeamId != teamID || ext.UserId != leaderID {
 		return nil, ErrAdtyTeamForbidden
 	}
-	if view.Status == common.TopUpStatusPending && ext.Provider == model.PaymentProviderAdtyEpay {
-		deadline := ext.ExpireAt
-		if deadline == 0 {
-			deadline = AdtyEpayExpiry(ext.CreatedAt)
-		}
-		if deadline <= time.Now().Unix() {
-			return nil, common.NewMessage("Order expired")
-		}
+	if view.Status != common.TopUpStatusPending {
+		return nil, adtyTeamTopupTerminalStatusError(view.Status)
 	}
-	if view.Status != common.TopUpStatusPending || teamCheckoutReady(ext) {
+	if adtyTeamOrderExpired(ext, time.Now().Unix()) {
+		return nil, common.NewMessage("Order expired")
+	}
+	if teamCheckoutReady(ext) {
+		if err := refreshTeamEpaySubmitURLIfNeeded(ext, clientIP, dev); err != nil {
+			return nil, err
+		}
 		return ext, nil
 	}
 	if !IsAdtyUSDTMethod(ext.Method) && (!IsAdtyEpayMethod(ext.Method) || ext.ChannelId <= 0) {
@@ -342,23 +649,38 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		var top model.TopUp
 		if err := model.AdtyLockForUpdate(tx).Where("trade_no = ? AND user_id = ?", tradeNo, leaderID).First(&top).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return model.ErrTopUpNotFound
+			}
 			return err
 		}
 		if err := model.AdtyLockForUpdate(tx).First(ext, ext.Id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return model.ErrTopUpNotFound
+			}
 			return err
 		}
-		if ext.Provider == model.PaymentProviderAdtyEpay && ext.ExpireAt == 0 && top.Status == common.TopUpStatusPending {
+		if top.Status != common.TopUpStatusPending {
+			return adtyTeamTopupTerminalStatusError(top.Status)
+		}
+		if ext.Provider == model.PaymentProviderAdtyEpay && ext.ExpireAt == 0 {
 			ext.ExpireAt = AdtyEpayExpiry(ext.CreatedAt)
 			if err := tx.Model(ext).UpdateColumn("expire_at", ext.ExpireAt).Error; err != nil {
 				return err
 			}
 		}
-		if top.Status != common.TopUpStatusPending || teamCheckoutReady(ext) {
+		if adtyTeamOrderExpired(ext, time.Now().Unix()) {
+			return common.NewMessage("Order expired")
+		}
+		if teamCheckoutReady(ext) {
 			alreadyDone = true
 			return nil
 		}
 		var team model.AdtyTeam
 		if err := tx.First(&team, teamID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAdtyTeamForbidden
+			}
 			return err
 		}
 		if team.LeaderUserId != leaderID || team.Status != model.AdtyTeamStatusActive {
@@ -390,9 +712,16 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 		return nil, err
 	}
 	if alreadyDone {
-		return model.GetAdtyTopupOrder(tradeNo)
+		latest, err := model.GetAdtyTopupOrder(tradeNo)
+		if err != nil || latest == nil {
+			return latest, err
+		}
+		if err := refreshTeamEpaySubmitURLIfNeeded(latest, clientIP, dev); err != nil {
+			return nil, err
+		}
+		return latest, nil
 	}
-	fields, recoverErr := recoverTeamCheckout(ctx, &extSnapshot, epayChannel, clientIP, isReplay)
+	fields, recoverErr := recoverTeamCheckout(ctx, &extSnapshot, epayChannel, clientIP, dev, isReplay)
 	if errors.Is(recoverErr, ErrAdtyPaymentDetected) {
 		if err := RecoverAdtyHostedPayment(ctx, &extSnapshot); err != nil {
 			return nil, err
@@ -400,6 +729,11 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 		return model.GetAdtyTopupOrder(tradeNo)
 	}
 	if recoverErr != nil {
+		if !isReplay {
+			if failErr := model.FailPendingAdtyTopUp(tradeNo, extSnapshot.Provider); failErr != nil {
+				common.SysError(common.LogText("team topup fail pending order %s failed: %s", tradeNo, failErr.Error()))
+			}
+		}
 		return nil, recoverErr
 	}
 	// Tx 2: Re-lock and persist checkout fields only if still pending, unready,
@@ -407,6 +741,7 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 	var (
 		discarded         bool
 		teamForbidden     bool
+		terminalStatus    string
 		curGatewayTradeID string
 	)
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
@@ -419,7 +754,12 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 			return err
 		}
 		curGatewayTradeID = cur.GatewayTradeId
-		if top.Status != common.TopUpStatusPending || teamCheckoutReady(&cur) {
+		if top.Status != common.TopUpStatusPending {
+			discarded = true
+			terminalStatus = top.Status
+			return nil
+		}
+		if teamCheckoutReady(&cur) {
 			discarded = true
 			return nil
 		}
@@ -434,6 +774,14 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 			teamForbidden = true
 			return nil
 		}
+		if extSnapshot.Provider == model.PaymentProviderAdtyBEpusdt {
+			if payAmount, ok := fields["pay_amount"].(decimal.Decimal); ok {
+				money, _ := payAmount.Float64()
+				if err := tx.Model(&model.TopUp{}).Where("id = ?", top.Id).Update("money", money).Error; err != nil {
+					return err
+				}
+			}
+		}
 		fields["checkout_stage"] = "ready"
 		return tx.Model(&cur).Updates(fields).Error
 	})
@@ -446,10 +794,21 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 			}
 		}
 		if err != nil {
+			if !isReplay {
+				if failErr := model.FailPendingAdtyTopUp(tradeNo, extSnapshot.Provider); failErr != nil {
+					common.SysError(common.LogText("team topup fail pending order %s after writeback error failed: %s", tradeNo, failErr.Error()))
+				}
+			}
 			return nil, err
 		}
 		if teamForbidden {
+			if !isReplay {
+				_ = model.FailPendingAdtyTopUp(tradeNo, extSnapshot.Provider)
+			}
 			return nil, ErrAdtyTeamForbidden
+		}
+		if terminalStatus != "" {
+			return nil, adtyTeamTopupTerminalStatusError(terminalStatus)
 		}
 	}
 	return model.GetAdtyTopupOrder(tradeNo)
@@ -462,11 +821,14 @@ func teamCheckoutReady(ext *model.AdtyTopupOrder) bool {
 	return ext.PayURL != "" || ext.QRCode != "" || ext.URLScheme != ""
 }
 
-func recoverTeamCheckout(ctx context.Context, ext *model.AdtyTopupOrder, channel *model.AdtyEpayChannel, clientIP string, replay bool) (map[string]any, error) {
+func recoverTeamCheckout(ctx context.Context, ext *model.AdtyTopupOrder, channel *model.AdtyEpayChannel, clientIP, device string, replay bool) (map[string]any, error) {
 	trade := ext.TradeNo
+	device = normalizeAdtyTeamDevice(device)
 	callback := strings.TrimRight(GetCallbackAddress(), "/") + "/api/user/"
 	if ext.Provider == model.PaymentProviderAdtyBEpusdt && IsAdtyUSDTMethod(ext.Method) {
-		if ext.CheckoutGateway != "" && strings.TrimRight(setting.GetBEpusdtSetting().BaseURL, "/") != ext.CheckoutGateway {
+		currentGateway := strings.TrimRight(strings.TrimSpace(setting.GetBEpusdtSetting().BaseURL), "/")
+		storedGateway := strings.TrimRight(strings.TrimSpace(ext.CheckoutGateway), "/")
+		if storedGateway != "" && currentGateway != storedGateway {
 			return nil, model.ErrPaymentMethodMismatch
 		}
 		deadline := ext.ExpireAt
@@ -474,15 +836,21 @@ func recoverTeamCheckout(ctx context.Context, ext *model.AdtyTopupOrder, channel
 			deadline = ext.CreatedAt + adtyUSDTOrderTimeoutSeconds()
 		}
 		remaining := deadline - time.Now().Unix()
-		if remaining < 120 {
+		if !replay && remaining < 180 && remaining > 0 {
+			remaining = 180
+		}
+		if remaining < 180 {
 			return nil, common.NewMessage("Order expired")
 		}
-		order, err := CreateBEpusdtOrder(BEpusdtCreateRequest{
+		if remaining > 3600 {
+			remaining = 3600
+		}
+		order, err := CreateBEpusdtOrderContext(ctx, BEpusdtCreateRequest{
 			OrderID: trade, AmountUSD: ext.PayAmount, TradeType: ext.Method, VerifyOrder: true,
 			NotifyURL: callback + "bepusdt/notify", RedirectURL: AdtyPayResultURL(trade), Name: "Team top-up " + trade, Timeout: int(remaining),
 		})
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", ErrAdtyPaymentGatewayUnavailable, err)
 		}
 		return map[string]any{"pay_address": order.Address, "pay_amount": order.ActualAmount,
 			"pay_url": order.PaymentURL, "expire_at": min(deadline, order.ExpireAt), "gateway_trade_id": order.TradeId}, nil
@@ -511,7 +879,8 @@ func recoverTeamCheckout(ctx context.Context, ext *model.AdtyTopupOrder, channel
 			if expectedType == "" {
 				expectedType = method.Method
 			}
-			if result.OutTradeNo != trade || result.MerchantId != channel.MerchantId || result.TypeCode != expectedType || !result.MoneyCNY.Equal(ext.PayAmount) {
+			merchantID := strings.TrimSpace(result.MerchantId)
+			if result.OutTradeNo != trade || (merchantID != "" && merchantID != strings.TrimSpace(channel.MerchantId)) || result.TypeCode != expectedType || !result.MoneyCNY.Equal(ext.PayAmount) {
 				return nil, model.ErrPaymentMethodMismatch
 			}
 			if result.Paid {
@@ -524,11 +893,14 @@ func recoverTeamCheckout(ctx context.Context, ext *model.AdtyTopupOrder, channel
 		}
 	}
 	result, err := CreateAdtyEpayOrder(ctx, channel, method, AdtyEpayCreateRequest{
-		TradeNo: trade, Name: "Team top-up " + trade, ClientIP: clientIP, Device: "pc", MoneyCNY: ext.PayAmount,
+		TradeNo: trade, Name: "Team top-up " + trade, ClientIP: clientIP, Device: device, MoneyCNY: ext.PayAmount,
 		NotifyURL: callback + "epay/notify/" + strconv.Itoa(channel.Id), ReturnURL: AdtyPayResultURL(trade),
 	})
 	if err != nil {
 		return nil, ErrAdtyEpayChosenChannelUnavailable
+	}
+	if result.Mode != "submit" && result.Mode != method.ReturnType {
+		_ = model.UpdateAdtyEpayMethodReturnType(method.Id, result.Mode)
 	}
 	if result.GatewayTradeNo == "" {
 		result.GatewayTradeNo = gatewayTradeNo

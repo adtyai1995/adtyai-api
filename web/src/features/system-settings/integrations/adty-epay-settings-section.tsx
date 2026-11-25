@@ -23,6 +23,7 @@ import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { handleServerError } from '@/lib/handle-server-error'
 
 import { SettingsSwitchField } from '../components/settings-form-layout'
 import { SettingsPageFormActions } from '../components/settings-page-context'
@@ -147,27 +148,31 @@ export function AdtyEpaySettingsSection(props: {
     for (const item of NUMBER_FIELDS) {
       if (!order.includes(item.field)) order.push(item.field)
     }
-    for (const field of order) {
-      if (values[field] !== saved[field]) {
+    try {
+      for (const field of order) {
+        if (values[field] !== saved[field]) {
+          await updateOption.mutateAsync({
+            key: OPTION_KEYS[field],
+            value: values[field],
+          })
+          savedRef.current = {
+            ...savedRef.current,
+            [field]: values[field],
+          }
+        }
+      }
+      if (probeEnabled !== saved.probeEnabled) {
         await updateOption.mutateAsync({
-          key: OPTION_KEYS[field],
-          value: values[field],
+          key: OPTION_KEYS.probeEnabled,
+          value: probeEnabled,
         })
         savedRef.current = {
           ...savedRef.current,
-          [field]: values[field],
+          probeEnabled,
         }
       }
-    }
-    if (probeEnabled !== saved.probeEnabled) {
-      await updateOption.mutateAsync({
-        key: OPTION_KEYS.probeEnabled,
-        value: probeEnabled,
-      })
-      savedRef.current = {
-        ...savedRef.current,
-        probeEnabled,
-      }
+    } catch (error) {
+      handleServerError(error)
     }
   }
 

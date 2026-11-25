@@ -17,6 +17,7 @@ var (
 	ErrAdtyAdjustKeyTooLong     = errors.New("idempotency key too long")
 	ErrAdtyAdjustKeyRequired    = errors.New("idempotency key required")
 	ErrAdtyAdjustOrderTooLong   = errors.New("order reference too long")
+	ErrAdtyQuotaAdjustNoChange  = common.NewMessage("Quota is unchanged")
 )
 
 const (
@@ -241,6 +242,9 @@ func AdjustUserQuotaWithLedgerForActor(userID, operatorID, operatorRole int, den
 			return ErrAdtyQuotaFloor
 		}
 		delta := int64(after) - int64(user.Quota)
+		if delta == 0 {
+			return ErrAdtyQuotaAdjustNoChange
+		}
 		batchSiteID := order.SiteId
 		if delta < 0 {
 			if prov.FundingSource != AdtyAdjustSourceBatch {

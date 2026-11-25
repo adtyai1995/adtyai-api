@@ -21,6 +21,18 @@ import { isDisplayablePaymentQr, isSafePaymentUrl } from './safe-url'
 
 type PaymentLinks = Pick<AdtyOrderExt, 'qr_code' | 'pay_url' | 'url_scheme'>
 
+/** Direct gateway QR payload (excluding pay_url / url_scheme fallbacks). */
+export function directQrCode(ext: PaymentLinks): string {
+  if (isDisplayablePaymentQr(ext.qr_code)) return ext.qr_code.trim()
+  return ''
+}
+
+/** Safe HTTP(S) / app-scheme payment URL for desktop submit / payurl flows. */
+export function safePaymentLink(ext: PaymentLinks): string {
+  if (isSafePaymentUrl(ext.pay_url)) return ext.pay_url.trim()
+  return ''
+}
+
 /** QR content for desktop: the gateway QR code, otherwise the payment link. */
 export function qrContent(ext: PaymentLinks): string {
   if (isDisplayablePaymentQr(ext.qr_code)) return ext.qr_code

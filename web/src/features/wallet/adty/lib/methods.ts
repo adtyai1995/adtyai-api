@@ -84,6 +84,7 @@ export const ORDER_STATUS_LABELS: Record<AdtyOrderStatus, string> = {
   canceled: 'Canceled',
   failed: 'Failed',
   refunded: 'Refunded',
+  replaced: 'Replaced',
 }
 
 export const ORDER_STATUS_VARIANTS: Record<
@@ -96,4 +97,5 @@ export const ORDER_STATUS_VARIANTS: Record<
   canceled: 'neutral',
   failed: 'danger',
   refunded: 'info',
+  replaced: 'neutral',
 }

@@ -1741,6 +1741,9 @@ func AdtyPayResultTarget(token string) string {
 		}
 		return target
 	}
+	if ext.IsTeamTopup() {
+		return AdtySitePublicBaseURL(AdtySiteForUser(topUp.UserId)) + "/my-team?trade_no=" + url.QueryEscape(tradeNo)
+	}
 	// 跳回优先用站长的自定义域名：客户是在站长的牌子上付的钱，就该回到站长的站。
 	// 客户在那个域名上本来就登录着，回来直接看到钱包和这笔订单。
 	return AdtySitePublicBaseURL(AdtySiteForUser(topUp.UserId)) + "/wallet?trade_no=" + url.QueryEscape(tradeNo)

@@ -34,11 +34,26 @@ var errEpayOrderAbsent = fmt.Errorf("epay order was not found")
 type AdtyEpayQueryResult struct {
 	PaidAt         int64
 	Paid           bool
+	RawStatus      string
 	MoneyCNY       decimal.Decimal
 	TypeCode       string
 	GatewayTradeNo string
 	OutTradeNo     string
 	MerchantId     string
+}
+
+func epayRawString(raw common.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, `"`) {
+		var s string
+		if err := common.Unmarshal(raw, &s); err == nil {
+			return strings.TrimSpace(s)
+		}
+	}
+	return strings.Trim(trimmed, `"`)
 }
 
 var adtyEpayHTTPClient = func() *http.Client {
@@ -86,6 +101,11 @@ func CreateAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, me
 	}
 	params := adtyEpayOrderParams(channel, method, req)
 	if channel.OrderMode == model.AdtyEpayOrderModeSubmit {
+		if strings.TrimSpace(params["return_url"]) == "" {
+			if callback := strings.TrimRight(strings.TrimSpace(GetCallbackAddress()), "/"); callback != "" {
+				params["return_url"] = callback + "/wallet"
+			}
+		}
 		if channel.IsRSA() && strings.TrimSpace(req.Device) != "" {
 			params["device"] = req.Device
 		}
@@ -127,7 +147,7 @@ func CreateAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, me
 	var parsed struct {
 		Code      common.RawMessage `json:"code"`
 		Msg       string            `json:"msg"`
-		TradeNo   string            `json:"trade_no"`
+		TradeNo   common.RawMessage `json:"trade_no"`
 		PayURL    string            `json:"payurl"`
 		QRCode    string            `json:"qrcode"`
 		URLScheme string            `json:"urlscheme"`
@@ -135,11 +155,11 @@ func CreateAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, me
 	if err := common.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("epay mapi returned non-JSON (http %d)", statusCode)
 	}
-	code := strings.Trim(strings.TrimSpace(string(parsed.Code)), `"`)
+	code := epayRawString(parsed.Code)
 	if code != "1" {
 		return nil, fmt.Errorf("epay mapi code %s: %s", code, parsed.Msg)
 	}
-	result := &AdtyEpayCreateResult{GatewayTradeNo: parsed.TradeNo, QRCode: parsed.QRCode, PayURL: parsed.PayURL, URLScheme: parsed.URLScheme}
+	result := &AdtyEpayCreateResult{GatewayTradeNo: epayRawString(parsed.TradeNo), QRCode: parsed.QRCode, PayURL: parsed.PayURL, URLScheme: parsed.URLScheme}
 	switch {
 	case parsed.QRCode != "":
 		result.Mode = "qrcode"
@@ -156,70 +176,110 @@ func CreateAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, me
 	return result, nil
 }
 
+// RefreshAdtyEpaySubmitURL re-signs an RSA submit-mode PayURL when its timestamp
+// query parameter is missing, invalid, or >= 120 seconds old (well inside Epay's
+// 300-second replay window). Non-RSA or non-submit channels are returned unchanged.
+func RefreshAdtyEpaySubmitURL(channel *model.AdtyEpayChannel, method *model.AdtyEpayChannelMethod, req AdtyEpayCreateRequest, currentPayURL string) (payURL string, refreshed bool, err error) {
+	if channel == nil || !channel.IsRSA() || channel.OrderMode != model.AdtyEpayOrderModeSubmit {
+		return currentPayURL, false, nil
+	}
+	needsRefresh := true
+	if parsed, parseErr := url.Parse(strings.TrimSpace(currentPayURL)); parseErr == nil && parsed != nil {
+		if tsRaw := strings.TrimSpace(parsed.Query().Get("timestamp")); tsRaw != "" {
+			if ts, convErr := strconv.ParseInt(tsRaw, 10, 64); convErr == nil && ts > 0 {
+				age := adtyEpayNow().Unix() - ts
+				if age < 120 && age > -120 {
+					needsRefresh = false
+				}
+			}
+		}
+	}
+	if !needsRefresh {
+		return currentPayURL, false, nil
+	}
+	if method == nil {
+		return "", false, errors.New("epay channel method is required to refresh submit URL")
+	}
+	res, err := CreateAdtyEpayOrder(context.Background(), channel, method, req)
+	if err != nil {
+		return "", false, err
+	}
+	return res.PayURL, true, nil
+}
+
 func createAdtyEpayOrderRSA(ctx context.Context, channel *model.AdtyEpayChannel, params map[string]string, req AdtyEpayCreateRequest) (*AdtyEpayCreateResult, error) {
-	params["method"] = "web"
 	params["clientip"] = req.ClientIP
 	params["device"] = req.Device
-	signed, err := EpaySignChannelParams(channel, params)
-	if err != nil {
-		return nil, err
-	}
-	form := url.Values{}
-	for key, value := range signed {
-		form.Set(key, value)
-	}
-	statusCode, raw, err := adtyEpayPostForm(ctx, adtyEpayEndpoint(channel, "/api/pay/create"), form, "epay api request failed")
-	if err != nil {
-		return nil, err
-	}
-	fields, err := EpayVerifyRSAResponse(channel, raw)
-	if err != nil {
-		var apiErr *epayRSAAPIError
-		if errors.As(err, &apiErr) {
-			return nil, apiErr
+	methods := []string{"web", "jump"}
+	for idx, apiMethod := range methods {
+		params["method"] = apiMethod
+		signed, err := EpaySignChannelParams(channel, params)
+		if err != nil {
+			return nil, err
 		}
-		if statusCode != http.StatusOK {
-			return nil, fmt.Errorf("epay api http %d", statusCode)
+		form := url.Values{}
+		for key, value := range signed {
+			form.Set(key, value)
 		}
-		return nil, err
-	}
-	result := &AdtyEpayCreateResult{GatewayTradeNo: fields["trade_no"]}
-	payType := strings.ToLower(strings.TrimSpace(fields["pay_type"]))
-	payInfo := strings.TrimSpace(fields["pay_info"])
-	if payInfo != "" {
-		switch payType {
-		case "qrcode":
-			result.Mode = "qrcode"
-			result.QRCode = payInfo
-		case "jump", "payurl", "url":
-			result.Mode = "payurl"
-			result.PayURL = payInfo
-		case "urlscheme":
-			result.Mode = "urlscheme"
-			result.URLScheme = payInfo
+		statusCode, raw, err := adtyEpayPostForm(ctx, adtyEpayEndpoint(channel, "/api/pay/create"), form, "epay api request failed")
+		if err != nil {
+			return nil, err
 		}
-	}
-	if result.Mode == "" {
-		switch {
-		case fields["qrcode"] != "":
-			result.Mode = "qrcode"
-			result.QRCode = fields["qrcode"]
-		case fields["payurl"] != "":
-			result.Mode = "payurl"
-			result.PayURL = fields["payurl"]
-		case fields["urlscheme"] != "":
-			result.Mode = "urlscheme"
-			result.URLScheme = fields["urlscheme"]
-		case payType != "":
-			return nil, fmt.Errorf("epay api returned unsupported pay_type %s", payType)
-		default:
-			return nil, fmt.Errorf("epay api returned no payment link")
+		fields, err := EpayVerifyRSAResponse(channel, raw)
+		if err != nil {
+			var apiErr *epayRSAAPIError
+			if errors.As(err, &apiErr) {
+				return nil, apiErr
+			}
+			if statusCode != http.StatusOK {
+				return nil, fmt.Errorf("epay api http %d", statusCode)
+			}
+			return nil, err
 		}
+		payType := strings.ToLower(strings.TrimSpace(fields["pay_type"]))
+		// Official Rainbow Epay v2 returns pay_type="html" for form-based plugins under method="web".
+		// Retry once with method="jump" using the same out_trade_no to obtain a safe redirect URL.
+		if payType == "html" && idx == 0 {
+			continue
+		}
+		result := &AdtyEpayCreateResult{GatewayTradeNo: fields["trade_no"]}
+		payInfo := strings.TrimSpace(fields["pay_info"])
+		if payInfo != "" {
+			switch payType {
+			case "qrcode":
+				result.Mode = "qrcode"
+				result.QRCode = payInfo
+			case "jump", "payurl", "url":
+				result.Mode = "payurl"
+				result.PayURL = payInfo
+			case "urlscheme":
+				result.Mode = "urlscheme"
+				result.URLScheme = payInfo
+			}
+		}
+		if result.Mode == "" {
+			switch {
+			case fields["qrcode"] != "":
+				result.Mode = "qrcode"
+				result.QRCode = fields["qrcode"]
+			case fields["payurl"] != "":
+				result.Mode = "payurl"
+				result.PayURL = fields["payurl"]
+			case fields["urlscheme"] != "":
+				result.Mode = "urlscheme"
+				result.URLScheme = fields["urlscheme"]
+			case payType != "":
+				return nil, fmt.Errorf("epay api returned unsupported pay_type %s", payType)
+			default:
+				return nil, fmt.Errorf("epay api returned no payment link")
+			}
+		}
+		if err := adtyRejectUnsafeEpayLink(result); err != nil {
+			return nil, err
+		}
+		return result, nil
 	}
-	if err := adtyRejectUnsafeEpayLink(result); err != nil {
-		return nil, err
-	}
-	return result, nil
+	return nil, fmt.Errorf("epay api returned unsupported pay_type html")
 }
 
 // adtyDangerousEpaySchemes 不能进二维码，也不能被浏览器打开。
@@ -370,30 +430,37 @@ func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, out
 		Status     common.RawMessage `json:"status"`
 		Money      common.RawMessage `json:"money"`
 		Type       string            `json:"type"`
-		TradeNo    string            `json:"trade_no"`
-		OutTradeNo string            `json:"out_trade_no"`
+		TradeNo    common.RawMessage `json:"trade_no"`
+		OutTradeNo common.RawMessage `json:"out_trade_no"`
 		MerchantId common.RawMessage `json:"pid"`
 	}
 	if err := common.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("epay query returned non-JSON")
 	}
-	if strings.Trim(strings.TrimSpace(string(parsed.Code)), `"`) != "1" {
+	if epayRawString(parsed.Code) != "1" {
 		if isEpayOrderAbsentMsg(parsed.Msg) {
 			return nil, errEpayOrderAbsent
 		}
 		return nil, fmt.Errorf("epay order query did not succeed")
 	}
-	result := &AdtyEpayQueryResult{TypeCode: parsed.Type, GatewayTradeNo: parsed.TradeNo, OutTradeNo: parsed.OutTradeNo,
-		MerchantId: strings.Trim(strings.TrimSpace(string(parsed.MerchantId)), `"`)}
-	switch strings.Trim(strings.TrimSpace(string(parsed.Status)), `"`) {
+	status := epayRawString(parsed.Status)
+	result := &AdtyEpayQueryResult{
+		RawStatus:      status,
+		TypeCode:       parsed.Type,
+		GatewayTradeNo: epayRawString(parsed.TradeNo),
+		OutTradeNo:     epayRawString(parsed.OutTradeNo),
+		MerchantId:     epayRawString(parsed.MerchantId),
+	}
+	switch status {
 	case "1":
 		result.Paid = true
-	case "0":
+	case "0", "2", "3", "4":
+		// 0=unpaid, 2=refunded, 3=frozen, 4=preauth: not creditable as paid.
 	default:
 		return nil, fmt.Errorf("epay returned unknown payment status")
 	}
-	result.PaidAt = AdtyEpayPaidTime(strings.Trim(string(parsed.PaidAt), `"`))
-	if money := strings.Trim(strings.TrimSpace(string(parsed.Money)), `"`); money != "" {
+	result.PaidAt = AdtyEpayPaidTime(epayRawString(parsed.PaidAt))
+	if money := epayRawString(parsed.Money); money != "" {
 		if value, err := common.ParseBoundedDecimalString(money, 18, 8); err == nil {
 			result.MoneyCNY = value
 		}
@@ -428,16 +495,19 @@ func queryAdtyEpayOrderRSA(ctx context.Context, channel *model.AdtyEpayChannel, 
 		}
 		return nil, err
 	}
+	status := strings.TrimSpace(fields["status"])
 	result := &AdtyEpayQueryResult{
+		RawStatus:      status,
 		TypeCode:       fields["type"],
 		GatewayTradeNo: fields["trade_no"],
 		OutTradeNo:     fields["out_trade_no"],
 		MerchantId:     strings.TrimSpace(fields["pid"]),
 	}
-	switch strings.TrimSpace(fields["status"]) {
+	switch status {
 	case "1":
 		result.Paid = true
-	case "0":
+	case "0", "2", "3", "4":
+		// 0=unpaid, 2=refunded, 3=frozen, 4=preauth: not creditable as paid.
 	default:
 		return nil, fmt.Errorf("epay returned unknown payment status")
 	}
@@ -574,13 +644,17 @@ func adtyEpayGet(ctx context.Context, target string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 }
 
-// Accept an absolute gateway timestamp only. An offset-free clock reading
-// cannot establish payment order across gateways in different time zones.
+// Accept an absolute gateway timestamp only, allowing up to 60 seconds of forward
+// clock skew relative to adtyEpayNow(). An offset-free clock reading cannot
+// establish payment order across gateways in different time zones.
 func AdtyEpayPaidTime(value string) int64 {
-	if n, err := strconv.ParseInt(value, 10, 64); err == nil && n > 0 && n <= time.Now().Unix() {
+	now := adtyEpayNow()
+	maxAllowed := now.Add(60 * time.Second)
+	trimmed := strings.TrimSpace(value)
+	if n, err := strconv.ParseInt(trimmed, 10, 64); err == nil && n > 0 && n <= maxAllowed.Unix() {
 		return n
 	}
-	if dt, err := time.Parse(time.RFC3339, value); err == nil && dt.Unix() > 0 && !dt.After(time.Now()) {
+	if dt, err := time.Parse(time.RFC3339, trimmed); err == nil && dt.Unix() > 0 && !dt.After(maxAllowed) {
 		return dt.Unix()
 	}
 	return 0

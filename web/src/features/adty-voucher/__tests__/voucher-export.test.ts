@@ -39,17 +39,23 @@ describe('adty-voucher export and batch calculation', () => {
     expect(parseVoucherBatchCount('')).toBeNull()
   })
 
-  it('computes exact USD totals using fixed-point integer arithmetic', () => {
+  it('computes exact USD totals using fixed-point integer arithmetic and enforces 2 decimals and $100,000 max', () => {
     const summary = computeVoucherBatchTotal('0.1', '3')
     expect(summary.valid).toBe(true)
     expect(summary.count).toBe(3)
     expect(summary.unitAmountUsd).toBe('0.10')
     expect(summary.totalAmountUsd).toBe('0.30')
 
-    const large = computeVoucherBatchTotal('12.345', '100')
+    const large = computeVoucherBatchTotal('12.34', '100')
     expect(large.valid).toBe(true)
-    expect(large.totalAmountUsd).toBe('1234.50')
+    expect(large.totalAmountUsd).toBe('1234.00')
 
+    const maxValid = computeVoucherBatchTotal('100000', '1')
+    expect(maxValid.valid).toBe(true)
+    expect(maxValid.totalAmountUsd).toBe('100000.00')
+
+    expect(computeVoucherBatchTotal('12.345', '100').valid).toBe(false)
+    expect(computeVoucherBatchTotal('100000.01', '1').valid).toBe(false)
     expect(computeVoucherBatchTotal('0', '5').valid).toBe(false)
     expect(computeVoucherBatchTotal('10', '101').valid).toBe(false)
   })

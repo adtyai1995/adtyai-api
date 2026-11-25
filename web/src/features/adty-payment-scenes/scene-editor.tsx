@@ -270,6 +270,17 @@ export function PaymentSceneEditor(props: {
                         form.setValue('team_ids', [])
                       }
                       if (nextBusiness !== 'owner_margin_topup') {
+                        const currentUserTypes = form.getValues('user_types')
+                        if (
+                          selectedBusiness === 'owner_margin_topup' ||
+                          (currentUserTypes.length === 1 &&
+                            currentUserTypes[0] === 'site_owner')
+                        ) {
+                          form.setValue('user_types', [], {
+                            shouldDirty: true,
+                            shouldValidate: true,
+                          })
+                        }
                         return
                       }
                       form.setValue('user_types', ['site_owner'], {
@@ -356,10 +367,20 @@ export function PaymentSceneEditor(props: {
                     id={`${id}-channels`}
                     placeholder={t('Allowed Epay channels')}
                     selected={form.watch('channel_ids').map(String)}
-                    options={(channels.data ?? []).map((channel) => ({
-                      value: String(channel.id),
-                      label: `${channel.name} (#${channel.id})`,
-                    }))}
+                    options={(channels.data ?? []).map((channel) => {
+                      let statusSuffix = ''
+                      if (channel.status === 'revoked') {
+                        statusSuffix = ` · ${t('Revoked')}`
+                      } else if (channel.status === 'disabled') {
+                        statusSuffix = ` · ${t('Disabled')}`
+                      } else if (channel.status === 'maintenance') {
+                        statusSuffix = ` · ${t('Maintenance')}`
+                      }
+                      return {
+                        value: String(channel.id),
+                        label: `${channel.name} (#${channel.id})${statusSuffix}`,
+                      }
+                    })}
                     onChange={(values) =>
                       form.setValue('channel_ids', values.map(Number), {
                         shouldDirty: true,

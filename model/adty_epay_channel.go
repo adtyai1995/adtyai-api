@@ -40,26 +40,26 @@ var ErrAdtyEpayChannelNotFound = errors.New("adty epay channel not found")
 
 // AdtyEpayChannel 是一个易支付商户。商户密钥与商户私钥不序列化给前端。
 type AdtyEpayChannel struct {
-	Id                 int                     `json:"id"`
-	Name               string                  `json:"name" gorm:"type:varchar(128)"`
-	GatewayURL         string                  `json:"gateway_url" gorm:"column:gateway_url;type:varchar(512)"`
-	MerchantId         string                  `json:"merchant_id" gorm:"type:varchar(128)"`
-	MerchantKey        string                  `json:"-" gorm:"column:merchant_key;type:text"`
-	SignType           string                  `json:"sign_type" gorm:"column:sign_type;type:varchar(16);not null;default:'MD5'"`
-	MerchantPrivateKey string                  `json:"-" gorm:"column:merchant_private_key;type:text"`
-	PlatformPublicKey  string                  `json:"platform_public_key" gorm:"column:platform_public_key;type:text"`
-	Priority           int                     `json:"priority"`
-	Weight             int                     `json:"weight"`
-	OrderMode          string                  `json:"order_mode" gorm:"type:varchar(16)"`
-	ProbeMode          string                  `json:"probe_mode" gorm:"type:varchar(16)"`
-	Status             string                  `json:"status" gorm:"type:varchar(16);index"`
-	StatusReason       string                  `json:"status_reason" gorm:"type:varchar(16)"`
-	UnpaidStreak       int                     `json:"unpaid_streak"`
-	UnpaidThreshold    int                     `json:"unpaid_threshold"`
-	ProbeFailCount     int                     `json:"probe_fail_count"`
-	ProbeOkCount       int                     `json:"probe_ok_count"`
-	LastProbeAt        int64                   `json:"last_probe_at"`
-	CreatedAt          int64                   `json:"created_at" gorm:"autoCreateTime"`
+	Id                   int                     `json:"id"`
+	Name                 string                  `json:"name" gorm:"type:varchar(128)"`
+	GatewayURL           string                  `json:"gateway_url" gorm:"column:gateway_url;type:varchar(512)"`
+	MerchantId           string                  `json:"merchant_id" gorm:"type:varchar(128)"`
+	MerchantKey          string                  `json:"-" gorm:"column:merchant_key;type:text"`
+	SignType             string                  `json:"sign_type" gorm:"column:sign_type;type:varchar(16);not null;default:'MD5'"`
+	MerchantPrivateKey   string                  `json:"-" gorm:"column:merchant_private_key;type:text"`
+	PlatformPublicKey    string                  `json:"platform_public_key" gorm:"column:platform_public_key;type:text"`
+	Priority             int                     `json:"priority"`
+	Weight               int                     `json:"weight"`
+	OrderMode            string                  `json:"order_mode" gorm:"type:varchar(16)"`
+	ProbeMode            string                  `json:"probe_mode" gorm:"type:varchar(16)"`
+	Status               string                  `json:"status" gorm:"type:varchar(16);index"`
+	StatusReason         string                  `json:"status_reason" gorm:"type:varchar(16)"`
+	UnpaidStreak         int                     `json:"unpaid_streak"`
+	UnpaidThreshold      int                     `json:"unpaid_threshold"`
+	ProbeFailCount       int                     `json:"probe_fail_count"`
+	ProbeOkCount         int                     `json:"probe_ok_count"`
+	LastProbeAt          int64                   `json:"last_probe_at"`
+	CreatedAt            int64                   `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt            int64                   `json:"updated_at" gorm:"autoUpdateTime"`
 	Methods              []AdtyEpayChannelMethod `json:"methods" gorm:"foreignKey:ChannelId"`
 	CredentialDecryptErr bool                    `json:"credential_decrypt_error,omitempty" gorm:"-"`
@@ -501,8 +501,22 @@ func adtyEpayDayStart(tx *gorm.DB, now int64) int64 {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc).Unix()
 }
 
+func sumAdtyEpayCommittedTodayTx(tx *gorm.DB, channelID int, method string, now int64) (decimal.Decimal, error) {
+	dayStart := adtyEpayDayStart(tx, now)
+	var total decimal.Decimal
+	err := tx.Table("adty_topup_orders AS a").
+		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
+		Where("a.channel_id = ? AND a.method = ? AND ((t.status = ? AND (t.complete_time >= ? OR t.create_time >= ?)) OR (t.status = ? AND t.create_time >= ? AND (a.expire_at = 0 OR a.expire_at > ?)))",
+			channelID, method,
+			common.TopUpStatusSuccess, dayStart, dayStart,
+			common.TopUpStatusPending, dayStart, now).
+		Select("COALESCE(SUM(a.pay_amount), 0)").Scan(&total).Error
+	return total, err
+}
+
 // lockAdtyEpayDailyRoom locks the method row and rejects the order when paid
-// plus still-pending amounts for today, plus this order, exceed the daily cap.
+// plus currently unexpired pending amounts for today, plus this order, exceed
+// the daily cap.
 func lockAdtyEpayDailyRoom(tx *gorm.DB, channelId int, method string, amount decimal.Decimal, now int64) error {
 	var row AdtyEpayChannelMethod
 	if err := AdtyLockForUpdate(tx).Where("channel_id = ? AND method = ?", channelId, method).First(&row).Error; err != nil {
@@ -511,13 +525,7 @@ func lockAdtyEpayDailyRoom(tx *gorm.DB, channelId int, method string, amount dec
 	if !row.DailyLimitCNY.IsPositive() {
 		return nil
 	}
-	dayStart := adtyEpayDayStart(tx, now)
-	var total decimal.Decimal
-	err := tx.Table("adty_topup_orders AS a").
-		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
-		Where("a.channel_id = ? AND a.method = ? AND ((t.status = ? AND t.complete_time >= ?) OR (t.status = ? AND t.create_time >= ?))",
-			channelId, method, common.TopUpStatusSuccess, dayStart, common.TopUpStatusPending, dayStart).
-		Select("COALESCE(SUM(a.pay_amount), 0)").Scan(&total).Error
+	total, err := sumAdtyEpayCommittedTodayTx(tx, channelId, method, now)
 	if err != nil {
 		return err
 	}
@@ -525,6 +533,12 @@ func lockAdtyEpayDailyRoom(tx *gorm.DB, channelId int, method string, amount dec
 		return ErrAdtyEpayDailyLimit
 	}
 	return nil
+}
+
+// SumAdtyEpayCommittedToday returns today's paid amount plus currently unexpired
+// pending reservations for a channel method, matching lockAdtyEpayDailyRoom.
+func SumAdtyEpayCommittedToday(channelID int, method string, now int64) (decimal.Decimal, error) {
+	return sumAdtyEpayCommittedTodayTx(DB, channelID, method, now)
 }
 
 // SumAdtyEpayPaidToday 统计一个通道某种方式当天已到账的人民币（每日限额用）。

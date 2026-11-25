@@ -49,7 +49,7 @@ func appendAdtyPaymentEventTx(tx *gorm.DB, ext *AdtyTopupOrder, source, outcome 
 // caller's stale site/user snapshot. It does not create orders or move money.
 func RecordAdtyPaymentAttempt(tradeNo, provider, source, outcome string, operatorID int) error {
 	switch outcome {
-	case "failed", "unpaid", "rejected":
+	case "failed", "unpaid", "rejected", "confirming":
 	default:
 		return errors.New("invalid payment attempt outcome")
 	}

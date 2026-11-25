@@ -357,7 +357,7 @@ func LockAndMergeSiteMethodBonusTx(tx *gorm.DB, siteID int, method string, enabl
 // inside tx, optionally locking the option rows so that concurrent rate updates
 // are serialized with order creation (G.4.2 / G.4.11 / G.4.14).
 func LoadBonusPolicySnapshotTx(tx *gorm.DB, siteID int, isTeam bool, method string, faceUSD decimal.Decimal, lock bool) (BonusPolicySnapshot, error) {
-	faceUSD = faceUSD.Round(6)
+	faceUSD = faceUSD.Round(8)
 	snap := BonusPolicySnapshot{
 		SiteID:        siteID,
 		IsTeam:        isTeam,
@@ -430,7 +430,7 @@ func LoadBonusPolicySnapshotTx(tx *gorm.DB, siteID int, isTeam bool, method stri
 	if err != nil || rateDec.LessThanOrEqual(decimal.Zero) || rateDec.GreaterThan(decimal.NewFromInt(1)) {
 		return snap, nil
 	}
-	bonusUSD := faceUSD.Mul(rateDec).Round(6)
+	bonusUSD := faceUSD.Mul(rateDec).Round(8)
 	bonusQuotaInt, err := common.WalletQuotaFromDecimalStrict(bonusUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
 	if err != nil {
 		return snap, err

@@ -332,7 +332,7 @@ export function PaymentSettingsSection({
                           <FormControl>
                             <Input
                               type='number'
-                              step='0.01'
+                              step='1'
                               min={0}
                               {...safeNumberFieldProps(field)}
                             />

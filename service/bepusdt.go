@@ -36,7 +36,7 @@ type BEpusdtCreateRequest struct {
 	NotifyURL   string
 	RedirectURL string
 	Name        string
-	Timeout     int // 秒，最低 120
+	Timeout     int // 秒，官方允许范围 180..3600
 }
 
 // BEpusdtOrder 是网关返回的订单。
@@ -122,26 +122,30 @@ func bepusdtSignedBody(body map[string]any, secret string) ([]byte, error) {
 }
 
 type bepusdtResponse struct {
-	StatusCode int             `json:"status_code"`
-	Message    string          `json:"message"`
+	StatusCode int               `json:"status_code"`
+	Message    string            `json:"message"`
 	Data       common.RawMessage `json:"data"`
 }
 
 func bepusdtPost(ctx context.Context, path string, body map[string]any) (common.RawMessage, error) {
+	return bepusdtPostWithConfig(ctx, path, body, true)
+}
+
+func bepusdtPostWithConfig(ctx context.Context, path string, body map[string]any, requireEnabled bool) (common.RawMessage, error) {
 	cfg := setting.GetBEpusdtSetting()
-	if !setting.BEpusdtConfigured() {
+	if requireEnabled && !cfg.Enabled {
 		return nil, errBEpusdtNotConfigured
 	}
-	parsedBase, err := url.Parse(strings.TrimSpace(cfg.BaseURL))
-	if err != nil || parsedBase == nil || (parsedBase.Scheme != "http" && parsedBase.Scheme != "https") || strings.TrimSpace(parsedBase.Host) == "" {
-		return nil, errBEpusdtNotConfigured
-	}
+	baseURL, err := setting.ValidateBEpusdtBaseURL(cfg.BaseURL)
 	secret := strings.TrimSpace(cfg.Secret)
+	if err != nil || baseURL == "" || secret == "" {
+		return nil, errBEpusdtNotConfigured
+	}
 	payload, err := bepusdtSignedBody(body, secret)
 	if err != nil {
 		return nil, err
 	}
-	targetURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/") + path
+	targetURL := strings.TrimRight(baseURL, "/") + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, common.SanitizeOutboundError(err, secret)
@@ -184,12 +188,19 @@ func bepusdtPost(ctx context.Context, path string, body map[string]any) (common.
 
 // CreateBEpusdtOrder 下单：fiat=USD、rate="1"（字符串），amount 和 timeout 是数字。
 func CreateBEpusdtOrder(req BEpusdtCreateRequest) (*BEpusdtOrder, error) {
+	return CreateBEpusdtOrderContext(context.Background(), req)
+}
+
+// CreateBEpusdtOrderContext 使用调用方 ctx 下单；ctx 为空或未设超时时默认 15 秒超时。
+func CreateBEpusdtOrderContext(ctx context.Context, req BEpusdtCreateRequest) (*BEpusdtOrder, error) {
 	if !setting.BEpusdtChainEnabled(req.TradeType) {
 		return nil, errBEpusdtChainDisabled
 	}
 	timeout := req.Timeout
-	if timeout < 120 {
+	if timeout < 180 {
 		timeout = bepusdtTimeoutSeconds
+	} else if timeout > 3600 {
+		timeout = 3600
 	}
 	amount, _ := req.AmountUSD.Float64()
 	body := map[string]any{
@@ -205,29 +216,37 @@ func CreateBEpusdtOrder(req BEpusdtCreateRequest) (*BEpusdtOrder, error) {
 	if req.Name != "" {
 		body["name"] = req.Name
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	data, err := bepusdtPost(ctx, "/api/v1/order/create-transaction", body)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+	}
+	data, err := bepusdtPostWithConfig(ctx, "/api/v1/order/create-transaction", body, true)
 	if err != nil {
 		return nil, err
 	}
 	var parsed struct {
-		OrderID        string          `json:"order_id"`
-		TradeType      string          `json:"trade_type"`
-		Fiat           string          `json:"fiat"`
+		OrderID        string            `json:"order_id"`
+		TradeType      string            `json:"trade_type"`
+		Fiat           string            `json:"fiat"`
 		Money          common.RawMessage `json:"amount"`
 		TradeId        string            `json:"trade_id"`
 		ActualAmount   common.RawMessage `json:"actual_amount"`
-		Token          string          `json:"token"`
-		ExpirationTime int64           `json:"expiration_time"`
-		PaymentURL     string          `json:"payment_url"`
+		Token          string            `json:"token"`
+		ExpirationTime int64             `json:"expiration_time"`
+		PaymentURL     string            `json:"payment_url"`
 	}
 	if err := common.Unmarshal(data, &parsed); err != nil {
 		return nil, err
 	}
 	if req.VerifyOrder {
 		money, err := decimalFromJSON(parsed.Money)
-		if err != nil || !money.Equal(req.AmountUSD) || parsed.Fiat != "USD" || parsed.OrderID != req.OrderID || parsed.TradeType != req.TradeType {
+		if err != nil || !money.Equal(req.AmountUSD) || parsed.OrderID != req.OrderID ||
+			(parsed.TradeType != "" && parsed.TradeType != req.TradeType) ||
+			(parsed.Fiat != "" && parsed.Fiat != "USD") {
 			return nil, fmt.Errorf("bepusdt returned a different order")
 		}
 	}
@@ -249,26 +268,125 @@ func CreateBEpusdtOrder(req BEpusdtCreateRequest) (*BEpusdtOrder, error) {
 }
 
 // CancelBEpusdtOrder 取消等待支付的订单。
-// 仅当网关成功取消、或明确返回「已取消/已过期/不存在」时返回 nil；
-// 检测到已转账/已支付时返回 ErrAdtyPaymentDetected；
-// 其余网络超时、5xx 或未知网关错误原样返回，禁止本地误取消并释放分站保障预留（A.8 / R2-019）。
+// 停用新单（cfg.Enabled=false）不应阻断历史待支付订单的取消，仍要求有效网关地址与密钥。
+// 仅当网关成功取消、或明确返回「已取消/已过期/不存在」、或状态不允许取消时经 HTTPS /api/v1/pay/info
+// 核实为终态未付（3/4/6）时返回 nil；检测到已支付或链上确认中（2/5）时返回 ErrAdtyPaymentDetected；
+// 其余网络超时、HTTP 非 HTTPS 查单或未知网关错误原样返回，禁止本地误取消并释放分站保障预留（A.8 / R2-019）。
 func CancelBEpusdtOrder(tradeId string) error {
 	if strings.TrimSpace(tradeId) == "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err := bepusdtPost(ctx, "/api/v1/order/cancel-transaction", map[string]any{"trade_id": tradeId})
+	_, err := bepusdtPostWithConfig(ctx, "/api/v1/order/cancel-transaction", map[string]any{"trade_id": tradeId}, false)
 	if err == nil {
 		return nil
 	}
 	if bepusdtPaymentDetected(err) {
 		return fmt.Errorf("%w: %s", ErrAdtyPaymentDetected, err.Error())
 	}
+	if bepusdtStatusDisallowsCancel(err) {
+		queryCtx, queryCancel := context.WithTimeout(context.Background(), 8*time.Second)
+		status, ok := queryBEpusdtOrderStatus(queryCtx, tradeId)
+		queryCancel()
+		if ok {
+			switch status {
+			case 2, 5:
+				return fmt.Errorf("%w: %s", ErrAdtyPaymentDetected, err.Error())
+			case 3, 4, 6:
+				return nil
+			}
+		}
+		return err
+	}
 	if bepusdtAlreadyCanceled(err) {
 		return nil
 	}
 	return err
+}
+
+func bepusdtStatusDisallowsCancel(err error) bool {
+	var gateway BEpusdtGatewayError
+	if !errors.As(err, &gateway) {
+		return false
+	}
+	msg := strings.TrimSpace(gateway.Message)
+	lower := strings.ToLower(msg)
+	return strings.Contains(msg, "状态不允许取消") || strings.Contains(lower, "status does not allow")
+}
+
+// queryBEpusdtOrderStatus queries BEpusdt's public /api/v1/pay/info over verified
+// HTTPS only (plain HTTP gateways cannot authenticate unsigned status responses).
+func queryBEpusdtOrderStatus(ctx context.Context, tradeId string) (int, bool) {
+	cfg := setting.GetBEpusdtSetting()
+	endpoint, err := url.Parse(strings.TrimSpace(cfg.BaseURL))
+	if err != nil || endpoint == nil || endpoint.Scheme != "https" || strings.TrimSpace(endpoint.Host) == "" ||
+		endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+		return 0, false
+	}
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/api/v1/pay/info"
+	endpoint.RawPath = ""
+	payload, err := common.Marshal(map[string]string{"trade_id": tradeId})
+	if err != nil {
+		return 0, false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(payload))
+	if err != nil {
+		return 0, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	baseClient := adtyVerifiedPaymentClientFromContext(ctx)
+	if baseClient == nil {
+		baseClient = bepusdtHTTPClient()
+	}
+	var client http.Client
+	if baseClient != nil {
+		client = *baseClient
+	}
+	baseTransport := client.Transport
+	if baseTransport == nil {
+		baseTransport = http.DefaultTransport
+	}
+	if tr, ok := baseTransport.(*http.Transport); !ok || tr.DialTLS != nil || tr.DialTLSContext != nil {
+		return 0, false
+	}
+	verifiedTransport, vErr := cloneAdtyVerifiedPaymentTransport(baseTransport)
+	if vErr != nil {
+		return 0, false
+	}
+	verifiedTransport.TLSClientConfig.ServerName = ""
+	client.Transport = verifiedTransport
+	defer verifiedTransport.CloseIdleConnections()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	if client.Timeout <= 0 || client.Timeout > 10*time.Second {
+		client.Timeout = 10 * time.Second
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, false
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if err != nil || len(raw) > 1<<20 {
+		return 0, false
+	}
+	var parsed struct {
+		StatusCode int `json:"status_code"`
+		Data       struct {
+			TradeID string `json:"trade_id"`
+			Status  *int   `json:"status"`
+		} `json:"data"`
+	}
+	if common.Unmarshal(raw, &parsed) != nil || parsed.StatusCode != http.StatusOK ||
+		parsed.Data.TradeID != tradeId || parsed.Data.Status == nil ||
+		*parsed.Data.Status < 1 || *parsed.Data.Status > 6 {
+		return 0, false
+	}
+	return *parsed.Data.Status, true
 }
 
 func bepusdtAlreadyCanceled(err error) bool {
@@ -293,17 +411,54 @@ func bepusdtAlreadyCanceled(err error) bool {
 	return strings.Contains(msg, "已取消") || strings.Contains(msg, "已过期") || strings.Contains(msg, "不存在") || strings.Contains(msg, "已关闭")
 }
 
-// bepusdtPaymentDetected 只认网关原文里的到账说法。状态码本身分不清已支付、已取消和网关故障。
+// bepusdtPaymentDetected 只认网关原文里的肯定到账说法，排除 unpaid / not paid / 未转账 等否定表达。
 func bepusdtPaymentDetected(err error) bool {
 	var gateway BEpusdtGatewayError
 	if !errors.As(err, &gateway) {
 		return false
 	}
-	lower := strings.ToLower(gateway.Message)
-	if strings.Contains(lower, "transfer") || strings.Contains(lower, "paid") {
+	msg := strings.TrimSpace(gateway.Message)
+	lower := strings.ToLower(msg)
+	if bepusdtContainsAffirmativeWord(lower, "paid") || bepusdtContainsAffirmativeWord(lower, "transfer") {
 		return true
 	}
-	return strings.Contains(gateway.Message, "已支付") || strings.Contains(gateway.Message, "转账") || strings.Contains(gateway.Message, "支付成功")
+	if strings.Contains(msg, "已支付") || strings.Contains(msg, "支付成功") {
+		return true
+	}
+	if strings.Contains(msg, "转账") && !strings.Contains(msg, "未转账") && !strings.Contains(msg, "没有转账") && !strings.Contains(msg, "无转账") {
+		return true
+	}
+	return false
+}
+
+func bepusdtContainsAffirmativeWord(lower, word string) bool {
+	search := lower
+	offset := 0
+	for {
+		idx := strings.Index(search, word)
+		if idx < 0 {
+			return false
+		}
+		absIdx := offset + idx
+		// Reject word embedded inside a negative prefix like "unpaid".
+		prevIsLetter := absIdx > 0 && lower[absIdx-1] >= 'a' && lower[absIdx-1] <= 'z'
+		if !prevIsLetter {
+			prefix := strings.TrimRight(lower[:absIdx], " \t\r\n-:;,")
+			negated := false
+			for _, neg := range []string{"not", "not yet", "never", "no", "non", "without"} {
+				if prefix == neg || (strings.HasSuffix(prefix, neg) && len(prefix) > len(neg) && !(prefix[len(prefix)-len(neg)-1] >= 'a' && prefix[len(prefix)-len(neg)-1] <= 'z')) {
+					negated = true
+					break
+				}
+			}
+			if !negated {
+				return true
+			}
+		}
+		step := idx + len(word)
+		offset += step
+		search = search[step:]
+	}
 }
 
 // decimalFromJSON 接受 JSON 字符串或数字（有界十进制防大指数 DoS，R7-03）。

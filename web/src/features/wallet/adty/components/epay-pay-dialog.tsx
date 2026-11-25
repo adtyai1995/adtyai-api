@@ -17,14 +17,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery } from '@tanstack/react-query'
+import { ExternalLink } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { handleServerError } from '@/lib/handle-server-error'
+import { getServerErrorMessage } from '@/lib/server-error-message'
 import { useAdtyUiStore } from '@/stores/adty-ui-store'
 
 import { adtyTopupQueryKeys, cancelAdtyOrder, getAdtyOrder } from '../api'
@@ -36,7 +38,12 @@ import {
   giftFulfillmentStatusLabelKey,
   isGiftBonusWithheld,
 } from '../lib/money'
-import { qrContent, mobileTarget } from '../lib/payment-links'
+import {
+  directQrCode,
+  mobileTarget,
+  qrContent,
+  safePaymentLink,
+} from '../lib/payment-links'
 import { clearPendingPayment, savePendingPayment } from '../lib/pending-payment'
 import type { AdtyOrder, AdtyTopupBusiness } from '../types'
 import { PaymentMethodIcon } from './payment-logos'
@@ -114,8 +121,11 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
   const order: AdtyOrder | undefined =
     orderQuery.data?.trade_no === tradeNo ? orderQuery.data : create.data
   const status = order?.status
-  const now = useNowSeconds(status === 'pending')
   const ext = order?.ext
+  const now = useNowSeconds(status === 'pending')
+  const expired =
+    status === 'expired' ||
+    (ext ? ext.expire_at > 0 && now >= ext.expire_at && status === 'pending' : false)
 
   const { refetch } = orderQuery
   useEffect(() => {
@@ -134,6 +144,7 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
       props.gatewayReturn ||
       !ext ||
       status !== 'pending' ||
+      expired ||
       jumpedRef.current === ext.trade_no
     ) {
       return
@@ -149,7 +160,7 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
       return
     }
     window.location.assign(target)
-  }, [device, ext, status, navigate, props.gatewayReturn])
+  }, [device, ext, status, expired, navigate, props.gatewayReturn])
 
   const { onSettled } = props
   useEffect(() => {
@@ -175,13 +186,31 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
   }
 
   const appName = props.method === 'wxpay' ? t('WeChat') : t('Alipay')
+  const directQr = ext ? directQrCode(ext) : ''
+  const payLink = ext ? safePaymentLink(ext) : ''
   const qr = ext ? qrContent(ext) : ''
+  const target = ext ? mobileTarget(ext) : ''
+  const desktopOpenLinkMode =
+    device === 'pc' && !directQr && Boolean(payLink)
   const unsafeLink =
     blocked ||
     (device === 'pc' &&
       status === 'pending' &&
+      !expired &&
+      directQr === '' &&
+      payLink === '' &&
       qr === '' &&
       Boolean(ext?.qr_code || ext?.pay_url || ext?.url_scheme))
+  const isActivePending = status === 'pending' && !expired
+
+  const openMobilePaymentApp = () => {
+    if (!target) return
+    if (navigate) {
+      navigate(target)
+      return
+    }
+    window.location.assign(target)
+  }
 
   return (
     <Dialog
@@ -205,21 +234,17 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
       contentHeight='auto'
       bodyClassName='space-y-4'
       footer={
-        status === 'pending' ? (
+        isActivePending ? (
           <>
             <Button
               variant='outline'
               disabled={cancel.isPending || create.isPending}
               onClick={() => void cancelOrder()}
             >
-              {t('Choose another payment method')}
-            </Button>
-            <Button
-              variant='ghost'
-              disabled={cancel.isPending}
-              onClick={() => void cancelOrder()}
-            >
               {t('Cancel order')}
+            </Button>
+            <Button variant='ghost' onClick={props.onClose}>
+              {t('Close')}
             </Button>
           </>
         ) : (
@@ -232,10 +257,30 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
           {t('Order number')} · {tradeNo}
         </p>
       )}
-      {!ext && (
+      {!ext && !orderQuery.isError && (
         <p className='text-muted-foreground text-sm'>
           {t('Creating the order...')}
         </p>
+      )}
+      {orderQuery.isError && (
+        <Alert variant='destructive'>
+          <AlertDescription className='flex flex-wrap items-center justify-between gap-2'>
+            <span>
+              {getServerErrorMessage(
+                orderQuery.error,
+                t('Failed to load order status.')
+              )}
+            </span>
+            <Button
+              type='button'
+              size='sm'
+              variant='outline'
+              onClick={() => void orderQuery.refetch()}
+            >
+              {t('Retry')}
+            </Button>
+          </AlertDescription>
+        </Alert>
       )}
       {ext && status === 'success' && (
         <div className='space-y-1 text-center' role='status'>
@@ -253,9 +298,29 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
           )}
         </div>
       )}
-      {ext && status === 'expired' && (
+      {ext && expired && status !== 'success' && (
         <p className='text-destructive text-center' role='status'>
           {t('This order has expired. Please create a new one.')}
+        </p>
+      )}
+      {ext && status === 'canceled' && (
+        <p className='text-muted-foreground text-center' role='status'>
+          {t('This order was canceled.')}
+        </p>
+      )}
+      {ext && status === 'failed' && (
+        <p className='text-destructive text-center' role='status'>
+          {t('This payment failed. Please create a new order.')}
+        </p>
+      )}
+      {ext && status === 'refunded' && (
+        <p className='text-muted-foreground text-center' role='status'>
+          {t('This order has been refunded.')}
+        </p>
+      )}
+      {ext && status === 'replaced' && (
+        <p className='text-muted-foreground text-center' role='status'>
+          {t('This order was replaced by a newer order.')}
         </p>
       )}
       {unsafeLink && (
@@ -267,7 +332,7 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
           </AlertDescription>
         </Alert>
       )}
-      {ext && status === 'pending' && (
+      {ext && isActivePending && (
         <div className='flex flex-col items-center gap-3'>
           <p className='text-2xl font-semibold' data-testid='epay-amount'>
             ¥{Number(ext.pay_amount).toFixed(2)}
@@ -277,30 +342,57 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
               amount: creditedUsdAmount(ext),
             })}
           </p>
-          {(device === 'pc' || !mobileTarget(ext)) && qr && (
-            <>
-              <div
-                className='rounded-lg bg-white p-3'
-                data-testid='epay-qr'
-                data-value={qr}
+          {desktopOpenLinkMode && (
+            <div className='flex flex-col items-center gap-2'>
+              <a
+                className={buttonVariants({ variant: 'brand' })}
+                href={payLink}
+                target='_blank'
+                rel='noopener noreferrer'
               >
-                <QRCodeSVG value={qr} size={200} />
-              </div>
-              <p className='text-sm'>
-                {t('Scan with {{app}}', { app: appName })}
+                <ExternalLink className='size-4' aria-hidden='true' />
+                {t('Open payment page')}
+              </a>
+              <p className='text-muted-foreground text-center text-xs'>
+                {t('Complete payment in the newly opened page, then return here.')}
               </p>
-            </>
+            </div>
           )}
-          {device === 'mobile' &&
-            mobileTarget(ext) &&
-            !blocked &&
-            !props.gatewayReturn && (
-              <p className='text-sm'>
-                {t('Opening {{app}}... Come back here after paying.', {
-                  app: appName,
-                })}
-              </p>
+          {!desktopOpenLinkMode &&
+            (device === 'pc' || !target) &&
+            qr && (
+              <>
+                <div
+                  className='rounded-lg bg-white p-3'
+                  data-testid='epay-qr'
+                  data-value={qr}
+                >
+                  <QRCodeSVG value={qr} size={200} />
+                </div>
+                <p className='text-sm'>
+                  {t('Scan with {{app}}', { app: appName })}
+                </p>
+              </>
             )}
+          {device === 'mobile' && target && !blocked && (
+            <div className='flex flex-col items-center gap-2'>
+              <p className='text-center text-sm'>
+                {props.gatewayReturn
+                  ? t('Returned from payment page. Checking order status...')
+                  : t('Opening {{app}}... Come back here after paying.', {
+                      app: appName,
+                    })}
+              </p>
+              <Button
+                type='button'
+                variant='brand'
+                onClick={openMobilePaymentApp}
+              >
+                <ExternalLink className='size-4' aria-hidden='true' />
+                {t('Open payment app')}
+              </Button>
+            </div>
+          )}
           <p className='text-sm'>
             {t('Time left')}:{' '}
             <span className='font-mono font-semibold'>

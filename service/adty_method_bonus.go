@@ -37,6 +37,22 @@ func AdtyPaymentMethodBonus(site *model.AdtySite, method string, faceUSD decimal
 	if key == "" || !faceUSD.IsPositive() {
 		return decimal.Zero, decimal.Zero, nil
 	}
+	if site != nil {
+		if site.Id <= 0 {
+			return decimal.Zero, decimal.Zero, nil
+		}
+		status := site.Status
+		if status == "" && model.DB != nil && model.DB.Migrator().HasTable(&model.AdtySite{}) {
+			var loaded model.AdtySite
+			if err := model.DB.Select("id, status").Where("id = ?", site.Id).Limit(1).Find(&loaded).Error; err != nil || loaded.Id == 0 {
+				return decimal.Zero, decimal.Zero, nil
+			}
+			status = loaded.Status
+		}
+		if status != model.AdtySiteStatusActive {
+			return decimal.Zero, decimal.Zero, nil
+		}
+	}
 	rule, ok := adtyMethodBonusRule(site, key)
 	if !ok || !rule.Enabled {
 		return decimal.Zero, decimal.Zero, nil

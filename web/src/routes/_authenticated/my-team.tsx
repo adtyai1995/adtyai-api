@@ -18,12 +18,18 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
+import { z } from 'zod'
 
 import { SectionPageLayout } from '@/components/layout'
 import { TeamPanel } from '@/features/wallet/adty/team-panel'
 import { useAuthStore } from '@/stores/auth-store'
 
+const myTeamSearchSchema = z.object({
+  trade_no: z.string().optional(),
+})
+
 export const Route = createFileRoute('/_authenticated/my-team')({
+  validateSearch: myTeamSearchSchema,
   beforeLoad: () => {
     if (useAuthStore.getState().auth.user?.adty_has_team !== true) {
       throw redirect({
@@ -38,11 +44,21 @@ export const Route = createFileRoute('/_authenticated/my-team')({
 
 function MyTeam() {
   const { t } = useTranslation()
+  const { trade_no } = Route.useSearch()
+  const navigate = Route.useNavigate()
   return (
     <SectionPageLayout>
       <SectionPageLayout.Title>{t('My team')}</SectionPageLayout.Title>
       <SectionPageLayout.Content>
-        <TeamPanel />
+        <TeamPanel
+          returnTradeNo={trade_no}
+          onReturnClosed={() => {
+            void navigate({
+              search: (prev) => ({ ...prev, trade_no: undefined }),
+              replace: true,
+            })
+          }}
+        />
       </SectionPageLayout.Content>
     </SectionPageLayout>
   )

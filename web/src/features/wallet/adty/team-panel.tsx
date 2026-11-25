@@ -25,21 +25,24 @@ import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { CopyButton } from '@/components/copy-button'
+import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
 import { PasswordInput } from '@/components/password-input'
+import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { labelOf, LEDGER_TYPE_LABELS } from '@/features/adty-team-admin/labels'
 import { teamRegistrationUrl } from '@/features/adty-team-registration/api'
 import { toIntlLocale } from '@/i18n/languages'
 import { api, getSelf } from '@/lib/api'
-import { formatQuota, formatTimestampToDate } from '@/lib/format'
+import { formatQuota, formatTimestamp, formatTimestampToDate } from '@/lib/format'
 import { formatUserIdentity } from '@/lib/format-user-identity'
 import {
   createServerError,
@@ -50,13 +53,26 @@ import {
 import { cn } from '@/lib/utils'
 import { useAuthStore, type AuthUser } from '@/stores/auth-store'
 
-import { adtyTopupQueryKeys, getAdtyTopupInfo, quoteAdtyTopup } from './api'
+import {
+  adtyTopupQueryKeys,
+  cancelAdtyOrder,
+  getAdtyOrder,
+  getAdtyTopupInfo,
+  quoteAdtyTopup,
+} from './api'
 import { EpayPayDialog } from './components/epay-pay-dialog'
 import { PaymentMethodButtons } from './components/payment-method-buttons'
 import { UsdtPayDialog } from './components/usdt-pay-dialog'
-import { paymentMethodKey } from './lib/methods'
+import { useNowSeconds } from './lib/countdown'
+import { detectPayDevice } from './lib/device'
+import {
+  methodLabel,
+  ORDER_STATUS_LABELS,
+  ORDER_STATUS_VARIANTS,
+  paymentMethodKey,
+} from './lib/methods'
 import { formatPaymentAmount, formatUsd } from './lib/money'
-import type { AdtyOrderExt } from './types'
+import type { AdtyOrderExt, AdtyOrderStatus } from './types'
 
 function formatFixedPayAmount(raw: string): string {
   const num = Number(raw)
@@ -135,11 +151,45 @@ const inviteStatusLabel: Record<string, string> = {
   revoked: 'Revoked',
 }
 
-export function TeamPanel() {
+type TeamTopupRow = AdtyOrderExt & {
+  status?: AdtyOrderStatus | string
+  created_at?: number
+  create_time?: number
+}
+
+type TeamLedgerRow = {
+  id: number
+  team_id: number
+  delta_quota: number
+  balance_before: number
+  balance_after: number
+  type: string
+  ref_id: string
+  actor_user_id: number
+  actor_username?: string
+  created_at: number
+}
+
+const TEAM_LEDGER_PAGE_SIZE = 10
+
+export function TeamPanel(
+  props: { returnTradeNo?: string; onReturnClosed?: () => void } = {}
+) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const [dismissedReturnTradeNo, setDismissedReturnTradeNo] = useState<string>()
+  const [ledgerPage, setLedgerPage] = useState(1)
+  const returnTradeNo = props.returnTradeNo?.trim() || undefined
+  const returning = Boolean(
+    returnTradeNo && returnTradeNo !== dismissedReturnTradeNo
+  )
+  const returnOrderQuery = useQuery({
+    queryKey: ['adty-team', 'return', returnTradeNo],
+    enabled: returning,
+    queryFn: () => getAdtyOrder(returnTradeNo ?? ''),
+  })
   const mine = useQuery({
     queryKey: ['adty-team', 'mine'],
     queryFn: async () => {
@@ -218,6 +268,21 @@ export function TeamPanel() {
     parsedTopupAmount > 0 &&
     parsedTopupAmount >= minTeamTopup &&
     (maxTeamTopup <= 0 || parsedTopupAmount <= maxTeamTopup)
+  let topupAmountError = ''
+  if (topupAmount.trim() !== '' && !validTopupAmount) {
+    if (
+      !Number.isFinite(parsedTopupAmount) ||
+      !Number.isInteger(parsedTopupAmount)
+    ) {
+      topupAmountError = t('Enter a whole number in USD')
+    } else if (parsedTopupAmount < minTeamTopup) {
+      topupAmountError = t('At least ${{amount}}', { amount: minTeamTopup })
+    } else if (maxTeamTopup > 0 && parsedTopupAmount > maxTeamTopup) {
+      topupAmountError = t('At most ${{amount}}', { amount: maxTeamTopup })
+    } else {
+      topupAmountError = t('Enter a valid amount')
+    }
+  }
 
   const teamQuoteQuery = useQuery({
     queryKey: [
@@ -247,8 +312,12 @@ export function TeamPanel() {
     meta: { errorToast: false },
   })
   const teamQuote = teamQuoteQuery.data?.quote
+  const teamQuoteAvailable = teamQuoteQuery.data?.available ?? false
+  const teamQuoteError = teamQuoteQuery.isError
+    ? getServerErrorMessage(teamQuoteQuery.error, t('Failed to load data'))
+    : ''
   let isTeamUsdtChannel = false
-  if (teamQuote) {
+  if (teamQuote && teamQuoteAvailable) {
     isTeamUsdtChannel = teamQuote.pay_currency === 'USDT'
   } else if (topupMethod) {
     isTeamUsdtChannel =
@@ -260,45 +329,36 @@ export function TeamPanel() {
       topupMethods.length > 0 &&
       topupMethods.every((item) => item.kind === 'usdt')
   }
-  const fallbackCnyRate = Number(topupInfo.data?.price_cny_per_usd ?? 0)
   const hasEstimatedTeamPay =
     validTopupAmount &&
     topupMethod !== null &&
-    (Boolean(teamQuote) ||
-      isTeamUsdtChannel ||
-      (Number.isFinite(fallbackCnyRate) && fallbackCnyRate > 0))
+    Boolean(teamQuote) &&
+    teamQuoteAvailable &&
+    !teamQuoteQuery.isError
   let teamPayAmountText = isTeamUsdtChannel ? '0.00 USDT' : '¥0.00'
   let teamPayRateHint = ''
-  if (validTopupAmount && topupMethod !== null) {
-    if (teamQuote) {
-      if (teamQuote.pay_currency === 'USDT') {
-        teamPayAmountText = `${formatFixedPayAmount(teamQuote.pay_amount)} USDT`
-        teamPayRateHint = t('1 USDT = 1 USD')
-      } else if (teamQuote.pay_currency === 'CNY') {
-        teamPayAmountText = `¥${Number(teamQuote.pay_amount).toFixed(2)}`
-        teamPayRateHint = t('1 USD = {{rate}} CNY', {
-          rate: Number(teamQuote.price_cny_per_usd).toFixed(2),
-        })
-      } else {
-        teamPayAmountText = formatPaymentAmount(
-          teamQuote.pay_amount,
-          teamQuote.pay_currency,
-          locale
-        )
-      }
-    } else if (isTeamUsdtChannel) {
-      teamPayAmountText = `${parsedTopupAmount.toFixed(2)} USDT`
+  if (hasEstimatedTeamPay && teamQuote) {
+    if (teamQuote.pay_currency === 'USDT') {
+      teamPayAmountText = `${formatFixedPayAmount(teamQuote.pay_amount)} USDT`
       teamPayRateHint = t('1 USDT = 1 USD')
-    } else if (Number.isFinite(fallbackCnyRate) && fallbackCnyRate > 0) {
-      teamPayAmountText = `¥${(parsedTopupAmount * fallbackCnyRate).toFixed(2)}`
+    } else if (teamQuote.pay_currency === 'CNY') {
+      teamPayAmountText = `¥${Number(teamQuote.pay_amount).toFixed(2)}`
       teamPayRateHint = t('1 USD = {{rate}} CNY', {
-        rate: fallbackCnyRate.toFixed(2),
+        rate: Number(teamQuote.price_cny_per_usd).toFixed(2),
       })
+    } else {
+      teamPayAmountText = formatPaymentAmount(
+        teamQuote.pay_amount,
+        teamQuote.pay_currency,
+        locale
+      )
     }
   }
 
-  const refresh = () =>
+  const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['adty-team'] })
+    void queryClient.invalidateQueries({ queryKey: ['adty-topup'] })
+  }
   const [checkout, setCheckout] = useState<AdtyOrderExt | null>(null)
   const attempt = useRef({ body: '', key: '' })
   const pendingOrders = useQuery({
@@ -307,13 +367,81 @@ export function TeamPanel() {
     queryFn: async () => {
       const { data } = await api.get<{
         success: boolean
-        data: { items: AdtyOrderExt[] }
+        data: { items: TeamTopupRow[] }
       }>(`/api/adty/teams/${team?.team_id}/topups`, {
         params: { status: 'pending' },
       })
       return requireServerSuccess(data).data.items ?? []
     },
   })
+  const teamTopups = useQuery({
+    queryKey: ['adty-team', 'topup-history', team?.team_id],
+    enabled: team?.role === 'leader' && Boolean(team?.team_id),
+    queryFn: async () => {
+      const { data } = await api.get<{
+        success: boolean
+        data: { items: TeamTopupRow[] }
+      }>(`/api/adty/teams/${team?.team_id}/topups`)
+      return requireServerSuccess(data).data.items ?? []
+    },
+  })
+  const teamLedgers = useQuery({
+    queryKey: ['adty-team', 'ledgers', team?.team_id, ledgerPage],
+    enabled: team?.role === 'leader' && Boolean(team?.team_id),
+    queryFn: async () => {
+      const { data } = await api.get<{
+        success: boolean
+        data: {
+          items: TeamLedgerRow[]
+          total: number
+          page: number
+          page_size: number
+        }
+      }>(`/api/adty/teams/${team?.team_id}/ledgers`, {
+        params: { p: ledgerPage, page_size: TEAM_LEDGER_PAGE_SIZE },
+      })
+      return requireServerSuccess(data).data
+    },
+  })
+  const pendingTradeNos = new Set(
+    (pendingOrders.data ?? []).map((item) => item.trade_no)
+  )
+  const hasAnyPendingTeamTopup =
+    pendingTradeNos.size > 0 ||
+    (teamTopups.data ?? []).some((item) => item.status === 'pending')
+  const nowSec = useNowSeconds(hasAnyPendingTeamTopup)
+  const resolveTeamTopupStatus = (order: TeamTopupRow): AdtyOrderStatus => {
+    if (order.status && order.status in ORDER_STATUS_LABELS) {
+      return order.status as AdtyOrderStatus
+    }
+    if (pendingTradeNos.has(order.trade_no)) return 'pending'
+    if ((order.refunded_at ?? 0) > 0) return 'refunded'
+    if (Number(order.paid_amount) > 0) return 'success'
+    if ((order.expire_at ?? 0) > 0 && order.expire_at <= nowSec) return 'expired'
+    return 'canceled'
+  }
+  const returnedCheckout: AdtyOrderExt | null =
+    returning && returnOrderQuery.data
+      ? {
+          ...(returnOrderQuery.data.ext ?? ({} as AdtyOrderExt)),
+          trade_no: returnOrderQuery.data.trade_no,
+          provider: returnOrderQuery.data.payment_provider,
+          method: returnOrderQuery.data.payment_method,
+          face_usd:
+            returnOrderQuery.data.ext?.face_usd ??
+            String(returnOrderQuery.data.amount),
+        }
+      : null
+  const activeCheckout = checkout ?? returnedCheckout
+  const activeGatewayReturn = !checkout && Boolean(returnedCheckout)
+  const closeCheckout = () => {
+    if (activeGatewayReturn && returnTradeNo) {
+      setDismissedReturnTradeNo(returnTradeNo)
+      props.onReturnClosed?.()
+    }
+    setCheckout(null)
+    refresh()
+  }
   const employeeLink = issued
     ? `${teamRegistrationUrl(issued)}?kind=employee`
     : ''
@@ -377,10 +505,36 @@ export function TeamPanel() {
       await action()
       refresh()
     } catch (cause) {
-      setError(getServerErrorMessage(cause, t('Failed to save')))
+      const message = getServerErrorMessage(cause, t('Failed to save'))
+      setError(message)
+      toast.error(message)
     } finally {
       setPending(false)
     }
+  }
+
+  const resumeTeamOrder = (order: TeamTopupRow) => {
+    if (!team) return
+    const hasCheckout = Boolean(
+      order.pay_address || order.pay_url || order.qr_code || order.url_scheme
+    )
+    if (hasCheckout) {
+      setCheckout(order)
+      return
+    }
+    void run(async () => {
+      const response = await api.post(
+        `/api/adty/teams/${team.team_id}/topups/${encodeURIComponent(order.trade_no)}/resume`
+      )
+      setCheckout(requireServerSuccess(response.data).data as AdtyOrderExt)
+    })
+  }
+
+  const cancelTeamOrder = (tradeNo: string) => {
+    void run(async () => {
+      await cancelAdtyOrder(tradeNo)
+      toast.success(t('Order canceled'))
+    })
   }
 
   return (
@@ -395,6 +549,9 @@ export function TeamPanel() {
               )}
             </p>
           </div>
+          {returning && returnOrderQuery.isError && (
+            <ErrorState onRetry={() => void returnOrderQuery.refetch()} />
+          )}
           {mine.isPending && <LoadingState />}
           {mine.isError && <ErrorState onRetry={() => void mine.refetch()} />}
           {mine.isSuccess && !team && (
@@ -520,13 +677,19 @@ export function TeamPanel() {
                   <Input
                     id='team-topup'
                     value={topupAmount}
-                    inputMode='decimal'
+                    inputMode='numeric'
                     autoComplete='off'
+                    aria-invalid={Boolean(topupAmountError)}
                     placeholder={t('At least ${{amount}}', {
                       amount: minTeamTopup,
                     })}
                     onChange={(event) => setTopupAmount(event.target.value)}
                   />
+                  {topupAmountError && (
+                    <p className='text-destructive text-xs' role='alert'>
+                      {topupAmountError}
+                    </p>
+                  )}
                 </div>
                 {scenes.length > 1 && (
                   <div className='flex flex-col gap-1'>
@@ -628,7 +791,12 @@ export function TeamPanel() {
                       variant='brand'
                       className='w-full shrink-0 sm:w-auto sm:min-w-28'
                       disabled={
-                        pending || !validTopupAmount || topupMethod === null
+                        pending ||
+                        !validTopupAmount ||
+                        topupMethod === null ||
+                        !teamQuoteAvailable ||
+                        teamQuoteQuery.isFetching ||
+                        teamQuoteQuery.isError
                       }
                       onClick={() =>
                         void run(async () => {
@@ -649,6 +817,7 @@ export function TeamPanel() {
                               payment_scene: scene?.key,
                               method: topupMethod.id,
                               channel_id: topupMethod.channel_id,
+                              device: detectPayDevice(),
                             },
                             {
                               headers: {
@@ -675,6 +844,18 @@ export function TeamPanel() {
                       {pending ? t('Processing...') : t('Team top-up')}
                     </Button>
                   </div>
+                  {teamQuoteQuery.data && !teamQuoteAvailable && (
+                    <p className='text-destructive text-sm' role='alert'>
+                      {t(
+                        'This method cannot take this amount. Choose another method or amount.'
+                      )}
+                    </p>
+                  )}
+                  {teamQuoteError && (
+                    <p className='text-destructive text-sm' role='alert'>
+                      {teamQuoteError}
+                    </p>
+                  )}
                 </section>
               </div>
               {pendingOrders.isError && (
@@ -704,29 +885,28 @@ export function TeamPanel() {
                   )
                 }
                 return (
-                  <Button
+                  <div
                     key={order.trade_no}
-                    type='button'
-                    variant='outline'
-                    disabled={pending}
-                    onClick={() => {
-                      if (hasCheckout) {
-                        setCheckout(order)
-                        return
-                      }
-                      void run(async () => {
-                        const response = await api.post(
-                          `/api/adty/teams/${team.team_id}/topups/${encodeURIComponent(order.trade_no)}/resume`
-                        )
-                        setCheckout(
-                          requireServerSuccess(response.data)
-                            .data as AdtyOrderExt
-                        )
-                      })
-                    }}
+                    className='flex flex-wrap items-center gap-2'
                   >
-                    {t('Continue payment')} · {order.trade_no}
-                  </Button>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      disabled={pending}
+                      onClick={() => resumeTeamOrder(order)}
+                    >
+                      {t('Continue payment')} · {order.trade_no}
+                    </Button>
+                    <Button
+                      type='button'
+                      variant='ghost'
+                      size='sm'
+                      disabled={pending}
+                      onClick={() => cancelTeamOrder(order.trade_no)}
+                    >
+                      {t('Cancel')}
+                    </Button>
+                  </div>
                 )
               })}
               <div className='flex flex-col gap-1'>
@@ -1130,6 +1310,248 @@ export function TeamPanel() {
               ))}
             </div>
           )}
+          {team?.role === 'leader' && (
+            <div className='flex flex-col gap-3'>
+              <h3 className='text-sm font-medium'>{t('Team top-up history')}</h3>
+              {teamTopups.isError && (
+                <ErrorState onRetry={() => void teamTopups.refetch()} />
+              )}
+              {!teamTopups.isError && (
+                <StaticDataTable
+                  tableClassName='min-w-[680px]'
+                  tableProps={{ 'aria-label': t('Team top-up history') }}
+                  data={teamTopups.data ?? []}
+                  getRowKey={(row) => row.trade_no}
+                  emptyContent={
+                    <EmptyState
+                      className='min-h-24'
+                      title={
+                        teamTopups.isLoading
+                          ? t('Loading...')
+                          : t('No top-ups yet')
+                      }
+                    />
+                  }
+                  columns={[
+                    {
+                      id: 'time',
+                      header: t('Time'),
+                      cell: (row) => {
+                        const ts = row.created_at ?? row.create_time ?? 0
+                        return ts > 0 ? formatTimestamp(ts) : '—'
+                      },
+                    },
+                    {
+                      id: 'method',
+                      header: t('Payment method'),
+                      cell: (row) =>
+                        row.method_label || t(methodLabel(row.method)),
+                    },
+                    {
+                      id: 'amount',
+                      header: t('Amount'),
+                      className: 'text-right',
+                      cellClassName: 'text-right tabular-nums',
+                      cell: (row) => formatUsd(Number(row.face_usd), locale),
+                    },
+                    {
+                      id: 'paid',
+                      header: t('Paid'),
+                      className: 'text-right',
+                      cellClassName: 'text-right tabular-nums',
+                      cell: (row) => {
+                        const paid = Number(row.paid_amount)
+                        const val = paid > 0 ? row.paid_amount : row.pay_amount
+                        const curr = row.paid_currency || row.pay_currency
+                        return val && curr ? `${val} ${curr}` : '—'
+                      },
+                    },
+                    {
+                      id: 'status',
+                      header: t('Status'),
+                      cell: (row) => {
+                        const rowStatus = resolveTeamTopupStatus(row)
+                        return (
+                          <StatusBadge
+                            label={t(
+                              ORDER_STATUS_LABELS[rowStatus] ?? rowStatus
+                            )}
+                            variant={
+                              ORDER_STATUS_VARIANTS[rowStatus] ?? 'neutral'
+                            }
+                            copyable={false}
+                          />
+                        )
+                      },
+                    },
+                    {
+                      id: 'trade_no',
+                      header: t('Order number'),
+                      cell: (row) => (
+                        <code className='font-mono text-xs'>
+                          {row.trade_no}
+                        </code>
+                      ),
+                    },
+                    {
+                      id: 'actions',
+                      header: t('Actions'),
+                      className: 'text-right',
+                      cellClassName: 'text-right',
+                      cell: (row) => {
+                        const rowStatus = resolveTeamTopupStatus(row)
+                        const actionable =
+                          isActive &&
+                          rowStatus === 'pending' &&
+                          (!row.expire_at || row.expire_at > nowSec)
+                        if (!actionable) return null
+                        const hasCheckout = Boolean(
+                          row.pay_address ||
+                            row.pay_url ||
+                            row.qr_code ||
+                            row.url_scheme
+                        )
+                        const canResume =
+                          hasCheckout ||
+                          (Boolean(row.method) &&
+                            row.method !== 'team' &&
+                            !(row.provider === 'adty_epay' && !row.channel_id))
+                        return (
+                          <div className='flex items-center justify-end gap-1.5 whitespace-nowrap'>
+                            {canResume && (
+                              <Button
+                                type='button'
+                                size='sm'
+                                disabled={pending}
+                                onClick={() => resumeTeamOrder(row)}
+                              >
+                                {t('Continue payment')}
+                              </Button>
+                            )}
+                            <Button
+                              type='button'
+                              size='sm'
+                              variant='outline'
+                              disabled={pending}
+                              onClick={() => cancelTeamOrder(row.trade_no)}
+                            >
+                              {t('Cancel')}
+                            </Button>
+                          </div>
+                        )
+                      },
+                    },
+                  ]}
+                />
+              )}
+            </div>
+          )}
+          {team?.role === 'leader' && (
+            <div className='flex flex-col gap-3'>
+              <h3 className='text-sm font-medium'>
+                {t('Shared balance ledger')}
+              </h3>
+              {teamLedgers.isError && (
+                <ErrorState onRetry={() => void teamLedgers.refetch()} />
+              )}
+              {!teamLedgers.isError && (
+                <>
+                  <StaticDataTable
+                    tableClassName='min-w-[600px]'
+                    tableProps={{ 'aria-label': t('Shared balance ledger') }}
+                    data={teamLedgers.data?.items ?? []}
+                    getRowKey={(row) => String(row.id)}
+                    emptyContent={
+                      <EmptyState
+                        className='min-h-24'
+                        title={
+                          teamLedgers.isLoading
+                            ? t('Loading...')
+                            : t('No ledger entries yet')
+                        }
+                      />
+                    }
+                    columns={[
+                      {
+                        id: 'time',
+                        header: t('Time'),
+                        cell: (row) =>
+                          row.created_at > 0
+                            ? formatTimestamp(row.created_at)
+                            : '—',
+                      },
+                      {
+                        id: 'type',
+                        header: t('Type'),
+                        cell: (row) =>
+                          labelOf(t, LEDGER_TYPE_LABELS, row.type),
+                      },
+                      {
+                        id: 'delta',
+                        header: t('Change'),
+                        className: 'text-right',
+                        cellClassName: 'text-right tabular-nums',
+                        cell: (row) =>
+                          `${row.delta_quota > 0 ? '+' : ''}${formatQuota(row.delta_quota)}`,
+                      },
+                      {
+                        id: 'balance_after',
+                        header: t('Balance after'),
+                        className: 'text-right',
+                        cellClassName: 'text-right tabular-nums',
+                        cell: (row) => formatQuota(row.balance_after),
+                      },
+                      {
+                        id: 'ref',
+                        header: t('Reference'),
+                        cell: (row) => (
+                          <code className='font-mono text-xs'>
+                            {row.ref_id || '—'}
+                          </code>
+                        ),
+                      },
+                    ]}
+                  />
+                  {Math.ceil(
+                    (teamLedgers.data?.total ?? 0) / TEAM_LEDGER_PAGE_SIZE
+                  ) > 1 && (
+                    <div className='flex items-center justify-end gap-2'>
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        disabled={ledgerPage <= 1}
+                        onClick={() => setLedgerPage((p) => p - 1)}
+                      >
+                        {t('Previous')}
+                      </Button>
+                      <span className='text-muted-foreground text-sm'>
+                        {ledgerPage} /{' '}
+                        {Math.ceil(
+                          (teamLedgers.data?.total ?? 0) / TEAM_LEDGER_PAGE_SIZE
+                        )}
+                      </span>
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        disabled={
+                          ledgerPage >=
+                          Math.ceil(
+                            (teamLedgers.data?.total ?? 0) /
+                              TEAM_LEDGER_PAGE_SIZE
+                          )
+                        }
+                        onClick={() => setLedgerPage((p) => p + 1)}
+                      >
+                        {t('Next')}
+                      </Button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
           {error && (
             <p role='alert' className='text-destructive text-sm'>
               {error}
@@ -1137,30 +1559,26 @@ export function TeamPanel() {
           )}
         </CardContent>
       </Card>
-      {checkout &&
-        (checkout.method.startsWith('usdt.') ? (
+      {activeCheckout &&
+        (activeCheckout.provider === 'bepusdt' ||
+        activeCheckout.method.startsWith('usdt.') ? (
           <UsdtPayDialog
-            key={checkout.trade_no}
-            tradeNo={checkout.trade_no}
-            chain={checkout.method}
-            amount={Number(checkout.face_usd)}
-            onClose={() => {
-              setCheckout(null)
-              refresh()
-            }}
-            onChangeChain={() => setCheckout(null)}
+            key={activeCheckout.trade_no}
+            tradeNo={activeCheckout.trade_no}
+            chain={activeCheckout.method}
+            amount={Number(activeCheckout.face_usd)}
+            onClose={closeCheckout}
+            onChangeChain={closeCheckout}
             onSettled={refresh}
           />
         ) : (
           <EpayPayDialog
-            key={checkout.trade_no}
-            tradeNo={checkout.trade_no}
-            method={checkout.method}
-            amount={Number(checkout.face_usd)}
-            onClose={() => {
-              setCheckout(null)
-              refresh()
-            }}
+            key={activeCheckout.trade_no}
+            tradeNo={activeCheckout.trade_no}
+            method={activeCheckout.method}
+            amount={Number(activeCheckout.face_usd)}
+            gatewayReturn={activeGatewayReturn}
+            onClose={closeCheckout}
             onSettled={refresh}
           />
         ))}

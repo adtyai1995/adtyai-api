@@ -99,12 +99,26 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
     fixedAmount ??
     selectedTier ??
     (customAmount === '' ? 0 : Number(customAmount))
+  const maxTopup = Number(scene?.max_usd ?? 0)
   const validAmount =
     Number.isFinite(amount) &&
     Number.isInteger(amount) &&
     (fixedAmount !== undefined ? amount > 0 : amount >= minTopup) &&
     amount >= Number(scene?.min_usd ?? 0) &&
-    (Number(scene?.max_usd ?? 0) <= 0 || amount <= Number(scene?.max_usd))
+    (maxTopup <= 0 || amount <= maxTopup)
+  let customAmountError = ''
+  if (fixedAmount === undefined && customAmount !== '' && !validAmount) {
+    const parsedCustom = Number(customAmount)
+    if (!Number.isFinite(parsedCustom) || !Number.isInteger(parsedCustom)) {
+      customAmountError = t('Enter a whole number in USD')
+    } else if (parsedCustom < minTopup) {
+      customAmountError = t('At least ${{amount}}', { amount: minTopup })
+    } else if (maxTopup > 0 && parsedCustom > maxTopup) {
+      customAmountError = t('At most ${{amount}}', { amount: maxTopup })
+    } else {
+      customAmountError = t('Enter a valid amount')
+    }
+  }
 
   const quoteQuery = useQuery({
     queryKey: [
@@ -311,18 +325,20 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
               type='number'
               inputMode='numeric'
               min={minTopup}
+              max={maxTopup > 0 ? maxTopup : undefined}
               step='1'
               value={fixedAmount ?? customAmount}
               disabled={fixedAmount !== undefined}
               placeholder={t('At least ${{amount}}', { amount: minTopup })}
+              aria-invalid={Boolean(customAmountError)}
               onChange={(event) => {
                 setCustomAmount(event.target.value)
                 setSelectedTier(null)
               }}
             />
-            {customAmount !== '' && !validAmount && (
-              <p className='text-muted-foreground text-xs'>
-                {t('At least ${{amount}}', { amount: minTopup })}
+            {customAmountError && (
+              <p className='text-destructive text-xs' role='alert'>
+                {customAmountError}
               </p>
             )}
           </div>

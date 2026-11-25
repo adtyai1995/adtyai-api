@@ -53,6 +53,7 @@ export type EpayChannel = {
   has_key: boolean
   has_merchant_private_key?: boolean
   has_platform_public_key?: boolean
+  credential_decrypt_error?: boolean
   today_cny: Record<string, string>
   methods: EpayMethodConfig[]
 }
@@ -66,6 +67,7 @@ export type EpayChannelInput = Omit<
   | 'has_key'
   | 'has_merchant_private_key'
   | 'has_platform_public_key'
+  | 'credential_decrypt_error'
   | 'today_cny'
 > & {
   merchant_key: string

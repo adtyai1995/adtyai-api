@@ -58,6 +58,7 @@ export type SecurityProofScope =
   | 'adty.payment_orphan.resolve'
   | 'adty.topup.query'
   | 'adty.site_earning.review'
+  | 'adty.gift_fulfillment.review'
   | 'adty.root_gift.grant'
 
 /** Site owner actions that need step-up (service/adty_site_verification.go). */
@@ -163,6 +164,7 @@ export type VerificationOperation =
         | 'adty.payment_orphan.resolve'
         | 'adty.topup.query'
         | 'adty.site_earning.review'
+        | 'adty.gift_fulfillment.review'
       context?: Record<string, unknown>
     }
   | {
@@ -192,6 +194,7 @@ export type VerificationOperation =
         | 'adty.payment_orphan.resolve'
         | 'adty.topup.query'
         | 'adty.site_earning.review'
+        | 'adty.gift_fulfillment.review'
       >
       context?: Record<string, never>
     }

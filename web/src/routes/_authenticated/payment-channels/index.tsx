@@ -18,13 +18,28 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
+import { PaymentChannels } from '@/features/adty-payment-channels'
+import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
+
 export const Route = createFileRoute('/_authenticated/payment-channels/')({
   beforeLoad: () => {
-    throw redirect({
-      to: '/system-settings/billing/$section',
-      params: { section: 'payment' },
-      search: { tab: 'epay' },
-      replace: true,
-    })
+    const user = useAuthStore.getState().auth.user
+    if ((user?.role ?? ROLE.GUEST) >= ROLE.SUPER_ADMIN) {
+      throw redirect({
+        to: '/system-settings/billing/$section',
+        params: { section: 'payment' },
+        search: { tab: 'epay' },
+        replace: true,
+      })
+    }
+    if (
+      !canAdmin(user, ADTY_PERMISSIONS.PAYMENT_READ) &&
+      !canAdmin(user, ADTY_PERMISSIONS.PAYMENT_OPERATE)
+    ) {
+      throw redirect({ to: '/403' })
+    }
   },
+  component: PaymentChannels,
 })

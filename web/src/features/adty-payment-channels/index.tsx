@@ -148,6 +148,9 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
   const test = useMutation({
     mutationFn: (id: number) => testEpayChannel(id),
     onSuccess: (results) => {
+      if (results.length === 0) {
+        toast.info(t('No enabled payment methods to test on this channel'))
+      }
       for (const result of results) {
         const label = paymentMethodLabel(result.method, t)
         if (result.ok) {
@@ -297,6 +300,13 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
                   variant={STATUS_VARIANT[row.status]}
                   copyable={false}
                 />
+                {row.credential_decrypt_error && (
+                  <StatusBadge
+                    label={t('Credential decryption failed')}
+                    variant='danger'
+                    copyable={false}
+                  />
+                )}
                 {row.status_reason && (
                   <span className='text-muted-foreground max-w-[120px] text-[11px] leading-tight'>
                     {paymentStatusReasonLabel(row.status_reason, t)}

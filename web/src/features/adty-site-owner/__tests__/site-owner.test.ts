@@ -30,6 +30,7 @@ import {
   validRetailMarkup,
   validSiteReferralRate,
 } from '../lib/site-owner'
+import { computeOwnerFundingPreview } from '../lib/funding-preview'
 import { isSiteOwnerSection, SITE_OWNER_SECTIONS } from '../sections'
 
 describe('adty-site-owner/lib/site-owner', () => {
@@ -80,6 +81,19 @@ describe('adty-site-owner/lib/site-owner', () => {
     expect(isValidOptionalHttpUrl('')).toBe(true)
     expect(isValidOptionalHttpUrl('https://pay.example.com')).toBe(true)
     expect(isValidOptionalHttpUrl('javascript:void(0)')).toBe(false)
+  })
+
+  it('caps owner funding preview at 2 decimal places and 100,000 USD', () => {
+    const wallets = [
+      { kind: 'earnings', balance: '200000.00', frozen_balance: '0' },
+      { kind: 'margin', balance: '50000.00', frozen_balance: '0', required_balance: '1000.00' },
+    ] as never
+    expect(computeOwnerFundingPreview(wallets, '10.25').valid).toBe(true)
+    expect(computeOwnerFundingPreview(wallets, '100000').valid).toBe(true)
+    expect(computeOwnerFundingPreview(wallets, '10.255').valid).toBe(false)
+    const overMax = computeOwnerFundingPreview(wallets, '100000.01')
+    expect(overMax.valid).toBe(false)
+    expect(overMax.exceedsMax).toBe(true)
   })
 })
 

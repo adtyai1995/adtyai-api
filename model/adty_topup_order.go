@@ -103,6 +103,9 @@ type AdtyTopupOrder struct {
 	// RefundDeductedQuota、RefundBonusQuota 是这次退款扣回的 R 和订单赠金 G，只在退款钩子里用，不入库。
 	RefundDeductedQuota int64 `json:"-" gorm:"-"`
 	RefundBonusQuota    int64 `json:"-" gorm:"-"`
+	// MaxActivePending enforces the active unexpired pending cap atomically inside
+	// CreateAdtyTopUpWithPolicy when positive; never persisted.
+	MaxActivePending int `json:"-" gorm:"-"`
 }
 
 func (AdtyTopupOrder) TableName() string {
@@ -119,6 +122,10 @@ func (order *AdtyTopupOrder) IsOwnerMargin() bool {
 
 func (order *AdtyTopupOrder) IsOwnerBusiness() bool {
 	return order.IsOwnerSelfUse() || order.IsOwnerMargin()
+}
+
+func (order *AdtyTopupOrder) IsTeamTopup() bool {
+	return order != nil && (order.TeamId > 0 || order.Business == AdtyBusinessTeamTopup)
 }
 
 func (order *AdtyTopupOrder) ValidOwnerSelfUseCredit() bool {
@@ -158,11 +165,14 @@ type AdtyPaymentFacts struct {
 	AllowReplaced    bool  // True only on explicit operator orphan-credit / manual-complete paths (R5-08).
 }
 
+const MaxActivePendingAdtyTopUps = 10
+
 var (
-	ErrPaymentAmountMismatch = errors.New("payment amount mismatch")
-	ErrAdtyTopUpNotCancel    = errors.New("adty topup cannot be canceled")
-	ErrAdtyDuplicatePayment  = errors.New("duplicate payment on a completed order")
-	ErrAdtyOwnerTopupReview  = errors.New("owner self-use payment requires review for the original closed site")
+	ErrPaymentAmountMismatch    = errors.New("payment amount mismatch")
+	ErrAdtyTopUpNotCancel       = errors.New("adty topup cannot be canceled")
+	ErrAdtyDuplicatePayment     = errors.New("duplicate payment on a completed order")
+	ErrAdtyOwnerTopupReview     = errors.New("owner self-use payment requires review for the original closed site")
+	ErrAdtyTooManyPendingOrders = common.NewMessage("Too many pending payment orders. Please complete or cancel an existing order first")
 )
 
 // AdtyAfterTopUpCreditedTx 在入账事务里调用（P6 注册返佣计佣任务）。只能做不会失败的写，
@@ -231,8 +241,9 @@ func CreateAdtyTopUpWithPolicy(topUp *TopUp, ext *AdtyTopupOrder, prepare, valid
 		}
 		// Acquire the payment-method lock before any consistent read: on MySQL
 		// REPEATABLE READ an earlier snapshot could miss a previous reservation.
+		now := time.Now().Unix()
 		if ext.Provider == PaymentProviderAdtyEpay && ext.ChannelId > 0 {
-			if err := lockAdtyEpayDailyRoom(tx, ext.ChannelId, ext.Method, ext.PayAmount, time.Now().Unix()); err != nil {
+			if err := lockAdtyEpayDailyRoom(tx, ext.ChannelId, ext.Method, ext.PayAmount, now); err != nil {
 				return err
 			}
 		}
@@ -252,6 +263,24 @@ func CreateAdtyTopUpWithPolicy(topUp *TopUp, ext *AdtyTopupOrder, prepare, valid
 		if validate != nil {
 			if err := validate(tx); err != nil {
 				return err
+			}
+		}
+		if ext.MaxActivePending > 0 && topUp.Status == common.TopUpStatusPending {
+			var pendingCount int64
+			if ext.TeamId > 0 {
+				pendingCount, err = CountTeamActivePendingAdtyTopUpsTx(tx, ext.TeamId, now)
+			} else {
+				ownerSiteID, scopeBusiness := 0, ""
+				if ext.IsOwnerBusiness() {
+					ownerSiteID, scopeBusiness = ext.SiteId, ext.Business
+				}
+				pendingCount, err = CountUserActivePendingAdtyTopUpsForBusinessTx(tx, topUp.UserId, scopeBusiness, ownerSiteID, now)
+			}
+			if err != nil {
+				return err
+			}
+			if pendingCount >= int64(ext.MaxActivePending) {
+				return ErrAdtyTooManyPendingOrders
 			}
 		}
 		if err := tx.Create(topUp).Error; err != nil {
@@ -471,6 +500,16 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 		"paid_tx_hash":  strings.TrimSpace(facts.TxHash),
 		"paid_source":   facts.Source,
 	}
+	backfillAddress := ""
+	if strings.TrimSpace(ext.PayAddress) == "" && strings.TrimSpace(facts.PayAddress) != "" {
+		backfillAddress = strings.TrimSpace(facts.PayAddress)
+		extUpdates["pay_address"] = backfillAddress
+	}
+	backfillGatewayTradeID := ""
+	if strings.TrimSpace(ext.GatewayTradeId) == "" && strings.TrimSpace(facts.GatewayTradeId) != "" {
+		backfillGatewayTradeID = strings.TrimSpace(facts.GatewayTradeId)
+		extUpdates["gateway_trade_id"] = backfillGatewayTradeID
+	}
 	if facts.Payload != "" {
 		extUpdates["provider_payload"] = facts.Payload
 	}
@@ -481,6 +520,12 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 	ext.PaidCurrency = facts.PaidCurrency
 	ext.PaidTxHash = strings.TrimSpace(facts.TxHash)
 	ext.PaidSource = facts.Source
+	if backfillAddress != "" {
+		ext.PayAddress = backfillAddress
+	}
+	if backfillGatewayTradeID != "" {
+		ext.GatewayTradeId = backfillGatewayTradeID
+	}
 	// 不在事务里调 ValidateTopUpQuotaCapacity：它读全局 DB，看不到事务里的改动。
 	if ext.TeamId > 0 {
 		ext.TeamPaymentEffectiveAt = now
@@ -560,9 +605,9 @@ func adtyPaymentVoucherDiffers(ext *AdtyTopupOrder, facts AdtyPaymentFacts) bool
 	return incoming != "" && stored != "" && !strings.EqualFold(incoming, stored)
 }
 
-func recordDuplicatePaymentReview(tradeNo string, facts AdtyPaymentFacts, cause error) {
+func recordDuplicatePaymentReview(tradeNo string, facts AdtyPaymentFacts, cause error) error {
 	if DB == nil {
-		return
+		return nil
 	}
 	if err := RecordPaymentOrphanEvent(&PaymentOrphanEvent{
 		Provider:    facts.Provider,
@@ -574,11 +619,13 @@ func recordDuplicatePaymentReview(tradeNo string, facts AdtyPaymentFacts, cause 
 		Payload:     facts.Payload,
 	}); err != nil {
 		common.SysError(common.LogText("record duplicate payment review failed trade_no=%s: %s", tradeNo, err.Error()))
+		return err
 	}
+	return nil
 }
 
 // checkAdtyPaymentFacts 核对回调或补查的金额：USDT 要求法币金额等于面额 × 分组充值倍率、
-// 实付不少于应付、收款地址和 trade_id 与下单时一致；易支付要求人民币金额分毫不差。
+// 实付不少于应付、收款地址和 trade_id 与下单时一致；易支付要求人民币金额分毫不差且通道单号非空一致。
 func checkAdtyPaymentFacts(ext *AdtyTopupOrder, facts AdtyPaymentFacts) error {
 	switch ext.Provider {
 	case PaymentProviderAdtyBEpusdt:
@@ -587,20 +634,38 @@ func checkAdtyPaymentFacts(ext *AdtyTopupOrder, facts AdtyPaymentFacts) error {
 			ratio = decimal.NewFromInt(1)
 		}
 		expectedFiat := ext.FaceUSD.Mul(ratio).Round(2)
-		if !facts.FiatAmount.Round(2).Equal(expectedFiat) {
+		if !facts.FiatAmount.Equal(expectedFiat) {
 			return fmt.Errorf("%w: fiat %s != %s", ErrPaymentAmountMismatch, facts.FiatAmount, expectedFiat)
 		}
 		if facts.PaidAmount.LessThan(ext.PayAmount) {
 			return fmt.Errorf("%w: paid %s < %s", ErrPaymentAmountMismatch, facts.PaidAmount, ext.PayAmount)
 		}
-		if ext.PayAddress != "" && !strings.EqualFold(strings.TrimSpace(facts.PayAddress), ext.PayAddress) {
+		payAddress := strings.TrimSpace(facts.PayAddress)
+		if payAddress == "" {
+			return fmt.Errorf("%w: missing address", ErrPaymentMethodMismatch)
+		}
+		if ext.PayAddress != "" && !strings.EqualFold(payAddress, strings.TrimSpace(ext.PayAddress)) {
 			return fmt.Errorf("%w: address", ErrPaymentAmountMismatch)
 		}
-		if ext.GatewayTradeId != "" && strings.TrimSpace(facts.GatewayTradeId) != ext.GatewayTradeId {
+		gatewayTradeID := strings.TrimSpace(facts.GatewayTradeId)
+		if gatewayTradeID == "" {
+			return fmt.Errorf("%w: missing trade id", ErrPaymentMethodMismatch)
+		}
+		if ext.GatewayTradeId != "" && gatewayTradeID != strings.TrimSpace(ext.GatewayTradeId) {
 			return fmt.Errorf("%w: trade id", ErrPaymentAmountMismatch)
 		}
+		if facts.Source == AdtyPaymentSourceCallback && strings.TrimSpace(facts.TxHash) == "" {
+			return fmt.Errorf("%w: missing tx hash", ErrPaymentMethodMismatch)
+		}
 	case PaymentProviderAdtyEpay:
-		if !facts.PaidAmount.Round(2).Equal(ext.PayAmount.Round(2)) {
+		gatewayTradeID := strings.TrimSpace(facts.GatewayTradeId)
+		if gatewayTradeID == "" {
+			return fmt.Errorf("%w: missing gateway trade id", ErrPaymentMethodMismatch)
+		}
+		if strings.TrimSpace(ext.GatewayTradeId) != "" && strings.TrimSpace(ext.GatewayTradeId) != gatewayTradeID {
+			return fmt.Errorf("%w: gateway trade id mismatch", ErrPaymentMethodMismatch)
+		}
+		if !facts.PaidAmount.Equal(ext.PayAmount) {
 			return fmt.Errorf("%w: paid %s != %s", ErrPaymentAmountMismatch, facts.PaidAmount, ext.PayAmount)
 		}
 	default:
@@ -621,7 +686,9 @@ func CompleteAdtyTopUp(tradeNo string, facts AdtyPaymentFacts, callerIp string) 
 	})
 	if errors.Is(err, ErrAdtyDuplicatePayment) {
 		recordAdtyRejectedPayment(tradeNo, facts)
-		recordDuplicatePaymentReview(tradeNo, facts, err)
+		if reviewErr := recordDuplicatePaymentReview(tradeNo, facts, err); reviewErr != nil {
+			return false, reviewErr
+		}
 		return false, err
 	}
 	if err != nil {
@@ -700,15 +767,47 @@ func ListUserPendingAdtyTradeNosForBusiness(userId, ownerSiteID int, business st
 	return tradeNos, err
 }
 
-// CountUserActivePendingAdtyTopUps counts unexpired pending orders for a user within the business scope.
-func CountUserActivePendingAdtyTopUps(userId int, now int64, ownerSiteID int, business string) (int64, error) {
+// CountUserActivePendingAdtyTopUpsForBusinessTx counts unexpired pending orders
+// for a user within the business scope using the caller's transaction.
+func CountUserActivePendingAdtyTopUpsForBusinessTx(tx *gorm.DB, userID int, business string, siteID int, now int64) (int64, error) {
+	if tx == nil {
+		tx = DB
+	}
 	var count int64
-	query := DB.Table("adty_topup_orders AS a").
+	query := tx.Table("adty_topup_orders AS a").
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
-		Where("a.user_id = ? AND t.status = ? AND a.expire_at > ?", userId, common.TopUpStatusPending, now)
-	query = adtyPendingBusinessScope(query, ownerSiteID, business)
+		Where("a.user_id = ? AND t.status = ? AND a.expire_at > ?", userID, common.TopUpStatusPending, now)
+	query = adtyPendingBusinessScope(query, siteID, business)
 	err := query.Count(&count).Error
 	return count, err
+}
+
+// CountUserActivePendingAdtyTopUps counts unexpired pending orders for a user within the business scope.
+func CountUserActivePendingAdtyTopUps(userId int, now int64, ownerSiteID int, business string) (int64, error) {
+	return CountUserActivePendingAdtyTopUpsForBusinessTx(DB, userId, business, ownerSiteID, now)
+}
+
+// CountTeamActivePendingAdtyTopUpsTx counts unexpired pending orders for a team inside tx.
+func CountTeamActivePendingAdtyTopUpsTx(tx *gorm.DB, teamID int64, now int64) (int64, error) {
+	if tx == nil {
+		tx = DB
+	}
+	var count int64
+	err := tx.Table("adty_topup_orders AS a").
+		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
+		Where("a.team_id = ? AND t.status = ? AND (a.expire_at = 0 OR a.expire_at > ?)", teamID, common.TopUpStatusPending, now).
+		Count(&count).Error
+	return count, err
+}
+
+// ListTeamActivePendingAdtyTopUps returns unexpired pending orders for a team, newest first.
+func ListTeamActivePendingAdtyTopUps(teamID int64, now int64) ([]AdtyTopupOrder, error) {
+	var exts []AdtyTopupOrder
+	err := DB.Table("adty_topup_orders AS a").Select("a.*").
+		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
+		Where("a.team_id = ? AND t.status = ? AND (a.expire_at = 0 OR a.expire_at > ?)", teamID, common.TopUpStatusPending, now).
+		Order("a.id DESC").Scan(&exts).Error
+	return exts, err
 }
 
 // ListUserActivePendingAdtyTopUpsForBusiness returns unexpired pending orders (newest first)
@@ -721,6 +820,44 @@ func ListUserActivePendingAdtyTopUpsForBusiness(userId int, now int64, ownerSite
 	query = adtyPendingBusinessScope(query, ownerSiteID, business)
 	err := query.Order("a.id DESC").Scan(&exts).Error
 	return exts, err
+}
+
+// ListUserActivePendingAdtyTopUpViewsForBusiness returns up to MaxActivePendingAdtyTopUps
+// unexpired pending order views (newest first) for a user within the business scope.
+func ListUserActivePendingAdtyTopUpViewsForBusiness(userId int, now int64, ownerSiteID int, business string) ([]AdtyTopUpView, error) {
+	var exts []AdtyTopupOrder
+	query := DB.Table("adty_topup_orders AS a").Select("a.*").
+		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
+		Where("a.user_id = ? AND t.status = ? AND a.expire_at > ?", userId, common.TopUpStatusPending, now)
+	query = adtyPendingBusinessScope(query, ownerSiteID, business)
+	if err := query.Order("a.id DESC").Limit(MaxActivePendingAdtyTopUps).Scan(&exts).Error; err != nil {
+		return nil, err
+	}
+	if len(exts) == 0 {
+		return []AdtyTopUpView{}, nil
+	}
+	tradeNos := make([]string, 0, len(exts))
+	for i := range exts {
+		tradeNos = append(tradeNos, exts[i].TradeNo)
+	}
+	var topUps []TopUp
+	if err := DB.Where("trade_no IN ? AND user_id = ?", tradeNos, userId).Find(&topUps).Error; err != nil {
+		return nil, err
+	}
+	byTradeNo := make(map[string]TopUp, len(topUps))
+	for _, topUp := range topUps {
+		byTradeNo[topUp.TradeNo] = topUp
+	}
+	views := make([]AdtyTopUpView, 0, len(exts))
+	for i := range exts {
+		topUp, ok := byTradeNo[exts[i].TradeNo]
+		if !ok {
+			continue
+		}
+		extCopy := exts[i]
+		views = append(views, AdtyTopUpView{TopUp: topUp, Ext: &extCopy})
+	}
+	return views, nil
 }
 
 func adtyPendingBusinessScope(query *gorm.DB, ownerSiteID int, business string) *gorm.DB {
@@ -1011,6 +1148,144 @@ func ListUserAdtyTopUps(userId int, pageInfo *common.PageInfo) ([]AdtyTopUpView,
 	}
 	var topUps []TopUp
 	if err := query.Order("id DESC").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Find(&topUps).Error; err != nil {
+		return nil, 0, err
+	}
+	tradeNos := make([]string, 0, len(topUps))
+	for _, topUp := range topUps {
+		tradeNos = append(tradeNos, topUp.TradeNo)
+	}
+	byTradeNo := map[string]*AdtyTopupOrder{}
+	if len(tradeNos) > 0 {
+		var exts []AdtyTopupOrder
+		if err := DB.Where("trade_no IN ?", tradeNos).Find(&exts).Error; err != nil {
+			return nil, 0, err
+		}
+		for i := range exts {
+			byTradeNo[exts[i].TradeNo] = &exts[i]
+		}
+	}
+	out := make([]AdtyTopUpView, 0, len(topUps))
+	for _, topUp := range topUps {
+		out = append(out, AdtyTopUpView{TopUp: topUp, Ext: byTradeNo[topUp.TradeNo]})
+	}
+	return out, total, nil
+}
+
+// AdtyUserTopUpListFilter holds SQL-level filters for a user's top-up history.
+type AdtyUserTopUpListFilter struct {
+	OwnerSiteID    int
+	Business       string
+	Status         string
+	Method         string
+	PaymentScene   string
+	TradeNo        string
+	Keyword        string
+	StartTimestamp int64
+	EndTimestamp   int64
+	Offset         int
+	Limit          int
+}
+
+func escapeAdtySQLLike(raw string) string {
+	r := strings.NewReplacer("!", "!!", "%", "!%", "_", "!_")
+	return r.Replace(strings.ToLower(strings.TrimSpace(raw)))
+}
+
+// ListUserAdtyTopUpsFiltered returns paginated user top-up orders with all
+// business, status, method, scene, trade_no, keyword, and timestamp filters applied in SQL.
+func ListUserAdtyTopUpsFiltered(userID int, filter AdtyUserTopUpListFilter) ([]AdtyTopUpView, int64, error) {
+	if filter.OwnerSiteID < 0 {
+		return []AdtyTopUpView{}, 0, nil
+	}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = common.ItemsPerPage
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset := max(filter.Offset, 0)
+
+	base := DB.Table("top_ups AS t").
+		Joins("LEFT JOIN adty_topup_orders AS a ON a.trade_no = t.trade_no").
+		Where("t.user_id = ? AND t.payment_provider IN ?", userID, []string{
+			PaymentProviderAdtyBEpusdt, PaymentProviderAdtyEpay, AdtyVoucherProvider,
+		})
+
+	if filter.OwnerSiteID > 0 {
+		base = base.Where("a.site_id = ?", filter.OwnerSiteID)
+	}
+	business := strings.TrimSpace(filter.Business)
+	if !strings.EqualFold(business, "all") && business != "" {
+		switch business {
+		case AdtyBusinessWalletTopup:
+			base = base.Where(
+				"COALESCE(a.team_id, 0) = 0 AND (a.trade_no IS NULL OR (COALESCE(a.business, '') IN ('', ?) AND NOT (COALESCE(a.provider, '') = ? AND COALESCE(a.method, '') = ?)))",
+				AdtyBusinessWalletTopup, AdtyVoucherProvider, AdtyVoucherPurposeSiteMargin,
+			)
+		case AdtyBusinessOwnerMarginTopup:
+			base = base.Where(
+				"(a.business = ? OR (a.provider = ? AND a.method = ?))",
+				AdtyBusinessOwnerMarginTopup, AdtyVoucherProvider, AdtyVoucherPurposeSiteMargin,
+			)
+		case AdtyBusinessTeamTopup:
+			base = base.Where("(a.business = ? OR COALESCE(a.team_id, 0) > 0)", AdtyBusinessTeamTopup)
+		default:
+			base = base.Where("a.business = ?", business)
+		}
+	}
+	if status := strings.ToLower(strings.TrimSpace(filter.Status)); status != "" && status != "all" {
+		if status == "cancelled" {
+			status = TopUpStatusCanceled
+		}
+		base = base.Where("LOWER(t.status) = ?", status)
+	}
+	if method := strings.ToLower(strings.TrimSpace(filter.Method)); method != "" && method != "all" {
+		if method == "usdt" {
+			base = base.Where(
+				"(LOWER(t.payment_method) = 'usdt' OR LOWER(t.payment_method) LIKE 'usdt.%' OR LOWER(COALESCE(a.method, '')) = 'usdt' OR LOWER(COALESCE(a.method, '')) LIKE 'usdt.%' OR LOWER(t.payment_provider) = ?)",
+				PaymentProviderAdtyBEpusdt,
+			)
+		} else {
+			base = base.Where(
+				"(LOWER(t.payment_method) = ? OR LOWER(COALESCE(a.method, '')) = ? OR LOWER(COALESCE(a.method_label, '')) = ?)",
+				method, method, method,
+			)
+		}
+	}
+	if scene := strings.ToLower(strings.TrimSpace(filter.PaymentScene)); scene != "" && scene != "all" {
+		base = base.Where(
+			"(LOWER(COALESCE(a.payment_scene, '')) = ? OR LOWER(COALESCE(a.payment_scene_name, '')) = ?)",
+			scene, scene,
+		)
+	}
+	if tradeNo := strings.TrimSpace(filter.TradeNo); tradeNo != "" {
+		like := "%" + escapeAdtySQLLike(tradeNo) + "%"
+		base = base.Where("LOWER(t.trade_no) LIKE ? ESCAPE '!'", like)
+	}
+	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
+		like := "%" + escapeAdtySQLLike(keyword) + "%"
+		base = base.Where(
+			"(LOWER(t.trade_no) LIKE ? ESCAPE '!' OR LOWER(t.payment_method) LIKE ? ESCAPE '!' OR LOWER(t.payment_provider) LIKE ? ESCAPE '!' OR LOWER(t.status) LIKE ? ESCAPE '!' OR LOWER(COALESCE(a.method, '')) LIKE ? ESCAPE '!' OR LOWER(COALESCE(a.method_label, '')) LIKE ? ESCAPE '!' OR LOWER(COALESCE(a.payment_scene, '')) LIKE ? ESCAPE '!' OR LOWER(COALESCE(a.payment_scene_name, '')) LIKE ? ESCAPE '!' OR LOWER(COALESCE(a.gateway_trade_id, '')) LIKE ? ESCAPE '!')",
+			like, like, like, like, like, like, like, like, like,
+		)
+	}
+	if filter.StartTimestamp > 0 {
+		base = base.Where("t.create_time >= ?", filter.StartTimestamp)
+	}
+	if filter.EndTimestamp > 0 {
+		base = base.Where("t.create_time <= ?", filter.EndTimestamp)
+	}
+
+	var total int64
+	if err := base.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return []AdtyTopUpView{}, 0, nil
+	}
+	var topUps []TopUp
+	if err := base.Session(&gorm.Session{}).Select("t.*").Order("t.id DESC").Limit(limit).Offset(offset).Scan(&topUps).Error; err != nil {
 		return nil, 0, err
 	}
 	tradeNos := make([]string, 0, len(topUps))

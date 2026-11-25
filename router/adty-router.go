@@ -87,6 +87,7 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/api/adty/teams/:id/topups", "wallet:write"},
 		{http.MethodPost, "/api/adty/teams/:id/topups/:trade_no/resume", "wallet:write"},
 		{http.MethodGet, "/api/adty/teams/:id/topups", "wallet:read"},
+		{http.MethodGet, "/api/adty/teams/:id/ledgers", "wallet:read"},
 		{http.MethodPost, "/api/adty/teams/:id/leave", "session"},
 		{http.MethodPost, "/api/adty/teams/:id/employees", "session"},
 		{http.MethodPost, "/api/adty/teams/:id/members/:userId/enable", "session"},
@@ -155,9 +156,10 @@ func registerAdtyWorkspaceRoutes(apiRouter *gin.RouterGroup) {
 	// 团队充值下单同样是建单入口：每张单都会真实打一次支付网关，且 trade_no 由客户端的
 	// Idempotency-Key 决定，换一个 key 就是一张新单。必须和 epay/pay 一样按用户限速
 	// （ISS-R4-0127）。
-	apiRouter.POST("/adty/teams/:id/topups", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:pay-team"), controller.PostAdtyTeamTopup)
-	apiRouter.POST("/adty/teams/:id/topups/:trade_no/resume", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:pay-team"), controller.ResumeAdtyTeamTopup)
+	apiRouter.POST("/adty/teams/:id/topups", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), middleware.UserCriticalRateLimit("CT:pay-team"), controller.PostAdtyTeamTopup)
+	apiRouter.POST("/adty/teams/:id/topups/:trade_no/resume", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), middleware.UserCriticalRateLimit("CT:pay-team"), controller.ResumeAdtyTeamTopup)
 	apiRouter.GET("/adty/teams/:id/topups", middleware.UserAuth(), controller.GetAdtyTeamTopups)
+	apiRouter.GET("/adty/teams/:id/ledgers", middleware.UserAuth(), controller.GetAdtyTeamLedgers)
 	apiRouter.POST("/adty/teams/:id/leave", middleware.UserAuth(), controller.PostAdtyTeamLeave)
 	apiRouter.POST("/adty/teams/:id/employees", middleware.UserAuth(), middleware.UserCriticalRateLimit("CT:team-employee"), middleware.AnonymousRequestBodyLimit(), controller.PostAdtyTeamEmployee)
 	apiRouter.POST("/adty/teams/:id/members/:userId/enable", middleware.UserAuth(), controller.PostAdtyTeamEnableMember)
@@ -526,6 +528,7 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPut, "/bonus-methods", ownerOrdWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-bonus-method"), controller.PutAdtySiteMethodBonus}},
 		{http.MethodGet, "/wallets", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerWallets}},
 		{http.MethodPost, "/wallets/earning-to-margin", ownerOrdWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-earning-margin"), controller.PostAdtyEarningToMargin}},
+		{http.MethodPost, "/margin/vouchers/redeem", ownerOrdWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-margin-voucher-redeem"), controller.PostAdtySiteMarginVoucherRedeem}},
 		{http.MethodPost, "/wallets/earning-to-personal", ownerOrdWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-earning-personal"), controller.PostOwnerPersonalTransfer}},
 		{http.MethodGet, "/wallets/self-use", ownerOrdRead, []gin.HandlerFunc{controller.GetOwnerSelfUseBalance}},
 		{http.MethodGet, "/self-use/usage", ownerOrdRead, []gin.HandlerFunc{controller.GetOwnerSelfUseUsage}},

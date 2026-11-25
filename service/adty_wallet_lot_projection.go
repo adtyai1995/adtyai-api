@@ -78,12 +78,19 @@ func ProjectWalletLotsForUsers(users []model.User) (map[int]WalletLotProjection,
 			// quota field carries whenever quota_pending != 0 (ISS-R4-0074), so omit.
 			continue
 		}
-		projection := walletLotProjectionFromQuota(sum.Principal, sum.Bonus, WalletLotProjectionSourceBatches)
-		projection.ExpiringBonusQuota = sum.ExpiringBonus
-		projection.ExpiringBonusUSD = WalletUSDPartsFromQuota(0, sum.ExpiringBonus).Bonus
-		projection.NextExpiresAt = sum.NextExpiresAt
-		projection.TotalQuota += sum.ExpiringBonus
-		projection.TotalUSD = WalletUSDPartsFromQuota(sum.Principal, sum.Bonus+sum.ExpiringBonus).Total
+		principal := max(int64(0), sum.Principal)
+		bonus := max(int64(0), sum.Bonus)
+		expiring := max(int64(0), sum.ExpiringBonus)
+		nextExpiresAt := sum.NextExpiresAt
+		if expiring <= 0 {
+			nextExpiresAt = 0
+		}
+		projection := walletLotProjectionFromQuota(principal, bonus, WalletLotProjectionSourceBatches)
+		projection.ExpiringBonusQuota = expiring
+		projection.ExpiringBonusUSD = WalletUSDPartsFromQuota(0, expiring).Bonus
+		projection.NextExpiresAt = nextExpiresAt
+		projection.TotalQuota += expiring
+		projection.TotalUSD = WalletUSDPartsFromQuota(principal, bonus+expiring).Total
 		out[user.Id] = projection
 	}
 	return out, nil

@@ -16,10 +16,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { EmptyState } from '@/components/empty-state'
@@ -32,8 +33,14 @@ import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestamp } from '@/lib/format'
+import { handleServerError } from '@/lib/handle-server-error'
 
-import { adtyTopupQueryKeys, getAdtyTopupHistory } from '../api'
+import {
+  adtyTopupQueryKeys,
+  cancelAdtyOrder,
+  getAdtyTopupHistory,
+} from '../api'
+import { useNowSeconds } from '../lib/countdown'
 import {
   METHOD_LABELS,
   methodLabel,
@@ -41,7 +48,9 @@ import {
   ORDER_STATUS_VARIANTS,
 } from '../lib/methods'
 import { formatUsd, giftFulfillmentStatusLabelKey } from '../lib/money'
+import { clearPendingPayment, loadPendingPayment } from '../lib/pending-payment'
 import type {
+  AdtyOrder,
   AdtyOrderStatus,
   AdtyTopupBusiness,
   AdtyTopupHistoryFilters,
@@ -65,8 +74,13 @@ function dateInputToUnixSeconds(
 }
 
 /** The user's own top-up orders with face value, bonus, payment and status. */
-export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
+export function AdtyTopupHistory(props: {
+  business?: AdtyTopupBusiness
+  onResumeOrder?: (order: AdtyOrder) => void
+  onOrderChanged?: () => void
+}) {
   const { t, i18n } = useTranslation()
+  const queryClient = useQueryClient()
   const fieldId = useId()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [page, setPage] = useState(1)
@@ -79,7 +93,7 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
   const startTimestamp = dateInputToUnixSeconds(startDate, false)
   const endTimestamp = dateInputToUnixSeconds(endDate, true)
   const filters: AdtyTopupHistoryFilters = {
-    business: props.business,
+    business: props.business ?? 'wallet_topup',
     ...(status ? { status } : {}),
     ...(paymentMethod ? { payment_method: paymentMethod } : {}),
     ...(tradeNo.trim() ? { trade_no: tradeNo.trim() } : {}),
@@ -99,6 +113,25 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
   const items = query.data?.items ?? []
   const total = query.data?.total ?? 0
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const hasPendingRows = items.some((row) => row.status === 'pending')
+  const nowSec = useNowSeconds(hasPendingRows)
+
+  const cancelMutation = useMutation({
+    mutationFn: (orderTradeNo: string) => cancelAdtyOrder(orderTradeNo),
+    onSuccess: (_data, orderTradeNo) => {
+      try {
+        if (loadPendingPayment(window.localStorage)?.tradeNo === orderTradeNo) {
+          clearPendingPayment(window.localStorage)
+        }
+      } catch {
+        // Ignore storage errors in restricted contexts.
+      }
+      toast.success(t('Order canceled'))
+      void queryClient.invalidateQueries({ queryKey: ['adty-topup'] })
+      props.onOrderChanged?.()
+    },
+    onError: (error) => handleServerError(error),
+  })
 
   if (query.isError && !query.data && !hasActiveFilters) {
     return <ErrorState onRetry={() => void query.refetch()} />
@@ -344,6 +377,41 @@ export function AdtyTopupHistory(props: { business?: AdtyTopupBusiness }) {
                   )}
                 </span>
               ),
+            },
+            {
+              id: 'actions',
+              header: t('Actions'),
+              className: 'text-right',
+              cellClassName: 'text-right',
+              cell: (row) => {
+                const actionable =
+                  row.status === 'pending' &&
+                  (!row.ext?.expire_at || row.ext.expire_at > nowSec)
+                if (!actionable) return null
+                return (
+                  <div className='flex items-center justify-end gap-1.5 whitespace-nowrap'>
+                    {props.onResumeOrder && (
+                      <Button
+                        type='button'
+                        size='sm'
+                        disabled={cancelMutation.isPending}
+                        onClick={() => props.onResumeOrder?.(row)}
+                      >
+                        {t('Continue payment')}
+                      </Button>
+                    )}
+                    <Button
+                      type='button'
+                      size='sm'
+                      variant='outline'
+                      disabled={cancelMutation.isPending}
+                      onClick={() => cancelMutation.mutate(row.trade_no)}
+                    >
+                      {t('Cancel')}
+                    </Button>
+                  </div>
+                )
+              },
             },
           ]}
         />

@@ -316,17 +316,19 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 		// approved staff balance increase, and site vouchers) preserves 100%
 		// of the site level's required margin floor while allowing 100% of
 		// excess balance above that floor without consuming the 90% gift/commission cycle.
-		if after.IsNegative() || after.Sub(totalFrozenAfter).IsNegative() {
-			return nil, ErrAdtySiteWalletInsufficient
-		}
 		netNewUse := change.HoldDelta.Sub(delta)
-		if netNewUse.IsPositive() && !change.AllowOverdraft {
-			floor, err := adtyMarginRequiredFloorTx(tx, siteID, &wallet)
-			if err != nil {
-				return nil, err
-			}
-			if after.Sub(totalFrozenAfter).LessThan(floor) {
+		if netNewUse.IsPositive() {
+			if after.IsNegative() || after.Sub(totalFrozenAfter).IsNegative() {
 				return nil, ErrAdtySiteWalletInsufficient
+			}
+			if !change.AllowOverdraft {
+				floor, err := adtyMarginRequiredFloorTx(tx, siteID, &wallet)
+				if err != nil {
+					return nil, err
+				}
+				if after.Sub(totalFrozenAfter).LessThan(floor) {
+					return nil, ErrAdtySiteWalletInsufficient
+				}
 			}
 		}
 	} else {
@@ -1478,7 +1480,7 @@ func SetAdtySiteTier(siteID int, code, mode string, now int64) (*model.AdtySite,
 		}
 		updates := map[string]any{
 			"tier_code": code, "tier_mode": mode, "tier_updated_at": now,
-			"tier_cost_factor": selected.CostFactor,
+			"tier_cost_factor":         selected.CostFactor,
 			"pending_tier_cost_factor": nil, "pending_tier_cost_factor_at": 0,
 		}
 		if err := tx.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", siteID, model.AdtySiteWalletMargin).

@@ -219,6 +219,7 @@ func TestR37LegalMainSiteStatusAndFallback(t *testing.T) {
 		"ja": "JA Refund",
 		"fr": "FR Refund",
 	}
+	env.siteSetting.RefundPolicyEnabled = true
 	env.legacyLegal.UserAgreement = "Legacy User Agreement"
 	env.legacyLegal.PrivacyPolicy = "Legacy Privacy Policy"
 	common.OptionMapRWMutex.Unlock()
@@ -451,7 +452,7 @@ func TestR37LegalSubsiteSaveAndServeOwnDocs(t *testing.T) {
 	}
 	checkSubLegal("user-agreement", "zh-CN", "分站中文协议")
 	checkSubLegal("user-agreement", "en", "Subsite EN UA")
-	checkSubLegal("privacy-policy", "en", "分站中文隐私")       // en missing -> zh-CN fallback
+	checkSubLegal("privacy-policy", "en", "分站中文隐私")              // en missing -> zh-CN fallback
 	checkSubLegal("refund-policy", "zh-CN", "Subsite EN Refund") // zh-CN missing -> en fallback
 
 	// AdtyLegalConsentRequiredForRequest: true on subsite, false on empty main site.

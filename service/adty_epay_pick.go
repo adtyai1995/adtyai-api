@@ -15,15 +15,8 @@ var ErrAdtyEpayNoChannel = errors.New("no epay channel can take this payment")
 // adtyEpayRand 是挑通道用的随机源，测试可以换成固定种子。
 var adtyEpayRand = func() *rand.Rand { return rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0)) }
 
-// adtyEpaySumToday 统计当天已到账金额，测试可以替换。
-var adtyEpaySumToday = model.SumAdtyEpayPaidToday
-
-// adtyDayStart 是 now 所在自然日的 0 点（业务时区）。
-func adtyDayStart(now int64) int64 {
-	loc := model.AdtyBusinessLocation(nil)
-	t := time.Unix(now, 0).In(loc)
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc).Unix()
-}
+// adtyEpaySumToday 统计当天已到账加未过期待支付金额，测试可以替换。
+var adtyEpaySumToday = model.SumAdtyEpayCommittedToday
 
 // PickAdtyEpayChannel 按规则挑通道：只看启用的、支持这种方式的、金额在单笔范围内、
 // 当天加上这笔不超过每日限额的通道 → 取优先级最高的一组 → 电脑上如果这组里有能返回二维码的，
@@ -38,7 +31,6 @@ func PickAdtyEpayChannel(method string, payCNY decimal.Decimal, device string, e
 		method  *model.AdtyEpayChannelMethod
 	}
 	var eligible []candidate
-	dayStart := adtyDayStart(now)
 	for i := range channels {
 		channel := &channels[i]
 		if len(allowed) > 0 && len(allowed[0]) > 0 && !slices.Contains(allowed[0], channel.Id) {
@@ -58,11 +50,11 @@ func PickAdtyEpayChannel(method string, payCNY decimal.Decimal, device string, e
 			continue
 		}
 		if m.DailyLimitCNY.IsPositive() {
-			paid, err := adtyEpaySumToday(channel.Id, method, dayStart)
+			committed, err := adtyEpaySumToday(channel.Id, method, now)
 			if err != nil {
 				return nil, nil, err
 			}
-			if paid.Add(payCNY).GreaterThan(m.DailyLimitCNY) {
+			if committed.Add(payCNY).GreaterThan(m.DailyLimitCNY) {
 				continue
 			}
 		}

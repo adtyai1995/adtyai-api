@@ -41,6 +41,7 @@ import {
 import { clearPendingPayment, savePendingPayment } from '../lib/pending-payment'
 import type { AdtyOrder, AdtyTopupBusiness } from '../types'
 import { ChainIcon } from './chain-icons'
+import { UsdtChainLogo } from './payment-logos'
 
 type UsdtPayDialogProps = {
   business?: AdtyTopupBusiness
@@ -105,7 +106,8 @@ export function UsdtPayDialog(props: UsdtPayDialogProps) {
     refetchInterval: (query) =>
       query.state.data?.status === 'pending' ? 3000 : false,
   })
-  const order: AdtyOrder | undefined = orderQuery.data ?? create.data
+  const order: AdtyOrder | undefined =
+    orderQuery.data?.trade_no === tradeNo ? orderQuery.data : create.data
   const status = order?.status
   const now = useNowSeconds(status === 'pending')
 
@@ -146,7 +148,8 @@ export function UsdtPayDialog(props: UsdtPayDialogProps) {
   const chainName = CHAIN_NAMES[props.chain] ?? props.chain
   const expired =
     status === 'expired' ||
-    (ext ? ext.expire_at <= now && status === 'pending' : false)
+    (ext ? ext.expire_at > 0 && now >= ext.expire_at && status === 'pending' : false)
+  const isActivePending = status === 'pending' && !expired
 
   return (
     <Dialog
@@ -154,14 +157,19 @@ export function UsdtPayDialog(props: UsdtPayDialogProps) {
       onOpenChange={(open) => {
         if (!open) props.onClose()
       }}
-      title={t('Pay with USDT')}
+      title={
+        <span className='inline-flex items-center gap-2.5'>
+          <UsdtChainLogo chain={props.chain} className='size-6' />
+          <span>{t('Pay with USDT')}</span>
+        </span>
+      }
       description={t('Only send USDT on the {{chain}} network.', {
         chain: chainName,
       })}
       contentHeight='auto'
       bodyClassName='space-y-4'
       footer={
-        status === 'pending' ? (
+        isActivePending ? (
           <>
             <Button
               variant='outline'
@@ -188,10 +196,30 @@ export function UsdtPayDialog(props: UsdtPayDialogProps) {
           <AlertDescription>{notice}</AlertDescription>
         </Alert>
       )}
-      {!ext && (
+      {!ext && !orderQuery.isError && (
         <p className='text-muted-foreground text-sm'>
           {t('Creating the order...')}
         </p>
+      )}
+      {orderQuery.isError && (
+        <Alert variant='destructive'>
+          <AlertDescription className='flex flex-wrap items-center justify-between gap-2'>
+            <span>
+              {getServerErrorMessage(
+                orderQuery.error,
+                t('Failed to load order status.')
+              )}
+            </span>
+            <Button
+              type='button'
+              size='sm'
+              variant='outline'
+              onClick={() => void orderQuery.refetch()}
+            >
+              {t('Retry')}
+            </Button>
+          </AlertDescription>
+        </Alert>
       )}
       {ext && status === 'success' && (
         <div className='space-y-1 text-center' role='status'>
@@ -214,7 +242,27 @@ export function UsdtPayDialog(props: UsdtPayDialogProps) {
           {t('This order has expired. Please create a new one.')}
         </p>
       )}
-      {ext && status === 'pending' && !expired && (
+      {ext && status === 'canceled' && (
+        <p className='text-muted-foreground text-center' role='status'>
+          {t('This order was canceled.')}
+        </p>
+      )}
+      {ext && status === 'failed' && (
+        <p className='text-destructive text-center' role='status'>
+          {t('This payment failed. Please create a new order.')}
+        </p>
+      )}
+      {ext && status === 'refunded' && (
+        <p className='text-muted-foreground text-center' role='status'>
+          {t('This order has been refunded.')}
+        </p>
+      )}
+      {ext && status === 'replaced' && (
+        <p className='text-muted-foreground text-center' role='status'>
+          {t('This order was replaced by a newer order.')}
+        </p>
+      )}
+      {ext && isActivePending && (
         <div className='flex flex-col items-center gap-4'>
           <div className='bg-muted/50 inline-flex items-center gap-2.5 rounded-full border px-3.5 py-1.5 text-sm font-medium'>
             <ChainIcon method={props.chain} className='size-6' />

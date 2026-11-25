@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { VoucherBatchResultDialog } from '../voucher-batch-result-dialog'
@@ -70,6 +70,7 @@ vi.mock('sonner', () => ({
 
 describe('VoucherBatchResultDialog', () => {
   afterEach(() => {
+    cleanup()
     copyMock.mockClear()
     vi.restoreAllMocks()
   })

@@ -517,7 +517,7 @@ export async function redeemOwnerMarginVoucher(
   code: string
 ): Promise<RedeemedOwnerVoucher> {
   const res = await api.post<ApiResponse<RedeemedOwnerVoucher>>(
-    '/api/adty/vouchers/redeem',
+    '/api/adty/site/margin/vouchers/redeem',
     { code: code.trim() }
   )
   return requireServerSuccess(res.data).data

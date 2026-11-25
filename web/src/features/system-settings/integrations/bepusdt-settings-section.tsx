@@ -19,7 +19,9 @@ For commercial licensing, please contact support@quantumnous.com
 import { Save } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
+import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -39,11 +41,15 @@ const BEPUSDT_CHAINS = Object.entries(CHAIN_NAMES).map(([id, label]) => ({
   label,
 }))
 
+const MIN_USDT_ORDER_MINUTES = 3
+const MAX_USDT_ORDER_MINUTES = 60
+
 export type BEpusdtSettingsDefaults = {
   enabled: boolean
   baseUrl: string
   tradeTypes: string
   orderMinutes: number
+  secretConfigured?: boolean
 }
 
 type BEpusdtSettingsSectionProps = {
@@ -62,6 +68,17 @@ function parseTradeTypes(raw: string): string[] {
   }
 }
 
+function isValidHttpUrl(raw: string): boolean {
+  const trimmed = raw.trim()
+  if (!trimmed) return false
+  try {
+    const parsed = new URL(trimmed)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
@@ -73,16 +90,21 @@ export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
   const [enabled, setEnabled] = useState(props.defaultValues.enabled)
   const [baseUrl, setBaseUrl] = useState(props.defaultValues.baseUrl)
   const [secret, setSecret] = useState('')
+  const [secretConfigured, setSecretConfigured] = useState(
+    Boolean(props.defaultValues.secretConfigured)
+  )
   const [chains, setChains] = useState<string[]>(initialChains)
   const [minutes, setMinutes] = useState(
     String(props.defaultValues.orderMinutes)
   )
+  const [validationSubmitted, setValidationSubmitted] = useState(false)
 
   // Reset drafts when the server-provided saved values change.
   const savedEnabled = props.defaultValues.enabled
   const savedBaseUrl = props.defaultValues.baseUrl
   const savedTradeTypes = props.defaultValues.tradeTypes
   const savedMinutes = props.defaultValues.orderMinutes
+  const savedSecretConfigured = Boolean(props.defaultValues.secretConfigured)
   useEffect(() => {
     const prev = savedRef.current
     savedRef.current = {
@@ -90,6 +112,7 @@ export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
       baseUrl: savedBaseUrl,
       tradeTypes: savedTradeTypes,
       orderMinutes: savedMinutes,
+      secretConfigured: savedSecretConfigured,
     }
     if (savedEnabled !== prev.enabled) {
       setEnabled((current) =>
@@ -112,17 +135,42 @@ export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
         current === String(prev.orderMinutes) ? String(savedMinutes) : current
       )
     }
-  }, [savedEnabled, savedBaseUrl, savedTradeTypes, savedMinutes, initialChains])
+    if (savedSecretConfigured !== Boolean(prev.secretConfigured)) {
+      setSecretConfigured(savedSecretConfigured)
+    }
+  }, [
+    savedEnabled,
+    savedBaseUrl,
+    savedTradeTypes,
+    savedMinutes,
+    savedSecretConfigured,
+    initialChains,
+  ])
 
   const minutesValue = Number.parseInt(minutes, 10)
+  const baseUrlError =
+    enabled && !isValidHttpUrl(baseUrl)
+      ? t('Enter a valid http(s) gateway address before enabling USDT payments')
+      : ''
+  const secretError =
+    enabled && secret.trim() === '' && !secretConfigured
+      ? t('Enter an API token before enabling USDT payments')
+      : ''
   const chainError = chains.length === 0 ? t('Choose at least one chain') : ''
   const minutesError =
-    !Number.isInteger(minutesValue) || minutesValue < 2
-      ? t('At least 2 minutes')
+    !Number.isInteger(minutesValue) ||
+    minutesValue < MIN_USDT_ORDER_MINUTES ||
+    minutesValue > MAX_USDT_ORDER_MINUTES
+      ? t('Enter a whole number between 3 and 60 minutes')
       : ''
 
   const save = async () => {
-    if (chainError || minutesError) return
+    setValidationSubmitted(true)
+    const firstError = baseUrlError || secretError || chainError || minutesError
+    if (firstError) {
+      toast.error(firstError)
+      return
+    }
     const saved = savedRef.current
     const savedChains = parseTradeTypes(saved.tradeTypes)
     const updates: Array<{ key: string; value: string | boolean | number }> = []
@@ -158,6 +206,11 @@ export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
         await updateOption.mutateAsync(update)
         if (update.key === 'adty_bepusdt.secret') {
           setSecret('')
+          setSecretConfigured(true)
+          savedRef.current = {
+            ...savedRef.current,
+            secretConfigured: true,
+          }
         } else if (update.key === 'adty_bepusdt.enabled') {
           savedRef.current = {
             ...savedRef.current,
@@ -215,19 +268,42 @@ export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
             id='bepusdt-base-url'
             value={baseUrl}
             placeholder='https://pay.example.com'
+            aria-invalid={Boolean(validationSubmitted && baseUrlError)}
             onChange={(event) => setBaseUrl(event.target.value)}
           />
+          {validationSubmitted && baseUrlError && (
+            <p className='text-destructive text-xs' role='alert'>
+              {baseUrlError}
+            </p>
+          )}
         </div>
         <div className='max-w-xl space-y-2'>
-          <Label htmlFor='bepusdt-secret'>{t('API token')}</Label>
+          <div className='flex items-center gap-2'>
+            <Label htmlFor='bepusdt-secret'>{t('API token')}</Label>
+            <StatusBadge
+              label={secretConfigured ? t('Configured') : t('Not configured')}
+              variant={secretConfigured ? 'success' : 'neutral'}
+              copyable={false}
+            />
+          </div>
           <Input
             id='bepusdt-secret'
             type='password'
             autoComplete='new-password'
             value={secret}
-            placeholder={t('Leave empty to keep the current token')}
+            aria-invalid={Boolean(validationSubmitted && secretError)}
+            placeholder={
+              secretConfigured
+                ? t('Leave empty to keep the current token')
+                : t('Enter your BEpusdt API token')
+            }
             onChange={(event) => setSecret(event.target.value)}
           />
+          {validationSubmitted && secretError && (
+            <p className='text-destructive text-xs' role='alert'>
+              {secretError}
+            </p>
+          )}
         </div>
         <fieldset className='space-y-2'>
           <legend className='text-sm font-medium'>{t('Enabled chains')}</legend>
@@ -249,7 +325,9 @@ export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
             ))}
           </div>
           {chainError && (
-            <p className='text-destructive text-xs'>{chainError}</p>
+            <p className='text-destructive text-xs' role='alert'>
+              {chainError}
+            </p>
           )}
         </fieldset>
         <div className='space-y-2'>
@@ -259,7 +337,8 @@ export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
           <Input
             id='bepusdt-minutes'
             type='number'
-            min={2}
+            min={MIN_USDT_ORDER_MINUTES}
+            max={MAX_USDT_ORDER_MINUTES}
             step={1}
             className='w-32'
             value={minutes}
@@ -267,7 +346,9 @@ export function BEpusdtSettingsSection(props: BEpusdtSettingsSectionProps) {
             aria-invalid={Boolean(minutesError)}
           />
           {minutesError && (
-            <p className='text-destructive text-xs'>{minutesError}</p>
+            <p className='text-destructive text-xs' role='alert'>
+              {minutesError}
+            </p>
           )}
         </div>
       </div>
