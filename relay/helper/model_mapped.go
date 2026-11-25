@@ -42,7 +42,7 @@ func ModelMappedHelper(c *gin.Context, info *relaycommon.RelayInfo, request dto.
 					if mappedModel == currentModel {
 						if currentModel == info.OriginModelName {
 							info.IsModelMapped = false
-							return nil
+							break
 						}
 
 						info.IsModelMapped = true

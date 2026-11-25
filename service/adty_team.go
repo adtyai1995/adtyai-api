@@ -1555,8 +1555,18 @@ func CreateAdtyTeamInvite(actorId int, teamId int64, ttl time.Duration) (*AdtyTe
 		if !canManageAdtyTeamInvites(team, actorId) {
 			return ErrAdtyTeamForbidden
 		}
+		now := time.Now().Unix()
+		var activeInviteCount int64
+		if err := tx.Model(&model.AdtyTeamInvite{}).
+			Where("team_id = ? AND used_at = 0 AND revoked_at = 0 AND expires_at >= ?", team.Id, now).
+			Count(&activeInviteCount).Error; err != nil {
+			return err
+		}
+		if activeInviteCount >= 50 {
+			return common.NewMessage("Too many active team invites; please revoke unused invites first")
+		}
 		invite = model.AdtyTeamInvite{
-			TeamId: team.Id, SiteId: team.SiteId, Purpose: model.AdtyTeamEmployeeInvitePurpose, CodeHash: hash, CreatedBy: actorId, ExpiresAt: time.Now().Add(ttl).Unix(),
+			TeamId: team.Id, SiteId: team.SiteId, Purpose: model.AdtyTeamEmployeeInvitePurpose, CodeHash: hash, CreatedBy: actorId, ExpiresAt: now + int64(ttl.Seconds()),
 		}
 		if err := tx.Create(&invite).Error; err != nil {
 			return err
@@ -1624,7 +1634,7 @@ func ListAdtyTeamInvites(actorId int, teamId int64) ([]AdtyTeamInviteView, error
 		return nil, ErrAdtyTeamForbidden
 	}
 	var rows []model.AdtyTeamInvite
-	if err := model.DB.Where("team_id = ?", team.Id).Order("id DESC").Find(&rows).Error; err != nil {
+	if err := model.DB.Where("team_id = ?", team.Id).Order("id DESC").Limit(200).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	now := time.Now().Unix()

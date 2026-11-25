@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -407,6 +408,10 @@ func PostAdtyMainTeam(c *gin.Context) {
 	}
 	created, eventID, replayed, err := service.CreateAdtySiteTeamByRootWithAudit(c.GetInt("id"), body.SiteId, body.LeaderId, body.Name, body.Discount, c.GetHeader("Idempotency-Key"))
 	if err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}

@@ -433,11 +433,12 @@ func (channel *Channel) SaveMultiKeyManagement() error {
 		otherInfo := locked.GetOtherInfo()
 		if !hasAvailable {
 			if locked.Status == common.ChannelStatusEnabled {
-				effectiveStatus = common.ChannelStatusAutoDisabled
+				effectiveStatus = common.ChannelStatusManuallyDisabled
 				otherInfo["status_reason"] = ChannelStatusReasonAllKeysDisabled
 				otherInfo["status_time"] = common.GetTimestamp()
 			}
-		} else if locked.Status == common.ChannelStatusAutoDisabled && otherInfo["status_reason"] == ChannelStatusReasonAllKeysDisabled {
+		} else if (locked.Status == common.ChannelStatusAutoDisabled || locked.Status == common.ChannelStatusManuallyDisabled) &&
+			otherInfo["status_reason"] == ChannelStatusReasonAllKeysDisabled {
 			if len(locked.GetGroups()) == 0 {
 				return ErrChannelNoGroup
 			}
@@ -741,7 +742,14 @@ func (channel *Channel) Update() error {
 		if effectiveStatus == common.ChannelStatusEnabled && len(effectiveGroups) == 0 {
 			return ErrChannelNoGroup
 		}
-		if err := tx.Model(channel).Updates(channel).Error; err != nil {
+		if err := tx.Model(channel).Omit(
+			"used_quota",
+			"balance",
+			"balance_updated_time",
+			"created_time",
+			"test_time",
+			"response_time",
+		).Updates(channel).Error; err != nil {
 			return err
 		}
 		if err := tx.First(channel, "id = ?", channel.Id).Error; err != nil {

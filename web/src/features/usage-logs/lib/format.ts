@@ -783,6 +783,15 @@ export function logTokenName(
     : log.token_name
 }
 
+const AUDIT_TEMPLATE_PLACEHOLDER_RE = /\{\{\s*(\w+)\s*\}\}/g
+
+function hasNonEmptyAuditParam(value: unknown): boolean {
+  if (value === undefined || value === null) return false
+  if (typeof value === 'string') return value.trim().length > 0
+  if (Array.isArray(value)) return value.length > 0
+  return true
+}
+
 /**
  * Render the localized content of an operation log from its structured
  * `other.op` descriptor. Returns null when the log has no recognized action,
@@ -806,5 +815,18 @@ export function renderAuditContent(
     return `${quotaOperation.summary} · ${quotaOperation.description}`
   }
   const params = { ...op.params }
+  if (op.action === 'adty.gift.fulfillment.review') {
+    const placeholders = Array.from(
+      template.matchAll(AUDIT_TEMPLATE_PLACEHOLDER_RE),
+      (match) => match[1]
+    ).filter((key): key is string => Boolean(key))
+    const paramRecord = params as Record<string, unknown>
+    if (
+      placeholders.length > 0 &&
+      placeholders.every((key) => !hasNonEmptyAuditParam(paramRecord[key]))
+    ) {
+      return t('Reviewed gift fulfillment')
+    }
+  }
   return t(template, params)
 }

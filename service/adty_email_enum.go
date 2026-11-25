@@ -473,7 +473,10 @@ func deliverAdtySystemEmailRow(db *gorm.DB, row *AdtySystemEmailDelivery, now ti
 	if db != nil && row.Id > 0 {
 		claim := db.Model(&AdtySystemEmailDelivery{}).
 			Where("id = ? AND status IN ?", row.Id, []string{AdtySystemEmailStatusPending, AdtySystemEmailStatusFailed}).
-			Update("status", AdtySystemEmailStatusSending)
+			Updates(map[string]any{
+				"status":     AdtySystemEmailStatusSending,
+				"updated_at": now.Unix(),
+			})
 		if claim.Error != nil {
 			return claim.Error
 		}
@@ -485,26 +488,43 @@ func deliverAdtySystemEmailRow(db *gorm.DB, row *AdtySystemEmailDelivery, now ti
 	attempts := row.Attempts + 1
 	var sendErr error
 	if row.SiteId > 0 {
-		site := AdtySiteById(row.SiteId)
-		if site == nil || site.Status == model.AdtySiteStatusDeleting || site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusPending {
-			// R7-27: Never fall back to the platform default sender when a subsite has
-			// been hard-deleted, is deleting, or is closed.
-			row.Status = AdtySystemEmailStatusDead
-			row.LastError = "site unavailable"
-			row.BodyCipher = ""
-			if db != nil && row.Id > 0 {
-				_ = db.Model(row).Updates(map[string]any{
-					"status":      row.Status,
-					"last_error":  row.LastError,
-					"body_cipher": "",
-				}).Error
+		var site *model.AdtySite
+		if db != nil && db.Migrator().HasTable(&model.AdtySite{}) {
+			// R8-16: Read authoritative site status directly from DB instead of
+			// the 60s local cache so closed/deleting sites are stopped immediately across replicas.
+			var siteRow model.AdtySite
+			if findErr := db.Where("id = ?", row.SiteId).First(&siteRow).Error; findErr == nil {
+				site = &siteRow
+			} else if !errors.Is(findErr, gorm.ErrRecordNotFound) {
+				sendErr = findErr
 			}
-			return nil
-		}
-		if adtyUsesDefaultSystemEmailSender() {
-			sendErr = AdtySendSiteEmail(site, row.Subject, row.Recipient, content)
 		} else {
-			sendErr = AdtySystemEmailSender(row.Sender, row.Subject, row.Recipient, content)
+			site = AdtySiteById(row.SiteId)
+		}
+		if sendErr == nil {
+			if site == nil || site.Status == model.AdtySiteStatusDeleting || site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusPending {
+				// R7-27: Never fall back to the platform default sender when a subsite has
+				// been hard-deleted, is deleting, or is closed.
+				row.Status = AdtySystemEmailStatusDead
+				row.LastError = "site unavailable"
+				row.BodyCipher = ""
+				if db != nil && row.Id > 0 {
+					_ = db.Model(&AdtySystemEmailDelivery{}).
+						Where("id = ? AND status = ?", row.Id, AdtySystemEmailStatusSending).
+						Updates(map[string]any{
+							"status":      row.Status,
+							"last_error":  row.LastError,
+							"body_cipher": "",
+							"updated_at":  now.Unix(),
+						}).Error
+				}
+				return nil
+			}
+			if adtyUsesDefaultSystemEmailSender() {
+				sendErr = AdtySendSiteEmail(site, row.Subject, row.Recipient, content)
+			} else {
+				sendErr = AdtySystemEmailSender(row.Sender, row.Subject, row.Recipient, content)
+			}
 		}
 	} else {
 		sendErr = AdtySystemEmailSender(row.Sender, row.Subject, row.Recipient, content)
@@ -516,13 +536,16 @@ func deliverAdtySystemEmailRow(db *gorm.DB, row *AdtySystemEmailDelivery, now ti
 		row.LastError = ""
 		row.BodyCipher = ""
 		if db != nil && row.Id > 0 {
-			_ = db.Model(row).Updates(map[string]any{
-				"status":      row.Status,
-				"attempts":    row.Attempts,
-				"sent_at":     row.SentAt,
-				"last_error":  "",
-				"body_cipher": "",
-			}).Error
+			_ = db.Model(&AdtySystemEmailDelivery{}).
+				Where("id = ? AND status = ?", row.Id, AdtySystemEmailStatusSending).
+				Updates(map[string]any{
+					"status":      row.Status,
+					"attempts":    row.Attempts,
+					"sent_at":     row.SentAt,
+					"last_error":  "",
+					"body_cipher": "",
+					"updated_at":  now.Unix(),
+				}).Error
 		}
 		return nil
 	}
@@ -536,13 +559,16 @@ func deliverAdtySystemEmailRow(db *gorm.DB, row *AdtySystemEmailDelivery, now ti
 		row.Status = AdtySystemEmailStatusFailed
 	}
 	if db != nil && row.Id > 0 {
-		_ = db.Model(row).Updates(map[string]any{
-			"status":        row.Status,
-			"attempts":      row.Attempts,
-			"last_error":    row.LastError,
-			"next_retry_at": row.NextRetryAt,
-			"body_cipher":   row.BodyCipher,
-		}).Error
+		_ = db.Model(&AdtySystemEmailDelivery{}).
+			Where("id = ? AND status = ?", row.Id, AdtySystemEmailStatusSending).
+			Updates(map[string]any{
+				"status":        row.Status,
+				"attempts":      row.Attempts,
+				"last_error":    row.LastError,
+				"next_retry_at": row.NextRetryAt,
+				"body_cipher":   row.BodyCipher,
+				"updated_at":    now.Unix(),
+			}).Error
 	}
 	return sendErr
 }
@@ -561,10 +587,14 @@ func RetryAdtySystemEmails(now time.Time) (int, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	// Recover rows left in "sending" by an interrupted process so restart resumes them.
+	// R8-16: Only recover stale "sending" rows whose in-flight lease timed out
+	// (>= 120s) so concurrent workers cannot double-send active deliveries.
 	_ = db.Model(&AdtySystemEmailDelivery{}).
-		Where("status = ?", AdtySystemEmailStatusSending).
-		Update("status", AdtySystemEmailStatusPending).Error
+		Where("status = ? AND updated_at <= ?", AdtySystemEmailStatusSending, now.Unix()-120).
+		Updates(map[string]any{
+			"status":     AdtySystemEmailStatusPending,
+			"updated_at": now.Unix(),
+		}).Error
 
 	var rows []AdtySystemEmailDelivery
 	if err := db.Where("status IN ?", []string{AdtySystemEmailStatusPending, AdtySystemEmailStatusFailed}).

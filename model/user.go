@@ -568,7 +568,8 @@ func getUserById(query *gorm.DB, id int, selectAll bool) (*User, error) {
 	return &user, err
 }
 
-var ErrCannotPromoteScopedUser = errors.New("Cannot promote a subsite customer, site staff, or team employee account to platform administrator.")
+var ErrCannotPromoteScopedUser = common.NewMessage("Cannot promote a subsite customer, site staff, or team employee account to platform administrator.")
+var ErrSiteRegistrationUnavailable = errors.New("site registration unavailable")
 
 // GetSelfUserById reads dashboard profile data and password existence in one
 // query. The password hash and management access token are never selected.
@@ -619,7 +620,24 @@ func HardDeleteUserByIdForActor(id int, actorRole int, denyAdminTarget bool) (in
 	return user.hardDelete(actorRole, denyAdminTarget)
 }
 
-func (user *User) prepareForInsert(tx *gorm.DB) error {
+func ensureRegistrableSiteTx(tx *gorm.DB, siteID int) error {
+	if siteID <= 0 || !tx.Migrator().HasTable(&AdtySite{}) {
+		return nil
+	}
+	var site AdtySite
+	if err := lockForUpdate(tx).Where("id = ?", siteID).First(&site).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrSiteRegistrationUnavailable
+		}
+		return err
+	}
+	if site.Status != AdtySiteStatusActive && site.Status != AdtySiteStatusPaused {
+		return ErrSiteRegistrationUnavailable
+	}
+	return nil
+}
+
+func (user *User) prepareForInsert(tx *gorm.DB, hashPassword bool) error {
 	user.Username = strings.TrimSpace(user.Username)
 	user.Email = NormalizeEmail(user.Email)
 	if user.Username == "" || !ValidateUsernameNoControl(user.Username) {
@@ -631,7 +649,7 @@ func (user *User) prepareForInsert(tx *gorm.DB) error {
 	if err := EnsureUsernameAvailableWithTx(tx, user.Username, 0); err != nil {
 		return err
 	}
-	if user.Password == "" {
+	if !hashPassword || user.Password == "" {
 		return nil
 	}
 	var err error
@@ -689,9 +707,26 @@ func ensureEmailAvailableWithTx(tx *gorm.DB, email string, siteID int, excludeUs
 }
 
 func (user *User) Insert(_ int) error {
+	user.Username = strings.TrimSpace(user.Username)
+	user.Email = NormalizeEmail(user.Email)
+	if user.Username == "" || !ValidateUsernameNoControl(user.Username) {
+		return common.NewMessage("Invalid parameters")
+	}
+	// R8-04: Perform expensive bcrypt password hashing before opening the DB
+	// transaction so row locks on adty_sites and email locks are held minimally.
+	if user.Password != "" {
+		hashed, err := common.HashAccountPassword(user.Password)
+		if err != nil {
+			return err
+		}
+		user.Password = hashed
+	}
 	if err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := ensureRegistrableSiteTx(tx, user.SiteId); err != nil {
+			return err
+		}
 		return withNormalizedEmailLock(tx, user.Email, user.SiteId, func(tx *gorm.DB) error {
-			if err := user.prepareForInsert(tx); err != nil {
+			if err := user.prepareForInsert(tx, false); err != nil {
 				return err
 			}
 			user.Quota = common.GetQuotaForNewUser()
@@ -748,8 +783,11 @@ func (user *User) FinishInsert(_ int) {
 // This is used for OAuth registration where user creation and binding need to be atomic.
 // Post-creation tasks (sidebar config, logs) are handled after the transaction commits.
 func (user *User) InsertWithTx(tx *gorm.DB, _ int) error {
+	if err := ensureRegistrableSiteTx(tx, user.SiteId); err != nil {
+		return err
+	}
 	return withNormalizedEmailLock(tx, user.Email, user.SiteId, func(tx *gorm.DB) error {
-		if err := user.prepareForInsert(tx); err != nil {
+		if err := user.prepareForInsert(tx, true); err != nil {
 			return err
 		}
 		user.Quota = common.GetQuotaForNewUser()

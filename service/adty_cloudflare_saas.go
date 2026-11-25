@@ -572,6 +572,7 @@ func AddAdtySiteDomainWithRole(ctx context.Context, ownerUserId int, rawHost, ro
 		return nil, ErrAdtyCustomDomainRoleInvalid
 	}
 	var domain model.AdtySiteDomain
+	skipAttach := false
 	err = model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var lockedSite model.AdtySite
 		if err := adtyLockSiteRow(tx, site.Id, &lockedSite); err != nil {
@@ -595,12 +596,19 @@ func AddAdtySiteDomainWithRole(ctx context.Context, ownerUserId int, rawHost, ro
 				return err
 			}
 		}
+		if found && existing.Status != model.AdtySiteDomainRemoved && existing.DesiredState == "removed" {
+			return common.NewMessage("Domain removal is in progress; please try again shortly")
+		}
 		if found && existing.SiteId != site.Id && existing.Status != model.AdtySiteDomainRemoved {
 			return ErrAdtyCustomDomainTaken
 		}
 		if found && existing.SiteId == site.Id && (existing.Status == model.AdtySiteDomainPending || existing.Status == model.AdtySiteDomainActive) {
-			domain = existing
-			return nil
+			if existing.ManagedBy != "platform" && adtyNormalizeDomainRole(existing.Role) == role {
+				domain = existing
+				skipAttach = existing.Status == model.AdtySiteDomainActive || existing.CFHostnameId != ""
+				return nil
+			}
+			return ErrAdtyCustomDomainRoleLimit
 		}
 		var activeCustomCount int64
 		if err := tx.Model(&model.AdtySiteDomain{}).
@@ -633,8 +641,10 @@ func AddAdtySiteDomainWithRole(ctx context.Context, ownerUserId int, rawHost, ro
 	if err != nil {
 		return nil, err
 	}
-	if err := adtyAttachCustomHostname(ctx, &domain); err != nil {
-		return nil, err
+	if !skipAttach {
+		if err := adtyAttachCustomHostname(ctx, &domain); err != nil {
+			return nil, err
+		}
 	}
 	return &domain, nil
 }
@@ -720,6 +730,9 @@ func AddAdtySiteDomainPair(ctx context.Context, ownerUserId int, rawSiteHost, ra
 		createCount := 0
 		for i := range items {
 			item := &items[i]
+			if item.found && item.existing.Status != model.AdtySiteDomainRemoved && item.existing.DesiredState == "removed" {
+				return common.NewMessage("Domain removal is in progress; please try again shortly")
+			}
 			if item.found && item.existing.SiteId != site.Id && item.existing.Status != model.AdtySiteDomainRemoved {
 				return ErrAdtyCustomDomainTaken
 			}

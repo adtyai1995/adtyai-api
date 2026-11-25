@@ -101,10 +101,31 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 	if ch.Status != common.ChannelStatusEnabled {
 		return service.TaskErrorWrapperLocal(errors.New("the channel of the origin task is disabled"), "task_channel_disable", http.StatusBadRequest)
 	}
-	// R7-07: Enforce current group/model channel authorization on remix/continuation
-	// so callers cannot reuse a high-tier origin task channel under a cheaper group.
-	if info.UsingGroup != "" && info.OriginModelName != "" && !model.IsChannelEnabledForGroupModel(info.UsingGroup, info.OriginModelName, ch.Id) {
-		return service.TaskErrorWrapperLocal(errors.New("the channel of the origin task is not allowed for this group"), "task_channel_forbidden", http.StatusForbidden)
+	// R7-07 / R8-05: Enforce current group/model channel authorization on remix/continuation
+	// so callers cannot reuse a high-tier origin task channel under a cheaper or disallowed group.
+	if info.OriginModelName != "" {
+		if info.UsingGroup == "auto" {
+			userGroup := info.UserGroup
+			if userGroup == "" {
+				userGroup = common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+			}
+			resolvedGroup := ""
+			for _, g := range service.GetRequestAutoGroups(c, userGroup) {
+				if service.SelectedBillingGroupAllowed(c, g, info.OriginModelName) && model.IsChannelEnabledForGroupModel(g, info.OriginModelName, ch.Id) {
+					resolvedGroup = g
+					break
+				}
+			}
+			if resolvedGroup == "" {
+				return service.TaskErrorWrapperLocal(errors.New("the channel of the origin task is not allowed for this group"), "task_channel_forbidden", http.StatusForbidden)
+			}
+			common.SetContextKey(c, constant.ContextKeyAutoGroup, resolvedGroup)
+			info.UsingGroup = resolvedGroup
+		} else if info.UsingGroup != "" {
+			if !service.SelectedBillingGroupAllowed(c, info.UsingGroup, info.OriginModelName) || !model.IsChannelEnabledForGroupModel(info.UsingGroup, info.OriginModelName, ch.Id) {
+				return service.TaskErrorWrapperLocal(errors.New("the channel of the origin task is not allowed for this group"), "task_channel_forbidden", http.StatusForbidden)
+			}
+		}
 	}
 	info.LockedChannel = ch
 	// R14-009: Preserve the origin task's plugin binding on NewAPI/TaskPlugin locked
@@ -364,25 +385,25 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		noteTaskQuotaClamp(info, clamp)
 		priceData = types.PriceData{Quota: quota, QuotaToPreConsume: quota, GroupRatioInfo: groupRatioInfo}
 		info.TieredBillingSnapshot = &billingexpr.BillingSnapshot{
-			BillingMode:               billing_setting.BillingModeTieredExpr,
-			ModelName:                 modelName,
-			PluginKey:                 pluginKey,
-			UpstreamModelName:         info.UpstreamModelName,
-			ExprString:                exprStr,
-			ExprHash:                  billingexpr.ExprHashString(exprStr),
+			BillingMode:                      billing_setting.BillingModeTieredExpr,
+			ModelName:                        modelName,
+			PluginKey:                        pluginKey,
+			UpstreamModelName:                info.UpstreamModelName,
+			ExprString:                       exprStr,
+			ExprHash:                         billingexpr.ExprHashString(exprStr),
 			GroupRatio:                       groupRatioInfo.GroupRatio,
 			GroupRatioDecimal:                groupRatioDec.String(),
 			EstimatedQuotaBeforeGroup:        beforeGroupDec.InexactFloat64(),
 			EstimatedQuotaBeforeGroupDecimal: beforeGroupDec.String(),
 			EstimatedQuotaAfterGroup:         quota,
-			EstimatedTier:             trace.MatchedTier,
-			QuotaPerUnit:              float64(common.FixedQuotaPerUnit),
-			ExprVersion:               billingexpr.ExprVersion(exprStr),
-			TaskUsageBilling:          true,
-			UsageFacts:                facts,
-			AcceptedAt:                input.AcceptedUnix,
-			BusinessTimezone:          input.BusinessTimezone,
-			AcceptedLocal:             localTime,
+			EstimatedTier:                    trace.MatchedTier,
+			QuotaPerUnit:                     float64(common.FixedQuotaPerUnit),
+			ExprVersion:                      billingexpr.ExprVersion(exprStr),
+			TaskUsageBilling:                 true,
+			UsageFacts:                       facts,
+			AcceptedAt:                       input.AcceptedUnix,
+			BusinessTimezone:                 input.BusinessTimezone,
+			AcceptedLocal:                    localTime,
 		}
 	} else {
 		priceData, err = helper.ModelPriceHelperPerCall(c, info)

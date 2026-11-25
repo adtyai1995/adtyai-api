@@ -448,12 +448,22 @@ func StartAdtyTelegramBind(userId int, purpose string) (string, string, int64, e
 	}
 	code := hex.EncodeToString(raw)
 	sum := sha256.Sum256([]byte(code))
-	expires := time.Now().Add(15 * time.Minute).Unix()
+	now := time.Now().Unix()
+	expires := now + int64((15 * time.Minute).Seconds())
 	row := model.AdtyTelegramChallenge{
 		UserId: user.Id, SiteId: user.SiteId, Purpose: purpose,
 		CodeHash: hex.EncodeToString(sum[:]), BotIdentity: bot.IdentityHash, ExpiresAt: expires,
 	}
-	if err := model.DB.Create(&row).Error; err != nil {
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		// R8-20: Expire prior unused challenges for the same (user_id, purpose)
+		// so repeated bind starts cannot accumulate unbounded active rows.
+		if err := tx.Model(&model.AdtyTelegramChallenge{}).
+			Where("user_id = ? AND purpose = ? AND used_at = 0 AND expires_at > ?", user.Id, purpose, now).
+			Update("expires_at", now).Error; err != nil {
+			return err
+		}
+		return tx.Create(&row).Error
+	}); err != nil {
 		return "", "", 0, err
 	}
 	return code, bot.Username, expires, nil

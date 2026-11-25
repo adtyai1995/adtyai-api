@@ -244,7 +244,9 @@ func getModelFromRequest(c *gin.Context) (*ModelRequest, error) {
 			return &cachedRequest, nil
 		}
 	}
-	if strings.HasPrefix(c.Request.Header.Get("Content-Type"), "application/json") {
+	contentType := strings.ToLower(strings.TrimSpace(c.Request.Header.Get("Content-Type")))
+	if contentType == "" || strings.HasPrefix(contentType, "application/json") ||
+		(!strings.HasPrefix(contentType, "application/x-www-form-urlencoded") && !strings.HasPrefix(contentType, "multipart/form-data")) {
 		return getModelFromJSONBody(c)
 	}
 
@@ -268,8 +270,16 @@ func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
 	if !gjson.ValidBytes(requestBody) {
 		return nil, errors.New("invalid JSON request body")
 	}
-	if countTopLevelJSONKey(requestBody, "model") > 1 {
+	// R8-02: Reject duplicate or case-folded top-level "model"/"group" keys so
+	// encoding/json case-insensitive decoding downstream cannot smuggle a
+	// different model/group past distributor authorization and billing.
+	modelExact, modelVariants := inspectTopLevelJSONKey(requestBody, "model")
+	if modelExact > 1 || modelVariants > 0 {
 		return nil, errors.New("model must be provided once")
+	}
+	groupExact, groupVariants := inspectTopLevelJSONKey(requestBody, "group")
+	if groupExact > 1 || groupVariants > 0 {
+		return nil, errors.New("group must be provided once")
 	}
 
 	values := gjson.GetManyBytes(requestBody, "model", "group")
@@ -293,13 +303,13 @@ func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
 	}, nil
 }
 
-func countTopLevelJSONKey(data []byte, target string) int {
+func inspectTopLevelJSONKey(data []byte, target string) (exactCount int, variantCount int) {
 	depth := 0
+	arrayDepth := 0
 	inString := false
 	escaped := false
 	stringStart := 0
 	expectingKey := false
-	count := 0
 	for index, current := range data {
 		if inString {
 			if escaped {
@@ -314,7 +324,7 @@ func countTopLevelJSONKey(data []byte, target string) int {
 				continue
 			}
 			inString = false
-			if depth == 1 && expectingKey {
+			if depth == 1 && arrayDepth == 0 && expectingKey {
 				key := string(data[stringStart:index])
 				var decodedKey string
 				if common.Unmarshal(data[stringStart-1:index+1], &decodedKey) == nil {
@@ -324,8 +334,12 @@ func countTopLevelJSONKey(data []byte, target string) int {
 				for cursor < len(data) && (data[cursor] == ' ' || data[cursor] == '\t' || data[cursor] == '\r' || data[cursor] == '\n') {
 					cursor++
 				}
-				if cursor < len(data) && data[cursor] == ':' && key == target {
-					count++
+				if cursor < len(data) && data[cursor] == ':' {
+					if key == target {
+						exactCount++
+					} else if strings.EqualFold(key, target) {
+						variantCount++
+					}
 				}
 				expectingKey = false
 			}
@@ -335,20 +349,24 @@ func countTopLevelJSONKey(data []byte, target string) int {
 		case '"':
 			inString = true
 			stringStart = index + 1
+		case '[':
+			arrayDepth++
+		case ']':
+			arrayDepth--
 		case '{':
 			depth++
-			if depth == 1 {
+			if depth == 1 && arrayDepth == 0 {
 				expectingKey = true
 			}
 		case '}':
 			depth--
 		case ',':
-			if depth == 1 {
+			if depth == 1 && arrayDepth == 0 {
 				expectingKey = true
 			}
 		}
 	}
-	return count
+	return exactCount, variantCount
 }
 
 func getJSONStringValue(result gjson.Result, field string) (string, error) {
@@ -447,7 +465,7 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			modelRequest.Model = modelName
 		}
 		c.Set("relay_mode", relayMode)
-	} else if !strings.HasPrefix(c.Request.URL.Path, "/v1/audio/transcriptions") && !strings.Contains(c.Request.Header.Get("Content-Type"), "multipart/form-data") {
+	} else if !strings.HasPrefix(c.Request.URL.Path, "/v1/audio/transcriptions") && !strings.Contains(strings.ToLower(c.Request.Header.Get("Content-Type")), "multipart/form-data") {
 		req, err := getModelFromRequest(c)
 		if err != nil {
 			return nil, false, err
@@ -476,6 +494,15 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		modelRequest.Model = constant.DeepSeekFetchModel
 	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/images/generations") {
+		if strings.Contains(strings.ToLower(c.Request.Header.Get("Content-Type")), "multipart/form-data") {
+			req, err := getModelFromRequest(c)
+			if err != nil {
+				return nil, false, err
+			}
+			if req != nil && req.Model != "" {
+				modelRequest.Model = req.Model
+			}
+		}
 		modelRequest.Model = common.GetStringIfEmpty(modelRequest.Model, "dall-e")
 	} else if strings.HasPrefix(c.Request.URL.Path, "/v1/images/edits") || strings.HasPrefix(c.Request.URL.Path, "/v1/edits") {
 		//modelRequest.Model = common.GetStringIfEmpty(c.PostForm("model"), "gpt-image-1")

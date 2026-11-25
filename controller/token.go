@@ -434,6 +434,53 @@ func normalizeTokenName(raw string) (string, bool) {
 	return trimmed, true
 }
 
+const (
+	maxTokenModelLimitsBytes = 32 * 1024
+	maxTokenModelLimitsItems = 1000
+	maxTokenAllowIpsBytes    = 8 * 1024
+	maxTokenAllowIpsItems    = 256
+)
+
+func validateTokenTextFieldLimits(c *gin.Context, modelLimits string, allowIps *string) bool {
+	if len(modelLimits) > maxTokenModelLimitsBytes {
+		common.ApiErrorT(c, "Invalid parameters")
+		return false
+	}
+	if strings.TrimSpace(modelLimits) != "" {
+		count := 0
+		for _, part := range strings.Split(modelLimits, ",") {
+			if strings.TrimSpace(part) != "" {
+				count++
+				if count > maxTokenModelLimitsItems {
+					common.ApiErrorT(c, "Invalid parameters")
+					return false
+				}
+			}
+		}
+	}
+	if allowIps != nil {
+		if len(*allowIps) > maxTokenAllowIpsBytes {
+			common.ApiErrorT(c, "Invalid parameters")
+			return false
+		}
+		if strings.TrimSpace(*allowIps) != "" {
+			count := 0
+			for _, line := range strings.Split(*allowIps, "\n") {
+				for _, part := range strings.Split(line, ",") {
+					if strings.TrimSpace(part) != "" {
+						count++
+						if count > maxTokenAllowIpsItems {
+							common.ApiErrorT(c, "Invalid parameters")
+							return false
+						}
+					}
+				}
+			}
+		}
+	}
+	return true
+}
+
 func addPersonalToken(c *gin.Context, ownerSite int) {
 	request := tokenRequest{}
 	err := c.ShouldBindJSON(&request)
@@ -473,6 +520,9 @@ func addPersonalToken(c *gin.Context, ownerSite int) {
 		siteID = ownerSite
 	}
 	if !validateTokenKeyLimits(c, request) {
+		return
+	}
+	if !validateTokenTextFieldLimits(c, token.ModelLimits, token.AllowIps) {
 		return
 	}
 	token.Group = strings.TrimSpace(token.Group)
@@ -645,6 +695,9 @@ func UpdateToken(c *gin.Context) {
 			cleanToken.AllowUserQuotaQuery = false
 		}
 		if !validateTokenKeyLimits(c, request) {
+			return
+		}
+		if !validateTokenTextFieldLimits(c, token.ModelLimits, token.AllowIps) {
 			return
 		}
 		targetGroup := strings.TrimSpace(token.Group)

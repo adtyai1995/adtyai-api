@@ -434,9 +434,6 @@ func parseMultipartFormData(c *gin.Context, data []byte, v any) error {
 	}
 	boundary, err := parseBoundary(contentType)
 	if err != nil {
-		if errors.Is(err, errBoundaryNotFound) {
-			return Unmarshal(data, v) // Fallback to JSON
-		}
 		return err
 	}
 

@@ -1,9 +1,12 @@
 package openai
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -162,6 +165,81 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	return wrapStreamWriteError(helper.ObjectData(c, lastStreamResponse))
 }
 
+func parseEmbeddedHTTPStatus(candidates ...any) int {
+	for _, candidate := range candidates {
+		switch v := candidate.(type) {
+		case int:
+			if v >= 400 && v <= 599 {
+				return v
+			}
+		case int64:
+			if v >= 400 && v <= 599 {
+				return int(v)
+			}
+		case float64:
+			if !math.IsNaN(v) && !math.IsInf(v, 0) && math.Trunc(v) == v && v >= 400 && v <= 599 {
+				return int(v)
+			}
+		case string:
+			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 400 && n <= 599 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+func hasNonEmptyErrorCode(code any) bool {
+	if code == nil {
+		return false
+	}
+	if s, ok := code.(string); ok {
+		return strings.TrimSpace(s) != ""
+	}
+	return true
+}
+
+// ExtractEmbeddedOpenAIError inspects a JSON payload (such as an HTTP 200 body
+// or SSE data frame) for a non-empty embedded OpenAI "error" field and resolves
+// the HTTP status code from any embedded 4xx/5xx status/code or fallbackStatus
+// (defaulting to 502 Bad Gateway).
+func ExtractEmbeddedOpenAIError(raw []byte, fallbackStatus int) (*types.OpenAIError, int) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' || !bytes.Contains(trimmed, []byte(`"error"`)) {
+		return nil, 0
+	}
+	var payload struct {
+		Status     any `json:"status"`
+		StatusCode any `json:"status_code"`
+		Code       any `json:"code"`
+		Error      any `json:"error"`
+	}
+	if err := common.Unmarshal(trimmed, &payload); err != nil || payload.Error == nil {
+		return nil, 0
+	}
+	if s, ok := payload.Error.(string); ok && strings.TrimSpace(s) == "" {
+		return nil, 0
+	}
+	oaiErr := dto.GetOpenAIError(payload.Error)
+	if oaiErr == nil || (strings.TrimSpace(oaiErr.Type) == "" && strings.TrimSpace(oaiErr.Message) == "" && !hasNonEmptyErrorCode(oaiErr.Code)) {
+		return nil, 0
+	}
+	var statusCode int
+	if errMap, ok := payload.Error.(map[string]any); ok {
+		statusCode = parseEmbeddedHTTPStatus(errMap["status_code"], errMap["status"], errMap["code"], payload.StatusCode, payload.Status, payload.Code)
+	} else {
+		statusCode = parseEmbeddedHTTPStatus(oaiErr.Code, payload.StatusCode, payload.Status, payload.Code)
+	}
+	if statusCode == 0 {
+		if fallbackStatus >= 400 && fallbackStatus <= 599 {
+			statusCode = fallbackStatus
+		} else {
+			statusCode = http.StatusBadGateway
+		}
+	}
+	return oaiErr, statusCode
+}
+
 func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
 		logger.LogError(c, common.LogText("invalid response or response body"))
@@ -183,6 +261,8 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var receivedValidFrame bool
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
+	var streamErr *types.NewAPIError
+	var embeddedErrStopped bool
 
 	// OpenAI format forwards every frame the moment it is read. The one
 	// exception is a usage-only chunk (usage present, choices empty) when the
@@ -195,6 +275,21 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	directForward := info.RelayFormat == types.RelayFormatOpenAI
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		if len(data) > 0 {
+			if oaiErr, statusCode := ExtractEmbeddedOpenAIError(common.StringToByteSlice(data), http.StatusBadGateway); oaiErr != nil {
+				if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+					streamErr = types.WithOpenAIError(*oaiErr, statusCode)
+					sr.Stop(streamErr)
+					return
+				}
+				embeddedErr := types.WithOpenAIError(*oaiErr, statusCode)
+				logger.LogError(c, common.LogText("upstream stream returned embedded error after payload written: %s", embeddedErr.Error()))
+				sr.Error(embeddedErr)
+				embeddedErrStopped = true
+				sr.Stop(nil)
+				return
+			}
+		}
 		if !directForward && lastStreamData != "" {
 			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 				common.SysLog(common.LogText("error handling stream format: %s", err.Error()))
@@ -244,6 +339,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			sr.Error(err)
 		}
 	})
+
+	if streamErr != nil {
+		return nil, streamErr
+	}
 
 	info.StreamStatus.RequireTerminal()
 
@@ -313,7 +412,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		info.CountBillableToolCall(dto.BuildInCallFunctionCall, name)
 	}
 
-	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+	if !embeddedErrStopped {
+		HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+	}
 
 	return usage, nil
 }

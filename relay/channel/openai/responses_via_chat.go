@@ -280,17 +280,41 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 
 	isClientGone := clientGone || (info != nil && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone)
 
+	resolveDeliveredUsage := func() *dto.Usage {
+		usage := state.Usage()
+		if usage == nil || usage.TotalTokens == 0 {
+			usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+			state.SetUsage(usage)
+		}
+		return usage
+	}
+
 	if streamErr != nil {
 		if hasWritten() {
-			usage := state.Usage()
-			if usage == nil || usage.TotalTokens == 0 {
-				usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
-				state.SetUsage(usage)
-			}
+			usage := resolveDeliveredUsage()
 			commitStreamTools()
 			return usage, nil
 		}
 		return nil, streamErr
+	}
+	if info != nil && info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
+		if info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
+			if !hasWritten() {
+				return nil, types.NewError(clientCancelError(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+			}
+			usage := resolveDeliveredUsage()
+			commitStreamTools()
+			return usage, nil
+		}
+		err := fmt.Errorf("chat-to-responses stream ended unexpectedly: %s", info.StreamStatus.Summary())
+		if !hasWritten() {
+			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusBadGateway)
+		}
+		info.StreamStatus.MarkFailed(string(types.ErrorCodeBadResponse), "server_error", http.StatusBadGateway)
+		failResponsesStream(err)
+		usage := resolveDeliveredUsage()
+		commitStreamTools()
+		return usage, nil
 	}
 	if !hasWritten() {
 		if isClientGone || helper.ClientRequestCanceled(c) {
@@ -303,10 +327,18 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 
 	usage := state.Usage()
 	noUpstreamUsage := usage == nil || usage.TotalTokens == 0
-	if upstreamFailure != nil && noUpstreamUsage && state.UsageText() == "" {
-		// The stream failed before any output reached the client, which
-		// already received response.failed: the request is not charged.
-		return nil, upstreamFailure
+	if upstreamFailure != nil {
+		if noUpstreamUsage && state.UsageText() == "" {
+			// The stream failed before any output reached the client, which
+			// already received response.failed: the request is not charged.
+			return nil, upstreamFailure
+		}
+		if noUpstreamUsage {
+			usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+			state.SetUsage(usage)
+		}
+		commitStreamTools()
+		return usage, nil
 	}
 	if noUpstreamUsage {
 		usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())

@@ -420,11 +420,13 @@ func handleNovaRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) 
 		content = contentBlocks[0].Text
 	}
 
+	created := common.GetTimestamp()
+
 	// 构造OpenAI格式响应
 	response := dto.OpenAITextResponse{
 		Id:      helper.GetResponseID(c),
 		Object:  "chat.completion",
-		Created: common.GetTimestamp(),
+		Created: created,
 		Model:   info.UpstreamModelName,
 		Choices: make([]dto.OpenAITextResponseChoice, 0, 1),
 	}
@@ -456,6 +458,78 @@ func handleNovaRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) 
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 	response.Usage = usage
+
+	if info != nil && info.IsStream {
+		helper.StopStreamKeepAlive(c)
+		helper.SetEventStreamHeaders(c)
+		info.SetFirstResponseTime()
+		if len(contentBlocks) > 0 {
+			deltaContent := content
+			contentChunk := dto.ChatCompletionsStreamResponse{
+				Id:      response.Id,
+				Object:  "chat.completion.chunk",
+				Created: created,
+				Model:   response.Model,
+				Choices: []dto.ChatCompletionsStreamResponseChoice{
+					{
+						Index: 0,
+						Delta: dto.ChatCompletionsStreamResponseChoiceDelta{
+							Role:    "assistant",
+							Content: &deltaContent,
+						},
+					},
+				},
+			}
+			if writeErr := helper.ObjectData(c, contentChunk); writeErr != nil {
+				if info.StreamStatus == nil {
+					info.StreamStatus = relaycommon.NewStreamStatus()
+				}
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, writeErr)
+				return nil, &response.Usage
+			}
+			info.SendResponseCount++
+
+			finishReason := "stop"
+			stopChunk := dto.ChatCompletionsStreamResponse{
+				Id:      response.Id,
+				Object:  "chat.completion.chunk",
+				Created: created,
+				Model:   response.Model,
+				Choices: []dto.ChatCompletionsStreamResponseChoice{
+					{
+						Index:        0,
+						FinishReason: &finishReason,
+					},
+				},
+				Usage: &response.Usage,
+			}
+			if writeErr := helper.ObjectData(c, stopChunk); writeErr != nil {
+				if info.StreamStatus == nil {
+					info.StreamStatus = relaycommon.NewStreamStatus()
+				}
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, writeErr)
+				return nil, &response.Usage
+			}
+			info.SendResponseCount++
+		} else {
+			usageChunk := helper.GenerateFinalUsageResponse(response.Id, created, response.Model, response.Usage)
+			if writeErr := helper.ObjectData(c, usageChunk); writeErr != nil {
+				if info.StreamStatus == nil {
+					info.StreamStatus = relaycommon.NewStreamStatus()
+				}
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, writeErr)
+				return nil, &response.Usage
+			}
+			info.SendResponseCount++
+		}
+		helper.Done(c)
+		if info.StreamStatus == nil {
+			info.StreamStatus = relaycommon.NewStreamStatus()
+		}
+		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+		info.StreamStatus.MarkCompleted()
+		return nil, &response.Usage
+	}
 
 	c.JSON(http.StatusOK, response)
 	return nil, &response.Usage

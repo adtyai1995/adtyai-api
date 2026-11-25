@@ -213,6 +213,23 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 		HandleStreamFinalResponse(c, info, claudeInfo)
 		return claudeInfo.Usage, nil
 	}
+	if info != nil && info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
+		if info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
+			if !hasWritten() {
+				return nil, types.NewError(clientCancelError(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+			}
+			HandleStreamFinalResponse(c, info, claudeInfo)
+			return claudeInfo.Usage, nil
+		}
+		err := fmt.Errorf("claude stream ended unexpectedly: %s", info.StreamStatus.Summary())
+		if !hasWritten() {
+			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusBadGateway)
+		}
+		info.StreamStatus.MarkFailed(string(types.ErrorCodeBadResponse), "server_error", http.StatusBadGateway)
+		failResponsesStream(err)
+		HandleStreamFinalResponse(c, info, claudeInfo)
+		return claudeInfo.Usage, nil
+	}
 	if !hasWritten() && (!receivedEvent || (claudeInfo.ResponseText.Len() == 0 && !claudeInfo.Done && claudeInfo.ToolUseCount == 0)) {
 		if helper.ClientRequestCanceled(c) {
 			return nil, types.NewError(clientCancelError(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())

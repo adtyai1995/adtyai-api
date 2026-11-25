@@ -137,14 +137,7 @@ func SaveAdtyPaymentScenes(actorID int, expected int64, scenes []model.AdtyPayme
 			}
 		}
 		for _, id := range scene.ChannelIDs {
-			var count int64
 			if id <= 0 || !slices.Contains(scene.Providers, model.PaymentProviderAdtyEpay) {
-				return nil, common.NewMessage("Invalid parameters")
-			}
-			if err := model.DB.Model(&model.AdtyEpayChannel{}).Where("id = ?", id).Count(&count).Error; err != nil {
-				return nil, err
-			}
-			if count != 1 {
 				return nil, common.NewMessage("Invalid parameters")
 			}
 		}
@@ -167,13 +160,22 @@ func SaveAdtyPaymentScenes(actorID int, expected int64, scenes []model.AdtyPayme
 		if config.Version != expected {
 			return model.ErrAdtyPaymentSceneConflict
 		}
-		// R7-28: Validate referenced site IDs inside the transaction after locking
-		// the scene config, excluding deleting sites so hard-delete cannot leave
-		// dangling references.
+		// R7-28 & R8-15: Validate referenced site and epay channel IDs inside the
+		// transaction after locking the scene config (canonical lock order:
+		// adty_payment_scene_configs -> adty_sites -> adty_epay_channels).
 		for _, scene := range scenes {
 			for _, id := range scene.SiteIDs {
 				var count int64
 				if err := tx.Model(&model.AdtySite{}).Where("id = ? AND status <> ?", id, model.AdtySiteStatusDeleting).Count(&count).Error; err != nil {
+					return err
+				}
+				if count != 1 {
+					return common.NewMessage("Invalid parameters")
+				}
+			}
+			for _, id := range scene.ChannelIDs {
+				var count int64
+				if err := tx.Model(&model.AdtyEpayChannel{}).Where("id = ?", id).Count(&count).Error; err != nil {
 					return err
 				}
 				if count != 1 {

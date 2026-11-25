@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -70,10 +71,28 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var toolCount int
 	var containStreamUsage bool
 	var lastParseErr error
+	var streamErr *types.NewAPIError
+	var embeddedErrStopped bool
 
 	helper.SetEventStreamHeaders(c)
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		if len(data) > 0 {
+			if oaiErr, statusCode := openai.ExtractEmbeddedOpenAIError(common.StringToByteSlice(data), http.StatusBadGateway); oaiErr != nil {
+				if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+					streamErr = types.WithOpenAIError(*oaiErr, statusCode)
+					sr.Stop(streamErr)
+					return
+				}
+				embeddedErr := types.WithOpenAIError(*oaiErr, statusCode)
+				logger.LogError(c, common.LogText("xai stream returned embedded error after payload written: %s", embeddedErr.Error()))
+				sr.Error(embeddedErr)
+				embeddedErrStopped = true
+				sr.Stop(nil)
+				return
+			}
+		}
+
 		var xAIResp dto.ChatCompletionsStreamResponse
 		if err := common.UnmarshalJsonStr(data, &xAIResp); err != nil {
 			common.SysLog(common.LogText("error unmarshalling stream response: %s", err.Error()))
@@ -85,8 +104,12 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// 把 xAI 的usage转换为 OpenAI 的usage
 		if xAIResp.Usage != nil && (xAIResp.Usage.TotalTokens > 0 || xAIResp.Usage.PromptTokens > 0 || xAIResp.Usage.CompletionTokens > 0) {
 			containStreamUsage = true
-			usage.PromptTokens = xAIResp.Usage.PromptTokens
-			usage.TotalTokens = xAIResp.Usage.TotalTokens
+			usage.PromptTokens = max(xAIResp.Usage.PromptTokens, 0)
+			usage.CompletionTokens = max(xAIResp.Usage.CompletionTokens, 0)
+			usage.TotalTokens = max(xAIResp.Usage.TotalTokens, 0)
+			if usage.TotalTokens == 0 && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
+				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+			}
 			usage.PromptTokensDetails = xAIResp.Usage.PromptTokensDetails
 			usage.CompletionTokenDetails = xAIResp.Usage.CompletionTokenDetails
 			normalizeXAIUsage(usage, "xai stream")
@@ -103,6 +126,10 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			info.SendResponseCount++
 		}
 	})
+
+	if streamErr != nil {
+		return nil, streamErr
+	}
 
 	if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
 		if helper.ClientRequestCanceled(c) {
@@ -123,7 +150,7 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 
-	if info == nil || info.StreamStatus == nil || info.StreamStatus.EndError == nil {
+	if !embeddedErrStopped && (info == nil || info.StreamStatus == nil || info.StreamStatus.EndError == nil) {
 		helper.Done(c)
 	}
 	return usage, nil
@@ -135,6 +162,13 @@ func xAIHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response
 	responseBody, apiErr := helper.ReadResponseBody(c, resp, types.ErrorCodeBadResponseBody)
 	if apiErr != nil {
 		return nil, apiErr
+	}
+	fallbackStatus := http.StatusBadGateway
+	if resp != nil && resp.StatusCode >= 400 && resp.StatusCode <= 599 {
+		fallbackStatus = resp.StatusCode
+	}
+	if oaiErr, statusCode := openai.ExtractEmbeddedOpenAIError(responseBody, fallbackStatus); oaiErr != nil {
+		return nil, types.WithOpenAIError(*oaiErr, statusCode)
 	}
 	var xaiResponse ChatCompletionResponse
 	err := common.Unmarshal(responseBody, &xaiResponse)

@@ -868,6 +868,7 @@ func GeminiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	}
 
 	var filteredReasons []string
+	var markdownImages []string
 	for _, prediction := range geminiResponse.Predictions {
 		if reason := strings.TrimSpace(prediction.RaiFilteredReason); reason != "" {
 			if !slices.Contains(filteredReasons, reason) {
@@ -881,6 +882,11 @@ func GeminiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		openAIResponse.Data = append(openAIResponse.Data, dto.ImageData{
 			B64Json: prediction.BytesBase64Encoded,
 		})
+		mimeType := strings.TrimSpace(prediction.MimeType)
+		if mimeType == "" {
+			mimeType = "image/png"
+		}
+		markdownImages = append(markdownImages, fmt.Sprintf("![image](data:%s;base64,%s)", mimeType, prediction.BytesBase64Encoded))
 	}
 
 	if len(openAIResponse.Data) == 0 {
@@ -890,15 +896,6 @@ func GeminiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		}
 		return nil, types.NewOpenAIError(errors.New(errMsg), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
-
-	jsonResponse, jsonErr := common.Marshal(openAIResponse)
-	if jsonErr != nil {
-		return nil, types.NewError(jsonErr, types.ErrorCodeBadResponseBody)
-	}
-
-	c.Writer.Header().Set("Content-Type", "application/json")
-	c.Writer.WriteHeader(resp.StatusCode)
-	_, _ = c.Writer.Write(jsonResponse)
 
 	// https://github.com/google-gemini/cookbook/blob/719a27d752aac33f39de18a8d3cb42a70874917e/quickstarts/Counting_Tokens.ipynb
 	// each image has fixed 258 tokens
@@ -913,6 +910,81 @@ func GeminiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		CompletionTokens: 0,                             // image generation does not calculate completion tokens
 		TotalTokens:      imageTokens * generatedImages,
 	}
+
+	if info != nil && info.IsStream && info.RelayFormat == types.RelayFormatOpenAI {
+		helper.StopStreamKeepAlive(c)
+		helper.SetEventStreamHeaders(c)
+		info.SetFirstResponseTime()
+
+		responseID := helper.GetResponseID(c)
+		created := common.GetTimestamp()
+		content := strings.Join(markdownImages, "\n")
+		contentChunk := dto.ChatCompletionsStreamResponse{
+			Id:      responseID,
+			Object:  "chat.completion.chunk",
+			Created: created,
+			Model:   info.UpstreamModelName,
+			Choices: []dto.ChatCompletionsStreamResponseChoice{
+				{
+					Index: 0,
+					Delta: dto.ChatCompletionsStreamResponseChoiceDelta{
+						Role:    "assistant",
+						Content: &content,
+					},
+				},
+			},
+		}
+		if writeErr := helper.ObjectData(c, contentChunk); writeErr != nil {
+			if info.StreamStatus == nil {
+				info.StreamStatus = relaycommon.NewStreamStatus()
+			}
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, writeErr)
+			return usage, nil
+		}
+		info.SendResponseCount++
+
+		finishReason := constant.FinishReasonStop
+		stopChunk := dto.ChatCompletionsStreamResponse{
+			Id:      responseID,
+			Object:  "chat.completion.chunk",
+			Created: created,
+			Model:   info.UpstreamModelName,
+			Choices: []dto.ChatCompletionsStreamResponseChoice{
+				{
+					Index:        0,
+					FinishReason: &finishReason,
+				},
+			},
+		}
+		if info.ShouldIncludeUsage {
+			stopChunk.Usage = usage
+		}
+		if writeErr := helper.ObjectData(c, stopChunk); writeErr != nil {
+			if info.StreamStatus == nil {
+				info.StreamStatus = relaycommon.NewStreamStatus()
+			}
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, writeErr)
+			return usage, nil
+		}
+		info.SendResponseCount++
+
+		helper.Done(c)
+		if info.StreamStatus == nil {
+			info.StreamStatus = relaycommon.NewStreamStatus()
+		}
+		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+		info.StreamStatus.MarkCompleted()
+		return usage, nil
+	}
+
+	jsonResponse, jsonErr := common.Marshal(openAIResponse)
+	if jsonErr != nil {
+		return nil, types.NewError(jsonErr, types.ErrorCodeBadResponseBody)
+	}
+
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.WriteHeader(resp.StatusCode)
+	_, _ = c.Writer.Write(jsonResponse)
 
 	return usage, nil
 }

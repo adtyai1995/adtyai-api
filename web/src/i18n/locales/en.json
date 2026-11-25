@@ -11416,6 +11416,12 @@
     "Batch deleted models": "Batch deleted models",
     "Synced model metadata": "Synced model metadata",
     "Updated model pricing": "Updated model pricing",
-    "Cancelled system task {{task_id}}": "Cancelled system task {{task_id}}"
+    "Cancelled system task {{task_id}}": "Cancelled system task {{task_id}}",
+    "Remove this payment channel from payment scenes before deleting it": "Remove this payment channel from payment scenes before deleting it",
+    "Domain removal is in progress; please try again shortly": "Domain removal is in progress; please try again shortly",
+    "Too many tickets created in the last 24 hours; please try again later": "Too many tickets created in the last 24 hours; please try again later",
+    "Too many active team invites; please revoke unused invites first": "Too many active team invites; please revoke unused invites first",
+    "Cannot promote a subsite customer, site staff, or team employee account to platform administrator.": "Cannot promote a subsite customer, site staff, or team employee account to platform administrator.",
+    "Reviewed gift fulfillment": "Reviewed gift fulfillment"
   }
 }

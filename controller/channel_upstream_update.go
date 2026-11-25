@@ -528,8 +528,21 @@ func checkAndPersistChannelUpstreamModelUpdates(
 	pendingAddModels, pendingRemoveModels, fetchErr := collectPendingUpstreamModelChanges(channel, *settings)
 	settings.UpstreamModelUpdateLastCheckTime = now
 	if fetchErr != nil {
-		if err = updateChannelUpstreamModelSettings(nil, channel, *settings, false); err != nil {
-			return false, 0, err
+		// R8-10: Lock and reload the latest channel row after upstream I/O so a
+		// failed fetch never overwrites concurrent settings edits with a stale snapshot.
+		if updateErr := model.DB.Transaction(func(tx *gorm.DB) error {
+			var locked model.Channel
+			if err := model.AdtyLockForUpdate(tx).First(&locked, "id = ?", channel.Id).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil
+				}
+				return err
+			}
+			lockedSettings := locked.GetOtherSettings()
+			lockedSettings.UpstreamModelUpdateLastCheckTime = now
+			return updateChannelUpstreamModelSettings(tx, &locked, lockedSettings, false)
+		}); updateErr != nil {
+			return false, 0, updateErr
 		}
 		return false, 0, fetchErr
 	}

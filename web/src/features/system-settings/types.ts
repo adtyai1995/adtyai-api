@@ -119,8 +119,6 @@ export type SiteSettings = {
   ServerAddress: string
   TaskPublicAddress: string
   'general_setting.docs_link': string
-  'legal.user_agreement': string
-  'legal.privacy_policy': string
   HeaderNavModules: string
   SidebarModulesAdmin: string
   // ADTY task 8.3: public site settings (setting/adty_setting/site.go)

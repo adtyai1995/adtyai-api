@@ -86,6 +86,9 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 				}
 			}
 			if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+				if info != nil && info.StreamStatus != nil {
+					info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
+				}
 				sr.Stop(c.Request.Context().Err())
 				return
 			}
@@ -94,6 +97,9 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 				headersWritten = true
 			}
 			if err := helper.StringData(c, data); err != nil {
+				if info != nil && info.StreamStatus != nil {
+					info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+				}
 				sr.Stop(err)
 				return
 			}
@@ -102,8 +108,16 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 			}
 		})
 		if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
-			if helper.ClientRequestCanceled(c) {
-				return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+			if helper.ClientRequestCanceled(c) || (info != nil && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone) {
+				var cancelErr error
+				if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
+					cancelErr = info.StreamStatus.EndError
+				} else if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+					cancelErr = c.Request.Context().Err()
+				} else {
+					cancelErr = errors.New("client closed request")
+				}
+				return nil, types.NewError(cancelErr, types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
 			}
 			if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
 				return nil, types.NewOpenAIError(info.StreamStatus.EndError, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
@@ -227,8 +241,25 @@ func OpenaiSTTHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 	if apiErr != nil {
 		return apiErr, nil
 	}
-	// 写入新的 response body
-	service.IOCopyBytesGracefully(c, resp, responseBody)
+
+	if len(bytes.TrimSpace(responseBody)) == 0 {
+		rf := strings.ToLower(strings.TrimSpace(responseFormat))
+		contentType := ""
+		if resp != nil {
+			contentType = strings.ToLower(resp.Header.Get("Content-Type"))
+		}
+		if rf == "" || rf == "json" || rf == "verbose_json" || rf == "diarized_json" || strings.Contains(contentType, "application/json") {
+			return types.NewOpenAIError(errors.New("empty upstream STT response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError), nil
+		}
+	}
+
+	fallbackStatus := http.StatusBadGateway
+	if resp != nil && resp.StatusCode >= 400 && resp.StatusCode <= 599 {
+		fallbackStatus = resp.StatusCode
+	}
+	if oaiErr, statusCode := ExtractEmbeddedOpenAIError(responseBody, fallbackStatus); oaiErr != nil {
+		return types.WithOpenAIError(*oaiErr, statusCode), nil
+	}
 
 	var responseData struct {
 		Text  string `json:"text"`
@@ -241,6 +272,10 @@ func OpenaiSTTHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		} `json:"usage"`
 	}
 	parsedJSON := common.Unmarshal(responseBody, &responseData) == nil
+
+	// 全部校验通过后再写出响应体并正常计费
+	service.IOCopyBytesGracefully(c, resp, responseBody)
+
 	if parsedJSON && responseData.Usage != nil {
 		usage := &responseData.Usage.Usage
 		clampNonNegativeUsage(usage)

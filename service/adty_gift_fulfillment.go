@@ -1621,7 +1621,8 @@ func ReviewAdtyGiftFulfillmentWithAudit(id int64, action, note string, operatorI
 			return err
 		}
 		var auditErr error
-		auditEntry, auditErr = appendAdtyGiftOfficialAuditTx(tx, operatorID, row.SiteId, row.TradeNo, "adty.gift.fulfillment.review", note,
+		auditEntry, auditErr = appendAdtyGiftOfficialAuditWithParamsTx(tx, operatorID, row.SiteId, row.TradeNo, "adty.gift.fulfillment.review", note,
+			map[string]any{"trade_no": row.TradeNo, "action": action},
 			map[string]any{"id": row.Id, "status": beforeStatus},
 			map[string]any{"id": row.Id, "trade_no": row.TradeNo, "action": action, "status": row.Status})
 		return auditErr

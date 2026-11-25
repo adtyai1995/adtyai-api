@@ -90,25 +90,13 @@ var channelReadOnlyFields = map[string]struct{}{
 	"used_quota":           {},
 }
 
-func clearChannelReadOnlyFields(channel *PatchChannel, requestData map[string]any) {
-	if _, ok := requestData["created_time"]; ok {
-		channel.CreatedTime = 0
-	}
-	if _, ok := requestData["test_time"]; ok {
-		channel.TestTime = 0
-	}
-	if _, ok := requestData["response_time"]; ok {
-		channel.ResponseTime = 0
-	}
-	if _, ok := requestData["balance"]; ok {
-		channel.Balance = 0
-	}
-	if _, ok := requestData["balance_updated_time"]; ok {
-		channel.BalanceUpdatedTime = 0
-	}
-	if _, ok := requestData["used_quota"]; ok {
-		channel.UsedQuota = 0
-	}
+func clearChannelReadOnlyFields(channel *PatchChannel, _ map[string]any) {
+	channel.CreatedTime = 0
+	channel.TestTime = 0
+	channel.ResponseTime = 0
+	channel.Balance = 0
+	channel.BalanceUpdatedTime = 0
+	channel.UsedQuota = 0
 }
 
 // channelNonSensitiveFields lists routing / server-managed channel

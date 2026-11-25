@@ -41,8 +41,6 @@ const defaultSiteSettings: SiteSettings & AdtySiteOptionSettings = {
   ServerAddress: '',
   TaskPublicAddress: '',
   'general_setting.docs_link': '',
-  'legal.user_agreement': '',
-  'legal.privacy_policy': '',
   HeaderNavModules: '',
   SidebarModulesAdmin: '',
   ...ADTY_SITE_OPTION_DEFAULTS,

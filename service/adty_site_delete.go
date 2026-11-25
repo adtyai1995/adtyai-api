@@ -126,18 +126,9 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 	cleanedOptions := map[string]string{}
 	commissionMarginKey := commissionMarginOptionKey(siteID)
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		// R7-28: Lock adty_payment_scene_configs BEFORE options -> adty_sites to
-		// preserve a consistent lock order with SaveAdtyPaymentScenes.
-		var sceneCfg *model.AdtyPaymentSceneConfig
-		if tx.Migrator().HasTable(&model.AdtyPaymentSceneConfig{}) {
-			var cfgErr error
-			sceneCfg, cfgErr = model.GetAdtyPaymentSceneConfig(tx, true)
-			if cfgErr != nil {
-				return cfgErr
-			}
-		}
-		// Pre-lock per-site option keys in sorted order BEFORE adty_sites to follow
-		// canonical options -> adty_sites lock order (R5-11).
+		// R8-01: Pre-lock per-site option keys in sorted order BEFORE
+		// adty_payment_scene_configs -> adty_sites so all transactions follow the
+		// canonical DAG lock order: options (key ASC) -> adty_payment_scene_configs -> adty_sites -> adty_epay_channels.
 		lockedOptVals := map[string]string{}
 		lockedOptFound := map[string]bool{}
 		if tx.Migrator().HasTable(&model.Option{}) {
@@ -156,6 +147,14 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 				if ok {
 					lockedOptVals[key] = raw
 				}
+			}
+		}
+		var sceneCfg *model.AdtyPaymentSceneConfig
+		if tx.Migrator().HasTable(&model.AdtyPaymentSceneConfig{}) {
+			var cfgErr error
+			sceneCfg, cfgErr = model.GetAdtyPaymentSceneConfig(tx, true)
+			if cfgErr != nil {
+				return cfgErr
 			}
 		}
 		var site model.AdtySite

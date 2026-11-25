@@ -258,16 +258,26 @@ func CreateAdtyTicket(userId int, input AdtyTicketInput) (*model.AdtyTicket, err
 			}
 		}
 
-		// R7-33: Cap concurrent open tickets per user to prevent ticket/attachment
-		// storage amplification when a single account spams new tickets.
+		// R7-33 & R8-18: Cap concurrent unresolved tickets (excluding both closed
+		// and customer-resolved terminal tickets) plus a rolling 24h creation cap
+		// so legitimate customers are not locked out while spam remains bounded.
 		var openTicketCount int64
 		if err := tx.Model(&model.AdtyTicket{}).
-			Where("user_id = ? AND status <> ?", actor.User.Id, model.AdtyTicketClosed).
+			Where("user_id = ? AND status NOT IN ?", actor.User.Id, []string{model.AdtyTicketClosed, model.AdtyTicketResolved}).
 			Count(&openTicketCount).Error; err != nil {
 			return err
 		}
 		if openTicketCount >= 20 {
 			return common.NewMessage("Too many open tickets; please wait for existing tickets to be resolved")
+		}
+		var recentTicketCount int64
+		if err := tx.Model(&model.AdtyTicket{}).
+			Where("user_id = ? AND created_at >= ?", actor.User.Id, time.Now().Add(-24*time.Hour).Unix()).
+			Count(&recentTicketCount).Error; err != nil {
+			return err
+		}
+		if recentTicketCount >= 20 {
+			return common.NewMessage("Too many tickets created in the last 24 hours; please try again later")
 		}
 
 		ticket := model.AdtyTicket{

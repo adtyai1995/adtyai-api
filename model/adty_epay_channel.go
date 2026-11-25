@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -272,9 +273,28 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 	})
 }
 
-// DeleteAdtyEpayChannel 删除通道。旧订单的回调仍按 channelId 路由，所以有订单的通道只能停用。
+// DeleteAdtyEpayChannel 删除通道。旧订单的回调仍按 channelId 路由，所以有订单的通道只能停用；
+// 仍被支付场景引用的通道也必须先从场景中移除，避免删除后静默放开或卡死配置保存（R8-15）。
 func DeleteAdtyEpayChannel(id int) error {
 	return DB.Transaction(func(tx *gorm.DB) error {
+		// R8-15: Follow canonical lock order adty_payment_scene_configs -> adty_epay_channels.
+		if tx.Migrator().HasTable(&AdtyPaymentSceneConfig{}) {
+			sceneCfg, cfgErr := GetAdtyPaymentSceneConfig(tx, true)
+			if cfgErr != nil {
+				return cfgErr
+			}
+			var scenes []AdtyPaymentScene
+			if strings.TrimSpace(sceneCfg.Payload) != "" {
+				if err := common.Unmarshal([]byte(sceneCfg.Payload), &scenes); err != nil {
+					return err
+				}
+			}
+			for _, scene := range scenes {
+				if slices.Contains(scene.ChannelIDs, id) {
+					return common.NewMessage("Remove this payment channel from payment scenes before deleting it")
+				}
+			}
+		}
 		var channel AdtyEpayChannel
 		if err := AdtyLockForUpdate(tx).First(&channel, id).Error; err != nil {
 			return err

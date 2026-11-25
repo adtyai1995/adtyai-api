@@ -112,7 +112,7 @@ var auditContentTemplates = map[string]string{
 	"adty.gift.release":                    "Released gift guarantee",
 	"adty.gift.spend":                      "Spent gift guarantee",
 	"adty.gift.spend_refund":               "Refunded spent gift guarantee",
-	"adty.gift.fulfillment.review":         "Reviewed gift fulfillment for order ${trade_no} (${action})",
+	"adty.gift.fulfillment.review":         "Reviewed gift fulfillment ${trade_no} (${action})",
 	"adty.team.create":                     "Created team",
 	"adty.team.close":                      "Closed team",
 	"adty.team.discount.update":            "Updated team ${team_id} discount from ${before} to ${after}",

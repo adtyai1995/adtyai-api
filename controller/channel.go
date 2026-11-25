@@ -1163,16 +1163,24 @@ func UpdateChannel(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := common.Unmarshal(rawBody, &channel); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
 	var requestData map[string]any
 	if err := common.Unmarshal(rawBody, &requestData); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	// R8-03: Reject uppercase / case-folded JSON keys before struct decoding so
+	// encoding/json case-insensitive matching cannot bypass requestData guards.
+	for k := range requestData {
+		if k != strings.ToLower(k) {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+	}
 	if _, ok := requestData["status"]; ok {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := common.Unmarshal(rawBody, &channel); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
@@ -1212,7 +1220,8 @@ func UpdateChannel(c *gin.Context) {
 	originProxy := originChannel.GetSetting().Proxy
 	proxyChanged := false
 	_, settingProvided := requestData["setting"]
-	if settingProvided {
+	settingPresent := settingProvided || channel.Setting != nil
+	if settingPresent {
 		newProxy, _ := service.NormalizeProxyURL(channel.GetSetting().Proxy)
 		normalizedOriginProxy, originProxyErr := service.NormalizeProxyURL(originProxy)
 		proxyChanged = originProxyErr != nil || normalizedOriginProxy != newProxy
@@ -1220,7 +1229,7 @@ func UpdateChannel(c *gin.Context) {
 	// Changing which plugins a channel binds needs the bind permission on any
 	// channel type; resubmitting an unchanged New API binding list does not, so
 	// administrators without it can still edit the rest of a gateway channel.
-	if settingProvided &&
+	if settingPresent &&
 		!slices.Equal(channel.GetSetting().TaskPluginBindings(), originChannel.GetSetting().TaskPluginBindings()) &&
 		!canActWithPermission(c, authz.TaskPluginBind) {
 		common.ApiErrorT(c, "Task plugin channels require the task_plugin.bind permission")

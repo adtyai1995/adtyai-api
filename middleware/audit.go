@@ -134,6 +134,8 @@ func finishAdminAudit(c *gin.Context, writer *auditResponseWriter) {
 	if action == "generic" {
 		opParams["method"] = method
 		opParams["route"] = route
+	} else if action == "adty.topup.query" && routeParams["trade_no"] != "" {
+		opParams["trade_no"] = routeParams["trade_no"]
 	}
 
 	// content 为英文兜底文本（供导出等非本地化消费者使用）。

@@ -541,6 +541,7 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	}
 
 	if info.IsStream &&
+		!info.DisablePing &&
 		info.RelayMode != constant.RelayModeAudioSpeech &&
 		info.RelayFormat != types.RelayFormatOpenAIImage &&
 		info.RelayMode != constant.RelayModeImagesGenerations &&
@@ -548,7 +549,7 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		helper.SetEventStreamHeaders(c)
 		// 处理流式请求的 ping 保活
 		generalSettings := operation_setting.GetGeneralSetting()
-		if generalSettings.PingIntervalEnabled && !info.DisablePing {
+		if generalSettings.PingIntervalEnabled {
 			pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
 			stopPinger := helper.StartStreamKeepAlive(c, pingInterval)
 			defer stopPinger()

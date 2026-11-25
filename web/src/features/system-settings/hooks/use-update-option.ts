@@ -81,8 +81,6 @@ const STATUS_RELATED_KEYS = new Set([
   'EmailDomainRestrictionEnabled',
   'EmailDomainWhitelist',
   'QuotaForNewUser',
-  'legal.user_agreement',
-  'legal.privacy_policy',
   'adty_legal_setting.user_agreement',
   'adty_legal_setting.privacy_policy',
   'adty_site_setting.refund_policy_enabled',
@@ -196,10 +194,7 @@ export function useUpdateOption() {
           queryClient.invalidateQueries({ queryKey: ['notice'] })
           queryClient.invalidateQueries({ queryKey: ['adty-notifications'] })
         }
-        if (
-          variables.key.startsWith('adty_legal_setting.') ||
-          variables.key.startsWith('legal.')
-        ) {
+        if (variables.key.startsWith('adty_legal_setting.')) {
           queryClient.invalidateQueries({ queryKey: ['legal'] })
         }
 

@@ -177,7 +177,8 @@ func RecoverBillingOperations(ctx context.Context, limit int) error {
 	var tasks []model.Task
 	if err := model.DB.WithContext(ctx).Where("billing_pending = ? AND billing_initial_pending = ?", true, false).
 		Where("status IN ?", []string{model.TaskStatusSuccess, model.TaskStatusFailure}).
-		Where("NOT EXISTS (SELECT 1 FROM billing_operations bo WHERE bo.state = ? AND bo.kind = ? AND bo.reference_id = tasks.id)", model.BillingDead, "task").
+		Where("NOT EXISTS (SELECT 1 FROM billing_operations bo WHERE bo.state IN (?, ?, ?) AND bo.kind = ? AND bo.reference_id = tasks.id)",
+			model.BillingDead, model.BillingSettlePending, model.BillingRefundPending, "task").
 		Order("id").Limit(limit).Find(&tasks).Error; err != nil {
 		return err
 	}
@@ -224,8 +225,9 @@ func RecoverBillingOperations(ctx context.Context, limit int) error {
 	}
 	var mjs []model.Midjourney
 	if err := model.DB.WithContext(ctx).Where("(billing_pending = ? OR billing_charge_pending = ?)", true, true).
-		Where("fail_reason NOT LIKE ?", "billing_conflict:%").
-		Where("NOT EXISTS (SELECT 1 FROM billing_operations bo WHERE bo.state = ? AND bo.kind IN (?, ?) AND bo.reference_id = midjourneys.id)", model.BillingDead, "mj_charge", "mj_refund").
+		Where("(fail_reason IS NULL OR fail_reason NOT LIKE ?)", "billing_conflict:%").
+		Where("NOT EXISTS (SELECT 1 FROM billing_operations bo WHERE bo.state IN (?, ?, ?) AND bo.kind IN (?, ?) AND bo.reference_id = midjourneys.id)",
+			model.BillingDead, model.BillingSettlePending, model.BillingRefundPending, "mj_charge", "mj_refund").
 		Order("id").Limit(limit).Find(&mjs).Error; err != nil {
 		return err
 	}

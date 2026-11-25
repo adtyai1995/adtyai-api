@@ -4,10 +4,43 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/gin-gonic/gin"
 )
+
+const DefaultAPIRequestBodyMaxBytes int64 = 1 << 20 // 1 MiB
+
+func isExemptFromDefaultAPIBodyLimit(path string) bool {
+	if path == "/api/plugin/task" || path == "/api/adty/site/logo" {
+		return true
+	}
+	if strings.HasPrefix(path, "/api/adty/tickets/") && strings.HasSuffix(path, "/images") {
+		return true
+	}
+	if strings.Contains(path, "/withdrawals/") && (strings.HasSuffix(path, "/pay") || strings.HasSuffix(path, "/paying")) {
+		return true
+	}
+	return false
+}
+
+// DefaultAPIRequestBodyLimit enforces a default upper bound on /api/* request
+// bodies while letting dedicated upload endpoints enforce their own limits (R8-19).
+func DefaultAPIRequestBodyLimit(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if maxBytes <= 0 || c.Request.Body == nil || isExemptFromDefaultAPIBodyLimit(c.Request.URL.Path) {
+			c.Next()
+			return
+		}
+		if c.Request.ContentLength > maxBytes {
+			c.AbortWithStatus(http.StatusRequestEntityTooLarge)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		c.Next()
+	}
+}
 
 func AnonymousRequestBodyLimit() gin.HandlerFunc {
 	return func(c *gin.Context) {

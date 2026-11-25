@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,8 +45,9 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	normalizeOpenAIUsage(&usageResp.Usage)
 	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
 
+	perImageBilling := info != nil && (info.PriceData.UsePrice || (info.TieredBillingSnapshot != nil && info.TieredBillingSnapshot.EstimatedImageCount != nil))
 	imageCount := openaiImageResponseCount(responseBody)
-	if imageCount == 0 && !service.ValidUsage(&usageResp.Usage) {
+	if imageCount == 0 && (perImageBilling || !service.ValidUsage(&usageResp.Usage)) {
 		return nil, types.NewError(errors.New("empty image response"), types.ErrorCodeEmptyResponse)
 	}
 	info.UpdateImageCount(imageCount)
@@ -207,9 +209,13 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	// Preserve the ClientGone anti-abuse billing rule for image generation;
 	// for non-canceled streams, reject empty or error-only streams without
 	// delivered images/usage so retries or full refunds can run.
+	perImageBilling := info != nil && (info.PriceData.UsePrice || (info.TieredBillingSnapshot != nil && info.TieredBillingSnapshot.EstimatedImageCount != nil))
 	clientGone := clientWriteFailed || (info != nil && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone) || helper.ClientRequestCanceled(c)
 	if !clientGone {
 		if len(lastStreamData) == 0 {
+			return nil, types.NewOpenAIError(fmt.Errorf("empty upstream image stream response"), types.ErrorCodeEmptyResponse, http.StatusBadGateway)
+		}
+		if completedImages == 0 && perImageBilling {
 			return nil, types.NewOpenAIError(fmt.Errorf("empty upstream image stream response"), types.ErrorCodeEmptyResponse, http.StatusBadGateway)
 		}
 		if sawErrorEvent && completedImages == 0 && !service.ValidUsage(usage) {
@@ -261,6 +267,17 @@ func writeOpenaiImageStreamChunk(c *gin.Context, data []byte) error {
 	return helper.StringData(c, string(data))
 }
 
+func isNonEmptyOpenAIImageErrorRaw(raw json.RawMessage) ([]byte, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 ||
+		bytes.Equal(trimmed, []byte("null")) ||
+		bytes.Equal(trimmed, []byte(`""`)) ||
+		bytes.Equal(trimmed, []byte("{}")) {
+		return nil, false
+	}
+	return trimmed, true
+}
+
 // isOpenAIImageStreamErrorEvent detects upstream error chunks by JSON content
 // only ("type" of error/upstream_error, or a non-empty "error" field). The SSE
 // "event:" line is not available here: StreamScannerHandler delivers only the
@@ -278,7 +295,8 @@ func isOpenAIImageStreamErrorEvent(data []byte) bool {
 		return false
 	}
 	payloadType := strings.ToLower(strings.TrimSpace(payload.Type))
-	return payloadType == "error" || payloadType == "upstream_error" || len(payload.Error) > 0
+	_, hasError := isNonEmptyOpenAIImageErrorRaw(payload.Error)
+	return payloadType == "error" || payloadType == "upstream_error" || hasError
 }
 
 func extractOpenAIImageStreamErrorMessage(data []byte) string {
@@ -295,16 +313,16 @@ func extractOpenAIImageStreamErrorMessage(data []byte) string {
 	if msg := strings.TrimSpace(payload.Message); msg != "" {
 		return msg
 	}
-	if len(payload.Error) > 0 {
+	if trimmed, ok := isNonEmptyOpenAIImageErrorRaw(payload.Error); ok {
 		var nested struct {
 			Message string `json:"message"`
 		}
-		if err := common.Unmarshal(payload.Error, &nested); err == nil {
+		if err := common.Unmarshal(trimmed, &nested); err == nil {
 			if msg := strings.TrimSpace(nested.Message); msg != "" {
 				return msg
 			}
 		}
-		if msg := strings.TrimSpace(common.JsonRawMessageToString(payload.Error)); msg != "" {
+		if msg := strings.TrimSpace(common.JsonRawMessageToString(trimmed)); msg != "" {
 			return msg
 		}
 	}

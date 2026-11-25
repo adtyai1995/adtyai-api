@@ -345,6 +345,10 @@ func Register(c *gin.Context) {
 		return
 	}
 	if err := cleanUser.Insert(0); err != nil {
+		if errors.Is(err, model.ErrSiteRegistrationUnavailable) {
+			common.ApiErrorT(c, "New user registration has been disabled by administrator")
+			return
+		}
 		if errors.Is(err, model.ErrEmailAlreadyTaken) {
 			common.ApiErrorT(c, "Verification code is incorrect or has expired") // 二开：任务 7.3
 			return
@@ -1276,9 +1280,23 @@ func UpdateSelf(c *gin.Context) {
 		// 获取当前用户设置
 		currentSetting := user.GetSetting()
 
-		// 更新sidebar_modules字段
+		// 更新sidebar_modules字段（R8-19: 限制大小与 JSON 结构，防止热缓存与 DB 膨胀）
 		if sidebarModulesStr, ok := sidebarModules.(string); ok {
+			if len(sidebarModulesStr) > 16*1024 {
+				common.ApiErrorT(c, "Invalid parameters")
+				return
+			}
+			if trimmed := strings.TrimSpace(sidebarModulesStr); trimmed != "" {
+				var parsed map[string]any
+				if err := common.Unmarshal([]byte(trimmed), &parsed); err != nil {
+					common.ApiErrorT(c, "Invalid parameters")
+					return
+				}
+			}
 			currentSetting.SidebarModules = sidebarModulesStr
+		} else if sidebarModules != nil {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
 		}
 
 		if err := model.UpdateUserSetting(user.Id, currentSetting); err != nil {
@@ -1975,6 +1993,13 @@ type UpdateUserSettingRequest struct {
 func UpdateUserSetting(c *gin.Context) {
 	var req UpdateUserSettingRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+
+	// R8-19: Bound hot-cached user setting string fields before validation/persistence.
+	if len(req.WebhookUrl) > 2048 || len(req.BarkUrl) > 2048 || len(req.GotifyUrl) > 2048 ||
+		len(req.WebhookSecret) > 512 || len(req.GotifyToken) > 512 || len(req.NotificationEmail) > 320 {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}

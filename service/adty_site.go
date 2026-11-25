@@ -1390,11 +1390,11 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 				return err
 			}
 		}
-		// R7-27: Stop pending/failed subsite system email retries once the site closes.
+		// R7-27 & R8-16: Stop pending/failed/in-flight subsite system email retries once the site closes.
 		if tx.Migrator().HasTable(&AdtySystemEmailDelivery{}) {
 			if err := tx.Model(&AdtySystemEmailDelivery{}).
-				Where("site_id = ? AND status IN ?", site.Id, []string{AdtySystemEmailStatusPending, AdtySystemEmailStatusFailed}).
-				Updates(map[string]any{"status": AdtySystemEmailStatusDead, "body_cipher": "", "last_error": "site closed"}).Error; err != nil {
+				Where("site_id = ? AND status IN ?", site.Id, []string{AdtySystemEmailStatusPending, AdtySystemEmailStatusFailed, AdtySystemEmailStatusSending}).
+				Updates(map[string]any{"status": AdtySystemEmailStatusDead, "body_cipher": "", "last_error": "site closed", "updated_at": now}).Error; err != nil {
 				return err
 			}
 		}

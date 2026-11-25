@@ -12,6 +12,23 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func writeAdtySiteWalletError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, model.ErrAdtyIdempotencyConflict), errors.Is(err, service.ErrAdtySiteWalletIdempotencyConflict):
+		common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
+	case errors.Is(err, service.ErrAdtySiteWalletInsufficient):
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Insufficient available funds"))
+	case errors.Is(err, service.ErrAdtySiteWalletInvalidKind),
+		errors.Is(err, service.ErrAdtySiteWalletInvalidOperation),
+		errors.Is(err, service.ErrAdtySiteWalletIdempotencyKey):
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
+	case errors.Is(err, service.ErrAdtySiteNotFound):
+		common.ApiErrorStatus(c, http.StatusNotFound, err)
+	default:
+		common.ApiError(c, err)
+	}
+}
+
 func PostAdtyEarningToMargin(c *gin.Context) {
 	site, ok := adtyOwnerSiteOr403(c)
 	if !ok {
@@ -35,11 +52,7 @@ func PostAdtyEarningToMargin(c *gin.Context) {
 		return
 	}
 	if err := service.TransferAdtyEarningToMargin(site.Id, c.GetInt("id"), amount, "earn-margin:"+key); err != nil {
-		if errors.Is(err, model.ErrAdtyIdempotencyConflict) || errors.Is(err, service.ErrAdtySiteWalletIdempotencyConflict) {
-			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
-			return
-		}
-		common.ApiError(c, err)
+		writeAdtySiteWalletError(c, err)
 		return
 	}
 	common.ApiSuccess(c, gin.H{"transferred": true})
@@ -74,11 +87,7 @@ func PostAdtyAdminSiteMargin(c *gin.Context) {
 	}
 	ledger, eventID, replayed, err := service.CreditAdtySiteMarginByRootWithAudit(id, c.GetInt("id"), amount, body.Reason, key)
 	if err != nil {
-		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
-			return
-		}
-		common.ApiError(c, err)
+		writeAdtySiteWalletError(c, err)
 		return
 	}
 	if replayed {

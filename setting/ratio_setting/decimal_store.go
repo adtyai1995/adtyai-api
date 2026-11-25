@@ -251,7 +251,7 @@ func parseBoundedRatioDecimal(raw string) (decimal.Decimal, error) {
 			fracDigits++
 		}
 	}
-	if totalDigits == 0 || totalDigits > 24 || fracDigits > 18 {
+	if totalDigits == 0 || totalDigits > 28 || fracDigits > 24 {
 		return decimal.Zero, fmt.Errorf("ratio precision exceeds limit")
 	}
 	if expPart != "" {
@@ -283,12 +283,16 @@ func parseBoundedRatioDecimal(raw string) (decimal.Decimal, error) {
 }
 
 // ValidateRatioFloat checks that a float64 ratio/price is finite, non-negative,
-// and representable by parseBoundedRatioDecimal once JSON-encoded (R7-01).
+// and representable by parseBoundedRatioDecimal once JSON-encoded (R7-01, R8-09).
 func ValidateRatioFloat(v float64) error {
 	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
 		return fmt.Errorf("ratio must be a finite, non-negative number")
 	}
-	_, err := parseBoundedRatioDecimal(strconv.FormatFloat(v, 'g', -1, 64))
+	encoded, err := common.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = parseBoundedRatioDecimal(string(encoded))
 	return err
 }
 

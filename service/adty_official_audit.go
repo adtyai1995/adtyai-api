@@ -20,6 +20,10 @@ func deliverAdtyCommittedAudit(event model.AuditLog) {
 }
 
 func appendAdtyOfficialAuditTx(tx *gorm.DB, actorId, siteId int, objectType, objectID, action, reason, approvalRef string, before, after any, result string) (*model.AuditLog, error) {
+	return appendAdtyOfficialAuditWithOpParamsTx(tx, actorId, siteId, objectType, objectID, action, reason, approvalRef, nil, before, after, result)
+}
+
+func appendAdtyOfficialAuditWithOpParamsTx(tx *gorm.DB, actorId, siteId int, objectType, objectID, action, reason, approvalRef string, opParams map[string]any, before, after any, result string) (*model.AuditLog, error) {
 	objectType = strings.TrimSpace(objectType)
 	objectID = strings.TrimSpace(objectID)
 	action = strings.TrimSpace(action)
@@ -43,6 +47,12 @@ func appendAdtyOfficialAuditTx(tx *gorm.DB, actorId, siteId int, objectType, obj
 		ApprovalRef: approvalRef,
 		Result:      result,
 		Success:     result == model.AuditResultSuccess,
+	}
+	if len(opParams) > 0 {
+		rec.Other.Op = &model.AuditOperation{
+			Action: action,
+			Params: model.AuditFields(opParams),
+		}
 	}
 	if actorId > 0 {
 		var u model.User
@@ -116,6 +126,10 @@ func adtyWalletIdempotencyExists(tx *gorm.DB, keys ...string) (bool, error) {
 
 func appendAdtyGiftOfficialAuditTx(tx *gorm.DB, actorId, siteId int, tradeNo, action, reason string, before, after any) (*model.AuditLog, error) {
 	return appendAdtyOfficialAuditTx(tx, actorId, siteId, "gift", tradeNo, action, reason, "", before, after, model.AuditResultSuccess)
+}
+
+func appendAdtyGiftOfficialAuditWithParamsTx(tx *gorm.DB, actorId, siteId int, tradeNo, action, reason string, opParams map[string]any, before, after any) (*model.AuditLog, error) {
+	return appendAdtyOfficialAuditWithOpParamsTx(tx, actorId, siteId, "gift", tradeNo, action, reason, "", opParams, before, after, model.AuditResultSuccess)
 }
 
 func appendAdtyMarginWalletOfficialAuditTx(tx *gorm.DB, ledger *model.AdtySiteWalletLedger, change AdtySiteWalletChange, frozenBefore, frozenAfter, cycleUsed, cycleTier decimal.Decimal) (*model.AuditLog, error) {
