@@ -19,33 +19,104 @@ import (
 // 收款码和打款凭证图片（任务 6.1）。存在 ./uploads/referral-assets（工作目录是 /data，部署要挂持久卷）；
 // 访问不需要登录，靠链接里的过期时间和签名。
 
-const referralAssetLinkTTL = 24 * time.Hour
+const (
+	referralAssetLinkTTL             = 24 * time.Hour
+	maxUnboundReferralAssetsPerUser  = 30
+)
 
 var (
-	errReferralAssetType = errors.New("only PNG, JPEG or WebP images are accepted")
+	ErrReferralAssetType  = errors.New("only PNG, JPEG or WebP images are accepted")
+	ErrReferralAssetLimit = common.NewMessage("Too many unused uploaded images; please submit a request before uploading more")
 	// referralAssetDir 是存放目录，测试可以换。
 	referralAssetDir = func() string { return filepath.Join("uploads", "referral-assets") }
 )
 
 var referralAssetExt = map[string]string{"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 
+func countUnboundReferralAssets(ownerUserId int) (int, error) {
+	if ownerUserId <= 0 || model.DB == nil || !model.DB.Migrator().HasTable(&model.ReferralAsset{}) {
+		return 0, nil
+	}
+	var assets []model.ReferralAsset
+	if err := model.DB.Select("storage_path").Where("owner_user_id = ?", ownerUserId).Find(&assets).Error; err != nil {
+		return 0, err
+	}
+	if len(assets) < maxUnboundReferralAssetsPerUser {
+		return len(assets), nil
+	}
+	used := make(map[string]struct{}, len(assets))
+	markUsed := func(raw string) {
+		if name, ok := extractReferralAssetName(raw); ok {
+			used[name] = struct{}{}
+		}
+	}
+	if model.DB.Migrator().HasTable(&model.ReferralWithdrawal{}) {
+		var rows []model.ReferralWithdrawal
+		if err := model.DB.Select("qr_image_url", "payment_proof_url", "reject_proof_url").Where("user_id = ?", ownerUserId).Find(&rows).Error; err != nil {
+			return 0, err
+		}
+		for _, r := range rows {
+			markUsed(r.QRImageURL)
+			markUsed(r.PaymentProofURL)
+			markUsed(r.RejectProofURL)
+		}
+	}
+	if model.DB.Migrator().HasTable(&model.AdtySiteWithdrawal{}) {
+		var rows []model.AdtySiteWithdrawal
+		if err := model.DB.Select("qr_image_url", "proof_note").Where("owner_user_id = ?", ownerUserId).Find(&rows).Error; err != nil {
+			return 0, err
+		}
+		for _, r := range rows {
+			markUsed(r.QRImageURL)
+			markUsed(r.ProofNote)
+		}
+	}
+	if model.DB.Migrator().HasTable(&model.AdtySiteInviteWithdrawal{}) {
+		var rows []model.AdtySiteInviteWithdrawal
+		if err := model.DB.Select("qr_image_url").Where("user_id = ?", ownerUserId).Find(&rows).Error; err != nil {
+			return 0, err
+		}
+		for _, r := range rows {
+			markUsed(r.QRImageURL)
+		}
+	}
+	unbound := 0
+	for _, asset := range assets {
+		if _, ok := used[asset.StoragePath]; !ok {
+			unbound++
+		}
+	}
+	return unbound, nil
+}
+
 // SaveReferralAsset 存一张图片，返回带签名的访问链接。
 func SaveReferralAsset(data []byte, contentType string, ownerUserId int, purpose, createdBy string) (string, error) {
 	ext, ok := referralAssetExt[contentType]
 	if !ok {
-		return "", errReferralAssetType
+		return "", ErrReferralAssetType
+	}
+	if ownerUserId > 0 && createdBy != "admin" {
+		unbound, err := countUnboundReferralAssets(ownerUserId)
+		if err != nil {
+			return "", err
+		}
+		if unbound >= maxUnboundReferralAssetsPerUser {
+			return "", ErrReferralAssetLimit
+		}
 	}
 	dir := referralAssetDir()
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", err
 	}
 	name := fmt.Sprintf("%s-%d-%s%s", strings.ReplaceAll(purpose, "_", "-"), ownerUserId, common.GetUUID(), ext)
-	if err := os.WriteFile(filepath.Join(dir, name), data, 0o640); err != nil {
+	fullPath := filepath.Join(dir, name)
+	if err := os.WriteFile(fullPath, data, 0o640); err != nil {
 		return "", err
 	}
 	if err := model.DB.Create(&model.ReferralAsset{
 		OwnerUserId: ownerUserId, Purpose: purpose, StoragePath: name, ContentType: contentType, Size: int64(len(data)), CreatedBy: createdBy,
 	}).Error; err != nil {
+		_ = os.Remove(fullPath)
 		return "", err
 	}
 	return SignReferralAssetURL(name, time.Now()), nil

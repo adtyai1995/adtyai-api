@@ -38,7 +38,7 @@ func parseOptionalDecimal(raw *string) (*decimal.Decimal, error) {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return nil, nil
 	}
-	value, err := decimal.NewFromString(strings.TrimSpace(*raw))
+	value, err := common.ParseBoundedDecimalString(*raw, 6, 6)
 	if err != nil {
 		return nil, err
 	}
@@ -994,6 +994,7 @@ func resellerSettingsSnapshot(db *gorm.DB) (adty_setting.ResellerSetting, map[st
 		}
 	}
 	defaults["unknown_host_mode"] = adty_setting.ResellerUnknownHostReject
+	defaults["sender_domain_enabled"] = "false"
 	err = config.UpdateConfigFromMap(&cfg, defaults)
 	return cfg, versions, err
 }
@@ -1049,7 +1050,7 @@ func GetAdtyResellerSettings(c *gin.Context) {
 		ResendConfigured:           adtyResendConfigured(),
 		MoneyConfigured:            hasTier,
 		TierConfigured:             hasTier,
-		SiteCustomerTermsVersion:   adty_setting.GetLegalSetting().SiteCustomerTermsVersion,
+		SiteCustomerTermsVersion:   0,
 	}
 	for _, widget := range cfg.TurnstileWidgets {
 		view.WidgetSecretConfigured[widget.Id] = strings.TrimSpace(cfg.TurnstileWidgetSecret[widget.Id]) != ""

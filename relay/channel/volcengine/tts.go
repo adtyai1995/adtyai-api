@@ -271,6 +271,7 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 		)
 	}
 
+	helper.StopStreamKeepAlive(c)
 	contentType := getContentTypeByEncoding(encoding)
 	c.Header("Content-Type", contentType)
 	c.Header("Transfer-Encoding", "chunked")

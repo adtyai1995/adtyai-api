@@ -2,7 +2,7 @@ package zhipu
 
 import (
 	"bufio"
-	"io"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -155,15 +155,18 @@ func streamMetaResponseZhipu2OpenAI(zhipuResponse *ZhipuStreamMetaResponse) (*dt
 }
 
 func zhipuStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	helper.StopStreamKeepAlive(c)
 	var usage *dto.Usage
 	var responseText strings.Builder
 	scanner := helper.NewStreamScanner(resp.Body)
 	scanner.Split(bufio.ScanLines)
 	dataChan := make(chan string)
 	metaChan := make(chan string)
-	stopChan := make(chan bool)
+	stopChan := make(chan error, 1)
 	done := make(chan struct{})
+	workerDone := make(chan struct{})
 	go func() {
+		defer close(workerDone)
 		sendString := func(ch chan<- string, v string) bool {
 			select {
 			case ch <- v:
@@ -195,50 +198,74 @@ func zhipuStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 				}
 			}
 		}
-		if err := scanner.Err(); err != nil {
+		err := scanner.Err()
+		if err != nil {
 			common.SysLog(common.LogText("error reading stream: %s", err.Error()))
 		}
 		select {
-		case stopChan <- true:
+		case stopChan <- err:
 		case <-done:
 		}
 	}()
 	helper.SetEventStreamHeaders(c)
-	c.Stream(func(w io.Writer) bool {
+	var scanErr error
+	var lastParseErr error
+streamLoop:
+	for {
 		select {
+		case <-c.Request.Context().Done():
+			break streamLoop
 		case data := <-dataChan:
-			responseText.WriteString(data)
 			response := streamResponseZhipu2OpenAI(data)
-			jsonResponse, err := common.Marshal(response)
-			if err != nil {
-				common.SysLog(common.LogText("error marshalling stream response: %s", err.Error()))
-				return true
+			if err := helper.ObjectData(c, response); err != nil {
+				common.SysLog(common.LogText("error sending stream response: %s", err.Error()))
+				break streamLoop
 			}
-			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
-			return true
+			responseText.WriteString(data)
+			if info != nil {
+				info.SendResponseCount++
+			}
 		case data := <-metaChan:
 			var zhipuResponse ZhipuStreamMetaResponse
 			err := common.Unmarshal([]byte(data), &zhipuResponse)
 			if err != nil {
+				lastParseErr = err
 				common.SysLog(common.LogText("error unmarshalling stream response: %s", err.Error()))
-				return true
+				continue
 			}
 			response, zhipuUsage := streamMetaResponseZhipu2OpenAI(&zhipuResponse)
-			jsonResponse, err := common.Marshal(response)
-			if err != nil {
-				common.SysLog(common.LogText("error marshalling stream response: %s", err.Error()))
-				return true
+			if err := helper.ObjectData(c, response); err != nil {
+				common.SysLog(common.LogText("error sending stream response: %s", err.Error()))
+				break streamLoop
 			}
 			usage = zhipuUsage
-			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
-			return true
-		case <-stopChan:
-			c.Render(-1, common.CustomEvent{Data: "data: [DONE]"})
-			return false
+			if info != nil {
+				info.SendResponseCount++
+			}
+		case err := <-stopChan:
+			scanErr = err
+			break streamLoop
 		}
-	})
+	}
 	close(done)
 	service.CloseResponseBodyGracefully(resp)
+	<-workerDone
+
+	if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+		if helper.ClientRequestCanceled(c) {
+			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
+		if scanErr != nil {
+			return nil, types.NewOpenAIError(scanErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		if lastParseErr != nil {
+			return nil, types.NewOpenAIError(lastParseErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		return nil, types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+	}
+	if scanErr == nil {
+		helper.Done(c)
+	}
 	if usage != nil {
 		usage.PromptTokens = max(usage.PromptTokens, 0)
 		usage.CompletionTokens = max(usage.CompletionTokens, 0)

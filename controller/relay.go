@@ -619,7 +619,7 @@ func executeTaskSubmissionWith(
 				taskErr = service.TaskErrorWrapperLocal(channelErr.Err, "get_channel_failed", channelErr.StatusCode)
 				break
 			}
-			if snapErr := service.SyncBillingGroupSnapshot(relayInfo); snapErr != nil {
+			if snapErr := service.SyncBillingGroupSnapshotWithContext(c, relayInfo); snapErr != nil {
 				logger.LogError(c, snapErr.Error())
 				taskErr = service.TaskErrorWrapperLocal(snapErr.Err, string(snapErr.GetErrorCode()), snapErr.StatusCode)
 				break

@@ -3,6 +3,7 @@ package openai
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -100,6 +101,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	accumulator := service.NewResponsesUsageAccumulator(info)
 	receivedValidEvent := false
 	var lastParseErr error
+	var streamErr *types.NewAPIError
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 
@@ -109,6 +111,20 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			logger.LogError(c, common.LogText("failed to unmarshal stream response: %s", err.Error()))
 			lastParseErr = err
 			sr.Error(err)
+			return
+		}
+		if (streamResponse.Type == "error" || streamResponse.Type == "response.failed" || streamResponse.Type == "response.error") &&
+			!helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+			streamErr = extractResponsesStreamError(&streamResponse, common.StringToByteSlice(data))
+			if info != nil && info.StreamStatus != nil {
+				oaiErr := streamErr.ToOpenAIError()
+				code := ""
+				if oaiErr.Code != nil {
+					code = fmt.Sprint(oaiErr.Code)
+				}
+				info.StreamStatus.MarkFailed(code, oaiErr.Type, streamErr.StatusCode)
+			}
+			sr.Stop(streamErr)
 			return
 		}
 		receivedValidEvent = true
@@ -132,9 +148,15 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, info.StreamStatus)
 	info.StreamStatus.RequireTerminal()
+	if streamErr != nil && !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+		return nil, streamErr
+	}
 	if !receivedValidEvent && !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
 		if helper.ClientRequestCanceled(c) {
 			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
+		if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
+			return nil, types.NewOpenAIError(info.StreamStatus.EndError, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
 		if lastParseErr != nil {
 			return nil, types.NewOpenAIError(lastParseErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
@@ -142,6 +164,46 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		return nil, types.NewOpenAIError(fmt.Errorf("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
 	}
 	return accumulator.Finish(), nil
+}
+
+func extractResponsesStreamError(event *dto.ResponsesStreamResponse, raw []byte) *types.NewAPIError {
+	var envelope struct {
+		Status int                `json:"status"`
+		Error  *types.OpenAIError `json:"error"`
+	}
+	_ = common.Unmarshal(raw, &envelope)
+
+	var oaiErr types.OpenAIError
+	switch {
+	case event != nil && event.Response != nil && event.Response.GetOpenAIError() != nil:
+		oaiErr = *event.Response.GetOpenAIError()
+	case envelope.Error != nil && (strings.TrimSpace(envelope.Error.Message) != "" || strings.TrimSpace(envelope.Error.Type) != "" || envelope.Error.Code != nil):
+		oaiErr = *envelope.Error
+	case event != nil:
+		oaiErr = types.OpenAIError{
+			Message: event.Message,
+			Type:    "server_error",
+			Param:   event.Param,
+			Code:    event.Code,
+		}
+	}
+	if strings.TrimSpace(oaiErr.Message) == "" {
+		oaiErr.Message = "upstream responses stream failed"
+	}
+	statusCode := envelope.Status
+	if statusCode < 400 || statusCode > 599 {
+		switch oaiErr.Type {
+		case "invalid_request_error":
+			statusCode = http.StatusBadRequest
+		case "rate_limit_error":
+			statusCode = http.StatusTooManyRequests
+		case "authentication_error":
+			statusCode = http.StatusUnauthorized
+		default:
+			statusCode = http.StatusBadGateway
+		}
+	}
+	return types.WithOpenAIError(oaiErr, statusCode)
 }
 
 // ensureResponsesUsageReasoningDetails copies a top-level usage.reasoning_tokens

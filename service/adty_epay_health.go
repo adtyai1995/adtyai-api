@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 )
 
 // 补查、连续未付、探活（任务 5.3）。都挂在充值维护任务上，只在主节点跑。
@@ -92,7 +93,7 @@ func runAdtyEpayFollowUpQueries(now int64) {
 			if err != nil {
 				outcome = "failed"
 				if !finalTeamCheck && errors.Is(err, model.ErrPaymentMethodMismatch) {
-					adtyQueuePaymentReview(ext.TradeNo, ext.GatewayTradeId, err.Error())
+					adtyQueuePaymentReview(ext.TradeNo, ext.GatewayTradeId, err.Error(), "")
 				}
 			}
 			if recordErr := model.RecordAdtyPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, outcome, 0); recordErr != nil {
@@ -100,11 +101,38 @@ func runAdtyEpayFollowUpQueries(now int64) {
 				continue
 			}
 		} else {
-			if _, err = model.CompleteAdtyTopUp(ext.TradeNo, *facts, ""); err != nil {
-				common.SysLog(common.LogText("epay follow-up credit failed trade_no=%s: %s", ext.TradeNo, err.Error()))
-				if reviewErr := adtyQueuePaymentReview(ext.TradeNo, facts.GatewayTradeId, err.Error()); reviewErr != nil {
+			var topUp *model.TopUp
+			var frozen *model.AdtyTopupOrder
+			var credited int
+			var alreadyDone bool
+			creditErr := model.DB.Transaction(func(tx *gorm.DB) error {
+				var txErr error
+				alreadyDone, credited, topUp, frozen, txErr = model.CompleteAdtyTopUpTx(tx, ext.TradeNo, *facts)
+				if txErr != nil {
+					return txErr
+				}
+				return tx.Model(&model.PaymentOrphanEvent{}).
+					Where("event_id = ? AND status = ?", "epay-query:"+ext.TradeNo, model.PaymentOrphanStatusPendingReview).
+					Updates(map[string]any{
+						"status":          model.PaymentOrphanStatusCredited,
+						"resolution":      model.PaymentOrphanStatusCredited,
+						"resolution_note": "Recovered by epay order query",
+						"resolved_at":     common.GetTimestamp(),
+						"update_time":     common.GetTimestamp(),
+					}).Error
+			})
+			if creditErr != nil {
+				common.SysLog(common.LogText("epay follow-up credit failed trade_no=%s: %s", ext.TradeNo, creditErr.Error()))
+				if isPermanentAdtyTopUpCreditReject(creditErr) {
+					encodedFacts, _ := common.Marshal(facts)
+					if reviewErr := adtyQueuePaymentReview(ext.TradeNo, facts.GatewayTradeId, creditErr.Error(), string(encodedFacts)); reviewErr != nil {
+						continue
+					}
+				} else {
 					continue
 				}
+			} else if !alreadyDone {
+				model.FinishAdtyTopUpCredit(topUp, frozen, credited, "")
 			}
 		}
 		if err := model.UpdateAdtyTopupOrderFields(ext.TradeNo, update); err != nil {
@@ -113,14 +141,16 @@ func runAdtyEpayFollowUpQueries(now int64) {
 	}
 }
 
-func adtyQueuePaymentReview(tradeNo, sessionID, cause string) error {
+func adtyQueuePaymentReview(tradeNo, sessionID, cause, payload string) error {
 	if err := model.RecordPaymentOrphanEvent(&model.PaymentOrphanEvent{
 		Provider:    model.PaymentProviderAdtyEpay,
+		EventID:     "epay-query:" + tradeNo,
 		EventType:   "payment_query",
 		ReferenceID: tradeNo,
 		SessionID:   sessionID,
 		Reason:      "payment requires manual review after payment succeeded",
 		Error:       cause,
+		Payload:     payload,
 	}); err != nil {
 		common.SysError(common.LogText("record payment review failed trade_no=%s: %s", tradeNo, err.Error()))
 		return err

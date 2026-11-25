@@ -569,16 +569,22 @@ func DisableAdtySiteSenderDomain(ctx context.Context, siteId, operatorId int) er
 }
 
 func DisableAdtySiteSenderDomainForActor(ctx context.Context, siteId, operatorId, actorRole int, denyAdminTarget bool) error {
-	if actorRole > 0 || denyAdminTarget {
+	if (operatorId > 0 || actorRole > 0 || denyAdminTarget) && siteId > 0 {
 		if err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			var site model.AdtySite
-			if err := model.AdtyLockForUpdate(tx).Select("id", "owner_user_id").Where("id = ?", siteId).First(&site).Error; err != nil {
+			if err := model.AdtyLockForUpdate(tx).Select("id", "owner_user_id", "status").Where("id = ?", siteId).First(&site).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					return ErrAdtySiteNotFound
 				}
 				return err
 			}
-			return checkAdtySiteTargetActorTx(tx, &site, operatorId, actorRole, denyAdminTarget)
+			if site.Status == model.AdtySiteStatusDeleting {
+				return ErrAdtySiteStatus
+			}
+			if actorRole > 0 || denyAdminTarget {
+				return checkAdtySiteTargetActorTx(tx, &site, operatorId, actorRole, denyAdminTarget)
+			}
+			return nil
 		}); err != nil {
 			return err
 		}
@@ -1624,7 +1630,7 @@ func AdtyPayResultTarget(token string) string {
 	}
 	if ext.IsOwnerBusiness() {
 		site := AdtySiteById(ext.SiteId)
-		if site == nil || site.Status == model.AdtySiteStatusClosed {
+		if site == nil || site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting {
 			return fallback
 		}
 		target := AdtySitePublicBaseURL(site) + "/site-owner/earnings?trade_no=" + url.QueryEscape(tradeNo)

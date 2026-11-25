@@ -463,7 +463,7 @@ func SaveAdtyOwnerSiteTeamDiscount(siteID, ownerID int, teamID int64, raw string
 	if _, err := lockOwnerSite(siteID, ownerID); err != nil {
 		return err
 	}
-	value, err := decimal.NewFromString(strings.TrimSpace(raw))
+	value, err := common.ParseBoundedDecimalString(raw, 4, 4)
 	if teamID <= 0 || err != nil {
 		return common.NewMessage("Invalid parameters")
 	}
@@ -658,7 +658,7 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 	if err := model.DB.First(&site, user.SiteId).Error; err != nil {
 		return nil, err
 	}
-	if site.Status == model.AdtySiteStatusClosed {
+	if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting {
 		return nil, common.NewMessage("Site is not open for registration")
 	}
 	code, err := ensureAdtySiteCustomerInviteCode(user.Id, site.Id)
@@ -731,7 +731,11 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 	rateConfigured := rateLookup.RowsAffected > 0
 	effectiveRate := rateRow.Rate
 	affiliateDisabled := false
-	if aff, found, affErr := loadSiteReferralAffiliateTx(model.DB, site.Id, user.Id); affErr == nil && found {
+	aff, found, affErr := loadSiteReferralAffiliateTx(model.DB, site.Id, user.Id)
+	if affErr != nil {
+		return nil, affErr
+	}
+	if found {
 		if aff.Status == model.AdtySiteAffiliateStatusDisabled {
 			affiliateDisabled = true
 		}
@@ -878,7 +882,11 @@ func ValidateAdtySiteInviteCode(siteID int, code string) (string, error) {
 		return "", common.NewMessage("Site referral is not enabled")
 	}
 	effectiveRate := rate.Rate
-	if aff, found, affErr := loadSiteReferralAffiliateTx(model.DB, siteID, cust.UserId); affErr == nil && found {
+	aff, found, affErr := loadSiteReferralAffiliateTx(model.DB, siteID, cust.UserId)
+	if affErr != nil {
+		return "", affErr
+	}
+	if found {
 		if aff.Status == model.AdtySiteAffiliateStatusDisabled {
 			return "", common.NewMessage("Site referral is not enabled")
 		}
@@ -933,7 +941,11 @@ func BindSiteInviteByCodeFromIP(siteID int, code string, inviteeID int, ipHash s
 		return common.NewMessage("Invalid site invite code")
 	}
 	effectiveRate := rate.Rate
-	if aff, found, affErr := loadSiteReferralAffiliateTx(model.DB, siteID, cust.UserId); affErr == nil && found {
+	aff, found, affErr := loadSiteReferralAffiliateTx(model.DB, siteID, cust.UserId)
+	if affErr != nil {
+		return affErr
+	}
+	if found {
 		if aff.Status == model.AdtySiteAffiliateStatusDisabled {
 			return common.NewMessage("Site referral is not enabled")
 		}

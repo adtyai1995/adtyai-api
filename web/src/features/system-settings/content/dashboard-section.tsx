@@ -54,7 +54,11 @@ import { safeNumberFieldProps } from '../utils/numeric-field'
 
 const dataDashboardSchema = z.object({
   DataExportEnabled: z.boolean(),
-  DataExportInterval: z.number().int().min(1).max(1440),
+  DataExportInterval: z
+    .number({ error: 'Please enter a valid number' })
+    .int('Enter a positive integer')
+    .min(1, 'Interval must be at least 1 minute')
+    .max(1440, 'Interval must be at most 1440 minutes'),
   DataExportDefaultTime: z.enum(['hour', 'day', 'week']),
 })
 

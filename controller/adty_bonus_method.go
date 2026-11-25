@@ -59,6 +59,14 @@ func saveAdtyBonusMethodOption(c *gin.Context, key, action string, params map[st
 			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("This site is not active and cannot change bonus rules"))
 			return false
 		}
+		if errors.Is(err, service.ErrAdtySiteNotFound) {
+			common.ApiErrorStatus(c, http.StatusNotFound, err)
+			return false
+		}
+		if errors.Is(err, service.ErrAdtySiteStatus) {
+			common.ApiErrorStatus(c, http.StatusForbidden, err)
+			return false
+		}
 		if adty_setting.IsBonusMethodValidationError(err) {
 			common.ApiErrorStatus(c, http.StatusForbidden, err)
 			return false
@@ -127,12 +135,28 @@ func PutAdtySiteBonusMarginFill(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	var txRef *gorm.DB
 	merge := func(current string) (string, error) {
+		// Lock AdtySite after options (site_bonus_margin_fill -> AdtySite) to match
+		// canonical lock order and block updates on missing, closed, or deleting sites.
+		var locked model.AdtySite
+		if err := model.AdtyLockForUpdate(txRef).Select("id", "status").Where("id = ?", siteID).First(&locked).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return "", service.ErrAdtySiteNotFound
+			}
+			return "", err
+		}
+		if locked.Status == model.AdtySiteStatusClosed || locked.Status == model.AdtySiteStatusDeleting {
+			return "", service.ErrAdtySiteStatus
+		}
 		return adty_setting.MergeSiteBonusMarginFill(current, siteID, *body.Enabled)
 	}
 	if !saveAdtyBonusMethodOption(c, adty_setting.TopupSettingKeySiteBonusMarginFill, "adty.topup.site_bonus_margin_fill.update",
 		map[string]any{"site_id": siteID, "enabled": *body.Enabled},
-		map[string]any{"site_id": siteID, "enabled": *body.Enabled}, merge) {
+		map[string]any{"site_id": siteID, "enabled": *body.Enabled}, merge, func(tx *gorm.DB) error {
+			txRef = tx
+			return nil
+		}) {
 		return
 	}
 	common.ApiSuccess(c, gin.H{"site_id": siteID, "enabled": *body.Enabled})

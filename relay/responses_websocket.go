@@ -466,6 +466,39 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 					}
 					return rejected
 				}
+				if !accepted && (event.Type == "response.failed" || event.Type == "response.error") {
+					var rejection responsesWSErrorEvent
+					_ = common.Unmarshal(incoming.body, &rejection)
+					var oaiErr types.OpenAIError
+					if event.Response != nil && event.Response.GetOpenAIError() != nil {
+						oaiErr = *event.Response.GetOpenAIError()
+					} else if rejection.Error != nil {
+						oaiErr = *rejection.Error
+					} else {
+						oaiErr = types.OpenAIError{Type: "server_error", Message: event.Message, Code: event.Code}
+					}
+					if strings.TrimSpace(oaiErr.Message) == "" {
+						oaiErr.Message = "upstream responses stream failed"
+					}
+					statusCode := rejection.Status
+					if statusCode < 400 || statusCode > 599 {
+						if oaiErr.Type == "invalid_request_error" {
+							statusCode = http.StatusBadRequest
+						} else {
+							statusCode = http.StatusBadGateway
+						}
+					}
+					code := ""
+					if oaiErr.Code != nil {
+						code = fmt.Sprint(oaiErr.Code)
+					}
+					info.StreamStatus.MarkFailed(code, oaiErr.Type, statusCode)
+					info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+					if event.Response != nil && event.Response.ID != "" {
+						s.lastResponseID = event.Response.ID
+					}
+					return types.WithOpenAIError(oaiErr, statusCode, types.ErrOptionWithSkipRetry())
+				}
 				if strings.HasPrefix(event.Type, "response.") {
 					if !accepted {
 						// Like HTTP, bind the session only once upstream accepted the request.
@@ -479,7 +512,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				accumulator.Observe(&event.ResponsesStreamResponse, incoming.body)
 			}
 			switch event.Type {
-			case "response.completed", "response.done", "response.incomplete", "response.failed", "response.cancelled", "response.canceled":
+			case "response.completed", "response.done", "response.incomplete", "response.failed", "response.error", "response.cancelled", "response.canceled":
 				if event.Response != nil {
 					s.lastResponseID = event.Response.ID
 				}

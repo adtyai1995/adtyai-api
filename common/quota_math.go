@@ -1,8 +1,10 @@
 package common
 
 import (
+	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/shopspring/decimal"
 )
@@ -181,4 +183,54 @@ func QuotaFromDecimalStrict(d decimal.Decimal) (int, error) {
 func WalletQuotaFromDecimalStrict(d decimal.Decimal) (int, error) {
 	f, _ := d.Round(0).Float64()
 	return strictQuota(saturateQuotaBounded(f, "WalletQuotaFromDecimal", MaxWalletQuota, -MaxWalletQuota))
+}
+
+// ParseBoundedDecimalString parses a plain decimal literal without scientific
+// notation (rejecting e/E exponents that can trigger giant big.Int.Exp CPU/OOM
+// allocations in shopspring/decimal) and bounds integer/fractional digit counts (R5-05).
+func ParseBoundedDecimalString(raw string, maxIntDigits, maxFracDigits int) (decimal.Decimal, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return decimal.Zero, errors.New("empty decimal string")
+	}
+	check := s
+	if check[0] == '+' || check[0] == '-' {
+		check = check[1:]
+	}
+	if check == "" {
+		return decimal.Zero, errors.New("invalid decimal string")
+	}
+	intPart, fracPart, hasDot := strings.Cut(check, ".")
+	if hasDot && strings.ContainsRune(fracPart, '.') {
+		return decimal.Zero, errors.New("invalid decimal string")
+	}
+	if len(intPart) == 0 && len(fracPart) == 0 {
+		return decimal.Zero, errors.New("invalid decimal string")
+	}
+	if maxIntDigits >= 0 && len(intPart) > maxIntDigits {
+		return decimal.Zero, errors.New("decimal integer part exceeds limit")
+	}
+	if maxFracDigits == 0 && hasDot && len(fracPart) > 0 {
+		for i := range len(fracPart) {
+			if fracPart[i] != '0' {
+				return decimal.Zero, errors.New("decimal fractional part not allowed")
+			}
+		}
+		if len(fracPart) > 8 {
+			return decimal.Zero, errors.New("decimal fractional part exceeds limit")
+		}
+	} else if maxFracDigits > 0 && len(fracPart) > maxFracDigits {
+		return decimal.Zero, errors.New("decimal fractional part exceeds limit")
+	}
+	for i := range len(intPart) {
+		if intPart[i] < '0' || intPart[i] > '9' {
+			return decimal.Zero, errors.New("invalid decimal digit")
+		}
+	}
+	for i := range len(fracPart) {
+		if fracPart[i] < '0' || fracPart[i] > '9' {
+			return decimal.Zero, errors.New("invalid decimal digit")
+		}
+	}
+	return decimal.NewFromString(s)
 }

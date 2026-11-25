@@ -784,6 +784,12 @@ func updateOptionMap(key string, value string) (err error) {
 	if key == "adty_reseller_setting.sender_domain_enabled" {
 		value = "false"
 	}
+	if key == "adty_legal_setting.site_customer_terms" {
+		value = "{}"
+	}
+	if key == "adty_legal_setting.site_customer_terms_version" {
+		value = "0"
+	}
 	if key == retiredThemeOptionKey || key == legacyAccessTokenRetireAtKey {
 		common.OptionMapRWMutex.Lock()
 		delete(common.OptionMap, key)

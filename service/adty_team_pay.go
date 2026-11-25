@@ -116,7 +116,14 @@ func AdtyQuoteForTeamPayment(leaderID, requestSiteID int, teamID int64, userGrou
 // the order, the leader is asked to choose another payment method.
 func StartAdtyTeamTopupPayment(leaderID int, teamID int64, amountUSD decimal.Decimal, method string, channelID int, key, clientIP string, paymentScene ...string) (*model.AdtyTopupOrder, error) {
 	method, key = strings.TrimSpace(method), strings.TrimSpace(key)
-	if leaderID <= 0 || teamID <= 0 || channelID < 0 || !amountUSD.IsPositive() || !amountUSD.Equal(decimal.NewFromInt(amountUSD.IntPart())) || key == "" {
+	if leaderID <= 0 || teamID <= 0 || channelID < 0 || key == "" || !amountUSD.IsPositive() {
+		return nil, ErrAdtyTeamInvalid
+	}
+	// R5-05: Reject extreme exponents before IntPart()/rescale allocates giant big.Int.
+	if exp := amountUSD.Exponent(); exp < -4 || exp > 9 {
+		return nil, ErrAdtyTeamInvalid
+	}
+	if !amountUSD.Equal(decimal.NewFromInt(amountUSD.IntPart())) {
 		return nil, ErrAdtyTeamInvalid
 	}
 	if len(key) > adtyTeamTopupKeyMaxLen {

@@ -303,7 +303,7 @@ func ResolvePaymentOrphanReviewForActor(id int64, operatorID, actorRole int, den
 				return common.NewMessage("The original order must never have been credited")
 			}
 			switch topUp.Status {
-			case common.TopUpStatusPending, common.TopUpStatusFailed, common.TopUpStatusExpired, TopUpStatusCanceled:
+			case common.TopUpStatusPending, common.TopUpStatusFailed, common.TopUpStatusExpired, TopUpStatusCanceled, TopUpStatusReplaced:
 			default:
 				return common.NewMessage("The original order must never have been credited")
 			}

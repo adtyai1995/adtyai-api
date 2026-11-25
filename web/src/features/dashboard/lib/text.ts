@@ -27,36 +27,16 @@ const TRANSLATION_NOT_READY_MARKER_SET = new Set(
 
 const NON_TEXT_NOTIFICATION_SOURCES = new Set(['channel_watcher'])
 
-const MARKER_CORE_EXPR = '(?:英文译文未就绪|English is not ready)[.。]?'
-const WRAPPED_MARKER_EXPR = `(?:[(（\\[【]\\s*${MARKER_CORE_EXPR}\\s*[)）\\]】]|${MARKER_CORE_EXPR})`
-const HTML_WRAPPED_MARKER_EXPR = `(?:<(?:p|div|span|small|em|i)\\b[^>]*>\\s*${WRAPPED_MARKER_EXPR}\\s*</(?:p|div|span|small|em|i)>|${WRAPPED_MARKER_EXPR})`
-
-const TRAILING_NOT_READY_PATTERNS = [
-  new RegExp(
-    `[ \\t]*\\n[ \\t\\n]*(?:(?:[-_*—–]{3,}|<hr\\s*/?>)[ \\t]*\\n[ \\t\\n]*)?${HTML_WRAPPED_MARKER_EXPR}[ \\t]*$`,
-    'i'
-  ),
-  new RegExp(
-    `[ \\t]*(?:(?:<br\\s*/?>|<hr\\s*/?>)[ \\t]*)+${HTML_WRAPPED_MARKER_EXPR}[ \\t]*$`,
-    'i'
-  ),
-  new RegExp(
-    `<(p|div|small|span|em|i)\\b[^>]*>\\s*${WRAPPED_MARKER_EXPR}\\s*</\\1>[ \\t]*$`,
-    'i'
-  ),
-  new RegExp(
-    `[ \\t]*(?:\\n[ \\t\\n]*|(?:<br\\s*/?>[ \\t]*)+)${WRAPPED_MARKER_EXPR}(?=[ \\t]*</(?:p|div)>\\s*$)`,
-    'i'
-  ),
-  new RegExp(
-    `[ \\t]*(?:[|/—–·•]|--+| - )[ \\t]*${WRAPPED_MARKER_EXPR}[ \\t]*$`,
-    'i'
-  ),
-  new RegExp(
-    `[ \\t]*[(（\\[【]\\s*${MARKER_CORE_EXPR}\\s*[)）\\]】][ \\t]*$`,
-    'i'
-  ),
-]
+const WRAPPER_TAGS = new Set(['p', 'div', 'span', 'small', 'em', 'i'])
+const CONTAINER_TAGS = new Set(['p', 'div'])
+const OPEN_BRACKETS = '([（【'
+const CLOSE_BRACKETS = ')]）】'
+const LEADING_MARKER_PUNCTUATION = '([（【-—–/|·•'
+const TRAILING_MARKER_PUNCTUATION = ')]）】.。!！'
+const RULE_LINE_CHARS = '-_*—–'
+const INLINE_SINGLE_SEPARATORS = '|/—–·•'
+const MAX_CLOSING_TAG_LEN = 12
+const MAX_BREAK_OR_RULE_TAG_LEN = 16
 
 const NAMED_HTML_ENTITIES: Record<string, string> = {
   nbsp: ' ',
@@ -171,13 +151,98 @@ export function extractAnnouncementPlainText(content: string): string {
     .join('\n')
 }
 
+function isHorizontalSpace(ch: string): boolean {
+  return ch === ' ' || ch === '\t'
+}
+
+function isWhitespaceChar(ch: string): boolean {
+  return (
+    ch === ' ' ||
+    ch === '\t' ||
+    ch === '\n' ||
+    ch === '\r' ||
+    ch === '\f' ||
+    ch === '\v' ||
+    ch.trim() === ''
+  )
+}
+
+function skipHorizontalSpacesBackward(text: string, pos: number): number {
+  let cursor = pos
+  while (cursor > 0 && isHorizontalSpace(text[cursor - 1])) {
+    cursor -= 1
+  }
+  return cursor
+}
+
+function skipWhitespaceBackward(text: string, pos: number): number {
+  let cursor = pos
+  while (cursor > 0 && isWhitespaceChar(text[cursor - 1])) {
+    cursor -= 1
+  }
+  return cursor
+}
+
+function skipSpacesAndNewlinesBackward(text: string, pos: number): number {
+  let cursor = pos
+  while (
+    cursor > 0 &&
+    (text[cursor - 1] === ' ' ||
+      text[cursor - 1] === '\t' ||
+      text[cursor - 1] === '\n')
+  ) {
+    cursor -= 1
+  }
+  return cursor
+}
+
+function trimMarkerPunctuation(text: string): string {
+  let start = 0
+  let end = text.length
+  while (
+    start < end &&
+    (isWhitespaceChar(text[start]) ||
+      LEADING_MARKER_PUNCTUATION.includes(text[start]))
+  ) {
+    start += 1
+  }
+  while (
+    end > start &&
+    (isWhitespaceChar(text[end - 1]) ||
+      TRAILING_MARKER_PUNCTUATION.includes(text[end - 1]))
+  ) {
+    end -= 1
+  }
+  return text.slice(start, end)
+}
+
 export function isTranslationNotReadyMarker(text?: string | null): boolean {
   if (!text) return false
-  const plain = extractAnnouncementPlainText(text)
-    .replaceAll(/^[([（【\s\-—–/|·•]+|[)\]）】\s.。!！]+$/g, '')
+  const plain = trimMarkerPunctuation(extractAnnouncementPlainText(text))
     .trim()
     .toLowerCase()
   return TRANSLATION_NOT_READY_MARKER_SET.has(plain)
+}
+
+function findLastBlankLineBreak(
+  text: string
+): { start: number; end: number } | null {
+  let i = text.length - 1
+  while (i > 0) {
+    if (text[i] !== '\n') {
+      i -= 1
+      continue
+    }
+    let j = i - 1
+    while (j >= 0 && isHorizontalSpace(text[j])) {
+      j -= 1
+    }
+    if (j >= 0 && text[j] === '\n') {
+      return { start: j, end: i + 1 }
+    }
+    i = j
+  }
+  return null
 }
 
 function stripTrailingSection(
@@ -208,17 +273,10 @@ function stripTrailingSection(
       .trim()
   }
 
-  let splitStart = -1
-  let splitEnd = -1
-  for (const match of normalizedContent.matchAll(/\n[ \t]*\n/g)) {
-    if (match.index !== undefined) {
-      splitStart = match.index
-      splitEnd = match.index + match[0].length
-    }
-  }
-  if (splitStart > 0) {
-    const head = normalizedContent.slice(0, splitStart).trim()
-    const tail = normalizedContent.slice(splitEnd).trim()
+  const lastBreak = findLastBlankLineBreak(normalizedContent)
+  if (lastBreak && lastBreak.start > 0) {
+    const head = normalizedContent.slice(0, lastBreak.start).trim()
+    const tail = normalizedContent.slice(lastBreak.end).trim()
     if (head && tail) {
       const tailPlain = extractAnnouncementPlainText(tail)
       const suffixPlain = extractAnnouncementPlainText(normalizedSuffix)
@@ -234,83 +292,276 @@ function stripTrailingSection(
   return trimmedContent
 }
 
-const TRAILING_MARKER_TAIL_RE = new RegExp(
-  `^${MARKER_CORE_EXPR}(?:\\s*[)）\\]】])?(?:\\s*</(?:p|div|span|small|em|i)>){0,2}$`,
-  'i'
-)
-const HTML_OPEN_WRAPPER_TAG_RE = /^<(?:p|div|span|small|em|i)\b[^>]*>$/i
-const HTML_BREAK_OR_RULE_TAG_RE = /^<(?:br|hr)\s*\/?>$/i
-
-function findLastNotReadyMarkerIndex(text: string): number {
-  const lower = text.toLowerCase()
-  let lastIndex = -1
+function matchMarkerCoreEndingAt(text: string, endPos: number): number {
+  let pos = endPos
+  if (pos > 0 && (text[pos - 1] === '.' || text[pos - 1] === '。')) {
+    pos -= 1
+  }
   for (const marker of TRANSLATION_NOT_READY_MARKERS) {
-    const idx = lower.lastIndexOf(marker.toLowerCase())
-    if (idx > lastIndex) {
-      lastIndex = idx
+    const start = pos - marker.length
+    if (start < 0) continue
+    if (text.slice(start, pos).toLowerCase() === marker.toLowerCase()) {
+      return start
     }
   }
-  return lastIndex
+  return -1
 }
 
-function findTrailingNotReadyWindowStart(
+function matchWrappedMarkerEndingAt(
   text: string,
-  markerIndex: number
-): number {
-  let pos = markerIndex
-  while (pos > 0 && /\s/.test(text[pos - 1])) {
-    pos -= 1
-  }
-  if (pos > 0 && '([（【'.includes(text[pos - 1])) {
-    pos -= 1
-  }
-  let beforeWrapper = pos
-  while (beforeWrapper > 0 && /\s/.test(text[beforeWrapper - 1])) {
-    beforeWrapper -= 1
-  }
-  if (beforeWrapper > 0 && text[beforeWrapper - 1] === '>') {
-    const lt = text.lastIndexOf('<', beforeWrapper - 1)
-    if (
-      lt >= 0 &&
-      text.indexOf('>', lt) === beforeWrapper - 1 &&
-      HTML_OPEN_WRAPPER_TAG_RE.test(text.slice(lt, beforeWrapper))
-    ) {
-      pos = lt
+  endPos: number
+): { start: number; hasBrackets: boolean } | null {
+  if (endPos <= 0) return null
+  if (CLOSE_BRACKETS.includes(text[endPos - 1])) {
+    const innerEnd = skipWhitespaceBackward(text, endPos - 1)
+    const coreStart = matchMarkerCoreEndingAt(text, innerEnd)
+    if (coreStart < 0) return null
+    const beforeCore = skipWhitespaceBackward(text, coreStart)
+    if (beforeCore > 0 && OPEN_BRACKETS.includes(text[beforeCore - 1])) {
+      return { start: beforeCore - 1, hasBrackets: true }
     }
+    return null
   }
+  const coreStart = matchMarkerCoreEndingAt(text, endPos)
+  if (coreStart < 0) return null
+  return { start: coreStart, hasBrackets: false }
+}
 
-  let separatorConsumed = false
-  while (pos > 0) {
-    const prev = text[pos - 1]
-    if (prev === ' ' || prev === '\t' || prev === '\n') {
-      pos -= 1
-      continue
-    }
-    if (prev === '>') {
-      const lt = text.lastIndexOf('<', pos - 1)
-      if (
-        lt >= 0 &&
-        text.indexOf('>', lt) === pos - 1 &&
-        HTML_BREAK_OR_RULE_TAG_RE.test(text.slice(lt, pos))
-      ) {
-        pos = lt
-        continue
-      }
+function readTrailingClosingTag(
+  text: string,
+  endPos: number
+): { tag: string; start: number } | null {
+  if (endPos <= 3 || text[endPos - 1] !== '>') return null
+  const minLt = Math.max(0, endPos - MAX_CLOSING_TAG_LEN)
+  let lt = -1
+  for (let i = endPos - 2; i >= minLt; i -= 1) {
+    const ch = text[i]
+    if (ch === '>') return null
+    if (ch === '<') {
+      lt = i
       break
     }
-    if ('-_*—–'.includes(prev)) {
-      pos -= 1
-      continue
+  }
+  if (lt < 0 || text[lt + 1] !== '/') return null
+  const tag = text.slice(lt + 2, endPos - 1).toLowerCase()
+  if (!WRAPPER_TAGS.has(tag)) return null
+  return { tag, start: lt }
+}
+
+function readTrailingOpenWrapperTag(
+  text: string,
+  endPos: number,
+  expectedTag: string
+): number {
+  if (endPos <= expectedTag.length + 1 || text[endPos - 1] !== '>') return -1
+  let lt = -1
+  for (let i = endPos - 2; i >= 0; i -= 1) {
+    const ch = text[i]
+    if (ch === '>') return -1
+    if (ch === '<') {
+      lt = i
+      break
     }
-    if (!separatorConsumed && '|/·•'.includes(prev)) {
-      pos -= 1
-      separatorConsumed = true
-      continue
+  }
+  if (lt < 0) return -1
+  const nameStart = lt + 1
+  const nameEnd = nameStart + expectedTag.length
+  if (nameEnd >= endPos) return -1
+  if (text.slice(nameStart, nameEnd).toLowerCase() !== expectedTag) return -1
+  const boundary = text[nameEnd]
+  if (boundary !== '>' && !isWhitespaceChar(boundary)) return -1
+  return lt
+}
+
+function matchHtmlWrappedMarkerEndingAt(
+  text: string,
+  endPos: number
+): { start: number; htmlWrapped: boolean; hasBrackets: boolean } | null {
+  const closing = readTrailingClosingTag(text, endPos)
+  if (closing) {
+    const innerEnd = skipWhitespaceBackward(text, closing.start)
+    const wrapped = matchWrappedMarkerEndingAt(text, innerEnd)
+    if (!wrapped) return null
+    const openEnd = skipWhitespaceBackward(text, wrapped.start)
+    const openStart = readTrailingOpenWrapperTag(text, openEnd, closing.tag)
+    if (openStart < 0) return null
+    return {
+      start: openStart,
+      htmlWrapped: true,
+      hasBrackets: wrapped.hasBrackets,
     }
-    break
+  }
+  const wrapped = matchWrappedMarkerEndingAt(text, endPos)
+  if (!wrapped) return null
+  return {
+    start: wrapped.start,
+    htmlWrapped: false,
+    hasBrackets: wrapped.hasBrackets,
+  }
+}
+
+function readTrailingBreakOrRuleTag(
+  text: string,
+  endPos: number
+): { tag: 'br' | 'hr'; start: number } | null {
+  if (endPos <= 3 || text[endPos - 1] !== '>') return null
+  const minLt = Math.max(0, endPos - MAX_BREAK_OR_RULE_TAG_LEN)
+  let lt = -1
+  for (let i = endPos - 2; i >= minLt; i -= 1) {
+    const ch = text[i]
+    if (ch === '>') return null
+    if (ch === '<') {
+      lt = i
+      break
+    }
+  }
+  if (lt < 0 || lt + 3 >= endPos) return null
+  const tag = text.slice(lt + 1, lt + 3).toLowerCase()
+  if (tag !== 'br' && tag !== 'hr') return null
+  let cursor = lt + 3
+  while (cursor < endPos - 1 && isWhitespaceChar(text[cursor])) {
+    cursor += 1
+  }
+  if (cursor < endPos - 1 && text[cursor] === '/') {
+    cursor += 1
+  }
+  if (cursor !== endPos - 1) return null
+  return { tag, start: lt }
+}
+
+function consumePrecedingRuleLine(text: string, pos: number): number | null {
+  const hr = readTrailingBreakOrRuleTag(text, pos)
+  if (hr && hr.tag === 'hr') {
+    const beforeRule = skipHorizontalSpacesBackward(text, hr.start)
+    if (beforeRule > 0 && text[beforeRule - 1] === '\n') {
+      return skipSpacesAndNewlinesBackward(text, beforeRule)
+    }
+    return null
+  }
+  let cursor = pos
+  while (cursor > 0 && RULE_LINE_CHARS.includes(text[cursor - 1])) {
+    cursor -= 1
+  }
+  if (pos - cursor < 3) return null
+  const beforeRule = skipHorizontalSpacesBackward(text, cursor)
+  if (beforeRule > 0 && text[beforeRule - 1] === '\n') {
+    return skipSpacesAndNewlinesBackward(text, beforeRule)
+  }
+  return null
+}
+
+function consumeLeadingNotReadySeparators(
+  text: string,
+  startPos: number,
+  options: {
+    allowInlineSeparators: boolean
+    htmlWrapped: boolean
+    hasBrackets: boolean
+  }
+): number | null {
+  const cursor = skipHorizontalSpacesBackward(text, startPos)
+
+  // Pattern 2: one or more <br> / <hr> tags immediately preceding the marker block.
+  let breakOrRuleCount = 0
+  let probe = cursor
+  while (probe > 0) {
+    const tag = readTrailingBreakOrRuleTag(text, probe)
+    if (!tag) break
+    if (!options.allowInlineSeparators && tag.tag !== 'br') break
+    breakOrRuleCount += 1
+    probe = skipHorizontalSpacesBackward(text, tag.start)
+  }
+  if (breakOrRuleCount > 0) {
+    return probe
   }
 
-  return pos
+  // Pattern 1: newline separator (with optional standalone rule line or <hr> above).
+  if (cursor > 0 && text[cursor - 1] === '\n') {
+    const afterLines = skipSpacesAndNewlinesBackward(text, cursor)
+    if (options.allowInlineSeparators) {
+      const withRule = consumePrecedingRuleLine(text, afterLines)
+      if (withRule !== null) {
+        return withRule
+      }
+    }
+    return afterLines
+  }
+
+  if (!options.allowInlineSeparators) {
+    return null
+  }
+
+  // Pattern 3: standalone matched HTML wrapper block (e.g. <p>...</p>, <span>...</span>).
+  if (options.htmlWrapped) {
+    return cursor
+  }
+
+  // Pattern 5: inline separator before bare/bracketed marker.
+  if (cursor > 0 && INLINE_SINGLE_SEPARATORS.includes(text[cursor - 1])) {
+    return skipHorizontalSpacesBackward(text, cursor - 1)
+  }
+  if (cursor >= 2 && text[cursor - 1] === '-' && text[cursor - 2] === '-') {
+    let dashStart = cursor - 2
+    while (dashStart > 0 && text[dashStart - 1] === '-') {
+      dashStart -= 1
+    }
+    return skipHorizontalSpacesBackward(text, dashStart)
+  }
+  if (
+    cursor > 1 &&
+    text[cursor - 1] === '-' &&
+    text[cursor - 2] === ' ' &&
+    cursor < startPos &&
+    text[cursor] === ' '
+  ) {
+    return skipHorizontalSpacesBackward(text, cursor - 2)
+  }
+
+  // Pattern 6: trailing bracketed marker without explicit separator.
+  if (options.hasBrackets) {
+    return cursor
+  }
+
+  return null
+}
+
+function stripOneTrailingNotReadyBlock(text: string): string {
+  const end = skipHorizontalSpacesBackward(text, text.length)
+  if (end === 0) return text
+
+  // Direct trailing marker block (bare, bracketed, or matched HTML wrapper).
+  const directBlock = matchHtmlWrappedMarkerEndingAt(text, end)
+  if (directBlock) {
+    const cutPos = consumeLeadingNotReadySeparators(text, directBlock.start, {
+      allowInlineSeparators: true,
+      htmlWrapped: directBlock.htmlWrapped,
+      hasBrackets: directBlock.hasBrackets,
+    })
+    if (cutPos !== null) {
+      return text.slice(0, cutPos).trim()
+    }
+  }
+
+  // Pattern 4: trailing marker nested at the end of a </p> or </div> container.
+  const containerClose = readTrailingClosingTag(text, end)
+  if (containerClose && CONTAINER_TAGS.has(containerClose.tag)) {
+    const innerEnd = skipHorizontalSpacesBackward(text, containerClose.start)
+    const innerBlock = matchHtmlWrappedMarkerEndingAt(text, innerEnd)
+    if (innerBlock && !innerBlock.htmlWrapped) {
+      const cutPos = consumeLeadingNotReadySeparators(text, innerBlock.start, {
+        allowInlineSeparators: false,
+        htmlWrapped: false,
+        hasBrackets: innerBlock.hasBrackets,
+      })
+      if (cutPos !== null) {
+        return (
+          text.slice(0, cutPos) + text.slice(containerClose.start)
+        ).trim()
+      }
+    }
+  }
+
+  return text
 }
 
 export function stripTranslationNotReadyMarkers(content: string): string {
@@ -325,19 +576,7 @@ export function stripTranslationNotReadyMarkers(content: string): string {
     for (const marker of TRANSLATION_NOT_READY_MARKERS) {
       next = stripTrailingSection(next, marker, true)
     }
-    const lastMarkerIdx = findLastNotReadyMarkerIndex(next)
-    if (
-      lastMarkerIdx >= 0 &&
-      TRAILING_MARKER_TAIL_RE.test(next.slice(lastMarkerIdx))
-    ) {
-      const windowStart = findTrailingNotReadyWindowStart(next, lastMarkerIdx)
-      const prefix = next.slice(0, windowStart)
-      let tail = next.slice(windowStart)
-      for (const pattern of TRAILING_NOT_READY_PATTERNS) {
-        tail = tail.replace(pattern, '')
-      }
-      next = (prefix + tail).trim()
-    }
+    next = stripOneTrailingNotReadyBlock(next)
     if (isTranslationNotReadyMarker(next)) {
       return ''
     }

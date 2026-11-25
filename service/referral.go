@@ -138,11 +138,14 @@ func newInviteCode() (string, error) {
 // EnsureAffiliate 给用户建推广员（已批准，8 位邀请码，用默认比例）；已有就直接返回。
 func (s *ReferralService) EnsureAffiliate(userId int) (*model.ReferralAffiliate, error) {
 	var users []model.User
-	if err := model.DB.Select("id", "site_id").Where("id = ?", userId).Limit(1).Find(&users).Error; err != nil {
+	if err := model.DB.Select("id", "site_id", "role").Where("id = ?", userId).Limit(1).Find(&users).Error; err != nil {
 		return nil, err
 	}
 	if len(users) == 0 {
 		return nil, common.NewMessage("User not found")
+	}
+	if users[0].Role >= common.RoleAdminUser {
+		return nil, common.NewMessage("Administrators cannot use user referral endpoints")
 	}
 	if users[0].SiteId > 0 {
 		return nil, ErrReferralSiteCustomer
@@ -208,10 +211,10 @@ func (s *ReferralService) AffiliateByCode(code string) (*model.ReferralAffiliate
 		return nil, ErrReferralCodeInvalid
 	}
 	var owners []model.User
-	if err := model.DB.Select("id", "site_id", "status").Where("id = ?", rows[0].UserId).Limit(1).Find(&owners).Error; err != nil {
+	if err := model.DB.Select("id", "site_id", "status", "role").Where("id = ?", rows[0].UserId).Limit(1).Find(&owners).Error; err != nil {
 		return nil, err
 	}
-	if len(owners) == 0 || owners[0].SiteId > 0 || owners[0].Status != common.UserStatusEnabled {
+	if len(owners) == 0 || owners[0].SiteId > 0 || owners[0].Status != common.UserStatusEnabled || owners[0].Role >= common.RoleAdminUser {
 		return nil, ErrReferralCodeInvalid
 	}
 	return &rows[0], nil

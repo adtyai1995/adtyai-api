@@ -2,6 +2,7 @@ package openai
 
 import (
 	"bytes"
+	"errors"
 	"math"
 	"net/http"
 	"strings"
@@ -18,27 +19,32 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) *dto.Usage {
-	// the status code has been judged before, if there is a body reading failure,
-	// it should be regarded as a non-recoverable error, so it should not return err for external retry.
-	// Analogous to nginx's load balancing, it will only retry if it can't be requested or
-	// if the upstream returns a specific status code, once the upstream has already written the header,
-	// the subsequent failure of the response body should be regarded as a non-recoverable error,
-	// and can be terminated directly.
-	defer service.CloseResponseBodyGracefully(resp)
-	usage := &dto.Usage{}
-	usage.PromptTokens = info.GetEstimatePromptTokens()
-	usage.TotalTokens = info.GetEstimatePromptTokens()
-	for k, v := range resp.Header {
-		if !service.ShouldCopyUpstreamHeader(c, k, v) {
-			continue
-		}
-		c.Writer.Header().Set(k, v[0])
+func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (*dto.Usage, *types.NewAPIError) {
+	if resp == nil || resp.Body == nil {
+		return nil, types.NewOpenAIError(errors.New("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
-	c.Writer.WriteHeader(resp.StatusCode)
+	defer service.CloseResponseBodyGracefully(resp)
+	helper.StopStreamKeepAlive(c)
+
+	writeUpstreamHeaders := func() {
+		if c == nil || c.Writer == nil || c.Writer.Written() {
+			return
+		}
+		for k, v := range resp.Header {
+			if len(v) == 0 || !service.ShouldCopyUpstreamHeader(c, k, v) {
+				continue
+			}
+			c.Writer.Header().Set(k, v[0])
+		}
+		c.Writer.WriteHeader(resp.StatusCode)
+	}
+
+	usage := &dto.Usage{}
 
 	if info.IsStream {
 		var streamedAudioBytes int
+		var lastParseErr error
+		headersWritten := false
 		helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 			if service.SundaySearch(data, "audio") {
 				var chunk struct {
@@ -53,6 +59,7 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 				var simpleResponse dto.SimpleResponse
 				if err := common.Unmarshal([]byte(data), &simpleResponse); err != nil {
 					logger.LogError(c, err.Error())
+					lastParseErr = err
 					sr.Error(err)
 				} else if simpleResponse.Usage.TotalTokens != 0 || simpleResponse.Usage.InputTokens != 0 || simpleResponse.Usage.OutputTokens != 0 || simpleResponse.Usage.PromptTokens != 0 || simpleResponse.Usage.CompletionTokens != 0 {
 					inTokens := simpleResponse.Usage.InputTokens
@@ -78,10 +85,38 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 					usage.CompletionTokenDetails.AudioTokens = audioOut
 				}
 			}
+			if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+				sr.Stop(c.Request.Context().Err())
+				return
+			}
+			if !headersWritten {
+				writeUpstreamHeaders()
+				headersWritten = true
+			}
 			if err := helper.StringData(c, data); err != nil {
-				sr.Error(err)
+				sr.Stop(err)
+				return
+			}
+			if info != nil {
+				info.SendResponseCount++
 			}
 		})
+		if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+			if helper.ClientRequestCanceled(c) {
+				return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+			}
+			if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
+				return nil, types.NewOpenAIError(info.StreamStatus.EndError, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
+			}
+			if lastParseErr != nil {
+				return nil, types.NewOpenAIError(lastParseErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+			}
+			return nil, types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+		}
+		if usage.PromptTokens == 0 {
+			usage.PromptTokens = info.GetEstimatePromptTokens()
+		}
+		usage.TotalTokens = max(usage.TotalTokens, usage.PromptTokens+usage.CompletionTokens)
 		usage.PromptTokensDetails.TextTokens = usage.PromptTokens
 		if usage.CompletionTokenDetails.AudioTokens == 0 {
 			if usage.CompletionTokens > 0 {
@@ -102,16 +137,21 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		bodyBytes, apiErr := helper.ReadResponseBody(c, resp, types.ErrorCodeReadResponseBodyFailed)
 		if apiErr != nil {
 			logger.LogError(c, common.LogText("failed to read TTS response body: %v", apiErr.Error()))
-			c.Writer.WriteHeaderNow()
-			return usage
+			return nil, apiErr
 		}
 
-		// 写入响应到客户端
+		// 仅在首块有效数据到达后再写入响应头与状态码
+		writeUpstreamHeaders()
 		c.Writer.WriteHeaderNow()
 		_, err := c.Writer.Write(bodyBytes)
 		if err != nil {
 			logger.LogError(c, common.LogText("failed to write TTS response: %v", err))
+		} else if info != nil {
+			info.SendResponseCount++
 		}
+
+		usage.PromptTokens = info.GetEstimatePromptTokens()
+		usage.TotalTokens = info.GetEstimatePromptTokens()
 
 		// 计算音频时长并更新 usage
 		audioFormat := "mp3" // 默认格式
@@ -159,7 +199,7 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 
-	return usage
+	return usage, nil
 }
 
 // estimatedAudioTokensFromSizeKB 是拿不到音频时长时的兜底估算：粗略按每 KB 约 1 token。

@@ -133,8 +133,10 @@ func dataRetentionCatalog() []dataRetentionCategorySpec {
 			AutoCleanable:   true,
 			AllowedActions:  []string{model.DataRetentionActionDelete},
 			DefaultBehavior: "no_automatic_deletion",
-			Notes:           "When Root sets a period, later runs may delete only already closed or resolved tickets whose close or resolve time is older than that period, honoring a 90-day safety floor. Disk images are removed first; a file-delete failure leaves that ticket's records in place. Open, in-progress, and waiting tickets are not touched. Unconfigured tickets are not auto-deleted.",
-			MinDays:         90,
+			// 实际删除口径：事务内删除工单数据库记录并将附件标记 delete_pending=true，事务提交后再删盘并由独立定时任务重试清理。
+			// Notes 字符串直接作为前端 t(category.notes) 的 i18n 键存在于 web/src/i18n/locales/{en,zh}.json，保持键名不变以免破坏 i18n-check。
+			Notes:   "When Root sets a period, later runs may delete only already closed or resolved tickets whose close or resolve time is older than that period, honoring a 90-day safety floor. Disk images are removed first; a file-delete failure leaves that ticket's records in place. Open, in-progress, and waiting tickets are not touched. Unconfigured tickets are not auto-deleted.",
+			MinDays: 90,
 		},
 		{
 			Category:        model.DataRetentionCategoryNotificationHistory,
@@ -417,6 +419,10 @@ func ListDataRetentionRuns(limit int) ([]DataRetentionRunView, error) {
 	}
 	views := make([]DataRetentionRunView, 0, len(runs))
 	for _, run := range runs {
+		runItems := items[run.Id]
+		if runItems == nil {
+			runItems = []model.AdtyDataRetentionRunItem{}
+		}
 		views = append(views, DataRetentionRunView{
 			Id:           run.Id,
 			StartedAt:    run.StartedAt,
@@ -424,7 +430,7 @@ func ListDataRetentionRuns(limit int) ([]DataRetentionRunView, error) {
 			Trigger:      run.Trigger,
 			Scope:        run.Scope,
 			SystemTaskID: run.SystemTaskID,
-			Items:        items[run.Id],
+			Items:        runItems,
 		})
 	}
 	return views, nil

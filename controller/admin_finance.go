@@ -78,6 +78,24 @@ func adtyUnifiedOrdersQuery(c *gin.Context, ownerSiteID *int, selfUserID *int) (
 	}
 	columns := []string{"id", "user_id", "site_id", "order_type", "source_type", "reference", "original_trade_no", "team_id", "trade_no", "payment_method", "payment_provider", "status", "create_time", "complete_time", "amount", "face_usd", "credit_quota", "paid_amount", "paid_currency", "channel_id", "owner_private"}
 	billingNetQuota := "(CASE WHEN x.kind = 'request' THEN x.applied_quota - x.stream_wallet_quota WHEN x.kind IN ('task', 'direct') THEN x.applied_quota - x.reserved_quota ELSE x.applied_quota END)"
+	castIDText := func(col string) string {
+		if common.UsingMainDatabase(common.DatabaseTypeMySQL) {
+			return "CAST(" + col + " AS CHAR)"
+		}
+		return "CAST(" + col + " AS TEXT)"
+	}
+	prefixID := func(prefix, col string) string {
+		if common.UsingMainDatabase(common.DatabaseTypeMySQL) {
+			return "CONCAT('" + prefix + "', CAST(" + col + " AS CHAR))"
+		}
+		return "'" + prefix + "' || CAST(" + col + " AS TEXT)"
+	}
+	castNumeric := func(expr string) string {
+		if common.UsingMainDatabase(common.DatabaseTypeMySQL) {
+			return "CAST(" + expr + " AS DECIMAL(20,8))"
+		}
+		return "CAST(" + expr + " AS NUMERIC)"
+	}
 	sources := []adtyUnifiedSource{
 		{from: "top_ups x LEFT JOIN adty_topup_orders e ON e.trade_no = x.trade_no", columns: map[string]string{
 			"id": "x.id", "user_id": "x.user_id", "site_id": "e.site_id", "team_id": "COALESCE(e.team_id, 0)", "order_type": "CASE WHEN x.payment_provider = '" + model.AdtyVoucherProvider + "' THEN 'voucher' ELSE 'topup' END",
@@ -103,31 +121,31 @@ func adtyUnifiedOrdersQuery(c *gin.Context, ownerSiteID *int, selfUserID *int) (
 			"owner_private": "CASE WHEN COALESCE(x.business, '') IN ('" + model.AdtyBusinessOwnerSelfUseTopup + "', '" + model.AdtyBusinessOwnerMarginTopup + "') THEN 1 ELSE 0 END",
 		}},
 		{from: "adty_site_withdrawals x", columns: map[string]string{
-			"id": "x.id", "user_id": "x.owner_user_id", "site_id": "x.site_id", "order_type": "'withdrawal'", "source_type": "'site_withdrawal'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'WD-SITE-' || CAST(x.id AS TEXT)",
-			"payment_method": "x.method", "payment_provider": "'withdrawal'", "status": "x.status", "create_time": "x.created_at", "complete_time": "x.paid_at", "face_usd": "x.amount_usd", "paid_amount": "CAST(COALESCE(NULLIF(x.payout_amount, ''), '0') AS NUMERIC)", "paid_currency": "COALESCE(x.payout_currency, '')",
+			"id": "x.id", "user_id": "x.owner_user_id", "site_id": "x.site_id", "order_type": "'withdrawal'", "source_type": "'site_withdrawal'", "reference": castIDText("x.id"), "trade_no": prefixID("WD-SITE-", "x.id"),
+			"payment_method": "x.method", "payment_provider": "'withdrawal'", "status": "x.status", "create_time": "x.created_at", "complete_time": "x.paid_at", "face_usd": "x.amount_usd", "paid_amount": castNumeric("COALESCE(NULLIF(x.payout_amount, ''), '0')"), "paid_currency": "COALESCE(x.payout_currency, '')",
 		}},
 		{from: "adty_site_invite_withdrawals x", columns: map[string]string{
-			"id": "x.id", "user_id": "x.user_id", "site_id": "x.site_id", "order_type": "'withdrawal'", "source_type": "'site_invite_withdrawal'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'WD-INV-' || CAST(x.id AS TEXT)",
-			"payment_method": "x.method", "payment_provider": "'withdrawal'", "status": "x.status", "create_time": "x.created_at", "complete_time": "x.paid_at", "face_usd": "x.amount_usd", "paid_amount": "CASE WHEN x.method = 'balance' THEN x.net_usd ELSE CAST(COALESCE(NULLIF(x.payout_amount, ''), '0') AS NUMERIC) END", "paid_currency": "CASE WHEN x.method = 'balance' THEN 'USD' ELSE COALESCE(x.payout_currency, '') END",
+			"id": "x.id", "user_id": "x.user_id", "site_id": "x.site_id", "order_type": "'withdrawal'", "source_type": "'site_invite_withdrawal'", "reference": castIDText("x.id"), "trade_no": prefixID("WD-INV-", "x.id"),
+			"payment_method": "x.method", "payment_provider": "'withdrawal'", "status": "x.status", "create_time": "x.created_at", "complete_time": "x.paid_at", "face_usd": "x.amount_usd", "paid_amount": "CASE WHEN x.method = 'balance' THEN x.net_usd ELSE " + castNumeric("COALESCE(NULLIF(x.payout_amount, ''), '0')") + " END", "paid_currency": "CASE WHEN x.method = 'balance' THEN 'USD' ELSE COALESCE(x.payout_currency, '') END",
 		}},
 		{from: "referral_withdrawals x", columns: map[string]string{
-			"id": "x.id", "user_id": "x.user_id", "site_id": "0", "order_type": "'withdrawal'", "source_type": "'main_withdrawal'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'WD-MAIN-' || CAST(x.id AS TEXT)",
-			"payment_method": "x.account_type", "payment_provider": "'withdrawal'", "status": "x.status", "create_time": "x.submitted_at", "complete_time": "x.paid_at", "face_usd": "x.amount", "paid_amount": "CASE WHEN x.account_type = 'usdt' THEN x.net_amount WHEN x.account_type IN ('alipay', 'wechat') THEN CAST(COALESCE(NULLIF(x.cny_amount, ''), '0') AS NUMERIC) WHEN x.account_type = 'balance' THEN x.net_amount ELSE 0 END", "paid_currency": "CASE WHEN x.account_type = 'usdt' THEN 'USDT' WHEN x.account_type IN ('alipay', 'wechat') THEN 'CNY' WHEN x.account_type = 'balance' THEN COALESCE(NULLIF(x.settlement_currency, ''), 'USD') ELSE '' END",
+			"id": "x.id", "user_id": "x.user_id", "site_id": "0", "order_type": "'withdrawal'", "source_type": "'main_withdrawal'", "reference": castIDText("x.id"), "trade_no": prefixID("WD-MAIN-", "x.id"),
+			"payment_method": "x.account_type", "payment_provider": "'withdrawal'", "status": "x.status", "create_time": "x.submitted_at", "complete_time": "x.paid_at", "face_usd": "x.amount", "paid_amount": "CASE WHEN x.account_type = 'usdt' THEN x.net_amount WHEN x.account_type IN ('alipay', 'wechat') THEN " + castNumeric("COALESCE(NULLIF(x.cny_amount, ''), '0')") + " WHEN x.account_type = 'balance' THEN x.net_amount ELSE 0 END", "paid_currency": "CASE WHEN x.account_type = 'usdt' THEN 'USDT' WHEN x.account_type IN ('alipay', 'wechat') THEN 'CNY' WHEN x.account_type = 'balance' THEN COALESCE(NULLIF(x.settlement_currency, ''), 'USD') ELSE '' END",
 		}},
 		{from: "adty_site_invite_commissions x", columns: map[string]string{
-			"id": "x.id", "user_id": "x.inviter_id", "site_id": "x.site_id", "order_type": "'commission'", "source_type": "'site_commission'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'COM-SITE-' || CAST(x.id AS TEXT)", "original_trade_no": "x.trade_no",
+			"id": "x.id", "user_id": "x.inviter_id", "site_id": "x.site_id", "order_type": "'commission'", "source_type": "'site_commission'", "reference": castIDText("x.id"), "trade_no": prefixID("COM-SITE-", "x.id"), "original_trade_no": "x.trade_no",
 			"payment_method": "'site_invite'", "payment_provider": "'commission'", "status": "x.status", "create_time": "x.created_at", "complete_time": "x.available_at", "face_usd": "x.amount_usd", "paid_amount": "x.covered_usd", "paid_currency": "'USD'",
 		}},
 		{from: "referral_commissions x", columns: map[string]string{
-			"id": "x.id", "user_id": "x.affiliate_user_id", "site_id": "0", "order_type": "'commission'", "source_type": "'main_commission'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'COM-MAIN-' || CAST(x.id AS TEXT)", "original_trade_no": "x.source_trade_no",
+			"id": "x.id", "user_id": "x.affiliate_user_id", "site_id": "0", "order_type": "'commission'", "source_type": "'main_commission'", "reference": castIDText("x.id"), "trade_no": prefixID("COM-MAIN-", "x.id"), "original_trade_no": "x.source_trade_no",
 			"payment_method": "x.source_type", "payment_provider": "'commission'", "status": "x.status", "create_time": "x.created_at", "complete_time": "x.available_at", "face_usd": "x.commission_amount", "paid_amount": "x.commission_amount", "paid_currency": "x.settlement_currency",
 		}},
 		{from: "adty_staff_balance_requests x", columns: map[string]string{
-			"id": "x.id", "user_id": "x.customer_user_id", "site_id": "x.site_id", "order_type": "'staff_adjustment'", "source_type": "'staff_adjustment'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'STAFF-ADJ-' || CAST(x.id AS TEXT)",
+			"id": "x.id", "user_id": "x.customer_user_id", "site_id": "x.site_id", "order_type": "'staff_adjustment'", "source_type": "'staff_adjustment'", "reference": castIDText("x.id"), "trade_no": prefixID("STAFF-ADJ-", "x.id"),
 			"payment_method": "x.direction", "payment_provider": "'staff_balance'", "status": "x.status", "create_time": "x.created_at", "complete_time": "x.reviewed_at", "face_usd": "x.amount_usd", "paid_currency": "'USD'",
 		}},
 		{from: "adty_balance_ledgers x", where: "x.type NOT IN ('topup', 'refund', 'voucher') AND COALESCE(x.ref_type, '') NOT IN ('staff_balance', 'staff_balance_request', 'site_invite_withdrawal', 'referral_withdrawal')", columns: map[string]string{
-			"id": "x.id", "user_id": "x.user_id", "site_id": "NULL", "order_type": "'other'", "source_type": "'balance_ledger'", "reference": "CAST(x.id AS TEXT)", "trade_no": "'LEDGER-' || CAST(x.id AS TEXT)",
+			"id": "x.id", "user_id": "x.user_id", "site_id": "NULL", "order_type": "'other'", "source_type": "'balance_ledger'", "reference": castIDText("x.id"), "trade_no": prefixID("LEDGER-", "x.id"),
 			"payment_method": "x.type", "payment_provider": "'wallet'", "status": "'completed'", "create_time": "x.created_at", "complete_time": "x.created_at", "amount": "x.delta_quota", "face_usd": "x.delta_quota / 500000.0", "credit_quota": "x.delta_quota", "paid_currency": "'USD'",
 		}},
 	}
@@ -273,7 +291,7 @@ func getAdtyUnifiedOrders(c *gin.Context, ownerSiteID *int, selfUserID *int) {
 					switch order.Status {
 					case common.TopUpStatusSuccess:
 						order.Actions.Refund = capability.Refund && order.Business != model.AdtyBusinessOwnerMarginTopup && (ownerSiteID == nil || order.Business != model.AdtyBusinessOwnerSelfUseTopup)
-					case common.TopUpStatusPending, common.TopUpStatusExpired, common.TopUpStatusFailed, model.TopUpStatusCanceled:
+					case common.TopUpStatusPending, common.TopUpStatusExpired, common.TopUpStatusFailed, model.TopUpStatusCanceled, model.TopUpStatusReplaced:
 						if ownerSiteID == nil {
 							order.Actions.Complete, order.Actions.Query = capability.Complete, capability.Query
 						}
@@ -346,7 +364,7 @@ type rechargeAuditActions struct {
 
 var rechargeAuditStatuses = []string{
 	common.TopUpStatusPending, common.TopUpStatusSuccess, common.TopUpStatusExpired,
-	common.TopUpStatusFailed, model.TopUpStatusCanceled, model.TopUpStatusRefunded,
+	common.TopUpStatusFailed, model.TopUpStatusCanceled, model.TopUpStatusReplaced, model.TopUpStatusRefunded,
 }
 
 // rechargeAuditQuery 建对账查询，筛选条件都来自查询参数。
@@ -485,7 +503,7 @@ func enrichTopupAuditOrders(orders []rechargeAuditOrder, ownerSiteID *int, siteN
 			continue
 		}
 		switch orders[i].Status {
-		case common.TopUpStatusPending, common.TopUpStatusExpired, common.TopUpStatusFailed, model.TopUpStatusCanceled:
+		case common.TopUpStatusPending, common.TopUpStatusExpired, common.TopUpStatusFailed, model.TopUpStatusCanceled, model.TopUpStatusReplaced:
 			orders[i].Actions.Complete = capability.Complete
 			orders[i].Actions.Query = capability.Query
 		case common.TopUpStatusSuccess:

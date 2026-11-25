@@ -291,6 +291,7 @@ function siteAuditActionLabel(
 
 export function SiteDomainsCard(props: {
   site: AdminSite
+  siteStatus?: AdminSite['status']
   domains: AdminSiteDomain[]
   senders: AdminSenderDomain[]
 }) {
@@ -298,6 +299,8 @@ export function SiteDomainsCard(props: {
   const queryClient = useQueryClient()
   const user = useAuthStore((state) => state.auth.user)
   const canDelete = canAdmin(user, ADTY_PERMISSIONS.SITE_DELETE)
+  const siteStatus = props.siteStatus ?? props.site.status
+  const isDeleting = siteStatus === 'deleting'
   const disableDomain = useMutation({
     mutationFn: (id: number) => {
       if (
@@ -442,27 +445,29 @@ export function SiteDomainsCard(props: {
                   )}
                 </div>
                 <div className='flex shrink-0 gap-1.5'>
-                  {user?.role === ROLE.SUPER_ADMIN &&
+                  {!isDeleting &&
+                    user?.role === ROLE.SUPER_ADMIN &&
                     domain.status !== 'removed' &&
                     domain.automation_state && (
                       <Button
                         type='button'
                         variant='outline'
                         size='sm'
-                        disabled={retryDomain.isPending}
+                        disabled={isDeleting || retryDomain.isPending}
                         onClick={() => retryDomain.mutate(domain.id)}
                       >
                         {t('Retry')}
                       </Button>
                     )}
-                  {canDelete &&
+                  {!isDeleting &&
+                    canDelete &&
                     domain.status !== 'removed' &&
                     domain.managed_by !== 'platform' && (
                       <Button
                         type='button'
                         variant='outline'
                         size='sm'
-                        disabled={disableDomain.isPending}
+                        disabled={isDeleting || disableDomain.isPending}
                         onClick={() => disableDomain.mutate(domain.id)}
                       >
                         {t('Disable')}
@@ -506,12 +511,12 @@ export function SiteDomainsCard(props: {
                     </span>
                   )}
                 </div>
-                {canDelete && (
+                {!isDeleting && canDelete && (
                   <Button
                     type='button'
                     variant='outline'
                     size='sm'
-                    disabled={disableSender.isPending}
+                    disabled={isDeleting || disableSender.isPending}
                     onClick={() => disableSender.mutate()}
                   >
                     {sender.status === 'removing' ? t('Retry') : t('Disable')}{' '}
@@ -824,11 +829,16 @@ export function SiteSupplyDiscountCard(props: { site: AdminSite }) {
 }
 
 /** Root-only margin coverage policy switches (top-up bonus margin-fill & commission margin-cover). */
-export function SiteMarginPoliciesCard(props: { siteId: number }) {
+export function SiteMarginPoliciesCard(props: {
+  siteId: number
+  siteStatus?: AdminSite['status']
+}) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const isRoot =
     useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
+  const marginPoliciesReadOnly =
+    props.siteStatus === 'closed' || props.siteStatus === 'deleting'
 
   const bonusMarginFill = useQuery({
     queryKey: siteAdminKeys.list('bonus-margin-fill', { siteId: props.siteId }),
@@ -895,8 +905,12 @@ export function SiteMarginPoliciesCard(props: { siteId: number }) {
               'When enabled, top-up bonuses can draw from the open margin cycle if available earnings are insufficient.'
             )}
             checked={bonusMarginFill.data.enabled === true}
-            disabled={saveBonusMarginFill.isPending}
-            onCheckedChange={(enabled) => saveBonusMarginFill.mutate(enabled)}
+            disabled={marginPoliciesReadOnly || saveBonusMarginFill.isPending}
+            onCheckedChange={(enabled) => {
+              if (!marginPoliciesReadOnly) {
+                saveBonusMarginFill.mutate(enabled)
+              }
+            }}
           />
         )}
 
@@ -911,8 +925,12 @@ export function SiteMarginPoliciesCard(props: { siteId: number }) {
               'After earnings, the open margin cycle can cover the rest. No amount is set here.'
             )}
             checked={commissionMargin.data?.allowed === true}
-            disabled={saveCommissionMargin.isPending}
-            onCheckedChange={(allowed) => saveCommissionMargin.mutate(allowed)}
+            disabled={marginPoliciesReadOnly || saveCommissionMargin.isPending}
+            onCheckedChange={(allowed) => {
+              if (!marginPoliciesReadOnly) {
+                saveCommissionMargin.mutate(allowed)
+              }
+            }}
           />
         )}
       </CardContent>

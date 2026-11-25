@@ -23,7 +23,11 @@ import { parseHttpStatusCodeRules } from '@/lib/http-status-code-rules'
 
 export function createRoutingPolicySchema(t: TFunction) {
   return z.object({
-    RetryTimes: z.number().int().min(0).max(99),
+    RetryTimes: z
+      .number({ error: t('Please enter a valid number') })
+      .int(t('Retry times must be a non-negative integer'))
+      .min(0, t('Value must be at least 0'))
+      .max(99, t('Value must be at most 99')),
     AutomaticRetryStatusCodes: z
       .string()
       .refine(
@@ -35,8 +39,14 @@ export function createRoutingPolicySchema(t: TFunction) {
       session_mode: z.enum(['', 'off', 'prefer', 'strict']),
       switch_on_success: z.boolean(),
       keep_on_channel_disabled: z.boolean(),
-      max_entries: z.number().int().min(0),
-      default_ttl_seconds: z.number().int().min(0),
+      max_entries: z
+        .number({ error: t('Please enter a valid number') })
+        .int(t('Value must be a non-negative integer'))
+        .min(0, t('Value must be at least 0')),
+      default_ttl_seconds: z
+        .number({ error: t('Please enter a valid number') })
+        .int(t('Value must be a non-negative integer'))
+        .min(0, t('Value must be at least 0')),
       rules: z.string().superRefine((value, context) => {
         try {
           const rules: unknown = JSON.parse(value)

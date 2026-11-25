@@ -19,33 +19,67 @@ const (
 	BillingSourceWallet = "wallet"
 )
 
-var freeReservationHeartbeatStops sync.Map
+type freeHeartbeatEntry struct {
+	stopFn func() bool
+}
+
+var (
+	freeReservationHeartbeatsMu sync.Mutex
+	freeReservationHeartbeats   = map[string]*freeHeartbeatEntry{}
+)
 
 func stopFreeReservationHeartbeat(opKey string) {
+	takeOverFreeReservationHeartbeat(opKey, nil)
+}
+
+// takeOverFreeReservationHeartbeat atomically detaches any free-stage heartbeat
+// entry and executes onTakeOver under the same mutex so a racing AfterFunc
+// callback from the free stage can never delete a newly transferred session key (R5-04).
+func takeOverFreeReservationHeartbeat(opKey string, onTakeOver func()) {
 	if opKey == "" {
+		if onTakeOver != nil {
+			onTakeOver()
+		}
 		return
 	}
-	if prev, ok := freeReservationHeartbeatStops.LoadAndDelete(opKey); ok {
-		if stopFn, valid := prev.(func() bool); valid && stopFn != nil {
-			stopFn()
+	freeReservationHeartbeatsMu.Lock()
+	if prev := freeReservationHeartbeats[opKey]; prev != nil {
+		delete(freeReservationHeartbeats, opKey)
+		if prev.stopFn != nil {
+			prev.stopFn()
 		}
 	}
+	if onTakeOver != nil {
+		onTakeOver()
+	}
+	freeReservationHeartbeatsMu.Unlock()
 }
 
 func registerFreeReservationHeartbeat(c *gin.Context, opKey string) {
 	if opKey == "" {
 		return
 	}
-	stopFreeReservationHeartbeat(opKey)
+	freeReservationHeartbeatsMu.Lock()
+	if prev := freeReservationHeartbeats[opKey]; prev != nil {
+		delete(freeReservationHeartbeats, opKey)
+		if prev.stopFn != nil {
+			prev.stopFn()
+		}
+	}
+	entry := &freeHeartbeatEntry{}
+	freeReservationHeartbeats[opKey] = entry
 	activeBillingReservations.Store(opKey, struct{}{})
 	if c != nil && c.Request != nil {
-		stopFn := context.AfterFunc(c.Request.Context(), func() {
-			if _, loaded := freeReservationHeartbeatStops.LoadAndDelete(opKey); loaded {
+		entry.stopFn = context.AfterFunc(c.Request.Context(), func() {
+			freeReservationHeartbeatsMu.Lock()
+			if freeReservationHeartbeats[opKey] == entry {
+				delete(freeReservationHeartbeats, opKey)
 				activeBillingReservations.Delete(opKey)
 			}
+			freeReservationHeartbeatsMu.Unlock()
 		})
-		freeReservationHeartbeatStops.Store(opKey, stopFn)
 	}
+	freeReservationHeartbeatsMu.Unlock()
 }
 
 // FreezeRequestBillingPayer persists the acceptance identity even when the

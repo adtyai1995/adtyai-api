@@ -63,16 +63,18 @@ const (
 	auditSecretZhKeyNamesExpr = `验证码|密码|口令|密钥|令牌|兑换码|充值码|支付密钥|商户私钥|私钥|发信密钥|接口密钥`
 
 	auditSecretTokenExpr = `sk-[A-Za-z0-9_\-]{8,}|nap_[A-Za-z0-9_\-]{12,}|pat-[A-Za-z0-9_\-]{10,}|re_[A-Za-z0-9_]{16,}|bot\d{6,}:[A-Za-z0-9_\-]{10,}|\d{6,12}:[A-Za-z0-9_\-]{20,}|Bearer\s+[A-Za-z0-9._\-]{16,}|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{8,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9\-]{10,}`
-	auditSecretKVValExpr = `(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(?:Bearer\s+)?[^\s,}\]"]+)`
+	auditSecretKVValExpr = `(?:\\"(?:[^"\\]|\\\\\\"|\\[^"\\]|\\\\)*\\"|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(?:(?:Bearer|Basic)\s+)?[^\s,}\]'"]+)`
 	auditSecretEnKVExpr  = `(?:` + auditSecretEnKeyNamesExpr + `)\s*[:：=＝]\s*(` + auditSecretKVValExpr + `)`
 	auditSecretZhKVExpr  = `(?:` + auditSecretZhKeyNamesExpr + `)\s*[:：=＝]\s*(` + auditSecretKVValExpr + `)`
+
+	maxAuditJSONRedactDepth = 16
 )
 
 var (
 	auditSecretPEM    = regexp.MustCompile(`(?is)` + auditSecretPEMExpr)
 	auditSecretJSONKV = regexp.MustCompile(`(?i)("(?:` + auditSecretEnKeyNamesExpr + `|` + auditSecretZhKeyNamesExpr + `)"\s*:\s*)"(?:[^"\\]|\\.)*"`)
 	auditSecretToken  = regexp.MustCompile(`(?i)(?:` + auditSecretTokenExpr + `)`)
-	auditSecretText   = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_"'])(?:` + auditSecretEnKVExpr + `|` + auditSecretZhKVExpr + `)`)
+	auditSecretText   = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_])(?:` + auditSecretEnKVExpr + `|` + auditSecretZhKVExpr + `)`)
 )
 
 // auditVoucherCodePattern matches candidate ADTY 26-character unpadded Base32 voucher codes
@@ -133,6 +135,36 @@ var auditSecretKeyNames = map[string]struct{}{
 	"key_secret":               {},
 	"voucher_code":             {},
 	"redemption_code":          {},
+	"验证码":                      {},
+	"密码":                       {},
+	"口令":                       {},
+	"密钥":                       {},
+	"令牌":                       {},
+	"兑换码":                      {},
+	"充值码":                      {},
+	"支付密钥":                     {},
+	"商户私钥":                     {},
+	"私钥":                       {},
+	"发信密钥":                     {},
+	"接口密钥":                     {},
+}
+
+var auditNonSecretKeyPrefixes = []string{
+	"has_",
+	"is_",
+	"can_",
+	"require_",
+	"requires_",
+	"enable_",
+	"enabled_",
+	"disable_",
+	"disabled_",
+	"allow_",
+	"allows_",
+	"use_",
+	"using_",
+	"need_",
+	"needs_",
 }
 
 // PrepareOfficialAuditLog validates G.13.2 first-class fields, redacts secrets,
@@ -463,21 +495,29 @@ func redactAuditOther(other AuditOther) AuditOther {
 }
 
 func redactAuditFields(fields AuditFields) AuditFields {
+	return redactAuditFieldsWithDepth(fields, 0)
+}
+
+func redactAuditFieldsWithDepth(fields AuditFields, depth int) AuditFields {
 	if fields == nil {
 		return nil
 	}
 	redacted := make(AuditFields, len(fields))
 	for key, value := range fields {
-		if isOfficialAuditSecretKey(key) {
+		if shouldRedactAuditField(key, value) {
 			redacted[key] = "[redacted]"
 			continue
 		}
-		redacted[key] = redactAuditValue(value)
+		redacted[key] = redactAuditValueWithDepth(value, depth)
 	}
 	return redacted
 }
 
 func redactStringMap(values map[string]string) map[string]string {
+	return redactStringMapWithDepth(values, 0)
+}
+
+func redactStringMapWithDepth(values map[string]string, depth int) map[string]string {
 	if values == nil {
 		return nil
 	}
@@ -487,43 +527,49 @@ func redactStringMap(values map[string]string) map[string]string {
 			redacted[key] = "[redacted]"
 			continue
 		}
-		redacted[key] = redactAuditText(value)
+		redacted[key] = redactAuditTextWithDepth(value, depth)
 	}
 	return redacted
 }
 
 func redactAuditValue(value any) any {
+	return redactAuditValueWithDepth(value, 0)
+}
+
+func redactAuditValueWithDepth(value any, depth int) any {
 	switch typed := value.(type) {
 	case nil:
 		return nil
 	case string:
-		return redactAuditText(typed)
+		return redactAuditTextWithDepth(typed, depth)
 	case []byte:
-		return redactAuditText(string(typed))
+		return redactAuditTextWithDepth(string(typed), depth)
 	case json.RawMessage:
-		return redactAuditValue(decodeOfficialRaw(typed))
+		return redactAuditValueWithDepth(decodeOfficialRaw(typed), depth)
 	case AuditFields:
-		return redactAuditFields(typed)
+		return redactAuditFieldsWithDepth(typed, depth)
+	case map[string]string:
+		return redactStringMapWithDepth(typed, depth)
 	case map[string]any:
 		redacted := make(map[string]any, len(typed))
 		for key, item := range typed {
-			if isOfficialAuditSecretKey(key) {
+			if shouldRedactAuditField(key, item) {
 				redacted[key] = "[redacted]"
 				continue
 			}
-			redacted[key] = redactAuditValue(item)
+			redacted[key] = redactAuditValueWithDepth(item, depth)
 		}
 		return redacted
 	case []any:
 		redacted := make([]any, len(typed))
 		for i, item := range typed {
-			redacted[i] = redactAuditValue(item)
+			redacted[i] = redactAuditValueWithDepth(item, depth)
 		}
 		return redacted
 	case []string:
 		redacted := make([]string, len(typed))
 		for i, item := range typed {
-			redacted[i] = redactAuditText(item)
+			redacted[i] = redactAuditTextWithDepth(item, depth)
 		}
 		return redacted
 	default:
@@ -539,11 +585,14 @@ func redactAuditValue(value any) any {
 		if err != nil {
 			return value
 		}
+		if depth >= maxAuditJSONRedactDepth {
+			return redactAuditPlainText(string(raw))
+		}
 		var normalized any
 		if err := common.Unmarshal(raw, &normalized); err != nil {
-			return redactAuditText(string(raw))
+			return redactAuditPlainText(string(raw))
 		}
-		return redactAuditValue(normalized)
+		return redactAuditValueWithDepth(normalized, depth+1)
 	}
 }
 
@@ -591,6 +640,15 @@ func isAuditVoucherCodeCandidate(token string) bool {
 	return true
 }
 
+func isAuditRedactedPlaceholder(val string) bool {
+	val = strings.TrimSpace(val)
+	if strings.HasPrefix(val, `\"`) && strings.HasSuffix(val, `\"`) && len(val) >= 4 {
+		val = strings.TrimSpace(val[2 : len(val)-2])
+	}
+	val = strings.Trim(val, `"'`)
+	return strings.EqualFold(val, "[redacted]")
+}
+
 func redactAuditSecretKVText(text string) string {
 	matches := auditSecretText.FindAllStringSubmatchIndex(text, -1)
 	if len(matches) == 0 {
@@ -606,7 +664,7 @@ func redactAuditSecretKVText(text string) string {
 			valStart, valEnd = loc[6], loc[7]
 		}
 		val := strings.TrimSpace(text[valStart:valEnd])
-		if strings.EqualFold(strings.Trim(val, `"'`), "[redacted]") {
+		if isAuditRedactedPlaceholder(val) {
 			b.WriteString(text[loc[0]:loc[1]])
 		} else {
 			b.WriteString(text[loc[2]:loc[3]])
@@ -619,9 +677,27 @@ func redactAuditSecretKVText(text string) string {
 }
 
 func redactAuditText(text string) string {
+	return redactAuditTextWithDepth(text, 0)
+}
+
+func redactAuditTextWithDepth(text string, depth int) string {
 	if text == "" {
 		return text
 	}
+	if depth < maxAuditJSONRedactDepth {
+		if trimmed := strings.TrimSpace(text); len(trimmed) >= 2 && (trimmed[0] == '{' || trimmed[0] == '[') {
+			var decoded any
+			if err := common.Unmarshal([]byte(trimmed), &decoded); err == nil {
+				if encoded, err := common.Marshal(redactAuditValueWithDepth(decoded, depth+1)); err == nil {
+					return string(encoded)
+				}
+			}
+		}
+	}
+	return redactAuditPlainText(text)
+}
+
+func redactAuditPlainText(text string) string {
 	text = auditSecretPEM.ReplaceAllString(text, "[redacted]")
 	text = auditSecretJSONKV.ReplaceAllString(text, `$1"[redacted]"`)
 	text = redactAuditSecretKVText(text)
@@ -634,11 +710,31 @@ func redactAuditText(text string) string {
 	})
 }
 
-func isOfficialAuditSecretKey(key string) bool {
+func normalizeOfficialAuditKey(key string) string {
 	normalized := strings.ToLower(strings.TrimSpace(key))
-	normalized = strings.ReplaceAll(normalized, "-", "_")
+	return strings.ReplaceAll(normalized, "-", "_")
+}
+
+func shouldRedactAuditField(key string, value any) bool {
+	normalized := normalizeOfficialAuditKey(key)
 	if _, ok := auditSecretKeyNames[normalized]; ok {
 		return true
+	}
+	if _, isBool := value.(bool); isBool {
+		return false
+	}
+	return isOfficialAuditSecretKey(normalized)
+}
+
+func isOfficialAuditSecretKey(key string) bool {
+	normalized := normalizeOfficialAuditKey(key)
+	if _, ok := auditSecretKeyNames[normalized]; ok {
+		return true
+	}
+	for _, prefix := range auditNonSecretKeyPrefixes {
+		if strings.HasPrefix(normalized, prefix) {
+			return false
+		}
 	}
 	for _, suffix := range []string{"_password", "_passwd", "_secret", "_private_key", "_api_key", "_apikey"} {
 		if strings.HasSuffix(normalized, suffix) {

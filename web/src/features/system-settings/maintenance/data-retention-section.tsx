@@ -374,6 +374,7 @@ export function DataRetentionSection() {
               </p>
             )}
             {(runs.data ?? []).map((run) => {
+              const runItems = Array.isArray(run.items) ? run.items : []
               const categoryTitle = (category: string) =>
                 t(
                   categories.find((item) => item.category === category)
@@ -390,13 +391,13 @@ export function DataRetentionSection() {
                       ? t('Started manually')
                       : t('Scheduled')}
                   </p>
-                  {run.items.length === 0 ? (
+                  {runItems.length === 0 ? (
                     <p className='text-muted-foreground'>
                       {t('Nothing was due for cleanup.')}
                     </p>
                   ) : (
                     <ul className='text-muted-foreground flex flex-col gap-0.5 tabular-nums'>
-                      {run.items.map((item) => (
+                      {runItems.map((item) => (
                         <li key={item.id}>
                           {categoryTitle(item.category)}:{' '}
                           {t('deleted {{deleted}}, de-identified {{deidentified}}, failed {{failed}}', {

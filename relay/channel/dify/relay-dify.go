@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -231,12 +232,13 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	usage := &dto.Usage{}
 	var nodeToken int
 	var streamErr error
-	hasOutput := false
+	var lastParseErr error
 	helper.SetEventStreamHeaders(c)
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		var difyResponse DifyChunkChatCompletionResponse
 		if err := common.Unmarshal([]byte(data), &difyResponse); err != nil {
 			common.SysLog(common.LogText("error unmarshalling stream response: %s", err.Error()))
+			lastParseErr = err
 			sr.Error(err)
 			return
 		}
@@ -254,28 +256,38 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 			return
 		}
 		openaiResponse := *streamResponseDify2OpenAI(difyResponse)
+		if err := helper.ObjectData(c, openaiResponse); err != nil {
+			common.SysLog(err.Error())
+			sr.Stop(err)
+			return
+		}
 		if len(openaiResponse.Choices) != 0 {
 			content := openaiResponse.Choices[0].Delta.GetContentString()
 			responseText += content
-			if content != "" {
-				hasOutput = true
-			}
 			if openaiResponse.Choices[0].Delta.ReasoningContent != nil {
 				nodeToken += 1
-				hasOutput = true
 			}
 		}
-		if err := helper.ObjectData(c, openaiResponse); err != nil {
-			common.SysLog(err.Error())
-			sr.Error(err)
-		} else if info != nil {
+		if info != nil {
 			info.SendResponseCount++
 		}
 	})
-	if streamErr != nil && !hasOutput && !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
-		return nil, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+	if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+		if helper.ClientRequestCanceled(c) {
+			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
+		if streamErr != nil {
+			return nil, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		}
+		if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
+			return nil, types.NewOpenAIError(info.StreamStatus.EndError, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		}
+		if lastParseErr != nil {
+			return nil, types.NewOpenAIError(lastParseErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		return nil, types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
 	}
-	if streamErr == nil {
+	if streamErr == nil && (info == nil || info.StreamStatus == nil || info.StreamStatus.EndError == nil) {
 		helper.Done(c)
 	}
 	usage.PromptTokens = max(usage.PromptTokens, 0)

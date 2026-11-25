@@ -378,6 +378,18 @@ func agentStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.R
 	})
 	common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, info.StreamStatus)
 	info.StreamStatus.RequireTerminal()
+	if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+		if streamErr != nil {
+			return nil, streamErr
+		}
+		if helper.ClientRequestCanceled(c) {
+			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
+		if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
+			return nil, types.NewOpenAIError(info.StreamStatus.EndError, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		}
+		return nil, types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusBadGateway)
+	}
 	usage := accumulator.Finish()
 	// Reported zero is authoritative; the generic accumulator estimates zeros
 	// for providers that omit counters. Agent always reports explicit counters.

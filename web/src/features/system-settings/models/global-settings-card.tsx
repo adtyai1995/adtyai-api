@@ -95,7 +95,9 @@ const schema = z.object({
   }),
   general_setting: z.object({
     ping_interval_enabled: z.boolean(),
-    ping_interval_seconds: z.coerce.number().min(1),
+    ping_interval_seconds: z.coerce
+      .number({ error: 'Please enter a valid number' })
+      .min(1, 'Must be ≥ 1'),
   }),
 })
 

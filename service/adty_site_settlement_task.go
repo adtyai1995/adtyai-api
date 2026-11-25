@@ -437,6 +437,9 @@ func ResumeAdtySiteSettlementWithAuditForActor(siteId, operatorId, actorRole int
 		if err := checkAdtySiteTargetActorTx(tx, &site, operatorId, actorRole, denyAdminTarget); err != nil {
 			return err
 		}
+		if site.Status == model.AdtySiteStatusDeleting {
+			return ErrAdtySiteStatus
+		}
 		if strings.TrimSpace(site.SettleHoldReason) == "" {
 			return common.NewMessage("This site is not on settlement hold")
 		}

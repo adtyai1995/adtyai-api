@@ -1005,16 +1005,21 @@ func removeAdtySiteDomain(ctx context.Context, domain *model.AdtySiteDomain) err
 
 func removeAdtySiteDomainForActor(ctx context.Context, domain *model.AdtySiteDomain, actorID, actorRole int, denyAdminTarget bool) error {
 	err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if (actorRole > 0 || denyAdminTarget) && domain.SiteId > 0 {
+		if domain.SiteId > 0 {
 			var site model.AdtySite
-			if err := model.AdtyLockForUpdate(tx).Select("id", "owner_user_id").Where("id = ?", domain.SiteId).First(&site).Error; err != nil {
+			if err := model.AdtyLockForUpdate(tx).Select("id", "owner_user_id", "status").Where("id = ?", domain.SiteId).First(&site).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					return ErrAdtySiteNotFound
 				}
 				return err
 			}
-			if err := checkAdtySiteTargetActorTx(tx, &site, actorID, actorRole, denyAdminTarget); err != nil {
-				return err
+			if site.Status == model.AdtySiteStatusDeleting {
+				return ErrAdtySiteStatus
+			}
+			if actorRole > 0 || denyAdminTarget {
+				if err := checkAdtySiteTargetActorTx(tx, &site, actorID, actorRole, denyAdminTarget); err != nil {
+					return err
+				}
 			}
 		}
 		var current model.AdtySiteDomain
@@ -1026,6 +1031,9 @@ func removeAdtySiteDomainForActor(ctx context.Context, domain *model.AdtySiteDom
 		}
 		if current.Status == model.AdtySiteDomainRemoved {
 			return nil
+		}
+		if current.LeaseUntil > time.Now().Unix() && current.LeaseToken != "" {
+			return common.NewMessage("Domain automation is in progress for this site; please try again shortly")
 		}
 		if current.AutomationState != "" {
 			if current.DesiredState == "removed" || current.Status == model.AdtySiteDomainRemoved {
@@ -1085,16 +1093,23 @@ func removeAdtySiteDomainLocked(ctx context.Context, tx *gorm.DB, domain *model.
 		}
 	}
 	if err := adtyDomainSnapshotQuery(tx, domain).Updates(map[string]any{
-		"status":           model.AdtySiteDomainRemoved,
-		"turnstile_widget": "",
-		"lease_token":      "",
-		"lease_until":      0,
-		"generation":       gorm.Expr("generation + 1"),
-		"last_checked_at":  time.Now().Unix(),
+		"status":               model.AdtySiteDomainRemoved,
+		"cf_hostname_id":       "",
+		"cf_create_started_at": 0,
+		"turnstile_widget":     "",
+		"lease_token":          "",
+		"lease_until":          0,
+		"generation":           gorm.Expr("generation + 1"),
+		"last_checked_at":      time.Now().Unix(),
 	}).Error; err != nil {
 		return err
 	}
-	domain.Status, domain.TurnstileWidget = model.AdtySiteDomainRemoved, ""
+	if tx.Migrator().HasTable(&model.AdtyDomainCloudResource{}) {
+		if err := tx.Where("domain_id = ?", domain.Id).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
+			return err
+		}
+	}
+	domain.Status, domain.CFHostnameId, domain.CFCreateStartedAt, domain.TurnstileWidget = model.AdtySiteDomainRemoved, "", 0, ""
 	domain.LeaseToken, domain.LeaseUntil = "", 0
 	domain.Generation++
 	return nil

@@ -688,7 +688,9 @@ type AdtyTodoItem struct {
 	Key            string `json:"key" gorm:"type:varchar(128);not null;uniqueIndex:idx_adty_todo_user_key,priority:2;index"`
 	PublicationId  int    `json:"publication_id" gorm:"not null;default:0;index"`
 	Title          string `json:"title" gorm:"type:varchar(200);not null;default:''"`
+	TitleEn        string `json:"title_en,omitempty" gorm:"-"`
 	Content        string `json:"content" gorm:"type:text"`
+	ContentEn      string `json:"content_en,omitempty" gorm:"-"`
 	Business       string `json:"business" gorm:"type:varchar(200);not null;default:''"`
 	Severity       string `json:"severity" gorm:"type:varchar(32);not null;default:'severe'"`
 	Status         string `json:"status" gorm:"type:varchar(32);not null;default:'pending';index"`
@@ -777,7 +779,7 @@ func adtyTodoItemVisibleForUserOnSite(db *gorm.DB, userID int, site *model.AdtyS
 		if site == nil && pub.Audience == "site" && pub.TargetSiteId > 0 && db.Migrator().HasTable(&model.AdtySite{}) {
 			var ownedCount int64
 			if err := db.Model(&model.AdtySite{}).
-				Where("id = ? AND owner_user_id = ? AND status <> ?", pub.TargetSiteId, userID, model.AdtySiteStatusClosed).
+				Where("id = ? AND owner_user_id = ? AND status NOT IN ?", pub.TargetSiteId, userID, []string{model.AdtySiteStatusClosed, model.AdtySiteStatusDeleting}).
 				Count(&ownedCount).Error; err != nil {
 				return false, err
 			}
@@ -1389,7 +1391,13 @@ func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeComplet
 		return items, nil
 	}
 	hasPubTable := model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyNotificationPublication{})
-	filtered := make([]AdtyTodoItem, 0, len(items))
+	type visibleTodoEntry struct {
+		item AdtyTodoItem
+		pub  *model.AdtyNotificationPublication
+	}
+	visibleEntries := make([]visibleTodoEntry, 0, len(items))
+	pubIDSeen := make(map[int]struct{})
+	translationKeys := make([]string, 0)
 	for i := range items {
 		var pub *model.AdtyNotificationPublication
 		if hasPubTable {
@@ -1402,22 +1410,75 @@ func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeComplet
 		if !visible {
 			continue
 		}
-		if pub != nil {
-			if strings.TrimSpace(pub.Title) != "" {
-				items[i].Title = truncateAdtyRunes(pub.Title, 200)
+		if pub != nil && pub.Id > 0 {
+			if _, seen := pubIDSeen[pub.Id]; !seen {
+				pubIDSeen[pub.Id] = struct{}{}
+				translationKeys = append(translationKeys,
+					adtyNotificationTranslationKey(pub.Id),
+					adtyNotificationTitleTranslationKey(pub.Id),
+				)
 			}
+		}
+		visibleEntries = append(visibleEntries, visibleTodoEntry{item: items[i], pub: pub})
+	}
+	if len(visibleEntries) == 0 {
+		return []AdtyTodoItem{}, nil
+	}
+	headByKey := map[string]model.AdtyTranslationHead{}
+	if len(translationKeys) > 0 && model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyTranslationHead{}) {
+		var heads []model.AdtyTranslationHead
+		if err := model.DB.Where("object_key IN ?", translationKeys).Find(&heads).Error; err == nil {
+			for _, head := range heads {
+				headByKey[head.ObjectKey] = head
+			}
+		}
+	}
+	filtered := make([]AdtyTodoItem, 0, len(visibleEntries))
+	for _, entry := range visibleEntries {
+		item := entry.item
+		pub := entry.pub
+		if pub != nil {
+			titleSrc := strings.TrimSpace(pub.Title)
+			if titleSrc != "" {
+				item.Title = truncateAdtyRunes(titleSrc, 200)
+			}
+			isHTML := strings.EqualFold(strings.TrimSpace(pub.ContentFormat), "html")
+			bodyHead, hasBodyHead := headByKey[adtyNotificationTranslationKey(pub.Id)]
+			bodySrc := ""
 			if strings.TrimSpace(pub.Content) != "" {
-				items[i].Content = formatAdtyTodoContentFromPublication(model.DB, pub)
+				bodySrc = stripAdtyNotificationTranslationSuffix(pub.Content, bodyHead.English)
+				content := bodySrc
+				if isHTML {
+					content = AdtyNotificationHTMLToPlainText(content)
+				}
+				item.Content = stripAdtyTodoNotReadySuffix(content)
 			} else {
-				items[i].Content = sanitizeAdtyTodoStoredContent(items[i].Content)
+				item.Content = sanitizeAdtyTodoStoredContent(item.Content)
+			}
+			if hasBodyHead && bodyHead.Status == model.AdtyTranslationReady && strings.TrimSpace(bodyHead.English) != "" && adtyTranslationHeadMatchesSource(bodyHead, bodySrc) {
+				eng := strings.TrimSpace(bodyHead.English)
+				if isHTML {
+					eng = AdtyNotificationHTMLToPlainText(SanitizeAdtyNotificationHTML(eng))
+				}
+				eng = strings.TrimSpace(stripAdtyTodoNotReadySuffix(eng))
+				if eng != "" && !strings.EqualFold(eng, AdtyTranslationNotReady) {
+					item.ContentEn = eng
+				}
+			}
+			titleHead, hasTitleHead := headByKey[adtyNotificationTitleTranslationKey(pub.Id)]
+			if hasTitleHead && titleHead.Status == model.AdtyTranslationReady && strings.TrimSpace(titleHead.English) != "" && adtyTranslationHeadMatchesSource(titleHead, titleSrc) {
+				titleEn := strings.TrimSpace(stripAdtyTodoNotReadySuffix(titleHead.English))
+				if titleEn != "" && !strings.EqualFold(titleEn, AdtyTranslationNotReady) {
+					item.TitleEn = truncateAdtyRunes(titleEn, 200)
+				}
 			}
 			if strings.TrimSpace(pub.Business) != "" {
-				items[i].Business = truncateAdtyRunes(pub.Business, 200)
+				item.Business = truncateAdtyRunes(pub.Business, 200)
 			}
 		} else {
-			items[i].Content = sanitizeAdtyTodoStoredContent(items[i].Content)
+			item.Content = sanitizeAdtyTodoStoredContent(item.Content)
 		}
-		filtered = append(filtered, items[i])
+		filtered = append(filtered, item)
 	}
 	return filtered, nil
 }

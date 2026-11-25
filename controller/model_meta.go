@@ -138,6 +138,12 @@ func CreateModelMeta(c *gin.Context) {
 		common.ApiErrorT(c, "Model name cannot be empty")
 		return
 	}
+	if m.Status == 0 {
+		if err := adtyAuthorizeAdminActions(c, authz.AdtyModelCreate, authz.AdtyModelDelete); err != nil {
+			denyAdtyAdminAction(c)
+			return
+		}
+	}
 	if err := model.ValidateMetadataValues(model.MetadataValues{Endpoints: m.Endpoints, Status: m.Status, NameRule: m.NameRule}); err != nil {
 		common.ApiError(c, err)
 		return
@@ -183,8 +189,8 @@ func UpdateModelMeta(c *gin.Context) {
 		return
 	}
 	// 改元数据要「模型·编辑」；把目录里的模型撤成 status=0（下架）与删除是同一个
-	// 业务动作——公开目录里看不到、也下不了单——所以要同一档权限（ISS-R4-0117）。
-	if err := adtyAuthorizeAdminActions(c, adtyModelUpdatePermissions(m.Id, m.Status)...); err != nil {
+	// 业务动作——公开目录里看不到、也下不了单——所以要同一档权限（ISS-R4-0117 / R5-07）。
+	if err := adtyAuthorizeAdminActions(c, adtyModelUpdatePermissions(m.Id, m.Status, statusOnly, m.ModelName, m.NameRule)...); err != nil {
 		denyAdtyAdminAction(c)
 		return
 	}
@@ -242,25 +248,30 @@ func UpdateModelMeta(c *gin.Context) {
 // 也下不了单），所以两者按同一档授权（约定 D 第 1 条）。只让「请求里带了 status」
 // 走删除也不行：`Model.Update` 是无条件写 status 的，整个请求体漏掉 status 字段
 // （反序列化成 0）同样是下架。
-func adtyModelUpdatePermissions(id, status int) []authz.Permission {
+func adtyModelUpdatePermissions(id, status int, statusOnly bool, modelName string, nameRule int) []authz.Permission {
 	permissions := []authz.Permission{authz.AdtyModelWrite}
-	if !adtyModelUpdateHides(id, status) {
+	if !adtyModelUpdateHides(id, status, statusOnly, modelName, nameRule) {
 		return permissions
 	}
 	return append(permissions, authz.AdtyModelDelete)
 }
 
-// adtyModelUpdateHides 判断这次更新是不是一次新的下架。已经隐藏的模型没有动作可做，
-// 读不到的行交给后面的更新自己报错——两种情况都不额外要删除权限。
-func adtyModelUpdateHides(id, status int) bool {
+// adtyModelUpdateHides 判断这次更新是不是一次新的下架（含把既有隐藏记录改名或改匹配规则以覆盖在售模型）。
+func adtyModelUpdateHides(id, status int, statusOnly bool, modelName string, nameRule int) bool {
 	if status != 0 {
 		return false
 	}
 	var current model.Model
-	if err := model.DB.Select("id", "status").First(&current, id).Error; err != nil {
+	if err := model.DB.Select("id", "status", "model_name", "name_rule").First(&current, id).Error; err != nil {
 		return false
 	}
-	return current.Status != 0
+	if current.Status != 0 {
+		return true
+	}
+	if !statusOnly && (strings.TrimSpace(modelName) != strings.TrimSpace(current.ModelName) || nameRule != current.NameRule) {
+		return true
+	}
+	return false
 }
 
 // DeleteModelMeta 删除模型

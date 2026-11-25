@@ -266,10 +266,10 @@ func ValidateResellerPatch(s *ResellerSetting, resendConfigured bool, changed ma
 	if touches("unknown_host_mode") && s.UnknownHostMode != ResellerUnknownHostMain && s.UnknownHostMode != ResellerUnknownHostReject {
 		return common.NewMessage("Invalid parameters")
 	}
-	if touches("cost_factor", "min_cost_factor", "enabled") && s.CostFactor != nil && !validPositiveMultiplier(s.CostFactor) {
+	if touches("cost_factor", "min_cost_factor") && s.CostFactor != nil && !validPositiveMultiplier(s.CostFactor) {
 		return common.NewMessage("The cost factor must be greater than 0")
 	}
-	if touches("min_cost_factor", "cost_factor", "enabled") && s.MinCostFactor != nil && !validPositiveMultiplier(s.MinCostFactor) {
+	if touches("min_cost_factor", "cost_factor") && s.MinCostFactor != nil && !validPositiveMultiplier(s.MinCostFactor) {
 		return common.NewMessage("The cost factor must be greater than 0")
 	}
 	if touches("cost_factor", "pending_cost_factor") && s.PendingCostFactor != nil && !validPositiveMultiplier(s.PendingCostFactor) {
@@ -278,12 +278,12 @@ func ValidateResellerPatch(s *ResellerSetting, resendConfigured bool, changed ma
 	if touches("min_cost_factor", "pending_min_cost_factor") && s.PendingMinCostFactor != nil && !validPositiveMultiplier(s.PendingMinCostFactor) {
 		return common.NewMessage("The cost factor must be greater than 0")
 	}
-	if touches("cost_factor", "min_cost_factor", "enabled") && s.CostFactor != nil && s.MinCostFactor != nil && *s.CostFactor < *s.MinCostFactor {
+	if touches("cost_factor", "min_cost_factor") && s.CostFactor != nil && s.MinCostFactor != nil && *s.CostFactor < *s.MinCostFactor {
 		return common.NewMessage("The cost factor cannot be below the minimum cost factor")
 	}
 	for _, tier := range s.CostFactorTiers {
 		factor := tier.CostFactor
-		if touches("min_cost_factor", "cost_factor_tiers", "enabled") && (tier.MinMonthlyUSD < 0 || !validPositiveMultiplier(&factor) || (s.MinCostFactor != nil && factor < *s.MinCostFactor)) {
+		if touches("min_cost_factor", "cost_factor_tiers") && (tier.MinMonthlyUSD < 0 || !validPositiveMultiplier(&factor) || (s.MinCostFactor != nil && factor < *s.MinCostFactor)) {
 			return common.NewMessage("Each tier needs a monthly amount of at least 0 and a cost factor not below the minimum")
 		}
 	}
@@ -330,9 +330,6 @@ func ValidateResellerPatch(s *ResellerSetting, resendConfigured bool, changed ma
 	}
 	if touches("custom_domain_enabled", "cloudflare_apiToken", "cloudflare_zone_id", "cname_target") && s.CustomDomainEnabled && !s.CloudflareConfigured() {
 		return common.NewMessage("Fill in the Cloudflare API token, zone ID and CNAME target before turning custom domains on")
-	}
-	if touches("sender_domain_enabled") && s.SenderDomainEnabled && !resendConfigured {
-		return common.NewMessage("Fill in the Resend API key under email settings before turning sender domains on")
 	}
 	return nil
 }

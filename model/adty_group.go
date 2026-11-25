@@ -474,7 +474,7 @@ func countAdtySiteRefs(db *gorm.DB, id string) (int64, error) {
 	}
 	var sites []AdtySite
 	if err := db.Select("id", "allowed_groups").
-		Where("allowed_groups <> '' AND status <> ?", AdtySiteStatusClosed).
+		Where("allowed_groups <> '' AND status NOT IN (?, ?)", AdtySiteStatusClosed, AdtySiteStatusDeleting).
 		Find(&sites).Error; err != nil {
 		return 0, err
 	}
@@ -652,6 +652,25 @@ func lockAssignableAdtyGroupsTx(tx *gorm.DB, ids []string) error {
 	return nil
 }
 
+// preLockAdtyGroupRowAllowDeletedTx acquires the FOR UPDATE lock on one
+// adty_groups row before locking users, reporting whether the row exists and
+// is soft-deleted so callers can allow keeping an unchanged legacy group while
+// rejecting transitions onto a soft-deleted group without reversing lock order.
+func preLockAdtyGroupRowAllowDeletedTx(tx *gorm.DB, id string) (bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" || tx == nil || !tx.Migrator().HasTable(&AdtyGroup{}) {
+		return false, nil
+	}
+	var rows []AdtyGroup
+	if err := lockForUpdate(tx.Unscoped()).Where("id = ?", id).Limit(1).Find(&rows).Error; err != nil {
+		return false, err
+	}
+	if len(rows) == 0 {
+		return false, nil
+	}
+	return rows[0].DeletedAt.Valid, nil
+}
+
 // PreLockAdtyGroupsTx locks assignable adty_groups rows in sorted order so callers
 // that subsequently lock users/channels preserve the canonical adty_groups -> users lock order.
 func PreLockAdtyGroupsTx(tx *gorm.DB, ids ...string) error {
@@ -797,7 +816,7 @@ func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 		if tx.Migrator().HasTable(&AdtySite{}) {
 			var sites []AdtySite
 			if err := lockForUpdate(tx).Select("id", "status", "allowed_groups").
-				Where("allowed_groups <> ''").
+				Where("allowed_groups <> '' AND status <> ?", AdtySiteStatusDeleting).
 				Order("id").Find(&sites).Error; err != nil {
 				return err
 			}
@@ -815,7 +834,7 @@ func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 					return err
 				}
 				siteChanged = true
-				if site.Status != AdtySiteStatusClosed {
+				if site.Status != AdtySiteStatusClosed && site.Status != AdtySiteStatusDeleting {
 					moved.Sites++
 				}
 			}

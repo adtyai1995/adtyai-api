@@ -2,6 +2,7 @@ package cloudflare
 
 import (
 	"bufio"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ func cfStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 	if resp != nil {
 		defer service.CloseResponseBodyGracefully(resp)
 	}
+	helper.StopStreamKeepAlive(c)
 	scanner := helper.NewStreamScanner(resp.Body)
 	scanner.Split(bufio.ScanLines)
 
@@ -39,6 +41,7 @@ func cfStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 	id := helper.GetResponseID(c)
 	var responseText string
 	isFirst := true
+	var lastParseErr error
 
 	for scanner.Scan() {
 		data := scanner.Text()
@@ -55,37 +58,59 @@ func cfStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 		var response dto.ChatCompletionsStreamResponse
 		err := common.Unmarshal([]byte(data), &response)
 		if err != nil {
+			lastParseErr = err
 			logger.LogError(c, common.LogText("error_unmarshalling_stream_response: %s", err.Error()))
 			continue
 		}
-		for _, choice := range response.Choices {
-			choice.Delta.Role = "assistant"
-			responseText += choice.Delta.GetContentString()
+		var chunkText strings.Builder
+		for i := range response.Choices {
+			response.Choices[i].Delta.Role = "assistant"
+			chunkText.WriteString(response.Choices[i].Delta.GetContentString())
 		}
 		response.Id = id
 		response.Model = info.UpstreamModelName
 		err = helper.ObjectData(c, response)
+		if err != nil {
+			logger.LogError(c, common.LogText("error_rendering_stream_response: %s", err.Error()))
+			break
+		}
 		if isFirst {
 			isFirst = false
 			info.FirstResponseTime = time.Now()
 		}
-		if err != nil {
-			logger.LogError(c, common.LogText("error_rendering_stream_response: %s", err.Error()))
+		responseText += chunkText.String()
+		if info != nil {
+			info.SendResponseCount++
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		logger.LogError(c, common.LogText("error_scanning_stream_response: %s", err.Error()))
+	scanErr := scanner.Err()
+	if scanErr != nil {
+		logger.LogError(c, common.LogText("error_scanning_stream_response: %s", scanErr.Error()))
+	}
+	if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+		if helper.ClientRequestCanceled(c) {
+			return types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry()), nil
+		}
+		if scanErr != nil {
+			return types.NewOpenAIError(scanErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError), nil
+		}
+		if lastParseErr != nil {
+			return types.NewOpenAIError(lastParseErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError), nil
+		}
+		return types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError), nil
 	}
 	usage := service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
-	if info.ShouldIncludeUsage {
-		response := helper.GenerateFinalUsageResponse(id, info.StartTime.Unix(), info.UpstreamModelName, *usage)
-		err := helper.ObjectData(c, response)
-		if err != nil {
-			logger.LogError(c, common.LogText("error_rendering_final_usage_response: %s", err.Error()))
+	if scanErr == nil {
+		if info.ShouldIncludeUsage {
+			response := helper.GenerateFinalUsageResponse(id, info.StartTime.Unix(), info.UpstreamModelName, *usage)
+			err := helper.ObjectData(c, response)
+			if err != nil {
+				logger.LogError(c, common.LogText("error_rendering_final_usage_response: %s", err.Error()))
+			}
 		}
+		helper.Done(c)
 	}
-	helper.Done(c)
 
 	return nil, usage
 }

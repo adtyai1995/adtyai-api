@@ -3,7 +3,6 @@ package cohere
 import (
 	"encoding/base64"
 	"errors"
-	"io"
 	"math"
 	"net/http"
 	"strings"
@@ -83,6 +82,7 @@ func stopReasonCohere2OpenAI(reason string) string {
 }
 
 func cohereStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	helper.StopStreamKeepAlive(c)
 	responseId := helper.GetResponseID(c)
 	createdTime := common.GetTimestamp()
 	usage := &dto.Usage{}
@@ -101,10 +101,11 @@ func cohereStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		return 0, nil, nil
 	})
 	dataChan := make(chan string)
-	stopChan := make(chan bool)
+	stopChan := make(chan error, 1)
 	done := make(chan struct{})
+	workerDone := make(chan struct{})
 	go func() {
-		defer service.CloseResponseBodyGracefully(resp)
+		defer close(workerDone)
 		for scanner.Scan() {
 			data := scanner.Text()
 			select {
@@ -113,18 +114,24 @@ func cohereStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 				return
 			}
 		}
-		if err := scanner.Err(); err != nil {
+		err := scanner.Err()
+		if err != nil {
 			common.SysLog(common.LogText("error reading stream: %s", err.Error()))
 		}
 		select {
-		case stopChan <- true:
+		case stopChan <- err:
 		case <-done:
 		}
 	}()
 	helper.SetEventStreamHeaders(c)
 	isFirst := true
-	c.Stream(func(w io.Writer) bool {
+	var scanErr error
+	var lastParseErr error
+streamLoop:
+	for {
 		select {
+		case <-c.Request.Context().Done():
+			break streamLoop
 		case data := <-dataChan:
 			if isFirst {
 				isFirst = false
@@ -134,8 +141,9 @@ func cohereStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			var cohereResp CohereResponse
 			err := common.Unmarshal([]byte(data), &cohereResp)
 			if err != nil {
+				lastParseErr = err
 				common.SysLog(common.LogText("error unmarshalling stream response: %s", err.Error()))
-				return true
+				continue
 			}
 			var openaiResp dto.ChatCompletionsStreamResponse
 			openaiResp.Id = responseId
@@ -151,11 +159,6 @@ func cohereStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 						FinishReason: &finishReason,
 					},
 				}
-				if cohereResp.Response != nil {
-					usage.PromptTokens = max(cohereResp.Response.Meta.BilledUnits.InputTokens, 0)
-					usage.CompletionTokens = max(cohereResp.Response.Meta.BilledUnits.OutputTokens, 0)
-					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-				}
 			} else {
 				openaiResp.Choices = []dto.ChatCompletionsStreamResponseChoice{
 					{
@@ -166,22 +169,47 @@ func cohereStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 						Index: 0,
 					},
 				}
+			}
+			if err := helper.ObjectData(c, openaiResp); err != nil {
+				common.SysLog(common.LogText("error sending stream response: %s", err.Error()))
+				break streamLoop
+			}
+			if cohereResp.IsFinished {
+				if cohereResp.Response != nil {
+					usage.PromptTokens = max(cohereResp.Response.Meta.BilledUnits.InputTokens, 0)
+					usage.CompletionTokens = max(cohereResp.Response.Meta.BilledUnits.OutputTokens, 0)
+					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+				}
+			} else {
 				responseText += cohereResp.Text
 			}
-			jsonStr, err := common.Marshal(openaiResp)
-			if err != nil {
-				common.SysLog(common.LogText("error marshalling stream response: %s", err.Error()))
-				return true
+			if info != nil {
+				info.SendResponseCount++
 			}
-			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonStr)})
-			return true
-		case <-stopChan:
-			c.Render(-1, common.CustomEvent{Data: "data: [DONE]"})
-			return false
+		case err := <-stopChan:
+			scanErr = err
+			break streamLoop
 		}
-	})
+	}
 	close(done)
 	service.CloseResponseBodyGracefully(resp)
+	<-workerDone
+
+	if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+		if helper.ClientRequestCanceled(c) {
+			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
+		if scanErr != nil {
+			return nil, types.NewOpenAIError(scanErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		if lastParseErr != nil {
+			return nil, types.NewOpenAIError(lastParseErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		return nil, types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+	}
+	if scanErr == nil {
+		helper.Done(c)
+	}
 	if usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 && usage.TotalTokens <= 0 {
 		usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
 	} else if usage.TotalTokens <= 0 {

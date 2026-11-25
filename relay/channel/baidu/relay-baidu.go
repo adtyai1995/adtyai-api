@@ -116,18 +116,32 @@ func embeddingResponseBaidu2OpenAI(response *BaiduEmbeddingResponse) *dto.OpenAI
 }
 
 func baiduStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*types.NewAPIError, *dto.Usage) {
+	defer service.CloseResponseBodyGracefully(resp)
 	usage := &dto.Usage{}
 	var responseText strings.Builder
-	hasOutput := false
+	var lastParseErr error
+	var streamErr *types.NewAPIError
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		var baiduResponse BaiduChatStreamResponse
 		if err := common.Unmarshal([]byte(data), &baiduResponse); err != nil {
 			common.SysLog(common.LogText("error unmarshalling stream response: %s", err.Error()))
+			lastParseErr = err
 			sr.Error(err)
 			return
 		}
-		if baiduResponse.Result != "" {
-			responseText.WriteString(baiduResponse.Result)
+		if baiduResponse.ErrorCode != 0 || baiduResponse.ErrorMsg != "" {
+			errMsg := baiduResponse.ErrorMsg
+			if errMsg == "" {
+				errMsg = fmt.Sprintf("baidu upstream error code: %d", baiduResponse.ErrorCode)
+			}
+			if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+				streamErr = types.NewOpenAIError(errors.New(errMsg), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+				sr.Stop(streamErr)
+				return
+			}
+			common.SysLog(common.LogText("baidu stream error after output written, billing delivered usage: %s", errMsg))
+			sr.Stop(errors.New(errMsg))
+			return
 		}
 		if baiduResponse.Usage.TotalTokens > 0 || baiduResponse.Usage.PromptTokens > 0 || baiduResponse.Usage.CompletionTokens > 0 {
 			prompt := max(baiduResponse.Usage.PromptTokens, 0)
@@ -140,13 +154,32 @@ func baiduStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		response := streamResponseBaidu2OpenAI(&baiduResponse)
 		if err := helper.ObjectData(c, response); err != nil {
 			common.SysLog(common.LogText("error sending stream response: %s", err.Error()))
-			sr.Error(err)
+			sr.Stop(err)
 			return
 		}
-		hasOutput = true
+		if baiduResponse.Result != "" {
+			responseText.WriteString(baiduResponse.Result)
+		}
+		if info != nil {
+			info.SendResponseCount++
+		}
 	})
-	service.CloseResponseBodyGracefully(resp)
-	if usage.TotalTokens <= 0 && (hasOutput || responseText.Len() > 0) {
+	if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+		if helper.ClientRequestCanceled(c) {
+			return types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry()), nil
+		}
+		if streamErr != nil {
+			return streamErr, nil
+		}
+		if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
+			return types.NewOpenAIError(info.StreamStatus.EndError, types.ErrorCodeBadResponseBody, http.StatusInternalServerError), nil
+		}
+		if lastParseErr != nil {
+			return types.NewOpenAIError(lastParseErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError), nil
+		}
+		return types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError), nil
+	}
+	if usage.TotalTokens <= 0 {
 		usage = service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 	}
 	return nil, usage

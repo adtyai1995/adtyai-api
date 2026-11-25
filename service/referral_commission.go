@@ -45,7 +45,7 @@ func adtyReferralSnapshotWithDB(db *gorm.DB, userId int, lockUser bool) (int, de
 	slices.Sort(userIDs)
 	for _, id := range userIDs {
 		var user model.User
-		userQuery := db.Select("id", "site_id", "status").Where("id = ?", id)
+		userQuery := db.Select("id", "site_id", "status", "role").Where("id = ?", id)
 		if lockUser {
 			userQuery = model.AdtyLockForUpdate(userQuery)
 		}
@@ -55,7 +55,7 @@ func adtyReferralSnapshotWithDB(db *gorm.DB, userId int, lockUser bool) (int, de
 			}
 			return 0, decimal.Zero, err
 		}
-		if user.SiteId > 0 {
+		if user.SiteId > 0 || user.Role >= common.RoleAdminUser {
 			return 0, decimal.Zero, nil
 		}
 		if id == affiliate.UserId && user.Status != common.UserStatusEnabled {

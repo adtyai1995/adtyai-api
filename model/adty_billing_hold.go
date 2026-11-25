@@ -308,8 +308,33 @@ func BackfillMissingAdtyBillingHolds(ctx context.Context, limit int) error {
 		limit = 100
 	}
 	var ops []BillingOperation
+	// R5-19: Filter out operations whose normalized request_id already has a
+	// billing hold (or direct:* chunks whose root request:<id> is already
+	// finalized), so LIMIT never stalls behind the oldest 100 historical rows.
+	var holdMatchExpr, directRootMatchExpr string
+	if common.UsingMainDatabase(common.DatabaseTypeMySQL) {
+		holdMatchExpr = "(h.request_id = billing_operations.operation_key OR " +
+			"CONCAT('request:', h.request_id) = billing_operations.operation_key OR " +
+			"billing_operations.operation_key LIKE CONCAT('direct:', h.request_id, ':%') OR " +
+			"billing_operations.operation_key LIKE CONCAT('violation:', h.request_id, ':%'))"
+		directRootMatchExpr = "billing_operations.operation_key LIKE 'direct:%' AND EXISTS (" +
+			"SELECT 1 FROM billing_operations root WHERE root.user_id = billing_operations.user_id " +
+			"AND root.state IN (?, ?) AND root.operation_key LIKE 'request:%' " +
+			"AND billing_operations.operation_key LIKE CONCAT('direct:', SUBSTR(root.operation_key, 9), ':%'))"
+	} else {
+		holdMatchExpr = "(h.request_id = billing_operations.operation_key OR " +
+			"('request:' || h.request_id) = billing_operations.operation_key OR " +
+			"billing_operations.operation_key LIKE ('direct:' || h.request_id || ':%') OR " +
+			"billing_operations.operation_key LIKE ('violation:' || h.request_id || ':%'))"
+		directRootMatchExpr = "billing_operations.operation_key LIKE 'direct:%' AND EXISTS (" +
+			"SELECT 1 FROM billing_operations root WHERE root.user_id = billing_operations.user_id " +
+			"AND root.state IN (?, ?) AND root.operation_key LIKE 'request:%' " +
+			"AND billing_operations.operation_key LIKE ('direct:' || SUBSTR(root.operation_key, 9) || ':%'))"
+	}
 	if err := DB.WithContext(ctx).
 		Where("state = ? AND shortfall > 0", BillingSettled).
+		Where("NOT EXISTS (SELECT 1 FROM adty_billing_holds h WHERE h.user_id = billing_operations.user_id AND "+holdMatchExpr+")").
+		Where("NOT ("+directRootMatchExpr+")", BillingSettled, BillingRefunded).
 		Order("updated_at, operation_key").
 		Limit(limit).
 		Find(&ops).Error; err != nil {

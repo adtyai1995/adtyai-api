@@ -43,23 +43,59 @@ export const sceneBusinessDescriptions: Record<ActiveSceneBusiness, string> = {
 const money = z
   .string()
   .regex(/^\d+(\.\d{1,8})?$/, 'Invalid parameters')
-  .max(32)
+  .max(32, 'Invalid parameters')
 export const paymentSceneSchema = z
   .object({
     key: z.string().regex(/^[a-z][a-z0-9_.-]{0,63}$/, 'Invalid parameters'),
-    name: z.string().trim().min(1, 'Required').max(120),
+    name: z
+      .string()
+      .trim()
+      .min(1, 'Required')
+      .max(120, 'Name must be 120 characters or fewer'),
     business: z.enum(ACTIVE_SCENE_BUSINESSES),
     enabled: z.boolean(),
-    providers: z.array(z.string()).min(1, 'Required').max(6),
-    methods: z.array(z.string().min(1).max(255)).max(100),
-    channel_ids: z.array(z.number().int().positive()).max(1000),
+    providers: z
+      .array(z.string())
+      .min(1, 'Required')
+      .max(6, 'Invalid parameters'),
+    methods: z
+      .array(
+        z
+          .string()
+          .min(1, 'Invalid parameters')
+          .max(255, 'Invalid parameters')
+      )
+      .max(100, 'Invalid parameters'),
+    channel_ids: z
+      .array(
+        z
+          .number({ error: 'Enter a positive integer' })
+          .int('Enter a positive integer')
+          .positive('Enter a positive integer')
+      )
+      .max(1000, 'Invalid parameters'),
     currencies: z
       .array(z.string().regex(/^[A-Z][A-Z0-9]{1,15}$/, 'Invalid parameters'))
-      .max(32),
+      .max(32, 'Invalid parameters'),
     site_scope: z.enum(['all', 'main', 'all_sites', 'selected']),
-    team_ids: z.array(z.number().int().positive()).max(1000).optional(),
-    site_ids: z.array(z.number().int().positive()).max(1000),
-    user_types: z.array(z.string()).max(6),
+    team_ids: z
+      .array(
+        z
+          .number({ error: 'Enter a positive integer' })
+          .int('Enter a positive integer')
+          .positive('Enter a positive integer')
+      )
+      .max(1000, 'Invalid parameters')
+      .optional(),
+    site_ids: z
+      .array(
+        z
+          .number({ error: 'Enter a positive integer' })
+          .int('Enter a positive integer')
+          .positive('Enter a positive integer')
+      )
+      .max(1000, 'Invalid parameters'),
+    user_types: z.array(z.string()).max(6, 'Invalid parameters'),
     min_usd: money,
     max_usd: money,
   })

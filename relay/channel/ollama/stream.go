@@ -2,6 +2,7 @@ package ollama
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 type ollamaChatStreamChunk struct {
 	Model     string `json:"model"`
 	CreatedAt string `json:"created_at"`
+	Error     string `json:"error"`
 	// chat
 	Message *struct {
 		Role      string           `json:"role"`
@@ -145,6 +147,7 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		return nil, types.NewOpenAIError(fmt.Errorf("empty response"), types.ErrorCodeBadResponse, http.StatusBadRequest)
 	}
 	defer service.CloseResponseBodyGracefully(resp)
+	helper.StopStreamKeepAlive(c)
 
 	scanner := helper.NewStreamScanner(resp.Body)
 	usage := &dto.Usage{}
@@ -155,16 +158,20 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	var started bool
 	var emittedOutput bool
 	var responseText strings.Builder
-	ensureStarted := func() {
+	ensureStarted := func() error {
 		if started {
-			return
+			return nil
 		}
-		started = true
 		helper.SetEventStreamHeaders(c)
 		start := helper.GenerateStartEmptyResponse(responseId, created, model, nil)
-		if data, err := common.Marshal(start); err == nil {
-			_ = helper.StringData(c, string(data))
+		if err := helper.ObjectData(c, start); err != nil {
+			return err
 		}
+		started = true
+		if info != nil {
+			info.SendResponseCount++
+		}
+		return nil
 	}
 
 	for scanner.Scan() {
@@ -181,19 +188,34 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 				// billed usage instead of returning an error that refunds 100%.
 				break
 			}
-			if started {
+			if started || helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) {
 				return usage, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
 			}
-			return usage, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		if chunk.Error != "" {
+			if helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) {
+				logger.LogError(c, common.LogText("ollama stream error after output written, billing delivered usage: %s", chunk.Error))
+				break
+			}
+			return nil, types.NewOpenAIError(errors.New(chunk.Error), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 		}
 		if chunk.Model != "" {
 			model = chunk.Model
 		}
 		created = toUnix(chunk.CreatedAt)
-		ensureStarted()
+		if err := ensureStarted(); err != nil {
+			break
+		}
 
 		if !chunk.Done {
 			delta, hasPayload := buildOllamaStreamDelta(&chunk, responseId, created, model, &toolCallIndex)
+			if err := helper.ObjectData(c, delta); err != nil {
+				break
+			}
+			if info != nil {
+				info.SendResponseCount++
+			}
 			if hasPayload {
 				emittedOutput = true
 				if len(delta.Choices) > 0 {
@@ -205,13 +227,16 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 					}
 				}
 			}
-			if data, err := common.Marshal(delta); err == nil {
-				_ = helper.StringData(c, string(data))
-			}
 			continue
 		}
 		// done frame
 		if delta, hasPayload := buildOllamaStreamDelta(&chunk, responseId, created, model, &toolCallIndex); hasPayload {
+			if err := helper.ObjectData(c, delta); err != nil {
+				break
+			}
+			if info != nil {
+				info.SendResponseCount++
+			}
 			emittedOutput = true
 			if len(delta.Choices) > 0 {
 				if content := delta.Choices[0].Delta.GetContentString(); content != "" {
@@ -220,9 +245,6 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 				if reasoning := delta.Choices[0].Delta.GetReasoningContent(); reasoning != "" {
 					responseText.WriteString(reasoning)
 				}
-			}
-			if data, err := common.Marshal(delta); err == nil {
-				_ = helper.StringData(c, string(data))
 			}
 		}
 		// finalize once and break loop
@@ -238,29 +260,32 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 		// emit stop delta
 		if stop := helper.GenerateStopResponse(responseId, created, model, finishReason); stop != nil {
-			if data, err := common.Marshal(stop); err == nil {
-				_ = helper.StringData(c, string(data))
+			if err := helper.ObjectData(c, stop); err == nil && info != nil {
+				info.SendResponseCount++
 			}
 		}
 		// emit usage frame
 		if final := helper.GenerateFinalUsageResponse(responseId, created, model, *usage); final != nil {
-			if data, err := common.Marshal(final); err == nil {
-				_ = helper.StringData(c, string(data))
+			if err := helper.ObjectData(c, final); err == nil && info != nil {
+				info.SendResponseCount++
 			}
 		}
 		// send [DONE]
 		helper.Done(c)
 		break
 	}
-	if err := scanner.Err(); err != nil && err != io.EOF {
-		logger.LogError(c, common.LogText("ollama stream scan error: %s", err.Error()))
-		if !started {
-			return usage, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusBadGateway)
-		}
+	scanErr := scanner.Err()
+	if scanErr != nil && scanErr != io.EOF {
+		logger.LogError(c, common.LogText("ollama stream scan error: %s", scanErr.Error()))
 	}
-	if !started {
-		ensureStarted()
-		helper.Done(c)
+	if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+		if helper.ClientRequestCanceled(c) {
+			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
+		if scanErr != nil && scanErr != io.EOF {
+			return nil, types.NewOpenAIError(scanErr, types.ErrorCodeReadResponseBodyFailed, http.StatusBadGateway)
+		}
+		return nil, types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
 	}
 	if usage.TotalTokens <= 0 && (emittedOutput || responseText.Len() > 0) {
 		usage = service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())

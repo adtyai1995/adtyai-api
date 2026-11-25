@@ -51,11 +51,19 @@ export function StaffDialog(props: {
   const { t } = useTranslation()
   const schema = z
     .object({
-      username: z.string().max(20),
-      display_name: z.string().min(1, t('Please enter a display name')).max(20),
+      username: z
+        .string()
+        .max(20, t('Username must be 20 characters or fewer')),
+      display_name: z
+        .string()
+        .min(1, t('Please enter a display name'))
+        .max(20, t('Display name must be 20 characters or fewer')),
       password: z
         .string()
-        .max(128)
+        .max(
+          128,
+          t('Staff passwords must contain between 15 and 128 characters.')
+        )
         .refine(
           (value) => props.mode === 'edit' || [...value].length >= 15,
           t('Staff passwords must contain between 15 and 128 characters.')

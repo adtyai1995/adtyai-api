@@ -98,7 +98,7 @@ func adtyStaffOwnerTx(tx *gorm.DB, ownerID, siteID int, allowClosing bool) (*mod
 
 func CreateAdtyStaff(ownerID, siteID int, input AdtyStaffInput) (*AdtyStaffView, error) {
 	input.Username, input.DisplayName = strings.TrimSpace(input.Username), strings.TrimSpace(input.DisplayName)
-	if input.Username == "" || input.DisplayName == "" || utf8.RuneCountInString(input.DisplayName) > 20 || utf8.RuneCountInString(input.Password) < 15 {
+	if input.Username == "" || !model.ValidateUsernameNoControl(input.Username) || input.DisplayName == "" || utf8.RuneCountInString(input.DisplayName) > 20 || utf8.RuneCountInString(input.Password) < 15 {
 		return nil, ErrAdtyStaffInput
 	}
 	if err := common.Validate.StructPartial(&model.User{Username: input.Username}, "Username"); err != nil {

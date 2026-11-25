@@ -78,8 +78,12 @@ function isHttpOriginUrl(value: string) {
 }
 
 const paymentSchema = z.object({
-  Price: z.coerce.number().min(0),
-  MinTopUp: z.coerce.number().min(0),
+  Price: z.coerce
+    .number({ error: 'Please enter a valid number' })
+    .min(0, 'Value must be at least 0'),
+  MinTopUp: z.coerce
+    .number({ error: 'Please enter a valid number' })
+    .min(0, 'Value must be at least 0'),
   CustomCallbackAddress: z
     .string()
     .refine(

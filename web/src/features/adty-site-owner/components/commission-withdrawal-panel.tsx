@@ -246,6 +246,25 @@ export function CommissionWithdrawalPanel(
   const [proof, setProof] = useState('')
   const [failReason, setFailReason] = useState('')
   const proofFileRef = useRef<HTMLInputElement | null>(null)
+  const activePayingIdRef = useRef<number | null>(null)
+
+  const resetPayForm = () => {
+    setTxId('')
+    setProof('')
+    if (proofFileRef.current) proofFileRef.current.value = ''
+  }
+
+  const openPaying = (row: CommissionWithdrawalRow) => {
+    activePayingIdRef.current = row.id
+    resetPayForm()
+    setPaying(row)
+  }
+
+  const closePaying = () => {
+    activePayingIdRef.current = null
+    setPaying(null)
+    resetPayForm()
+  }
 
   const list = useQuery({
     queryKey: siteOwnerKeys.list('commission-withdrawals', {
@@ -276,11 +295,14 @@ export function CommissionWithdrawalPanel(
   }
 
   const uploadProof = useMutation({
-    mutationFn: (file: File) =>
+    mutationFn: (input: { file: File; withdrawalId: number }) =>
       props.closed
-        ? uploadReferralAsset(file, '/api/user/admin/referral/upload')
-        : uploadOwnerWithdrawalQR(file, 'payment_proof'),
-    onSuccess: (url) => {
+        ? uploadReferralAsset(input.file, '/api/user/admin/referral/upload')
+        : uploadOwnerWithdrawalQR(input.file, 'payment_proof'),
+    onSuccess: (url, input) => {
+      if (activePayingIdRef.current !== input.withdrawalId) {
+        return
+      }
       setProof(url)
       toast.success(t('Payment proof uploaded'))
     },
@@ -331,10 +353,7 @@ export function CommissionWithdrawalPanel(
         : markOwnerCommissionWithdrawalPaid(row.id, txId.trim(), proof.trim()),
     onSuccess: () => {
       toast.success(t('Marked as paid'))
-      setPaying(null)
-      setTxId('')
-      setProof('')
-      if (proofFileRef.current) proofFileRef.current.value = ''
+      closePaying()
       refresh()
     },
     onError: (err) => handleServerError(err),
@@ -626,14 +645,7 @@ export function CommissionWithdrawalPanel(
                         <Button
                           size='sm'
                           disabled={pay.isPending}
-                          onClick={() => {
-                            setTxId('')
-                            setProof('')
-                            if (proofFileRef.current) {
-                              proofFileRef.current.value = ''
-                            }
-                            setPaying(row)
-                          }}
+                          onClick={() => openPaying(row)}
                         >
                           {t('Mark as paid')}
                         </Button>
@@ -779,7 +791,7 @@ export function CommissionWithdrawalPanel(
       <Dialog
         open={paying !== null}
         onOpenChange={(open) => {
-          if (!open) setPaying(null)
+          if (!open) closePaying()
         }}
         title={t('Mark as paid')}
         description={
@@ -792,7 +804,7 @@ export function CommissionWithdrawalPanel(
             <Button
               variant='outline'
               disabled={pay.isPending}
-              onClick={() => setPaying(null)}
+              onClick={closePaying}
             >
               {t('Cancel')}
             </Button>
@@ -886,7 +898,9 @@ export function CommissionWithdrawalPanel(
                   className='hidden'
                   onChange={(event) => {
                     const file = event.target.files?.[0]
-                    if (file) uploadProof.mutate(file)
+                    if (file && paying) {
+                      uploadProof.mutate({ file, withdrawalId: paying.id })
+                    }
                   }}
                 />
                 <Button

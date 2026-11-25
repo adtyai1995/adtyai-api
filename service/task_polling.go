@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -484,6 +485,9 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	if errors.Is(pollCtx.Err(), context.Canceled) {
+		return pollCtx.Err()
+	}
 	if err != nil {
 		return recordPollFailureForTasks(ctx, adaptor, tasks, pollClassHookError, resp.StatusCode, err.Error())
 	}
@@ -769,6 +773,12 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		taskResult.Reason = t.FailReason
 		task.Data = t.Data
 	} else if taskResult, err = adaptor.ParseTaskResult(pollCtx, task, resp, responseBody); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if errors.Is(pollCtx.Err(), context.Canceled) {
+			return pollCtx.Err()
+		}
 		return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassHookError, resp.StatusCode, err.Error())
 	}
 	if ctx.Err() != nil {
@@ -966,14 +976,16 @@ func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor
 		if strings.TrimSpace(task.PrivateData.BillingReviewReason) == "" {
 			task.PrivateData.BillingReviewReason = reviewReason
 		}
-		RecalculateTaskQuota(ctx, task, task.Quota, common.NewMessage("Kept the reserved task charge pending manual billing review"))
-		if task.BillingPending {
-			flagTaskBillingManualReview(ctx, task, reviewReason)
-		} else if task.ID > 0 && model.DB != nil {
-			common.SysError(common.LogText("task billing review: %s, task %s platform %s user %d keeps its reserved charge and is flagged for manual review",
-				reviewReason, task.TaskID, task.Platform, task.UserId))
+		// R5-02: Only clear billing_pending once RecalculateTaskQuota actually
+		// commits the settlement (preserving transient recovery retries on DB error).
+		if !recalculateTaskQuotaResult(ctx, task, task.Quota, common.NewMessage("Kept the reserved task charge pending manual billing review")) {
+			return true
+		}
+		common.SysError(common.LogText("task billing review: %s, task %s platform %s user %d keeps its reserved charge and is flagged for manual review",
+			reviewReason, task.TaskID, task.Platform, task.UserId))
+		if task.ID > 0 && model.DB != nil {
 			if err := model.DB.WithContext(ctx).Model(&model.Task{}).Where("id = ?", task.ID).
-				Update("private_data", task.PrivateData).Error; err != nil {
+				Updates(map[string]any{"private_data": task.PrivateData, "billing_pending": false}).Error; err != nil {
 				common.SysError(common.LogText("task billing review: failed to persist BillingReviewReason for task %s: %s", task.TaskID, err.Error()))
 			}
 		}

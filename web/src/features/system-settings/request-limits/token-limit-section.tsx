@@ -40,7 +40,9 @@ import { useUpdateOption } from '../hooks/use-update-option'
 
 const tokenLimitSchema = z.object({
   token_setting: z.object({
-    max_user_tokens: z.number().min(1),
+    max_user_tokens: z
+      .number({ error: 'Please enter a valid number' })
+      .min(1, 'Must be ≥ 1'),
   }),
 })
 

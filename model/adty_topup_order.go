@@ -155,6 +155,7 @@ type AdtyPaymentFacts struct {
 	DenyAdminTarget  bool  // True on PAT-authenticated admin calls; forbids Role >= RoleAdminUser targets (R11-003).
 	PaidAt           int64 // Verified Unix timestamp when payment became effective (ISS-R1-0009).
 	PaidTimeVerified bool  // True only when PaidAt comes from verified gateway or reviewed timing evidence.
+	AllowReplaced    bool  // True only on explicit operator orphan-credit / manual-complete paths (R5-08).
 }
 
 var (
@@ -354,6 +355,10 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 		err = appendAdtyPaymentEventTx(tx, ext, facts.Source, "replayed", facts.OperatorId)
 		return true, 0, topUp, ext, err
 	case common.TopUpStatusPending, common.TopUpStatusExpired, common.TopUpStatusFailed, TopUpStatusCanceled:
+	case TopUpStatusReplaced:
+		if !facts.AllowReplaced {
+			return false, 0, nil, nil, ErrTopUpStatusInvalid
+		}
 	default:
 		return false, 0, nil, nil, ErrTopUpStatusInvalid
 	}

@@ -329,6 +329,26 @@ func MergeSiteBonusMarginFill(current string, siteID int, allowed bool) (string,
 	return marshalBonusSetting(next)
 }
 
+// RemoveSiteMethodBonus deletes all per-method bonus rules stored for siteID in current JSON.
+func RemoveSiteMethodBonus(current string, siteID int) (string, bool, error) {
+	if siteID <= 0 || strings.TrimSpace(current) == "" {
+		return current, false, nil
+	}
+	var next map[int]map[string]MethodBonusRule
+	if err := unmarshalBonusSetting(current, &next); err != nil {
+		return "", false, err
+	}
+	if _, exists := next[siteID]; !exists {
+		return current, false, nil
+	}
+	delete(next, siteID)
+	encoded, err := marshalBonusSetting(next)
+	if err != nil {
+		return "", false, err
+	}
+	return encoded, true, nil
+}
+
 // LockAndMergeSiteMethodBonusTx locks the authoritative site_method_bonus row in
 // the SQL transaction, validates the site and rule, and writes the updated rule.
 func LockAndMergeSiteMethodBonusTx(tx *gorm.DB, siteID int, method string, enabled bool, rate string) (string, error) {

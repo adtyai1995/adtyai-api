@@ -36,7 +36,9 @@ func findSiteOwnerForEmailChallenge(email string, siteID int) (*User, error) {
 		return nil, ErrEmailNotFound
 	}
 	var site AdtySite
-	if err := DB.Select("id", "owner_user_id", "status").Where("id = ? AND status <> ?", siteID, AdtySiteStatusClosed).First(&site).Error; err != nil {
+	if err := DB.Select("id", "owner_user_id", "status").
+		Where("id = ? AND status NOT IN (?, ?, ?)", siteID, AdtySiteStatusClosed, AdtySiteStatusDeleting, AdtySiteStatusPending).
+		First(&site).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrEmailNotFound
 		}
@@ -61,7 +63,7 @@ func isActiveSiteOwnerForSite(userID, siteID int) (bool, error) {
 	}
 	var count int64
 	if err := DB.Model(&AdtySite{}).
-		Where("id = ? AND owner_user_id = ? AND status <> ?", siteID, userID, AdtySiteStatusClosed).
+		Where("id = ? AND owner_user_id = ? AND status NOT IN (?, ?, ?)", siteID, userID, AdtySiteStatusClosed, AdtySiteStatusDeleting, AdtySiteStatusPending).
 		Count(&count).Error; err != nil {
 		return false, err
 	}

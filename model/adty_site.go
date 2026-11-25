@@ -446,10 +446,28 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 		return nil, 0, nil
 	}
 	migrateOwnerSelfUse := fromSite > 0 && toSite == 0 && ownerUserID > 0
+	// R5-12 / R5-13: Preserve canonical AdtySite -> AdtyTeam -> AdtySiteStaff / AdtyTeamMember -> User
+	// lock order before locking User rows so concurrent admin operations (PreLockScopedEmployeeRowsTx)
+	// cannot AB-BA deadlock with site closure.
+	if tx.Migrator().HasTable(&AdtySiteStaff{}) {
+		var preLockedStaff []AdtySiteStaff
+		if err := lockForUpdate(tx).Select("id").Where("site_id = ?", fromSite).Order("id ASC").Find(&preLockedStaff).Error; err != nil {
+			return nil, 0, err
+		}
+	}
+	if tx.Migrator().HasTable(&AdtyTeamMember{}) {
+		siteCustomerIDs := tx.Model(&User{}).Select("id").Where("site_id = ? AND staff_site_id = 0", fromSite)
+		var preLockedMembers []AdtyTeamMember
+		if err := lockForUpdate(tx).Select("id").
+			Where("independent_employee = ? AND status = ? AND user_id IN (?)", true, AdtyTeamMemberDisabled, siteCustomerIDs).
+			Order("id ASC").Find(&preLockedMembers).Error; err != nil {
+			return nil, 0, err
+		}
+	}
 	// InsertWithLimit locks the owner too: a token created before this lock is
 	// revoked with the migration; one created afterwards belongs to the new site.
 	var users []User
-	userQ := lockForUpdate(tx).Select("id", "site_id", "staff_site_id")
+	userQ := lockForUpdate(tx).Select("id", "site_id", "staff_site_id", "auth_version")
 	if migrateOwnerSelfUse {
 		userQ = userQ.Where("site_id = ? OR staff_site_id = ? OR id = ?", fromSite, fromSite, ownerUserID)
 	} else {
@@ -460,8 +478,10 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 	}
 	ids := make([]int, 0, len(users))
 	staffIDs := make([]int, 0)
+	prevAuthVersionByID := make(map[int]int64, len(users))
 	ownerLocked := false
 	for i := range users {
+		prevAuthVersionByID[users[i].Id] = users[i].AuthVersion
 		if users[i].StaffSiteId == fromSite {
 			staffIDs = append(staffIDs, users[i].Id)
 			continue
@@ -528,7 +548,7 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 		}
 		if tx.Migrator().HasTable(&AdtySiteStaff{}) {
 			if err := tx.Model(&AdtySiteStaff{}).Where("site_id = ? AND user_id IN ?", fromSite, staffIDs).
-				Update("status", "disabled").Error; err != nil {
+				Updates(map[string]any{"status": "disabled", "disabled_auth_version": 0}).Error; err != nil {
 				return nil, 0, err
 			}
 		}
@@ -538,7 +558,11 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 		// Site membership is part of authorization. Fence old user metadata and
 		// browser sessions before the new membership can commit.
 		for _, id := range ids {
-			if _, err := IncrementUserAuthVersionWithTx(tx, id); err != nil {
+			nextAuthVer, err := IncrementUserAuthVersionWithTx(tx, id)
+			if err != nil {
+				return nil, 0, err
+			}
+			if err := SyncStaffAndTeamDisabledAuthVersionTx(tx, id, prevAuthVersionByID[id], nextAuthVer); err != nil {
 				return nil, 0, err
 			}
 		}

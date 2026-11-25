@@ -59,7 +59,11 @@ export const forgotPasswordFormSchema = z.object({
   email: z.string().email({
     message: 'Please enter a valid email address',
   }),
-  username: z.string().max(20).optional().or(z.literal('')),
+  username: z
+    .string()
+    .max(USERNAME_MAX_LENGTH, 'Username must be 20 characters or fewer')
+    .optional()
+    .or(z.literal('')),
 })
 
 export const otpFormSchema = z.object({

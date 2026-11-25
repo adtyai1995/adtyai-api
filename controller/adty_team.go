@@ -344,7 +344,7 @@ func PostAdtyTeamTopup(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
+	amount, err := common.ParseBoundedDecimalString(body.AmountUSD, 9, 0)
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return

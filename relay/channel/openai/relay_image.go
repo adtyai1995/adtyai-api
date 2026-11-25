@@ -316,6 +316,7 @@ func buildOpenAIImageStreamError(raw []byte, fallbackMsg string) *types.NewAPIEr
 
 func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	defer service.CloseResponseBodyGracefully(resp)
+	helper.StopStreamKeepAlive(c)
 
 	responseBody, apiErr := helper.ReadResponseBody(c, resp, types.ErrorCodeReadResponseBodyFailed)
 	if apiErr != nil {

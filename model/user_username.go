@@ -51,6 +51,9 @@ func EnsureUsernameAvailableWithTx(tx *gorm.DB, username string, excludeUserID i
 	if username == "" {
 		return nil
 	}
+	if !ValidateUsernameNoControl(username) {
+		return common.NewMessage("Invalid parameters")
+	}
 	if err := lockNormalizedUsername(tx, username); err != nil {
 		return err
 	}

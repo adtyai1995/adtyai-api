@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"gorm.io/gorm"
 )
 
@@ -54,7 +56,7 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 		now := time.Now().Unix()
 		if tx.Migrator().HasTable(&model.AdtySiteDomain{}) {
 			var domains []model.AdtySiteDomain
-			if err := model.AdtyLockForUpdate(tx).Where("site_id = ?", siteID).Order("id ASC").Find(&domains).Error; err != nil {
+			if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND status <> ?", siteID, model.AdtySiteDomainRemoved).Order("id ASC").Find(&domains).Error; err != nil {
 				return err
 			}
 			for _, dom := range domains {
@@ -121,7 +123,31 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 	var auditEvent *model.AuditLog
 	deletedOwnerID := 0
 	var deletedOwnerAuthVersion int64
+	cleanedOptions := map[string]string{}
+	commissionMarginKey := commissionMarginOptionKey(siteID)
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		// Pre-lock per-site option keys in sorted order BEFORE adty_sites to follow
+		// canonical options -> adty_sites lock order (R5-11).
+		lockedOptVals := map[string]string{}
+		lockedOptFound := map[string]bool{}
+		if tx.Migrator().HasTable(&model.Option{}) {
+			optKeys := []string{
+				commissionMarginKey,
+				adty_setting.TopupSettingKeySiteBonusMarginFill,
+				adty_setting.TopupSettingKeySiteMethodBonus,
+			}
+			slices.Sort(optKeys)
+			for _, key := range optKeys {
+				raw, ok, readErr := model.ReadOptionForUpdate(tx, key)
+				if readErr != nil {
+					return readErr
+				}
+				lockedOptFound[key] = ok
+				if ok {
+					lockedOptVals[key] = raw
+				}
+			}
+		}
 		var site model.AdtySite
 		if err := model.AdtyLockForUpdate(tx).Where("id = ?", siteID).First(&site).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -176,6 +202,7 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			&model.AdtySitePriceScope{},
 			&model.AdtySiteReferralRate{},
 			&model.AdtySiteReferralAffiliate{},
+			&model.AdtySiteReferralAuditLog{},
 			&model.AdtySiteStaff{},
 			&model.AdtySiteMailConfig{},
 			&model.AdtySiteSenderDomain{},
@@ -183,11 +210,38 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			&model.AdtySiteTierEvaluation{},
 			&model.AdtySiteOwnership{},
 			&model.AdtySettlementScan{},
+			&model.AdtyTelegramBinding{},
+			&model.AdtyTelegramChallenge{},
+			&model.AdtyTelegramDelivery{},
+			&model.AdtySiteLookup{},
 		} {
 			if tx.Migrator().HasTable(tableModel) {
 				if err := tx.Where("site_id = ?", siteID).Delete(tableModel).Error; err != nil {
 					return err
 				}
+			}
+		}
+		// Clean up per-site options so recycled or removed site IDs carry no stale policy.
+		if lockedOptFound[commissionMarginKey] {
+			if err := tx.Where(&model.Option{Key: commissionMarginKey}).Delete(&model.Option{}).Error; err != nil {
+				return err
+			}
+			cleanedOptions[commissionMarginKey] = "0"
+		}
+		if rawFill, ok := lockedOptVals[adty_setting.TopupSettingKeySiteBonusMarginFill]; ok && strings.TrimSpace(rawFill) != "" {
+			if mergedFill, mergeErr := adty_setting.MergeSiteBonusMarginFill(rawFill, siteID, false); mergeErr == nil && mergedFill != rawFill {
+				if err := model.SaveOptionsTx(tx, map[string]string{adty_setting.TopupSettingKeySiteBonusMarginFill: mergedFill}); err != nil {
+					return err
+				}
+				cleanedOptions[adty_setting.TopupSettingKeySiteBonusMarginFill] = mergedFill
+			}
+		}
+		if rawMethod, ok := lockedOptVals[adty_setting.TopupSettingKeySiteMethodBonus]; ok && strings.TrimSpace(rawMethod) != "" {
+			if mergedMethod, changed, rmErr := adty_setting.RemoveSiteMethodBonus(rawMethod, siteID); rmErr == nil && changed {
+				if err := model.SaveOptionsTx(tx, map[string]string{adty_setting.TopupSettingKeySiteMethodBonus: mergedMethod}); err != nil {
+					return err
+				}
+				cleanedOptions[adty_setting.TopupSettingKeySiteMethodBonus] = mergedMethod
 			}
 		}
 		if err := tx.Delete(&model.AdtySite{}, siteID).Error; err != nil {
@@ -214,6 +268,11 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 		}
 		return "", "", err
 	}
+	if len(cleanedOptions) > 0 {
+		if err := model.ApplyOptionValues(cleanedOptions); err != nil {
+			common.SysError(common.LogText("failed to sync cleaned site options after hard-deleting site %d: %v", siteID, err))
+		}
+	}
 	if deletedOwnerID > 0 {
 		if err := model.PublishCommittedUserAuthVersion(deletedOwnerID, deletedOwnerAuthVersion); err != nil {
 			common.SysError(common.LogText("failed to publish auth tombstone after hard-deleting standalone site owner %d: %v", deletedOwnerID, err))
@@ -237,7 +296,7 @@ func cleanupAdtySiteCloudDomainsForHardDelete(ctx context.Context, siteID int) e
 		return nil
 	}
 	var domains []model.AdtySiteDomain
-	if err := model.DB.WithContext(ctx).Where("site_id = ?", siteID).Order("id ASC").Find(&domains).Error; err != nil {
+	if err := model.DB.WithContext(ctx).Where("site_id = ? AND status <> ?", siteID, model.AdtySiteDomainRemoved).Order("id ASC").Find(&domains).Error; err != nil {
 		return err
 	}
 	if len(domains) == 0 {
@@ -264,7 +323,11 @@ func cleanupAdtySiteCloudDomainsForHardDelete(ctx context.Context, siteID int) e
 			hostnameID = foundID
 			createAttempted = createAttempted || lookupAttempted
 		}
-		if hostnameID == "" && createAttempted && zone != "" && cfg.CloudflareConfigured() {
+		hadCFResource := hostnameID != "" || createAttempted
+		if hostnameID == "" && createAttempted {
+			if zone == "" || !cfg.CloudflareConfigured() {
+				return common.NewMessage("Cloudflare is not configured; cannot clean up provisioned domain resources before hard delete")
+			}
 			candidate, err := AdtyCloudflare.findCustomHostname(ctx, zone, row.Hostname)
 			if err != nil {
 				return adtyDomainAutomationUserError(err)
@@ -303,9 +366,12 @@ func cleanupAdtySiteCloudDomainsForHardDelete(ctx context.Context, siteID int) e
 			if dnsRoot == "" {
 				dnsRoot = strings.TrimSpace(cfg.AliyunDomain)
 			}
+			if len(records) > 0 && dnsRoot == "" {
+				return common.NewMessage("AliDNS root domain is not configured; cannot clean up DNS resources before hard delete")
+			}
 			for len(records) > 0 {
 				rec := records[0]
-				if rec.ID == "" && dnsRoot != "" {
+				if rec.ID == "" {
 					found, err := AdtyAliDNS().Find(ctx, dnsRoot, rec)
 					if err != nil {
 						return adtyDomainAutomationUserError(err)
@@ -324,9 +390,15 @@ func cleanupAdtySiteCloudDomainsForHardDelete(ctx context.Context, siteID int) e
 				_ = model.DB.Model(&model.AdtySiteDomain{}).Where("id = ?", row.Id).Update("dns_records", string(encoded)).Error
 			}
 		}
-		if row.TurnstileWidget != "" {
+		if row.TurnstileWidget != "" || (row.ManagedBy != "platform" && (hadCFResource || row.Status == model.AdtySiteDomainActive) && cfg.TurnstileConfigured()) {
 			if err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-				if err := adtyTurnstileRemoveDomain(ctx, tx, row.TurnstileWidget, row.Hostname); err != nil {
+				// R5-09: Lock the domain row BEFORE touching Turnstile options/widgets
+				// to match canonical AdtySiteDomain -> Turnstile lock order.
+				var current model.AdtySiteDomain
+				if err := adtyLockDomainRow(tx, row.Id, &current); err != nil {
+					return err
+				}
+				if err := adtyTurnstileRemoveDomain(ctx, tx, current.TurnstileWidget, current.Hostname); err != nil {
 					return err
 				}
 				return tx.Model(&model.AdtySiteDomain{}).Where("id = ?", row.Id).Update("turnstile_widget", "").Error
@@ -385,44 +457,56 @@ func cleanupAdtySiteSenderDomainsForHardDelete(ctx context.Context, siteID int) 
 
 func adtySiteHasBusinessDataTx(tx *gorm.DB, siteID int) (bool, error) {
 	checks := []struct {
-		model any
-		where string
-		args  []any
+		model    any
+		where    string
+		args     []any
+		unscoped bool
 	}{
-		{&model.User{}, "site_id = ? OR inherited_from_site_id = ? OR staff_site_id = ?", []any{siteID, siteID, siteID}},
-		{&model.AdtySiteCustomer{}, "site_id = ?", []any{siteID}},
-		{&model.AdtyTopupOrder{}, "site_id = ?", []any{siteID}},
-		{&model.AdtyManualRefund{}, "site_id = ?", []any{siteID}},
-		{&model.AdtyFundBatch{}, "site_id = ?", []any{siteID}},
-		{&model.AdtyTeam{}, "site_id = ? OR source_site_id = ?", []any{siteID, siteID}},
-		{&model.AdtySiteWalletLedger{}, "site_id = ?", []any{siteID}},
-		{&model.AdtySiteWallet{}, "site_id = ? AND (balance <> 0 OR frozen_usd <> 0)", []any{siteID}},
-		{&model.AdtySiteWithdrawal{}, "site_id = ?", []any{siteID}},
-		{&model.AdtySiteEarningDaily{}, "site_id = ?", []any{siteID}},
-		{&model.AdtySiteEarningLine{}, "site_id = ?", []any{siteID}},
-		{&model.AdtySiteSettlementSheet{}, "site_id = ?", []any{siteID}},
-		{&model.AdtySiteTrialGrant{}, "site_id = ?", []any{siteID}},
-		{&model.AdtyVoucher{}, "source_site_id = ? OR target_site_id = ?", []any{siteID, siteID}},
-		{&model.AdtyTicket{}, "site_id = ? OR handling_site_id = ?", []any{siteID, siteID}},
-		{&model.AdtySiteInviteCommission{}, "site_id = ?", []any{siteID}},
-		{&model.AdtySiteInviteWithdrawal{}, "site_id = ?", []any{siteID}},
-		{&model.AdtySiteTierPrincipalAdjustment{}, "site_id = ?", []any{siteID}},
-		{&model.AdtyFinancialAdjustment{}, "site_id = ?", []any{siteID}},
-		{&model.AdtyGiftFulfillment{}, "site_id = ?", []any{siteID}},
-		{&model.AdtyOrderPaymentEvent{}, "site_id = ?", []any{siteID}},
-		{&model.AdtySiteEarningEvent{}, "site_id = ?", []any{siteID}},
-		{&model.AdtyCommissionRecovery{}, "site_id = ?", []any{siteID}},
-		{&model.AdtyAnomalyDisposition{}, "site_id = ?", []any{siteID}},
-		{&model.AdtyStaffBalanceRequest{}, "site_id = ?", []any{siteID}},
-		{&model.AdtyPriceRevision{}, "site_id = ?", []any{siteID}},
-		{&model.AdtySiteCloseMailBatch{}, "site_id = ?", []any{siteID}},
+		{&model.User{}, "site_id = ? OR inherited_from_site_id = ? OR staff_site_id = ?", []any{siteID, siteID, siteID}, true},
+		{&model.AdtySiteCustomer{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyTopupOrder{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyManualRefund{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyFundBatch{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyTeam{}, "site_id = ? OR source_site_id = ?", []any{siteID, siteID}, false},
+		{&model.AdtySiteWalletLedger{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtySiteWallet{}, "site_id = ? AND (balance <> 0 OR frozen_usd <> 0 OR excess_frozen_usd <> 0)", []any{siteID}, false},
+		{&model.AdtySiteWithdrawal{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtySiteEarningDaily{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtySiteEarningLine{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtySiteEarningFact{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtySiteSettlementSheet{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtySiteTrialGrant{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyVoucher{}, "source_site_id = ? OR target_site_id = ?", []any{siteID, siteID}, false},
+		{&model.AdtyTicket{}, "site_id = ? OR handling_site_id = ?", []any{siteID, siteID}, false},
+		{&model.AdtySiteInvite{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtySiteInviteCommission{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtySiteInviteWithdrawal{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyCommissionCoverageCancellation{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtySiteTierPrincipalAdjustment{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyFinancialAdjustment{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyGiftFulfillment{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyOrderPaymentEvent{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtySiteEarningEvent{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyCommissionRecovery{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyAnomalyDisposition{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyStaffBalanceRequest{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyPriceRevision{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtySiteCloseMailBatch{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtySiteReport{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyUserSiteMigration{}, "source_site_id = ? OR target_site_id = ?", []any{siteID, siteID}, false},
+		{&model.BillingOperation{}, "site_id = ?", []any{siteID}, false},
+		{&model.Token{}, "owner_self_use_site_id = ?", []any{siteID}, true},
 	}
 	for _, chk := range checks {
 		if !tx.Migrator().HasTable(chk.model) {
 			continue
 		}
 		var n int64
-		if err := tx.Model(chk.model).Where(chk.where, chk.args...).Limit(1).Count(&n).Error; err != nil {
+		q := tx
+		if chk.unscoped {
+			q = tx.Unscoped()
+		}
+		if err := q.Model(chk.model).Where(chk.where, chk.args...).Limit(1).Count(&n).Error; err != nil {
 			return false, err
 		}
 		if n > 0 {
@@ -434,44 +518,57 @@ func adtySiteHasBusinessDataTx(tx *gorm.DB, siteID int) (bool, error) {
 
 func maybeDeleteEmptyStandaloneOwnerTx(tx *gorm.DB, userID int) (bool, int64, error) {
 	var user model.User
-	if err := model.AdtyLockForUpdate(tx).Select("id", "role", "quota", "used_quota", "request_count").First(&user, userID).Error; err != nil {
+	if err := model.AdtyLockForUpdate(tx).Select("id", "role", "quota", "quota_pending", "used_quota", "request_count", "site_id", "staff_site_id").First(&user, userID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return false, 0, nil
 		}
 		return false, 0, err
 	}
-	if user.Role >= common.RoleAdminUser || user.Quota != 0 || user.UsedQuota != 0 || user.RequestCount != 0 {
+	if user.Role >= common.RoleAdminUser || user.Quota != 0 || user.QuotaPending != 0 || user.UsedQuota != 0 || user.RequestCount != 0 || user.SiteId != 0 || user.StaffSiteId != 0 {
 		return false, 0, nil
 	}
 	assetChecks := []struct {
-		model any
-		where string
-		args  []any
+		model    any
+		where    string
+		args     []any
+		unscoped bool
 	}{
-		{&model.AdtySite{}, "owner_user_id = ?", []any{userID}},
-		{&model.AdtyTopupOrder{}, "user_id = ?", []any{userID}},
-		{&model.TopUp{}, "user_id = ?", []any{userID}},
-		{&model.Token{}, "user_id = ?", []any{userID}},
-		{&model.AdtyFundBatch{}, "user_id = ?", []any{userID}},
-		{&model.BillingOperation{}, "user_id = ?", []any{userID}},
-		{&model.AdtyManualRefund{}, "user_id = ?", []any{userID}},
-		{&model.ReferralCommissionAccount{}, "user_id = ? AND (pending_amount <> 0 OR available_amount <> 0 OR frozen_amount <> 0 OR withdrawn_amount <> 0)", []any{userID}},
-		{&model.ReferralWithdrawal{}, "user_id = ?", []any{userID}},
-		{&model.ReferralCommission{}, "affiliate_user_id = ? OR invitee_user_id = ?", []any{userID, userID}},
-		{&model.AdtyTeam{}, "leader_user_id = ?", []any{userID}},
-		{&model.AdtyTeamMember{}, "user_id = ?", []any{userID}},
-		{&model.AdtyVoucher{}, "issuer_id = ? OR redeemer_id = ? OR designated_owner_id = ?", []any{userID, userID, userID}},
-		{&model.AdtySiteWithdrawal{}, "owner_user_id = ?", []any{userID}},
-		{&model.AdtySiteInviteCommission{}, "inviter_id = ? OR invitee_id = ?", []any{userID, userID}},
-		{&model.AdtySiteInviteWithdrawal{}, "user_id = ?", []any{userID}},
-		{&model.AdtyTicket{}, "user_id = ?", []any{userID}},
+		{&model.AdtySite{}, "owner_user_id = ?", []any{userID}, false},
+		{&model.AdtySiteOwnership{}, "old_owner_user_id = ? OR new_owner_user_id = ?", []any{userID, userID}, false},
+		{&model.AdtySiteEarningDaily{}, "site_owner_user_id = ? OR user_id = ?", []any{userID, userID}, false},
+		{&model.AdtySiteEarningEvent{}, "site_owner_user_id = ? OR user_id = ?", []any{userID, userID}, false},
+		{&model.AdtySiteTrialGrant{}, "site_owner_user_id = ? OR user_id = ?", []any{userID, userID}, false},
+		{&model.AdtySiteStaff{}, "owner_user_id = ? OR user_id = ?", []any{userID, userID}, false},
+		{&model.AdtySiteCustomer{}, "user_id = ?", []any{userID}, false},
+		{&model.AdtyFinancialAdjustment{}, "user_id = ?", []any{userID}, false},
+		{&model.AdtyStaffBalanceRequest{}, "staff_user_id = ? OR customer_user_id = ?", []any{userID, userID}, false},
+		{&model.AdtyTopupOrder{}, "user_id = ?", []any{userID}, false},
+		{&model.TopUp{}, "user_id = ?", []any{userID}, false},
+		{&model.Token{}, "user_id = ?", []any{userID}, true},
+		{&model.AdtyFundBatch{}, "user_id = ?", []any{userID}, false},
+		{&model.BillingOperation{}, "user_id = ?", []any{userID}, false},
+		{&model.AdtyManualRefund{}, "user_id = ?", []any{userID}, false},
+		{&model.ReferralCommissionAccount{}, "user_id = ? AND (pending_amount <> 0 OR available_amount <> 0 OR frozen_amount <> 0 OR withdrawn_amount <> 0)", []any{userID}, false},
+		{&model.ReferralWithdrawal{}, "user_id = ?", []any{userID}, false},
+		{&model.ReferralCommission{}, "affiliate_user_id = ? OR invitee_user_id = ?", []any{userID, userID}, false},
+		{&model.AdtyTeam{}, "leader_user_id = ?", []any{userID}, false},
+		{&model.AdtyTeamMember{}, "user_id = ?", []any{userID}, false},
+		{&model.AdtyVoucher{}, "issuer_id = ? OR redeemer_id = ? OR designated_owner_id = ?", []any{userID, userID, userID}, false},
+		{&model.AdtySiteWithdrawal{}, "owner_user_id = ?", []any{userID}, false},
+		{&model.AdtySiteInviteCommission{}, "inviter_id = ? OR invitee_id = ?", []any{userID, userID}, false},
+		{&model.AdtySiteInviteWithdrawal{}, "user_id = ?", []any{userID}, false},
+		{&model.AdtyTicket{}, "user_id = ?", []any{userID}, false},
 	}
 	for _, chk := range assetChecks {
 		if !tx.Migrator().HasTable(chk.model) {
 			continue
 		}
 		var n int64
-		if err := tx.Model(chk.model).Where(chk.where, chk.args...).Limit(1).Count(&n).Error; err != nil {
+		q := tx
+		if chk.unscoped {
+			q = tx.Unscoped()
+		}
+		if err := q.Model(chk.model).Where(chk.where, chk.args...).Limit(1).Count(&n).Error; err != nil {
 			return false, 0, err
 		}
 		if n > 0 {

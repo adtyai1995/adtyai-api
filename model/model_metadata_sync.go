@@ -221,10 +221,19 @@ func ApplyMetadataSync(updates []MetadataSyncUpdate, upstreamVendors map[string]
 			}
 			if update.Create {
 				actions.Create = true
+				if update.Values.Status == 0 {
+					actions.Delete = true
+				}
 			} else {
 				actions.Update = true
-				if local != nil && local.Status != 0 && slices.Contains(update.Fields, "status") && update.Values.Status == 0 {
-					actions.Delete = true
+				if local != nil {
+					targetStatus := local.Status
+					if slices.Contains(update.Fields, "status") {
+						targetStatus = update.Values.Status
+					}
+					if targetStatus == 0 && (local.Status != 0 || (slices.Contains(update.Fields, "name_rule") && update.Values.NameRule != local.NameRule)) {
+						actions.Delete = true
+					}
 				}
 			}
 			if update.Values.Vendor != "" && (update.Create || slices.Contains(update.Fields, "vendor")) && FindMetadataVendor(vendors, update.Values.Vendor) == nil {

@@ -298,17 +298,21 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 // reason 写入日志内容（例如按 token 重算或 adaptor 调整）。
 // clamps 可选：若计算 actualQuota 时发生额度饱和，将其记入日志 admin_info（仅管理员可见）。
 func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int, reason *common.Message, clamps ...*common.QuotaClamp) {
+	recalculateTaskQuotaResult(ctx, task, actualQuota, reason, clamps...)
+}
+
+func recalculateTaskQuotaResult(ctx context.Context, task *model.Task, actualQuota int, reason *common.Message, clamps ...*common.QuotaClamp) bool {
 	if actualQuota < 0 {
-		return
+		return false
 	}
 	key, err := model.QueueTaskBillingOperation(task, actualQuota, false)
 	if err != nil {
-		return
+		return false
 	}
 	op, applied, err := model.ApplyBillingSettlement(key)
 	if err != nil {
 		logger.LogError(ctx, common.LogText("failed to adjust funding for the difference, task %s: %s", task.TaskID, err.Error()))
-		return
+		return false
 	}
 	preConsumedQuota := op.ReservedQuota
 	quotaDelta := actualQuota - preConsumedQuota
@@ -316,7 +320,7 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	task.PrivateData.TokenConsumedQuota = &op.TokenAppliedQuota
 	projectBillingEarnings(key)
 	if !applied || quotaDelta == 0 {
-		return
+		return true
 	}
 
 	logger.LogInfo(ctx, common.LogText("task %s settles the difference: delta=%s (actual %s, pre-consumed %s, %s)",
@@ -363,6 +367,7 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 		Other:     other,
 		NodeName:  task.PrivateData.NodeName,
 	})
+	return true
 }
 
 // RecalculateTaskQuotaByTokens 根据实际 token 消耗重新计费（异步差额结算）。

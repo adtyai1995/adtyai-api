@@ -269,7 +269,8 @@ func firstAdtySettlementDay(tx *gorm.DB, siteID int, yesterday time.Time, loc *t
  ) AS stamps`, siteID, siteID, siteID, siteID, siteID, siteID, siteID, siteID, siteID).Scan(&ts).Error; err != nil {
 		return first, false, err
 	}
-	hasPriorFacts := ts > 0
+	cutoff := yesterday.AddDate(0, 0, 1)
+	hasPriorFacts := ts > 0 && ts < cutoff.Unix()
 	if ts > 0 && ts < first.Unix() {
 		d := time.Unix(ts, 0).In(loc)
 		first = time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, loc)
@@ -278,11 +279,13 @@ func firstAdtySettlementDay(tx *gorm.DB, siteID int, yesterday time.Time, loc *t
 	if err := tx.Model(&model.AdtySiteEarningDaily{}).Where("site_id = ? AND day <> ''", siteID).Select("COALESCE(MIN(day),'')").Scan(&recorded).Error; err != nil {
 		return first, hasPriorFacts, err
 	}
-	if strings.TrimSpace(recorded) != "" {
-		hasPriorFacts = true
-	}
-	if d, err := time.ParseInLocation("2006-01-02", adtyEarningDayOf(recorded), loc); err == nil && d.Before(first) {
-		first = d
+	if d, err := time.ParseInLocation("2006-01-02", adtyEarningDayOf(recorded), loc); err == nil {
+		if d.Before(cutoff) {
+			hasPriorFacts = true
+		}
+		if d.Before(first) {
+			first = d
+		}
 	}
 	return first, hasPriorFacts, nil
 }

@@ -340,9 +340,18 @@ func ValidateAdtyTeamTopupCreateTx(tx *gorm.DB, ext *AdtyTopupOrder) error {
 // BEFORE user deletion locks the users row, preventing AB-BA deadlocks (R5-008).
 var AdtyPreLockUserDeleteHook func(tx *gorm.DB, userId int) error
 
+// AdtyUserDeletePostEffects separates post-commit revocation effects produced
+// by AdtyBeforeUserDeleteHook so independent employees disabled during leader
+// team closure receive full session/auth revocation while ordinary members
+// whose team keys were disabled only have their token caches invalidated.
+type AdtyUserDeletePostEffects struct {
+	DisabledEmployeeIDs []int
+	KeyOwnerIDs         []int
+}
+
 // AdtyBeforeUserDeleteHook closes a team when its leader is deleted and returns
-// the user IDs of any independent team employees disabled during closure (R2-010).
-var AdtyBeforeUserDeleteHook func(tx *gorm.DB, userId int) ([]int, error)
+// separated post-commit cache/session invalidation targets (R2-010 / R5-15).
+var AdtyBeforeUserDeleteHook func(tx *gorm.DB, userId int) (AdtyUserDeletePostEffects, error)
 
 // BackfillAdtyTeamSourceSiteID 为已迁入主站（site_id=0）且 source_site_id 仍为空的历史团队补写来源站（A.16.4 / G.7.2）。
 // 只使用已核销的团队注册链接上独立记下的非零 SiteId 和 TeamId；同一团队若出现多个不同来源则视为不明确，不回填。

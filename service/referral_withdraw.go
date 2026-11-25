@@ -1171,24 +1171,41 @@ func (s *ReferralService) SaveReferralSettings(values map[string]string, rawRate
 	}
 	written := map[string]string{}
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		// Pre-lock all referral setting keys touched or read in sorted order at
+		// transaction start so concurrent setting writes cannot deadlock.
+		preLockSet := map[string]struct{}{
+			"adty_referral_setting.enabled":              {},
+			"adty_referral_setting.default_rate":         {},
+			"adty_referral_setting.min_withdraw_usd":     {},
+			"adty_referral_setting.usdt_withdraw_fee":    {},
+			adty_setting.ReferralKeyWithdrawCNYRate:          {},
+			adty_setting.ReferralKeyWithdrawCNYRateUpdatedAt: {},
+			adty_setting.ReferralKeyWithdrawMethods:      {},
+			adty_setting.ReferralKeyWithdrawUSDTNetworks: {},
+		}
+		for key := range values {
+			preLockSet[key] = struct{}{}
+		}
+		allLockKeys := make([]string, 0, len(preLockSet))
+		for key := range preLockSet {
+			allLockKeys = append(allLockKeys, key)
+		}
+		slices.Sort(allLockKeys)
+		oldValues := map[string]string{}
+		for _, key := range allLockKeys {
+			raw, ok, readErr := model.ReadOptionForUpdate(tx, key)
+			if readErr != nil {
+				return readErr
+			}
+			if _, inPatch := values[key]; inPatch && ok {
+				oldValues[key] = raw
+			}
+		}
 		if err := referralProgramCanStayOn(tx, values); err != nil {
 			return err
 		}
 		if err := validateReferralWithdrawSettingsTx(tx, values, writeRate); err != nil {
 			return err
-		}
-		oldValues := map[string]string{}
-		sortedKeys := make([]string, 0, len(values))
-		for key := range values {
-			sortedKeys = append(sortedKeys, key)
-		}
-		slices.Sort(sortedKeys)
-		for _, key := range sortedKeys {
-			if raw, ok, readErr := model.ReadOptionForUpdate(tx, key); readErr != nil {
-				return readErr
-			} else if ok {
-				oldValues[key] = raw
-			}
 		}
 		if err := model.SaveOptionsTx(tx, values); err != nil {
 			return err

@@ -623,7 +623,7 @@ func HardDeleteUserByIdForActor(id int, actorRole int, denyAdminTarget bool) (in
 func (user *User) prepareForInsert(tx *gorm.DB) error {
 	user.Username = strings.TrimSpace(user.Username)
 	user.Email = NormalizeEmail(user.Email)
-	if user.Username == "" {
+	if user.Username == "" || !ValidateUsernameNoControl(user.Username) {
 		return common.NewMessage("Invalid parameters")
 	}
 	if err := ensureEmailAvailableWithTx(tx, user.Email, user.SiteId, 0); err != nil {
@@ -822,6 +822,9 @@ func (user *User) UpdateWithTx(tx *gorm.DB, updatePassword bool) error {
 		return err
 	}
 	if newUser.Username != "" {
+		if !ValidateUsernameNoControl(newUser.Username) {
+			return common.NewMessage("Invalid parameters")
+		}
 		if err = EnsureUsernameAvailableWithTx(tx, newUser.Username, user.Id); err != nil {
 			return err
 		}
@@ -1183,6 +1186,15 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 		updates["password"] = newUser.Password
 	}
 
+	// R5-18: Acquire adty_groups FOR UPDATE lock BEFORE users to match
+	// DeleteAdtyGroup / MigrateAdtyGroup canonical lock order (adty_groups -> users).
+	var targetGroupDeleted bool
+	if newUser.Group != "" {
+		targetGroupDeleted, err = preLockAdtyGroupRowAllowDeletedTx(tx, newUser.Group)
+		if err != nil {
+			return err
+		}
+	}
 	if err = PreLockScopedEmployeeRowsTx(tx, user.Id); err != nil {
 		return err
 	}
@@ -1193,10 +1205,8 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 	if err = EnsureUsernameAvailableWithTx(tx, newUser.Username, user.Id); err != nil {
 		return err
 	}
-	if newUser.Group != current.Group {
-		if err = lockAssignableAdtyGroupsTx(tx, []string{newUser.Group}); err != nil {
-			return err
-		}
+	if newUser.Group != current.Group && targetGroupDeleted {
+		return ErrAdtyGroupNotFound
 	}
 	passwordChanged := updatePassword && current.Password != newUser.Password
 	authChanged := passwordChanged || current.Group != newUser.Group
@@ -1575,7 +1585,7 @@ func (user *User) deleteWithOptions(identity *AuthSessionIdentity, actorRole int
 	}
 	var nextAuthVersion int64
 	var revokedAccessTokens int64
-	var disabledEmployeeIDs []int
+	var postEffects AdtyUserDeletePostEffects
 	if err := DB.Transaction(func(tx *gorm.DB) error {
 		// R5-008: Pre-lock AdtyTeam / AdtyTeamMember rows BEFORE ValidateAuthSessionWithTx
 		// locks users(user.Id), preserving canonical adty_teams -> adty_team_members -> users order.
@@ -1613,11 +1623,12 @@ func (user *User) deleteWithOptions(identity *AuthSessionIdentity, actorRole int
 			return err
 		}
 		if AdtyBeforeUserDeleteHook != nil {
-			ids, err := AdtyBeforeUserDeleteHook(tx, user.Id)
+			effects, err := AdtyBeforeUserDeleteHook(tx, user.Id)
 			if err != nil {
 				return err
 			}
-			disabledEmployeeIDs = append(disabledEmployeeIDs, ids...)
+			postEffects.DisabledEmployeeIDs = append(postEffects.DisabledEmployeeIDs, effects.DisabledEmployeeIDs...)
+			postEffects.KeyOwnerIDs = append(postEffects.KeyOwnerIDs, effects.KeyOwnerIDs...)
 		}
 		if err := disableDeletedUserAffiliatesTx(tx, user.Id); err != nil {
 			return err
@@ -1652,16 +1663,39 @@ func (user *User) deleteWithOptions(identity *AuthSessionIdentity, actorRole int
 	if err := invalidateUserCache(user.Id); err != nil {
 		common.SysError(common.LogText("failed to invalidate user cache after deleting user %d: %v", user.Id, err))
 	}
-	for _, empID := range disabledEmployeeIDs {
-		if empID <= 0 || empID == user.Id {
+	applyAdtyUserDeletePostEffects(user.Id, postEffects)
+	return revokedAccessTokens, nil
+}
+
+func applyAdtyUserDeletePostEffects(deletedUserID int, effects AdtyUserDeletePostEffects) {
+	revokedEmployees := make(map[int]struct{}, len(effects.DisabledEmployeeIDs))
+	for _, empID := range effects.DisabledEmployeeIDs {
+		if empID <= 0 || empID == deletedUserID {
 			continue
 		}
+		if _, dup := revokedEmployees[empID]; dup {
+			continue
+		}
+		revokedEmployees[empID] = struct{}{}
 		_ = PublishUserAuthCache(empID)
 		_, _ = RevokeAllUserSessions(empID, "team_closed")
 		_ = InvalidateUserTokensCache(empID)
 		_ = invalidateUserCache(empID)
 	}
-	return revokedAccessTokens, nil
+	invalidatedKeys := make(map[int]struct{}, len(effects.KeyOwnerIDs))
+	for _, uid := range effects.KeyOwnerIDs {
+		if uid <= 0 || uid == deletedUserID {
+			continue
+		}
+		if _, alreadyRevoked := revokedEmployees[uid]; alreadyRevoked {
+			continue
+		}
+		if _, dup := invalidatedKeys[uid]; dup {
+			continue
+		}
+		invalidatedKeys[uid] = struct{}{}
+		_ = InvalidateUserTokensCache(uid)
+	}
 }
 
 func (user *User) HardDelete() (int64, error) {
@@ -1675,7 +1709,7 @@ func (user *User) hardDelete(actorRole int, denyAdminTarget bool) (int64, error)
 	var tokens []Token
 	var deletedAuthVersion int64
 	var revokedAccessTokens int64
-	var disabledEmployeeIDs []int
+	var postEffects AdtyUserDeletePostEffects
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		// R6-007: Pre-lock AdtyTeam / AdtyTeamMember / affected User rows in canonical
 		// order before AdtyBeforeUserDeleteHook touches tokens or users.
@@ -1708,11 +1742,12 @@ func (user *User) hardDelete(actorRole int, denyAdminTarget bool) (int64, error)
 			return err
 		}
 		if AdtyBeforeUserDeleteHook != nil {
-			ids, err := AdtyBeforeUserDeleteHook(tx, user.Id)
+			effects, err := AdtyBeforeUserDeleteHook(tx, user.Id)
 			if err != nil {
 				return err
 			}
-			disabledEmployeeIDs = append(disabledEmployeeIDs, ids...)
+			postEffects.DisabledEmployeeIDs = append(postEffects.DisabledEmployeeIDs, effects.DisabledEmployeeIDs...)
+			postEffects.KeyOwnerIDs = append(postEffects.KeyOwnerIDs, effects.KeyOwnerIDs...)
 		}
 		if err := disableDeletedUserAffiliatesTx(tx, user.Id); err != nil {
 			return err
@@ -1747,15 +1782,7 @@ func (user *User) hardDelete(actorRole int, denyAdminTarget bool) (int64, error)
 	if err := invalidateUserCache(user.Id); err != nil {
 		common.SysError(common.LogText("failed to invalidate user cache after hard deleting user %d: %v", user.Id, err))
 	}
-	for _, empID := range disabledEmployeeIDs {
-		if empID <= 0 || empID == user.Id {
-			continue
-		}
-		_ = PublishUserAuthCache(empID)
-		_, _ = RevokeAllUserSessions(empID, "team_closed")
-		_ = InvalidateUserTokensCache(empID)
-		_ = invalidateUserCache(empID)
-	}
+	applyAdtyUserDeletePostEffects(user.Id, postEffects)
 	return revokedAccessTokens, nil
 }
 

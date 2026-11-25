@@ -572,6 +572,15 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 		return common.NewMessage("Channel cannot be empty")
 	}
 
+	rawGroup := channel.Group
+	channel.NormalizeGroup()
+	if isAdd && len(channel.GetGroups()) == 0 {
+		return model.ErrChannelNoGroup
+	}
+	if !isAdd && rawGroup != "" && len(channel.GetGroups()) == 0 {
+		return model.ErrChannelNoGroup
+	}
+
 	// 校验 channel settings
 	if err := channel.ValidateSettings(); err != nil {
 		return common.NewMessage("Invalid channel settings format: {{error}}", map[string]any{"error": err.Error()})
@@ -1179,6 +1188,13 @@ func UpdateChannel(c *gin.Context) {
 
 	baseURLFromPluginDefault := channel.Type == constant.ChannelTypeTaskPlugin &&
 		(channel.BaseURL == nil || strings.TrimSpace(*channel.BaseURL) == "")
+	if _, groupProvided := requestData["group"]; groupProvided {
+		channel.NormalizeGroup()
+		if len(channel.GetGroups()) == 0 {
+			common.ApiError(c, model.ErrChannelNoGroup)
+			return
+		}
+	}
 	// 使用统一的校验函数
 	if err := validateChannel(&channel.Channel, false); err != nil {
 		common.ApiError(c, err)
@@ -1761,6 +1777,10 @@ func CopyChannel(c *gin.Context) {
 	clone.Name = origin.Name + suffix
 	clone.TestTime = 0
 	clone.ResponseTime = 0
+	clone.NormalizeGroup()
+	if len(clone.GetGroups()) == 0 {
+		clone.Status = common.ChannelStatusManuallyDisabled
+	}
 	if resetBalance {
 		clone.Balance = 0
 		clone.UsedQuota = 0

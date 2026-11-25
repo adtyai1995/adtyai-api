@@ -196,7 +196,7 @@ func CanCreditPaymentOrphanEvent(orphan *PaymentOrphanEvent) bool {
 		return false
 	}
 	switch topUp.Status {
-	case common.TopUpStatusPending, common.TopUpStatusFailed, common.TopUpStatusExpired, TopUpStatusCanceled:
+	case common.TopUpStatusPending, common.TopUpStatusFailed, common.TopUpStatusExpired, TopUpStatusCanceled, TopUpStatusReplaced:
 		return true
 	}
 	return false

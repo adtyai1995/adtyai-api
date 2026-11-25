@@ -85,7 +85,7 @@ func prepareTopUpGiftOnCreditTx(tx *gorm.DB, ext *model.AdtyTopupOrder, priorSta
 	if tx == nil || ext == nil || totalBonus <= 0 {
 		return totalBonus, nil
 	}
-	nonPending := priorStatus == common.TopUpStatusExpired || priorStatus == model.TopUpStatusCanceled || priorStatus == common.TopUpStatusFailed
+	nonPending := priorStatus == common.TopUpStatusExpired || priorStatus == model.TopUpStatusCanceled || priorStatus == common.TopUpStatusFailed || priorStatus == model.TopUpStatusReplaced
 	nowUnix := time.Now().Unix()
 	// R3-013: Apply A.8 late-payment timing rules both after cancel/expiry and during the
 	// pending expiry buffer (ExpireAt already elapsed or verified payment timestamp > ExpireAt),

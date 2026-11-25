@@ -329,11 +329,12 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
     onError: (err) => handleServerError(err),
   })
 
+  const isClosedOrDeleting =
+    site.status === 'closed' || site.status === 'deleting'
   const editable =
     canAdjust &&
-    site.status !== 'closed' &&
+    !isClosedOrDeleting &&
     site.status !== 'closing' &&
-    site.status !== 'deleting' &&
     site.status !== 'pending'
   const busy =
     save.isPending ||
@@ -371,12 +372,12 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
                 reason: site.settle_hold_reason,
               })}
             </span>
-            {canAdjust && (
+            {canAdjust && !isClosedOrDeleting && (
               <Button
                 type='button'
                 size='sm'
                 variant='outline'
-                disabled={busy}
+                disabled={busy || isClosedOrDeleting}
                 onClick={() => settlement.mutate()}
               >
                 {t('Resume settlement')}
@@ -474,12 +475,12 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
           <div className='space-y-1.5'>
             <div className='flex items-center justify-between gap-2'>
               <Label htmlFor={`${fieldId}-notice`}>{t('Notice')}</Label>
-              {canDelete && savedNoticeText && (
+              {canDelete && !isClosedOrDeleting && savedNoticeText && (
                 <Button
                   type='button'
                   size='sm'
                   variant='outline'
-                  disabled={busy}
+                  disabled={busy || isClosedOrDeleting}
                   onClick={() => setTakingDown(true)}
                 >
                   {t('Take down notice')}
@@ -742,8 +743,10 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
         )}
         destructive
         isLoading={takedown.isPending}
-        disabled={!canDelete}
-        handleConfirm={() => canDelete && takedown.mutate()}
+        disabled={!canDelete || isClosedOrDeleting}
+        handleConfirm={() =>
+          canDelete && !isClosedOrDeleting && takedown.mutate()
+        }
       />
     </form>
   )

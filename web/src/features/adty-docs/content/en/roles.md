@@ -18,7 +18,7 @@ Set the brand, retail price, and site gift. Earnings go to the earnings wallet. 
 
 ## Site staff
 
-Work only on customers of this site. A balance change is a request until the owner or main-site Root approves it.
+Handle customers and tickets of this site only within granted permissions. Staff cannot issue refunds or request customer balance adjustments; customer credits are issued by the site owner via site redemption codes.
 
 ## Main-site admin
 

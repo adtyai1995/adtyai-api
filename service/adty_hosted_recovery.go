@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -72,6 +73,20 @@ func RecoverAdtyHostedPaymentAs(ctx context.Context, ext *model.AdtyTopupOrder, 
 
 // RecoverAdtyHostedPaymentForActor enforces target role hierarchy and PAT
 // admin-target restrictions inside the credit transaction (R11-003).
+func isPermanentAdtyTopUpCreditReject(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, model.ErrPaymentAmountMismatch) ||
+		errors.Is(err, model.ErrPaymentMethodMismatch) ||
+		errors.Is(err, model.ErrTopUpStatusInvalid) ||
+		errors.Is(err, model.ErrAdtyDuplicatePayment) ||
+		errors.Is(err, model.ErrAdtyOwnerTopupReview) ||
+		errors.Is(err, model.ErrPaymentOrphanNotCredit) ||
+		errors.Is(err, model.ErrInvalidTopUpQuota) ||
+		errors.Is(err, model.ErrTopUpNotFound)
+}
+
 func RecoverAdtyHostedPaymentForActor(ctx context.Context, ext *model.AdtyTopupOrder, operatorID, actorRole int, denyAdminTarget bool) error {
 	if ext == nil {
 		return model.ErrTopUpNotFound
@@ -110,13 +125,20 @@ func RecoverAdtyHostedPaymentForActor(ctx context.Context, ext *model.AdtyTopupO
 		}).Error
 	})
 	if err != nil {
-		if errors.Is(err, model.ErrAdtyOwnerTopupReview) {
+		// R5-23: Only queue a durable PaymentOrphanEvent when payment was actually
+		// verified by the gateway and credit failed with a permanent business rejection,
+		// carrying the serialized facts payload. Transient query/DB errors stay retriable.
+		if isPermanentAdtyTopUpCreditReject(err) {
 			payload, marshalErr := common.Marshal(facts)
 			if marshalErr != nil {
 				return marshalErr
 			}
+			sessionID := strings.TrimSpace(facts.GatewayTradeId)
+			if sessionID == "" {
+				sessionID = ext.GatewayTradeId
+			}
 			if reviewErr := model.RecordPaymentOrphanEvent(&model.PaymentOrphanEvent{
-				Provider: ext.Provider, EventID: "hosted-query:" + ext.TradeNo, EventType: "payment_query", ReferenceID: ext.TradeNo, SessionID: ext.GatewayTradeId,
+				Provider: ext.Provider, EventID: "hosted-query:" + ext.TradeNo, EventType: "payment_query", ReferenceID: ext.TradeNo, SessionID: sessionID,
 				Reason: "Payment recovery requires reconciliation", Error: err.Error(), Payload: string(payload),
 			}); reviewErr != nil {
 				return reviewErr
@@ -154,13 +176,8 @@ func recoverAdtyHostedPayments(now int64) {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		err := RecoverAdtyHostedPayment(ctx, &ext)
 		cancel()
-		if err != nil && !errors.Is(err, model.ErrAdtyOwnerTopupReview) {
-			if reviewErr := model.RecordPaymentOrphanEvent(&model.PaymentOrphanEvent{
-				Provider: ext.Provider, EventID: "hosted-query:" + ext.TradeNo, EventType: "payment_query", ReferenceID: ext.TradeNo, SessionID: ext.GatewayTradeId,
-				Reason: "Payment recovery requires reconciliation", Error: err.Error(),
-			}); reviewErr != nil {
-				common.SysError(common.LogText("hosted payment recovery review failed: %s", reviewErr.Error()))
-			}
+		if err != nil && !isPermanentAdtyTopUpCreditReject(err) {
+			common.SysLog(common.LogText("hosted payment recovery transient error trade_no=%s: %s", ext.TradeNo, err.Error()))
 		}
 	}
 }

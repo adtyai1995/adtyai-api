@@ -52,7 +52,10 @@ const logSettingsSchema = z.object({
   LogConsumeEnabled: z.boolean(),
   log_setting: z.object({
     user_export_enabled: z.boolean(),
-    max_range_days: z.number().int().min(1),
+    max_range_days: z
+      .number({ error: 'Please enter a valid number' })
+      .int('Enter a positive integer')
+      .min(1, 'The longest log time range must be at least 1 day'),
   }),
 })
 

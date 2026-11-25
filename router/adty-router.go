@@ -416,50 +416,50 @@ func registerAdtyReferralRoutes(apiRouter *gin.RouterGroup) {
 	user := apiRouter.Group("/user/referral", middleware.UserAuth(), controller.RejectAdminUserReferral)
 	for _, route := range []struct {
 		method, path, scope string
-		handler             gin.HandlerFunc
+		handlers            []gin.HandlerFunc
 	}{
-		{http.MethodGet, "/profile", "wallet:read", controller.GetReferralProfile},
-		{http.MethodPost, "/apply", "wallet:write", controller.ApplyReferralPartner},
-		{http.MethodGet, "/commissions", "wallet:read", controller.GetReferralCommissions},
-		{http.MethodGet, "/withdrawals", "wallet:read", controller.GetReferralWithdrawals},
-		{http.MethodPost, "/withdrawals", "wallet:write", controller.CreateReferralWithdrawal},
-		{http.MethodPost, "/withdrawals/:id/cancel", "wallet:write", controller.CancelReferralWithdrawal},
-		{http.MethodPost, "/upload", "wallet:write", controller.UploadReferralAsset},
+		{http.MethodGet, "/profile", "wallet:read", []gin.HandlerFunc{controller.GetReferralProfile}},
+		{http.MethodPost, "/apply", "wallet:write", []gin.HandlerFunc{controller.ApplyReferralPartner}},
+		{http.MethodGet, "/commissions", "wallet:read", []gin.HandlerFunc{controller.GetReferralCommissions}},
+		{http.MethodGet, "/withdrawals", "wallet:read", []gin.HandlerFunc{controller.GetReferralWithdrawals}},
+		{http.MethodPost, "/withdrawals", "wallet:write", []gin.HandlerFunc{controller.CreateReferralWithdrawal}},
+		{http.MethodPost, "/withdrawals/:id/cancel", "wallet:write", []gin.HandlerFunc{controller.CancelReferralWithdrawal}},
+		{http.MethodPost, "/upload", "wallet:write", []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:referral-upload"), controller.UploadReferralAsset}},
 	} {
 		middleware.DeclareAdtyAccessTokenRoute(route.method, "/api/user/referral"+route.path, "scope", route.scope)
-		user.Handle(route.method, route.path, route.handler)
+		user.Handle(route.method, route.path, route.handlers...)
 	}
 
 	admin := apiRouter.Group("/user/admin/referral", middleware.AdminAuth())
 	for _, route := range []struct {
 		method, path string
 		permission   authz.Permission
-		handler      gin.HandlerFunc
+		handlers     []gin.HandlerFunc
 	}{
-		{http.MethodGet, "/overview", authz.AdtyReferralRead, controller.GetReferralOverview},
-		{http.MethodGet, "/badges", authz.AdtyReferralRead, controller.GetReferralAdminBadges},
-		{http.MethodGet, "/affiliates", authz.AdtyReferralRead, controller.GetReferralAffiliates},
-		{http.MethodGet, "/affiliates/:user_id/bindings", authz.AdtyReferralRead, controller.GetReferralBindings},
-		{http.MethodGet, "/commissions", authz.AdtyReferralRead, controller.GetAdminReferralCommissions},
-		{http.MethodGet, "/commission-jobs", authz.AdtyReferralRead, controller.GetReferralCommissionJobs},
-		{http.MethodGet, "/ledgers", authz.AdtyReferralRead, controller.GetReferralLedgers},
-		{http.MethodGet, "/audit-logs", authz.AdtyReferralRead, controller.GetReferralAdminAuditLogs},
-		{http.MethodGet, "/withdrawals", authz.AdtyReferralRead, controller.GetAdminReferralWithdrawals},
-		{http.MethodPost, "/affiliates/:user_id/partner", authz.AdtyReferralReview, controller.ReviewReferralPartner},
-		{http.MethodGet, "/closed-site-withdrawals", authz.AdtyReferralRead, controller.GetClosedSiteInviteWithdrawals},
-		{http.MethodPost, "/closed-site-withdrawals/:id/review", authz.AdtyReferralReview, controller.PostClosedSiteInviteWithdrawalReview},
-		{http.MethodPost, "/closed-site-withdrawals/:id/failed", authz.AdtyReferralPayout, controller.PostClosedSiteInviteWithdrawalFailed},
-		{http.MethodPost, "/closed-site-withdrawals/:id/paid", authz.AdtyReferralPayout, controller.PostClosedSiteInviteWithdrawalPaid},
-		{http.MethodPost, "/withdrawals/:id/review", authz.AdtyReferralReview, controller.ReviewReferralWithdrawal},
-		{http.MethodPost, "/withdrawals/:id/pay", authz.AdtyReferralPayout, controller.PayReferralWithdrawal},
-		{http.MethodPost, "/upload", authz.AdtyReferralPayout, controller.UploadReferralAsset},
-		{http.MethodPost, "/affiliates/:user_id/update", authz.AdtyReferralAdjust, controller.UpdateReferralAffiliate},
-		{http.MethodPost, "/commission-jobs/retry", authz.AdtyReferralAdjust, controller.RetryReferralCommissionJob},
-		{http.MethodPost, "/settlements/run", authz.AdtyReferralAdjust, controller.RunReferralSettlement},
-		{http.MethodGet, "/settings", authz.AdtyReferralSettingsRead, controller.GetReferralSettings},
-		{http.MethodPut, "/settings", authz.AdtyReferralSettings, controller.UpdateReferralSettings},
+		{http.MethodGet, "/overview", authz.AdtyReferralRead, []gin.HandlerFunc{controller.GetReferralOverview}},
+		{http.MethodGet, "/badges", authz.AdtyReferralRead, []gin.HandlerFunc{controller.GetReferralAdminBadges}},
+		{http.MethodGet, "/affiliates", authz.AdtyReferralRead, []gin.HandlerFunc{controller.GetReferralAffiliates}},
+		{http.MethodGet, "/affiliates/:user_id/bindings", authz.AdtyReferralRead, []gin.HandlerFunc{controller.GetReferralBindings}},
+		{http.MethodGet, "/commissions", authz.AdtyReferralRead, []gin.HandlerFunc{controller.GetAdminReferralCommissions}},
+		{http.MethodGet, "/commission-jobs", authz.AdtyReferralRead, []gin.HandlerFunc{controller.GetReferralCommissionJobs}},
+		{http.MethodGet, "/ledgers", authz.AdtyReferralRead, []gin.HandlerFunc{controller.GetReferralLedgers}},
+		{http.MethodGet, "/audit-logs", authz.AdtyReferralRead, []gin.HandlerFunc{controller.GetReferralAdminAuditLogs}},
+		{http.MethodGet, "/withdrawals", authz.AdtyReferralRead, []gin.HandlerFunc{controller.GetAdminReferralWithdrawals}},
+		{http.MethodPost, "/affiliates/:user_id/partner", authz.AdtyReferralReview, []gin.HandlerFunc{controller.ReviewReferralPartner}},
+		{http.MethodGet, "/closed-site-withdrawals", authz.AdtyReferralRead, []gin.HandlerFunc{controller.GetClosedSiteInviteWithdrawals}},
+		{http.MethodPost, "/closed-site-withdrawals/:id/review", authz.AdtyReferralReview, []gin.HandlerFunc{controller.PostClosedSiteInviteWithdrawalReview}},
+		{http.MethodPost, "/closed-site-withdrawals/:id/failed", authz.AdtyReferralPayout, []gin.HandlerFunc{controller.PostClosedSiteInviteWithdrawalFailed}},
+		{http.MethodPost, "/closed-site-withdrawals/:id/paid", authz.AdtyReferralPayout, []gin.HandlerFunc{controller.PostClosedSiteInviteWithdrawalPaid}},
+		{http.MethodPost, "/withdrawals/:id/review", authz.AdtyReferralReview, []gin.HandlerFunc{controller.ReviewReferralWithdrawal}},
+		{http.MethodPost, "/withdrawals/:id/pay", authz.AdtyReferralPayout, []gin.HandlerFunc{controller.PayReferralWithdrawal}},
+		{http.MethodPost, "/upload", authz.AdtyReferralPayout, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:referral-upload"), controller.UploadReferralAsset}},
+		{http.MethodPost, "/affiliates/:user_id/update", authz.AdtyReferralAdjust, []gin.HandlerFunc{controller.UpdateReferralAffiliate}},
+		{http.MethodPost, "/commission-jobs/retry", authz.AdtyReferralAdjust, []gin.HandlerFunc{controller.RetryReferralCommissionJob}},
+		{http.MethodPost, "/settlements/run", authz.AdtyReferralAdjust, []gin.HandlerFunc{controller.RunReferralSettlement}},
+		{http.MethodGet, "/settings", authz.AdtyReferralSettingsRead, []gin.HandlerFunc{controller.GetReferralSettings}},
+		{http.MethodPut, "/settings", authz.AdtyReferralSettings, []gin.HandlerFunc{controller.UpdateReferralSettings}},
 	} {
-		handlePermissionRoute(admin, route.method, route.path, route.permission, route.handler)
+		handlePermissionRoute(admin, route.method, route.path, route.permission, route.handlers...)
 	}
 }
 

@@ -197,8 +197,8 @@ function isLeadingCsvWhitespaceOrControl(char: string): boolean {
 
 function needsCsvFormulaPrefix(value: string): boolean {
   if (value.length === 0) return false
-  const first = value[0]
-  if (first === '\t' || first === '\r' || first === '\n') {
+  const firstCode = value.charCodeAt(0)
+  if (firstCode < 0x20 || (firstCode >= 0x7f && firstCode <= 0x9f)) {
     return true
   }
   let index = 0

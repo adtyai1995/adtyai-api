@@ -157,6 +157,11 @@ func adtyMarkupFloat(k decimal.Decimal, userId int, group string) float64 {
 }
 
 func adtyDecimalFloatInvalid(d decimal.Decimal) bool {
+	// R5-05: Guard against huge exponents (e.g. "1e2000000000") before InexactFloat64/Rat
+	// invokes big.Int.Exp and exhausts CPU/memory.
+	if exp := d.Exponent(); exp < -18 || exp > 18 {
+		return true
+	}
 	value := d.InexactFloat64()
 	return math.IsNaN(value) || math.IsInf(value, 0)
 }

@@ -541,6 +541,9 @@ func ReportAdtySiteCustomer(site *model.AdtySite, ownerId, userId int, reason st
 		if current.Status == model.AdtySiteStatusClosing {
 			return ErrAdtySiteClosing
 		}
+		if current.Status != model.AdtySiteStatusActive && current.Status != model.AdtySiteStatusPaused {
+			return ErrAdtySiteStatus
+		}
 		return tx.Create(report).Error
 	})
 	if err != nil {

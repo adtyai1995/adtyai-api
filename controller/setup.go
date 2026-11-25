@@ -156,7 +156,7 @@ func PostSetup(c *gin.Context) {
 			return
 		}
 	} else {
-		if req.Username == "" {
+		if req.Username == "" || !model.ValidateUsernameNoControl(req.Username) {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
 		}

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -131,6 +132,7 @@ func buildXunfeiAuthUrl(hostUrl string, apiKey, apiSecret string) string {
 }
 
 func xunfeiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, textRequest dto.GeneralOpenAIRequest, appId string, apiSecret string, apiKey string) (*dto.Usage, *types.NewAPIError) {
+	helper.StopStreamKeepAlive(c)
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 	domain, authUrl := getXunfeiAuthUrl(c, apiKey, apiSecret, textRequest.Model)
@@ -171,37 +173,51 @@ func xunfeiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, textReques
 	for {
 		select {
 		case <-ctx.Done():
-			if hasOutput {
+			if helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) {
 				return finalizeUsage(), nil
 			}
-			return &usage, types.NewError(ctx.Err(), types.ErrorCodeDoRequestFailed)
+			if helper.ClientRequestCanceled(c) {
+				return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+			}
+			return nil, types.NewError(ctx.Err(), types.ErrorCodeDoRequestFailed)
 		case xunfeiResponse := <-dataChan:
+			response := streamResponseXunfei2OpenAI(&xunfeiResponse)
+			if err := helper.ObjectData(c, response); err != nil {
+				if helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) {
+					return finalizeUsage(), nil
+				}
+				if helper.ClientRequestCanceled(c) {
+					return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+				}
+				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+			}
 			usage.PromptTokens += max(xunfeiResponse.Payload.Usage.Text.PromptTokens, 0)
 			usage.CompletionTokens += max(xunfeiResponse.Payload.Usage.Text.CompletionTokens, 0)
 			usage.TotalTokens += max(xunfeiResponse.Payload.Usage.Text.TotalTokens, 0)
 			if len(xunfeiResponse.Payload.Choices.Text) > 0 {
 				responseText.WriteString(xunfeiResponse.Payload.Choices.Text[0].Content)
 			}
-			response := streamResponseXunfei2OpenAI(&xunfeiResponse)
-			jsonResponse, err := common.Marshal(response)
-			if err != nil {
-				if hasOutput {
-					return finalizeUsage(), nil
-				}
-				return &usage, types.NewError(err, types.ErrorCodeBadResponseBody)
-			}
-			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
-			c.Writer.Flush()
 			hasOutput = true
+			if info != nil {
+				info.SendResponseCount++
+			}
 		case err := <-stopChan:
 			if err != nil {
-				if hasOutput {
+				if helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) {
 					return finalizeUsage(), nil
 				}
-				return &usage, types.NewError(err, types.ErrorCodeBadResponseBody)
+				if helper.ClientRequestCanceled(c) {
+					return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+				}
+				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 			}
-			c.Render(-1, common.CustomEvent{Data: "data: [DONE]"})
-			c.Writer.Flush()
+			if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+				if helper.ClientRequestCanceled(c) {
+					return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+				}
+				return nil, types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+			}
+			helper.Done(c)
 			return finalizeUsage(), nil
 		}
 	}

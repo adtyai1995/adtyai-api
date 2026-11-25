@@ -324,8 +324,14 @@ func UploadReferralAsset(c *gin.Context) {
 	} else if rejectAdminUserReferral(c) {
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 5<<20+64<<10)
 	header, err := c.FormFile("file")
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			common.ApiErrorT(c, "The image must be at most 5 MB")
+			return
+		}
 		common.ApiErrorT(c, "Choose an image to upload")
 		return
 	}
@@ -337,6 +343,11 @@ func UploadReferralAsset(c *gin.Context) {
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, 5<<20+1))
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			common.ApiErrorT(c, "The image must be at most 5 MB")
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -346,7 +357,11 @@ func UploadReferralAsset(c *gin.Context) {
 	}
 	link, err := service.SaveReferralAsset(data, http.DetectContentType(data), c.GetInt("id"), purpose, createdBy)
 	if err != nil {
-		common.ApiErrorT(c, "Only PNG, JPEG or WebP images are accepted")
+		if errors.Is(err, service.ErrReferralAssetType) {
+			common.ApiErrorT(c, "Only PNG, JPEG or WebP images are accepted")
+			return
+		}
+		common.ApiError(c, err)
 		return
 	}
 	common.ApiSuccess(c, gin.H{"url": link})

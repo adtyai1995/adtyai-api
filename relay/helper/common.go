@@ -36,6 +36,11 @@ func (writer *streamKeepAliveWriter) Unwrap() http.ResponseWriter {
 	return writer.ResponseWriter
 }
 
+func (writer *streamKeepAliveWriter) Header() http.Header {
+	writer.stop()
+	return writer.ResponseWriter.Header()
+}
+
 func (writer *streamKeepAliveWriter) Write(data []byte) (int, error) {
 	writer.stop()
 	return writer.ResponseWriter.Write(data)

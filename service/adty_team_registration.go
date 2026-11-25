@@ -137,7 +137,7 @@ func CompleteAdtyTeamRegistration(code, username, password, teamName string, req
 	code = strings.TrimSpace(code)
 	username = strings.TrimSpace(username)
 	teamName = strings.TrimSpace(teamName)
-	if len(code) < 16 || username == "" || strings.Contains(username, "@") || len(username) > 20 || teamName == "" || password == "" {
+	if len(code) < 16 || username == "" || strings.Contains(username, "@") || len(username) > 20 || !model.ValidateUsernameNoControl(username) || teamName == "" || password == "" {
 		return nil, ErrAdtyTeamInvalid
 	}
 	hash := hashAdtyTeamRegistrationCode(code)

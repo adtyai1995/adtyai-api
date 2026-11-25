@@ -74,13 +74,25 @@ import { safeNumberFieldProps } from '../utils/numeric-field'
 const perfSchema = z.object({
   performance_setting: z.object({
     disk_cache_enabled: z.boolean(),
-    disk_cache_threshold_mb: z.coerce.number().min(1),
-    disk_cache_max_size_mb: z.coerce.number().min(100),
+    disk_cache_threshold_mb: z.coerce
+      .number({ error: 'Please enter a valid number' })
+      .min(1, 'Must be ≥ 1'),
+    disk_cache_max_size_mb: z.coerce
+      .number({ error: 'Please enter a valid number' })
+      .min(100, 'Value must be at least 100'),
     disk_cache_path: z.string(),
     monitor_enabled: z.boolean(),
-    monitor_cpu_threshold: z.coerce.number().min(0),
-    monitor_memory_threshold: z.coerce.number().min(0).max(100),
-    monitor_disk_threshold: z.coerce.number().min(0).max(100),
+    monitor_cpu_threshold: z.coerce
+      .number({ error: 'Please enter a valid number' })
+      .min(0, 'Value must be at least 0'),
+    monitor_memory_threshold: z.coerce
+      .number({ error: 'Please enter a valid number' })
+      .min(0, 'Value must be at least 0')
+      .max(100, 'Value must be at most 100'),
+    monitor_disk_threshold: z.coerce
+      .number({ error: 'Please enter a valid number' })
+      .min(0, 'Value must be at least 0')
+      .max(100, 'Value must be at most 100'),
   }),
 })
 

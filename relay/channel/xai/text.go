@@ -1,6 +1,7 @@
 package xai
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -63,10 +64,12 @@ func streamResponseXAI2OpenAI(xAIResp *dto.ChatCompletionsStreamResponse, usage 
 }
 
 func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	defer service.CloseResponseBodyGracefully(resp)
 	usage := &dto.Usage{}
 	var responseTextBuilder strings.Builder
 	var toolCount int
 	var containStreamUsage bool
+	var lastParseErr error
 
 	helper.SetEventStreamHeaders(c)
 
@@ -74,6 +77,7 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		var xAIResp dto.ChatCompletionsStreamResponse
 		if err := common.UnmarshalJsonStr(data, &xAIResp); err != nil {
 			common.SysLog(common.LogText("error unmarshalling stream response: %s", err.Error()))
+			lastParseErr = err
 			sr.Error(err)
 			return
 		}
@@ -89,12 +93,29 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 
 		openaiResponse := streamResponseXAI2OpenAI(&xAIResp, usage)
-		_ = openai.ProcessStreamResponse(*openaiResponse, &responseTextBuilder, &toolCount)
 		if err := helper.ObjectData(c, openaiResponse); err != nil {
 			common.SysLog(err.Error())
-			sr.Error(err)
+			sr.Stop(err)
+			return
+		}
+		_ = openai.ProcessStreamResponse(*openaiResponse, &responseTextBuilder, &toolCount)
+		if info != nil {
+			info.SendResponseCount++
 		}
 	})
+
+	if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+		if helper.ClientRequestCanceled(c) {
+			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
+		if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
+			return nil, types.NewOpenAIError(info.StreamStatus.EndError, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		if lastParseErr != nil {
+			return nil, types.NewOpenAIError(lastParseErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		return nil, types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+	}
 
 	if !containStreamUsage || usage.TotalTokens <= 0 {
 		usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
@@ -102,8 +123,9 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 
-	helper.Done(c)
-	service.CloseResponseBodyGracefully(resp)
+	if info == nil || info.StreamStatus == nil || info.StreamStatus.EndError == nil {
+		helper.Done(c)
+	}
 	return usage, nil
 }
 

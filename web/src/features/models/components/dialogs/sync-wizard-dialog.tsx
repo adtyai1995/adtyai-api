@@ -111,6 +111,23 @@ function metadataSyncPermissions(
   ) {
     permissions.push(ADTY_PERMISSIONS.MODEL_WRITE)
   }
+  if (
+    selections.some((selection) => {
+      const candidate = candidates.find(
+        (item) => item.model_name === selection.model_name
+      )
+      const statusField = candidate?.fields.find(
+        (field) => field.field === 'status'
+      )
+      const upstreamStatus = candidate?.upstream?.status ?? statusField?.upstream
+      if (upstreamStatus !== 0) {
+        return false
+      }
+      return selection.create || selection.fields.includes('status')
+    })
+  ) {
+    permissions.push(ADTY_PERMISSIONS.MODEL_DELETE)
+  }
   return permissions
 }
 

@@ -273,6 +273,7 @@ func awsHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types
 }
 
 func awsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types.NewAPIError, *dto.Usage) {
+	helper.StopStreamKeepAlive(c)
 	requestContext := c.Request.Context()
 	ctx, cancel := newAwsInvokeContext(requestContext)
 	defer cancel()

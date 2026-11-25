@@ -317,6 +317,7 @@ func CreditPaymentOrphan(c *gin.Context) {
 		facts.OperatorId = c.GetInt("id")
 		facts.ActorRole = c.GetInt("role")
 		facts.DenyAdminTarget = isAccessTokenRequest(c)
+		facts.AllowReplaced = true
 		alreadyDone, credited, topUp, ext, err = model.CompleteAdtyTopUpTx(tx, orphan.ReferenceID, facts)
 		if err != nil {
 			return err
@@ -407,6 +408,7 @@ func ManualCompleteAdtyTopUp(c *gin.Context) {
 		OperatorId:      c.GetInt("id"),
 		ActorRole:       c.GetInt("role"),
 		DenyAdminTarget: isAccessTokenRequest(c),
+		AllowReplaced:   true,
 	}
 	var topUp *model.TopUp
 	var ext *model.AdtyTopupOrder

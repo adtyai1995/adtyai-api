@@ -1081,8 +1081,12 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 				task.PrivateData.BillingContext = &bc
 			}
 			task.PrivateData.TokenConsumedQuota = &row.TokenAppliedQuota
-			// R4-019: Keep billing_pending=true for ambiguous submissions awaiting manual review.
-			keepPendingReview := strings.TrimSpace(task.PrivateData.BillingReviewReason) != ""
+			// R4-019 / R5-02: Keep billing_pending=true only for non-terminal ambiguous
+			// submissions awaiting manual review; terminal settled tasks must clear
+			// billing_pending so RecoverBillingOperations never loops on LIMIT 100.
+			keepPendingReview := strings.TrimSpace(task.PrivateData.BillingReviewReason) != "" &&
+				task.Status != TaskStatusSuccess &&
+				task.Status != TaskStatusFailure
 			if err := tx.Model(&task).Updates(map[string]any{"quota": row.AppliedQuota, "private_data": task.PrivateData, "billing_pending": keepPendingReview, "billing_initial_pending": false}).Error; err != nil {
 				return err
 			}

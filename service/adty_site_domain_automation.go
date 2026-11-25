@@ -327,9 +327,10 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			if err := model.DB.Where("domain_id = ? AND generation = ? AND zone = ?", row.Id, adtyCustomHostnameGeneration(row), row.ProviderZone).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
 				return err
 			}
-			if row.CFHostnameId != "" {
+			if row.CFHostnameId != "" || row.CFCreateStartedAt > 0 {
 				row.CFHostnameId = ""
-				if err := adtySaveDomainResource(row, map[string]any{"cf_hostname_id": ""}); err != nil {
+				row.CFCreateStartedAt = 0
+				if err := adtySaveDomainResource(row, map[string]any{"cf_hostname_id": "", "cf_create_started_at": 0}); err != nil {
 					return err
 				}
 			}

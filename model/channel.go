@@ -37,7 +37,7 @@ type Channel struct {
 	Balance            float64 `json:"balance"` // in USD
 	BalanceUpdatedTime int64   `json:"balance_updated_time" gorm:"bigint"`
 	Models             string  `json:"models"`
-	Group              string  `json:"group" gorm:"type:varchar(64);default:'default'"`
+	Group              string  `json:"group" gorm:"type:varchar(64);default:''"`
 	UsedQuota          int64   `json:"used_quota" gorm:"bigint;default:0"`
 	ModelMapping       *string `json:"model_mapping" gorm:"type:text"`
 	//MaxInputTokens     *int    `json:"max_input_tokens" gorm:"default:0"`
@@ -328,14 +328,26 @@ func (channel *Channel) GetGroups() []string {
 	}
 	rawGroups := strings.Split(strings.Trim(channel.Group, ","), ",")
 	groups := make([]string, 0, len(rawGroups))
+	seen := make(map[string]struct{}, len(rawGroups))
 	for _, group := range rawGroups {
 		group = strings.TrimSpace(group)
 		if group == "" {
 			continue
 		}
+		if _, dup := seen[group]; dup {
+			continue
+		}
+		seen[group] = struct{}{}
 		groups = append(groups, group)
 	}
 	return groups
+}
+
+// NormalizeGroup canonicalizes comma-separated group IDs by trimming whitespace,
+// dropping empty entries and duplicates, and writing the clean list back to Group.
+func (channel *Channel) NormalizeGroup() string {
+	channel.Group = strings.Join(channel.GetGroups(), ",")
+	return channel.Group
 }
 
 func (channel *Channel) GetOtherInfo() map[string]any {
@@ -515,8 +527,14 @@ func BatchInsertChannels(channels []Channel) error {
 	}()
 
 	var allGroups []string
-	for _, channel_ := range channels {
-		allGroups = append(allGroups, channel_.GetGroups()...)
+	for i := range channels {
+		channels[i].NormalizeGroup()
+		groups := channels[i].GetGroups()
+		if len(groups) == 0 && (channels[i].Status == 0 || channels[i].Status == common.ChannelStatusEnabled) {
+			tx.Rollback()
+			return ErrChannelNoGroup
+		}
+		allGroups = append(allGroups, groups...)
 	}
 	if len(allGroups) > 0 {
 		if err := lockAssignableAdtyGroupsTx(tx, allGroups); err != nil {
@@ -608,8 +626,13 @@ func (channel *Channel) GetStatusCodeMapping() string {
 }
 
 func (channel *Channel) Insert() error {
+	channel.NormalizeGroup()
+	groups := channel.GetGroups()
+	if len(groups) == 0 && (channel.Status == 0 || channel.Status == common.ChannelStatusEnabled) {
+		return ErrChannelNoGroup
+	}
 	return DB.Transaction(func(tx *gorm.DB) error {
-		if err := lockAssignableAdtyGroupsTx(tx, channel.GetGroups()); err != nil {
+		if err := lockAssignableAdtyGroupsTx(tx, groups); err != nil {
 			return err
 		}
 		if err := tx.Create(channel).Error; err != nil {
@@ -658,9 +681,29 @@ func (channel *Channel) Update() error {
 			}
 		}
 	}
+	rawGroupProvided := channel.Group != ""
+	channel.NormalizeGroup()
+	if rawGroupProvided && len(channel.GetGroups()) == 0 {
+		return ErrChannelNoGroup
+	}
 	return DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockAssignableAdtyGroupsTx(tx, channel.GetGroups()); err != nil {
 			return err
+		}
+		var existing Channel
+		if err := lockForUpdate(tx).First(&existing, "id = ?", channel.Id).Error; err != nil {
+			return err
+		}
+		effectiveGroups := channel.GetGroups()
+		if len(effectiveGroups) == 0 && !rawGroupProvided {
+			effectiveGroups = existing.GetGroups()
+		}
+		effectiveStatus := existing.Status
+		if channel.Status != 0 {
+			effectiveStatus = channel.Status
+		}
+		if effectiveStatus == common.ChannelStatusEnabled && len(effectiveGroups) == 0 {
+			return ErrChannelNoGroup
 		}
 		if err := tx.Model(channel).Updates(channel).Error; err != nil {
 			return err
@@ -830,33 +873,33 @@ func UpdateChannelStatusWithError(channelId int, usingKey string, status int, re
 	pollingLock.Lock()
 	defer pollingLock.Unlock()
 
-	shouldUpdateAbilities := false
 	refreshNeeded := false
 	defer func() {
-		if shouldUpdateAbilities {
-			err := UpdateAbilityStatus(channelId, status == common.ChannelStatusEnabled)
-			if err != nil {
-				common.SysLog(common.LogText("failed to update ability status: channel_id=%d, error=%v", channelId, err))
-			}
-		}
 		// A periodic reload may have observed the old row after the early
 		// cache update. Invalidate again after both persistence stages.
 		if refreshNeeded {
 			_ = RefreshChannelCache()
 		}
 	}()
-	channel, err := GetChannelById(channelId, true)
-	if err != nil {
-		return false, nil
-	} else {
+	var channel *Channel
+	var changed bool
+	txErr := DB.Transaction(func(tx *gorm.DB) error {
+		var locked Channel
+		if err := lockForUpdate(tx).First(&locked, "id = ?", channelId).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		channel = &locked
 		if status == common.ChannelStatusEnabled && len(channel.GetGroups()) == 0 {
-			return false, ErrChannelNoGroup
+			return ErrChannelNoGroup
 		}
 		// Check the stored row too, since this node's cache may be stale.
 		if status == common.ChannelStatusAutoDisabled && channel.Status == common.ChannelStatusManuallyDisabled {
 			// Refresh from the stored row so auto-probe cannot reopen it.
 			refreshNeeded = common.MemoryCacheEnabled
-			return false, nil
+			return nil
 		}
 		// A manual channel operation must replace the exhaustion reason even
 		// when the status value is already manually disabled.
@@ -889,9 +932,10 @@ func UpdateChannelStatusWithError(channelId int, usingKey string, status int, re
 					refreshNeeded = true
 				}
 			}
-			return false, nil
+			return nil
 		}
 
+		shouldUpdateAbilities := false
 		if channel.ChannelInfo.IsMultiKey {
 			beforeStatus := channel.Status
 			handlerMultiKeyUpdate(channel, usingKey, status, reason)
@@ -906,17 +950,39 @@ func UpdateChannelStatusWithError(channelId int, usingKey string, status int, re
 			channel.Status = status
 			shouldUpdateAbilities = true
 		}
-		refreshNeeded = true
-		err = channel.saveStatusState()
-		if err != nil {
-			common.SysLog(common.LogText("failed to update channel status: channel_id=%d, status=%d, error=%v", channel.Id, status, err))
-			return false, nil
+		updates := map[string]any{
+			"status":     channel.Status,
+			"other_info": channel.OtherInfo,
 		}
-		if common.MemoryCacheEnabled {
-			CacheUpdateChannel(channel)
-			if channel.Status != common.ChannelStatusEnabled {
-				CacheUpdateChannelStatus(channelId, channel.Status)
+		if channel.ChannelInfo.IsMultiKey {
+			updates["channel_info"] = channel.ChannelInfo
+		}
+		if err := tx.Model(&Channel{}).Where("id = ?", channel.Id).Updates(updates).Error; err != nil {
+			return err
+		}
+		if shouldUpdateAbilities {
+			if err := tx.Model(&Ability{}).Where("channel_id = ?", channelId).Select("enabled").Update("enabled", channel.Status == common.ChannelStatusEnabled).Error; err != nil {
+				return err
 			}
+		}
+		changed = true
+		refreshNeeded = true
+		return nil
+	})
+	if txErr != nil {
+		if errors.Is(txErr, ErrChannelNoGroup) {
+			return false, txErr
+		}
+		common.SysLog(common.LogText("failed to update channel status: channel_id=%d, status=%d, error=%v", channelId, status, txErr))
+		return false, txErr
+	}
+	if !changed || channel == nil {
+		return false, nil
+	}
+	if common.MemoryCacheEnabled {
+		CacheUpdateChannel(channel)
+		if channel.Status != common.ChannelStatusEnabled {
+			CacheUpdateChannelStatus(channelId, channel.Status)
 		}
 	}
 	return true, nil
@@ -988,9 +1054,18 @@ func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *
 		shouldReCreateAbilities = true
 		updateData.Models = *models
 	}
-	if group != nil && *group != "" {
-		shouldReCreateAbilities = true
-		updateData.Group = *group
+	var normalizedGroups []string
+	if group != nil {
+		tmp := Channel{Group: *group}
+		tmp.NormalizeGroup()
+		normalizedGroups = tmp.GetGroups()
+		if *group != "" && len(normalizedGroups) == 0 {
+			return ErrChannelNoGroup
+		}
+		if len(normalizedGroups) > 0 {
+			shouldReCreateAbilities = true
+			updateData.Group = tmp.Group
+		}
 	}
 	if priority != nil {
 		updateData.Priority = priority
@@ -1006,8 +1081,8 @@ func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *
 	}
 
 	return DB.Transaction(func(tx *gorm.DB) error {
-		if group != nil {
-			if err := lockAssignableAdtyGroupsTx(tx, strings.Split(*group, ",")); err != nil {
+		if len(normalizedGroups) > 0 {
+			if err := lockAssignableAdtyGroupsTx(tx, normalizedGroups); err != nil {
 				return err
 			}
 		}

@@ -121,6 +121,7 @@ func cozeChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 
 func cozeChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	defer service.CloseResponseBodyGracefully(resp)
+	helper.StopStreamKeepAlive(c)
 	scanner := helper.NewStreamScanner(resp.Body)
 	scanner.Split(bufio.ScanLines)
 	helper.SetEventStreamHeaders(c)
@@ -132,6 +133,7 @@ func cozeChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *ht
 	var usage = &dto.Usage{}
 	// streamErr 是上游写进流里的失败帧。它既不能补 [DONE]，也不能当成功结算。
 	var streamErr error
+	var lastParseErr error
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -139,7 +141,7 @@ func cozeChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *ht
 		if line == "" {
 			if currentEvent != "" && currentData != "" {
 				// handle last event
-				if err := handleCozeEvent(c, currentEvent, currentData, &responseText, usage, id, info); err != nil {
+				if err := handleCozeEvent(c, currentEvent, currentData, &responseText, usage, id, info, &lastParseErr); err != nil {
 					streamErr = err
 					break
 				}
@@ -162,15 +164,25 @@ func cozeChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *ht
 
 	// Last event
 	if streamErr == nil && currentEvent != "" && currentData != "" {
-		streamErr = handleCozeEvent(c, currentEvent, currentData, &responseText, usage, id, info)
+		streamErr = handleCozeEvent(c, currentEvent, currentData, &responseText, usage, id, info, &lastParseErr)
 	}
 
-	hadMidStreamErr := streamErr != nil || scanner.Err() != nil
-	if streamErr != nil && !(helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) || responseText != "") {
-		return nil, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
-	}
-	if err := scanner.Err(); err != nil && !(helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) || responseText != "") {
-		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+	scanErr := scanner.Err()
+	hadMidStreamErr := streamErr != nil || scanErr != nil
+	if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+		if helper.ClientRequestCanceled(c) {
+			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
+		if streamErr != nil {
+			return nil, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		if scanErr != nil {
+			return nil, types.NewOpenAIError(scanErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		if lastParseErr != nil {
+			return nil, types.NewOpenAIError(lastParseErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		return nil, types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
 	}
 	if !hadMidStreamErr {
 		helper.Done(c)
@@ -198,7 +210,7 @@ func cozeChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *ht
 	return usage, nil
 }
 
-func handleCozeEvent(c *gin.Context, event string, data string, responseText *string, usage *dto.Usage, id string, info *relaycommon.RelayInfo) error {
+func handleCozeEvent(c *gin.Context, event string, data string, responseText *string, usage *dto.Usage, id string, info *relaycommon.RelayInfo, lastParseErr *error) error {
 	switch event {
 	case "conversation.chat.completed":
 		// 将 data 解析为 CozeChatResponseData
@@ -206,6 +218,9 @@ func handleCozeEvent(c *gin.Context, event string, data string, responseText *st
 		err := common.Unmarshal([]byte(data), &chatData)
 		if err != nil {
 			common.SysLog(common.LogText("error_unmarshalling_stream_response: %s", err.Error()))
+			if lastParseErr != nil {
+				*lastParseErr = err
+			}
 			return nil
 		}
 
@@ -228,6 +243,9 @@ func handleCozeEvent(c *gin.Context, event string, data string, responseText *st
 		err := common.Unmarshal([]byte(data), &messageData)
 		if err != nil {
 			common.SysLog(common.LogText("error_unmarshalling_stream_response: %s", err.Error()))
+			if lastParseErr != nil {
+				*lastParseErr = err
+			}
 			return nil
 		}
 
@@ -235,10 +253,11 @@ func handleCozeEvent(c *gin.Context, event string, data string, responseText *st
 		err = common.Unmarshal(messageData.Content, &content)
 		if err != nil {
 			common.SysLog(common.LogText("error_unmarshalling_stream_response: %s", err.Error()))
+			if lastParseErr != nil {
+				*lastParseErr = err
+			}
 			return nil
 		}
-
-		*responseText += content
 
 		openaiResponse := dto.ChatCompletionsStreamResponse{
 			Id:      id,
@@ -253,8 +272,11 @@ func handleCozeEvent(c *gin.Context, event string, data string, responseText *st
 		choice.Delta.SetContentString(content)
 		openaiResponse.Choices = append(openaiResponse.Choices, choice)
 
-		if err := helper.ObjectData(c, openaiResponse); err == nil && info != nil {
-			info.SendResponseCount++
+		if err := helper.ObjectData(c, openaiResponse); err == nil {
+			*responseText += content
+			if info != nil {
+				info.SendResponseCount++
+			}
 		}
 
 	case "error":
@@ -262,7 +284,7 @@ func handleCozeEvent(c *gin.Context, event string, data string, responseText *st
 		err := common.Unmarshal([]byte(data), &errorData)
 		if err != nil {
 			common.SysLog(common.LogText("error_unmarshalling_stream_response: %s", err.Error()))
-			return nil
+			return fmt.Errorf("coze stream error: %w", err)
 		}
 
 		common.SysLog(common.LogText("stream event error: %v %v", errorData.Code, errorData.Message))

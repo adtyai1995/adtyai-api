@@ -139,13 +139,13 @@ func AdtySiteAgreementAccepted(agreementVer string) bool {
 	return true
 }
 
-// AdtyCurrentSiteCustomerTermsVersion 是分站客户条款当前的版本号。0 表示还没写。
+// AdtyCurrentSiteCustomerTermsVersion returns "0" because subsite customer
+// terms were retired under R-32 (#9).
 func AdtyCurrentSiteCustomerTermsVersion() string {
-	return strconv.Itoa(adty_setting.GetLegalSetting().SiteCustomerTermsVersion)
+	return "0"
 }
 
-// AdtySiteTermsStatus 说明登录后要不要重新勾选。站长无需签署开站协议；分站客户按客户条款版本检查。
-// 查询失败或分站客户缺少 AdtySiteCustomer 关系时一律按需重签（required=true）拦截，绝不当作免签放行（ISS-R1-0032）。
+// AdtySiteTermsStatus 说明登录后要不要重新勾选。站长无需签署开站协议；分站客户条款已退役。
 func AdtySiteTermsStatus(userId int) (required bool, version string) {
 	req, ver, err := AdtySiteTermsStatusWithError(userId)
 	if err != nil {
@@ -160,70 +160,10 @@ func AdtySiteTermsStatusWithError(userId int) (required bool, version string, er
 	return false, "", nil
 }
 
-// AcceptAdtySiteTerms 接受当前分站客户条款（站长开站协议已退役 — R1-123）。
-// 版本对不上不写；已经是当前版本则直接成功。
+// AcceptAdtySiteTerms rejects writes because subsite customer terms have been
+// retired under R-32 (#9) / R5-26.
 func AcceptAdtySiteTerms(userId int, version string) error {
-	version = strings.TrimSpace(version)
-	if version == "" {
-		return ErrAdtySiteAgreement
-	}
-	return acceptCustomerSiteTerms(userId, version)
-}
-
-func acceptCustomerSiteTerms(userId int, version string) error {
-	if adty_setting.GetLegalSetting().SiteCustomerTermsVersion <= 0 {
-		return ErrAdtySiteAgreement
-	}
-	current := AdtyCurrentSiteCustomerTermsVersion()
-	if version != current {
-		return ErrAdtySiteAgreement
-	}
-	return model.DB.Transaction(func(tx *gorm.DB) error {
-		var users []model.User
-		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id", "staff_site_id").Where("id = ?", userId).Limit(1).Find(&users).Error; err != nil {
-			return err
-		}
-		if len(users) == 0 || users[0].SiteId <= 0 || users[0].StaffSiteId > 0 {
-			return ErrAdtySiteNotOwner
-		}
-		if isEmp, empErr := adtyIsIndependentTeamEmployeeTx(tx, userId); empErr != nil {
-			return empErr
-		} else if isEmp {
-			return ErrAdtySiteNotOwner
-		}
-		siteID := users[0].SiteId
-		var rows []model.AdtySiteCustomer
-		if err := model.AdtyLockForUpdate(tx).Where("user_id = ?", userId).Limit(1).Find(&rows).Error; err != nil {
-			return err
-		}
-		now := time.Now().Unix()
-		if len(rows) == 0 {
-			if err := adtyRecordSiteCustomerWithRiskTx(tx, userId, siteID, current, "", ""); err != nil {
-				return err
-			}
-			return recordSiteAuditTx(tx, siteID, "customer_terms_recover", userId,
-				nil, map[string]any{"user_id": userId, "terms_version": current}, "recover missing site customer relation on terms accept")
-		}
-		if rows[0].SiteId != siteID && rows[0].Status != model.AdtySiteCustomerArchived {
-			return ErrAdtySiteNotOwner
-		}
-		if rows[0].Status != model.AdtySiteCustomerArchived && rows[0].SiteId == siteID && rows[0].TermsVersion == current {
-			return nil
-		}
-		oldVer := rows[0].TermsVersion
-		if err := tx.Model(&model.AdtySiteCustomer{}).Where("user_id = ?", userId).Updates(map[string]any{
-			"site_id": siteID, "status": "active", "archived_at": 0,
-			"terms_version": current, "terms_at": now,
-		}).Error; err != nil {
-			return err
-		}
-		if oldVer == "" || rows[0].Status == model.AdtySiteCustomerArchived {
-			return recordSiteAuditTx(tx, siteID, "customer_terms_recover", userId,
-				map[string]any{"user_id": userId, "terms_version": oldVer, "status": rows[0].Status},
-				map[string]any{"user_id": userId, "terms_version": current, "status": "active"}, "recover customer terms relation")
-		}
-		return nil
-	})
+	return ErrAdtySiteAgreement
 }
 
 // validateSitePreset checks an optional per-site supply discount override.
@@ -319,7 +259,7 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 	var newOwnerUsername, newOwnerPassHash, newOwnerEmail, newOwnerDisplayName string
 	if preset.NewOwner != nil {
 		newOwnerUsername = strings.TrimSpace(preset.NewOwner.Username)
-		if len(newOwnerUsername) < 3 || len(newOwnerUsername) > 20 || strings.Contains(newOwnerUsername, "@") {
+		if len(newOwnerUsername) < 3 || len(newOwnerUsername) > 20 || strings.Contains(newOwnerUsername, "@") || !model.ValidateUsernameNoControl(newOwnerUsername) {
 			return nil, "", false, common.NewMessage("Owner username must be 3 to 20 characters and cannot contain @")
 		}
 		if err := common.Validate.StructPartial(&model.User{Username: newOwnerUsername}, "Username"); err != nil {
@@ -473,11 +413,6 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id", "staff_site_id", "status").Where("id IN ?", lockIDs).Order("id ASC").Find(&lockedUsers).Error; err != nil {
 			return err
 		}
-		if status == model.AdtySiteStatusActive {
-			if err := markAffiliateSiteOwnerTx(tx, userId, now); err != nil {
-				return err
-			}
-		}
 		if openKeyDigest != nil {
 			var existing model.AdtySite
 			lookup := tx.Where("open_key = ?", *openKeyDigest).Limit(1).Find(&existing)
@@ -524,6 +459,14 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 		}
 		if owned > 0 {
 			return ErrAdtySiteAlreadyOwner
+		}
+		// R5-27: Mark affiliate as site owner only after idempotency replay and
+		// owner eligibility checks pass, while still holding the lockedUsers lock
+		// to preserve canonical User -> ReferralAffiliate lock order (R4-09).
+		if status == model.AdtySiteStatusActive {
+			if err := markAffiliateSiteOwnerTx(tx, userId, now); err != nil {
+				return err
+			}
 		}
 		var selectedTier *model.AdtySiteTier
 		if tierCode != "" {
@@ -1390,7 +1333,9 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 		if err != nil {
 			return err
 		}
-		_ = tx.Model(&model.User{}).Where("staff_site_id = ?", site.Id).Pluck("id", &disabledStaff).Error
+		if err := tx.Model(&model.User{}).Where("staff_site_id = ?", site.Id).Pluck("id", &disabledStaff).Error; err != nil {
+			return err
+		}
 		if err := disableAdtyTeamsKeysOnCloseTx(tx, inheritedTeamIDs); err != nil {
 			return err
 		}

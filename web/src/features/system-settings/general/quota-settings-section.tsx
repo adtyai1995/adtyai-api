@@ -51,7 +51,9 @@ import { useSettingsForm } from '../hooks/use-settings-form'
 import { useUpdateOption } from '../hooks/use-update-option'
 
 const quotaSchema = z.object({
-  QuotaForNewUser: z.coerce.number().min(0),
+  QuotaForNewUser: z.coerce
+    .number({ error: 'Please enter a valid number' })
+    .min(0, 'Value must be at least 0'),
   quota_setting: z.object({
     enable_free_model_pre_consume: z.boolean(),
     trust_quota_usd: z.preprocess(

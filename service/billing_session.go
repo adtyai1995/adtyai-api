@@ -78,7 +78,6 @@ func (s *BillingSession) DetachReservationHeartbeat(maxTTL time.Duration) {
 		return
 	}
 	s.heartbeatDetached = true
-	stopFreeReservationHeartbeat(s.operationKey)
 	if s.heartbeatStop != nil {
 		s.heartbeatStop()
 		s.heartbeatStop = nil
@@ -87,7 +86,9 @@ func (s *BillingSession) DetachReservationHeartbeat(maxTTL time.Duration) {
 		s.heartbeatTimer.Stop()
 		s.heartbeatTimer = nil
 	}
-	activeBillingReservations.Store(s.operationKey, struct{}{})
+	takeOverFreeReservationHeartbeat(s.operationKey, func() {
+		activeBillingReservations.Store(s.operationKey, struct{}{})
+	})
 	if maxTTL <= 0 {
 		maxTTL = 4 * time.Minute
 	}
@@ -347,8 +348,9 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 		c.Set(adtyBillingOperationContextKey, s.operationKey)
 		c.Set(usageBillingContextKey, row)
 		s.mu.Lock()
-		stopFreeReservationHeartbeat(s.operationKey)
-		activeBillingReservations.Store(s.operationKey, struct{}{})
+		takeOverFreeReservationHeartbeat(s.operationKey, func() {
+			activeBillingReservations.Store(s.operationKey, struct{}{})
+		})
 		if c != nil && c.Request != nil {
 			opKey := s.operationKey
 			s.heartbeatStop = context.AfterFunc(c.Request.Context(), func() {

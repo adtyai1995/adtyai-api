@@ -108,13 +108,15 @@ const tencentStreamMaxBadFrames = 5
 
 func tencentStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	var responseText strings.Builder
+	defer service.CloseResponseBodyGracefully(resp)
+	helper.StopStreamKeepAlive(c)
 	scanner := helper.NewStreamScanner(resp.Body)
 	scanner.Split(bufio.ScanLines)
-	defer service.CloseResponseBodyGracefully(resp)
 
 	helper.SetEventStreamHeaders(c)
 
 	badFrames := 0
+	var lastParseErr error
 	for scanner.Scan() {
 		data := scanner.Text()
 		if len(data) < 5 || !strings.HasPrefix(data, "data:") {
@@ -132,9 +134,10 @@ func tencentStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *htt
 		err := common.Unmarshal([]byte(data), &tencentResponse)
 		if err != nil {
 			badFrames++
+			lastParseErr = err
 			common.SysLog(common.LogText("error unmarshalling stream response: %s", err.Error()))
 			if badFrames >= tencentStreamMaxBadFrames {
-				if helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) || responseText.Len() > 0 {
+				if helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) {
 					return service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens()), nil
 				}
 				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
@@ -148,7 +151,7 @@ func tencentStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *htt
 		// 不检查就会把失败帧当成「一个没有 choices 的正常 chunk」推给客户端，
 		// 最后以 [DONE] 和成功结账收场。
 		if tencentResponse.Error.Code != 0 {
-			if helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) || responseText.Len() > 0 {
+			if helper.HasWrittenStreamPayload(c) || (info != nil && info.SendResponseCount > 0) {
 				common.SysLog(common.LogText("Tencent stream error after output written, billing delivered usage: code=%d msg=%s", tencentResponse.Error.Code, tencentResponse.Error.Message))
 				return service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens()), nil
 			}
@@ -159,23 +162,40 @@ func tencentStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *htt
 		}
 
 		response := streamResponseTencent2OpenAI(&tencentResponse)
-		if len(response.Choices) != 0 {
-			responseText.WriteString(response.Choices[0].Delta.GetContentString())
-		}
-
 		err = helper.ObjectData(c, response)
 		if err != nil {
 			common.SysLog(err.Error())
-		} else if info != nil {
-			info.SendResponseCount++
+		} else {
+			if len(response.Choices) != 0 {
+				responseText.WriteString(response.Choices[0].Delta.GetContentString())
+			}
+			if info != nil {
+				info.SendResponseCount++
+			}
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		common.SysLog(common.LogText("error reading stream: %s", err.Error()))
+	scanErr := scanner.Err()
+	if scanErr != nil {
+		common.SysLog(common.LogText("error reading stream: %s", scanErr.Error()))
 	}
 
-	helper.Done(c)
+	if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+		if helper.ClientRequestCanceled(c) {
+			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
+		if scanErr != nil {
+			return nil, types.NewOpenAIError(scanErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		if lastParseErr != nil {
+			return nil, types.NewOpenAIError(lastParseErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		return nil, types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+	}
+
+	if scanErr == nil {
+		helper.Done(c)
+	}
 
 	return service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens()), nil
 }

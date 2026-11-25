@@ -766,8 +766,14 @@ func UploadAdtySiteLogo(c *gin.Context) {
 		common.ApiError(c, service.ErrAdtySiteClosing)
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, service.AdtySiteLogoMaxBytes+64<<10)
 	header, err := c.FormFile("file")
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			common.ApiError(c, service.ErrAdtySiteLogoTooLarge)
+			return
+		}
 		common.ApiErrorT(c, "Choose an image to upload")
 		return
 	}
@@ -783,6 +789,11 @@ func UploadAdtySiteLogo(c *gin.Context) {
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, service.AdtySiteLogoMaxBytes+1))
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			common.ApiError(c, service.ErrAdtySiteLogoTooLarge)
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}

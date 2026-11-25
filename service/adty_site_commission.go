@@ -266,18 +266,31 @@ func AuthorizeAdtySiteCommissionMargin(siteID int, allowed bool) error {
 	if siteID <= 0 {
 		return common.NewMessage("Invalid parameters")
 	}
-	var count int64
-	if err := model.DB.Model(&model.AdtySite{}).Where("id = ?", siteID).Count(&count).Error; err != nil {
-		return err
-	}
-	if count != 1 {
-		return common.NewMessage("Invalid parameters")
-	}
+	key := commissionMarginOptionKey(siteID)
 	value := "0"
 	if allowed {
 		value = "1"
 	}
-	return model.UpdateOption(commissionMarginOptionKey(siteID), value)
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		// Lock options row before adty_sites to match canonical options -> adty_sites order.
+		if _, err := model.LockOptionValueTx(tx, key); err != nil {
+			return err
+		}
+		var site model.AdtySite
+		if err := model.AdtyLockForUpdate(tx).Select("id", "status").Where("id = ?", siteID).First(&site).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAdtySiteNotFound
+			}
+			return err
+		}
+		if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting {
+			return ErrAdtySiteStatus
+		}
+		return model.SaveOptionsTx(tx, map[string]string{key: value})
+	}); err != nil {
+		return err
+	}
+	return model.ApplyOptionValues(map[string]string{key: value})
 }
 
 // SiteCommissionMarginAllowed reports the saved commission-margin authorization.

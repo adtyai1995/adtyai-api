@@ -329,6 +329,7 @@ export function SiteDetailPage(props: { siteId: number }) {
                   <TabsContent value='domains'>
                     <SiteDomainsCard
                       site={site}
+                      siteStatus={site.status}
                       domains={domains}
                       senders={senders}
                     />
@@ -360,7 +361,10 @@ export function SiteDetailPage(props: { siteId: number }) {
                         key={`${site.id}:${site.cost_factor ?? ''}`}
                         site={site}
                       />
-                      <SiteMarginPoliciesCard siteId={site.id} />
+                      <SiteMarginPoliciesCard
+                        siteId={site.id}
+                        siteStatus={site.status}
+                      />
                     </TabsContent>
                   )}
 

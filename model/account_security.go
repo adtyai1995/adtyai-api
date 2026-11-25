@@ -54,6 +54,9 @@ func ChangeUserPassword(identity AuthSessionIdentity, update *User, firstPasswor
 		changes := map[string]any{"password": hash, "access_token": nil, "access_token_created_at": nil}
 		trimmedUsername := strings.TrimSpace(update.Username)
 		if trimmedUsername != "" {
+			if !ValidateUsernameNoControl(trimmedUsername) {
+				return common.NewMessage("Invalid parameters")
+			}
 			if err := EnsureUsernameAvailableWithTx(tx, trimmedUsername, identity.UserID); err != nil {
 				return err
 			}
