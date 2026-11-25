@@ -884,7 +884,6 @@ pkg/adtylimit/limit_test.go
 pkg/billingexpr/accepted_time_test.go
 pkg/billingexpr/billingexpr_test.go
 pkg/billingexpr/compile_usage_test.go
-pkg/billingexpr/eval_decimal_test.go
 pkg/billingexpr/run_validation_test.go
 pkg/billingexpr/settle_clamp_test.go
 pkg/billingexpr/settle_decimal_test.go
@@ -1472,7 +1471,6 @@ web/src/features/adty-team-registration/__tests__/links-panel.test.tsx
 web/src/features/adty-telegram/__tests__/admin-panel.test.tsx
 web/src/features/adty-telegram/__tests__/bind-card.test.tsx
 web/src/features/adty-ticket/__tests__/draft.test.ts
-web/src/features/adty-ticket/__tests__/ticket-center.test.tsx
 web/src/features/adty-ticket/__tests__/workspace.test.tsx
 web/src/features/adty-ticket/ticket-status.test.ts
 web/src/features/adty-translation/__tests__/admin-panel.test.tsx
@@ -1721,4 +1719,36 @@ web/src/lib/server-error-message.test.ts
 web/src/stores/__tests__/system-config-store.test.ts
 web/src/styles/__tests__/theme.test.ts
 web/src/test-setup.ts
-web/vitest.config.ts
+
+# 桌面端构建目录（已退役，约定 I）
+electron/
+
+# 已退役的前端与后端文件（R-32 至 R-35 及前期清理，2026-11-25）
+model/adty_official_price.go
+web/src/features/adty-home/lib/landing-data.ts
+web/src/features/adty-site-admin/components/invite-codes-panel.tsx
+web/src/features/adty-site-admin/components/main-team-price-panel.tsx
+web/src/features/adty-site-admin/components/site-detail-sheet.tsx
+web/src/features/adty-site-admin/components/site-owner-handover-dialog.tsx
+web/src/features/adty-site-admin/lib/owner-handover.ts
+web/src/features/adty-site-owner/components/agreement-panel.tsx
+web/src/features/adty-site-owner/components/owner-self-use-history.tsx
+web/src/features/adty-site-owner/components/owner-self-use-panel.tsx
+web/src/features/adty-site-owner/components/site-team-discount-panel.tsx
+web/src/features/adty-site-owner/components/terms-accept-panel.tsx
+web/src/features/adty-site-staff/balance-request-dialog.tsx
+web/src/features/auth/components/telegram-login-dialog.tsx
+web/src/features/models/components/dialogs/upstream-conflict-dialog.tsx
+web/src/features/models/components/dialogs/vendors-management-dialog.tsx
+web/src/features/pricing/components/model-details-apps.tsx
+web/src/features/pricing/lib/seed.ts
+web/src/features/security/components/dialogs/telegram-bind-dialog.tsx
+web/src/features/system-settings/content/json-toggle-section.tsx
+web/src/features/system-settings/hooks/use-accordion-state.ts
+web/src/features/system-settings/hooks/use-form-dirty-guard.ts
+web/src/features/system-settings/hooks/use-safe-json-state.ts
+web/src/features/system-settings/utils/route-config.ts
+web/src/features/usage-logs/components/common-logs-header-actions.tsx
+web/src/hooks/use-minimum-loading-time.ts
+web/src/hooks/use-table-compact-mode.ts
+web/src/lib/show-submitted-data.tsx
