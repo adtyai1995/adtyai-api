@@ -111,28 +111,9 @@ func DeleteAdtyArchivedWebsiteDomain(c *gin.Context) {
 	common.ApiSuccess(c, nil)
 }
 
-// AcceptAdtySiteTerms 接受当前开站协议：POST /api/adty/site/terms/accept。不走站长中心的协议门。
+// AcceptAdtySiteTerms 分站客户条款确认已停用（R-32 #4/#9）。
 func AcceptAdtySiteTerms(c *gin.Context) {
-	var body struct {
-		Version string `json:"version"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	if err := service.AcceptAdtySiteTerms(c.GetInt("id"), body.Version); err != nil {
-		if errors.Is(err, service.ErrAdtySiteNotOwner) || errors.Is(err, service.ErrAdtySiteAgreement) {
-			common.ApiErrorStatus(c, http.StatusForbidden, err)
-			return
-		}
-		common.ApiError(c, err)
-		return
-	}
-	required, version := service.AdtySiteTermsStatus(c.GetInt("id"))
-	common.ApiSuccess(c, gin.H{
-		"site_terms_required": required,
-		"site_terms_version":  version,
-	})
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Site customer terms acceptance has been disabled"))
 }
 
 // adtyRequireOwnerProof 要求这次站长操作带上有效的二次验证 proof；失败时已经写好响应。
@@ -183,8 +164,8 @@ func GetAdtyOwnerSite(c *gin.Context) {
 		"cost_factor":           d.String(),
 		"custom_domain_enabled": cfg.CustomDomainEnabled,
 		"sender_domain_enabled": cfg.SenderDomainEnabled, "brand": brand, "home_page_content": site.HomePageContent,
-		"legal_docs":    service.AdtySiteLegalFor(site),
-		"bonus_methods": service.AdtySiteBonusMethods(site),
+		"legal_docs":         service.AdtySiteLegalFor(site),
+		"bonus_methods":      service.AdtySiteBonusMethods(site),
 		"seo_index":          site.SeoIndex,
 		"close_requested_at": site.CloseRequestedAt, "close_execute_at": site.CloseExecuteAt,
 		"prices": prices, "pricing_version": version, "domains": domains, "visibility": service.AdtySiteVisibility(site),

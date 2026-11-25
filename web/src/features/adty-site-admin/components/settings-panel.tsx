@@ -781,14 +781,6 @@ export function SettingsPanel(props: {
           ))}
         </div>
       </details>
-      <p className='text-muted-foreground text-xs'>
-        {t(
-          'Site customer terms version {{terms}}. Edit it under System Settings > Content.',
-          {
-            terms: saved.site_customer_terms_version,
-          }
-        )}
-      </p>
 
       {props.canWrite && (
         <div>

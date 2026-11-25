@@ -9,6 +9,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type adtyUserLedgerItem struct {
+	model.AdtyBalanceLedger
+	OperatorUsername string `json:"operator_username,omitempty"`
+}
+
 // GetAdtyUserLedger 分页列出一个用户的余额流水（任务 7.2，用户·查看）：退款、人工调额、佣金转余额。
 func GetAdtyUserLedger(c *gin.Context) {
 	userID, err := strconv.Atoi(c.Param("id"))
@@ -33,7 +38,21 @@ func GetAdtyUserLedger(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	opIDs := make([]int, 0, len(rows))
+	for _, row := range rows {
+		if row.OperatorId > 0 {
+			opIDs = append(opIDs, row.OperatorId)
+		}
+	}
+	names := model.LookupUsernamesByIDs(model.DB, opIDs)
+	items := make([]adtyUserLedgerItem, len(rows))
+	for i, row := range rows {
+		items[i] = adtyUserLedgerItem{
+			AdtyBalanceLedger: row,
+			OperatorUsername:  names[row.OperatorId],
+		}
+	}
 	pageInfo.SetTotal(int(total))
-	pageInfo.SetItems(rows)
+	pageInfo.SetItems(items)
 	common.ApiSuccess(c, pageInfo)
 }

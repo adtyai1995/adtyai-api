@@ -27,6 +27,7 @@ import { LoadingState } from '@/components/loading-state'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { cn } from '@/lib/utils'
 
 import {
@@ -133,7 +134,9 @@ export function SiteWalletLedger(props: {
             id: 'operator',
             header: t('Operator'),
             cell: (row: SiteWalletLedgerEntry) =>
-              row.operator_id > 0 ? `#${row.operator_id}` : '—',
+              row.operator_id > 0
+                ? formatUserIdentity(row.operator_id, row.operator_username)
+                : '—',
           },
         ]
       : []),

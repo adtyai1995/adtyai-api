@@ -37,6 +37,7 @@ func setupR37TestDB(t *testing.T) *gorm.DB {
 		&model.AdtyUserFingerprint{},
 		&model.AdtyAnomalyDisposition{},
 		&model.AdtySite{},
+		&model.AdtySiteOwnership{},
 		&model.AdtySiteCustomer{},
 		&model.AdtySiteReferralRate{},
 		&model.AdtySiteReferralAffiliate{},
@@ -81,7 +82,7 @@ func setupR37TestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func boolPtr(b bool) *bool        { return &b }
+func boolPtr(b bool) *bool          { return &b }
 func float64Ptr(v float64) *float64 { return &v }
 
 func createR37SiteWithOwner(t *testing.T, db *gorm.DB, suffix string) (model.User, model.AdtySite) {
@@ -850,4 +851,145 @@ func TestR37SubsiteBatchRegisterRuleEnforcement(t *testing.T) {
 		Where("site_id = ? AND user_id = ? AND settlement_enabled = ?", site.Id, inviterOldWin.Id, false).
 		Count(&frozenOldWin).Error)
 	assert.Zero(t, frozenOldWin, "invites outside BatchRegisterWindowHours must not freeze settlement")
+}
+
+func TestR37ZeroDayObservationRespectsAffiliateSettlementFreeze(t *testing.T) {
+	db := setupR37TestDB(t)
+	owner, site := createR37SiteWithOwner(t, db, "zero_day_freeze")
+	inviterFrozen := createR37SiteCustomer(t, db, site.Id, "inviter_0d_frozen")
+	inviterNormal := createR37SiteCustomer(t, db, site.Id, "inviter_0d_normal")
+	invitee1 := createR37SiteCustomer(t, db, site.Id, "invitee_0d_1")
+	invitee2 := createR37SiteCustomer(t, db, site.Id, "invitee_0d_2")
+
+	require.NoError(t, SaveAdtyOwnerSiteMarketingWithAudit(site.Id, owner.Id, AdtySiteMarketingUpdate{
+		Rate:               strPtr("0.10"),
+		PendingCoverageCap: strPtr("500"),
+		ObservationDays:    strPtr("0"),
+		Enabled:            boolPtr(true),
+	}, "127.0.0.1", "test"))
+
+	require.NoError(t, BindSiteInviteFromIP(site.Id, inviterFrozen.Id, invitee1.Id, "ip_0d_1"))
+	require.NoError(t, BindSiteInviteFromIP(site.Id, inviterNormal.Id, invitee2.Id, "ip_0d_2"))
+
+	// Freeze settlement for inviterFrozen before the order is covered.
+	require.NoError(t, UpdateAdtyOwnerSiteReferralAffiliate(site.Id, owner.Id, inviterFrozen.Id, AdtySiteAffiliateUpdateInput{
+		Action: "freeze_settlement",
+		Reason: "pending risk review",
+	}, "198.51.100.9", "owner-ui"))
+
+	now := time.Now().Truncate(time.Second)
+	extFrozen := &model.AdtyTopupOrder{
+		TradeNo:   "R37-0DAY-FROZEN-1",
+		SiteId:    site.Id,
+		UserId:    invitee1.Id,
+		FaceUSD:   decimal.NewFromInt(100),
+		CreatedAt: now.Unix(),
+	}
+	extNormal := &model.AdtyTopupOrder{
+		TradeNo:   "R37-0DAY-NORMAL-2",
+		SiteId:    site.Id,
+		UserId:    invitee2.Id,
+		FaceUSD:   decimal.NewFromInt(100),
+		CreatedAt: now.Unix(),
+	}
+
+	for _, ext := range []*model.AdtyTopupOrder{extFrozen, extNormal} {
+		require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+			if err := PrepareAdtySiteInviteCommissionSnapshotTx(tx, nil, ext); err != nil {
+				return err
+			}
+			if err := RecordAdtySiteInviteCommissionTx(tx, ext, now); err != nil {
+				return err
+			}
+			var comm model.AdtySiteInviteCommission
+			if err := tx.Where("trade_no = ?", ext.TradeNo).First(&comm).Error; err != nil {
+				return err
+			}
+			return CoverAdtySiteInviteCommissionTx(tx, comm.Id, now)
+		}))
+	}
+
+	var frozenRow, normalRow model.AdtySiteInviteCommission
+	require.NoError(t, db.Where("trade_no = ?", extFrozen.TradeNo).First(&frozenRow).Error)
+	require.NoError(t, db.Where("trade_no = ?", extNormal.TradeNo).First(&normalRow).Error)
+
+	// 0-day observation must keep frozen affiliate in covered (not available), while normal affiliate becomes available immediately.
+	assert.Equal(t, model.AdtySiteCommissionCovered, frozenRow.Status, "0-day observation must not bypass affiliate settlement_enabled=false")
+	assert.Equal(t, now.Unix(), frozenRow.CoveredAt)
+	assert.Equal(t, now.Unix(), frozenRow.AvailableAt)
+	assert.True(t, frozenRow.CoveredUSD.Equal(decimal.NewFromInt(10)))
+	assert.False(t, SiteInviteCommissionWithdrawable(&frozenRow, now))
+
+	assert.Equal(t, model.AdtySiteCommissionAvailable, normalRow.Status)
+	assert.True(t, SiteInviteCommissionWithdrawable(&normalRow, now))
+
+	// Release job still skips the frozen affiliate while settlement_enabled=false.
+	require.NoError(t, ReleaseAdtySiteInviteCommissions(now.Add(time.Minute)))
+	require.NoError(t, db.First(&frozenRow, frozenRow.Id).Error)
+	assert.Equal(t, model.AdtySiteCommissionCovered, frozenRow.Status)
+
+	// Restoring settlement allows ReleaseAdtySiteInviteCommissions to release it cleanly.
+	require.NoError(t, UpdateAdtyOwnerSiteReferralAffiliate(site.Id, owner.Id, inviterFrozen.Id, AdtySiteAffiliateUpdateInput{
+		Action: "restore_settlement",
+		Reason: "cleared",
+	}, "198.51.100.9", "owner-ui"))
+
+	require.NoError(t, ReleaseAdtySiteInviteCommissions(now.Add(time.Minute)))
+	require.NoError(t, db.First(&frozenRow, frozenRow.Id).Error)
+	assert.Equal(t, model.AdtySiteCommissionAvailable, frozenRow.Status)
+	assert.True(t, SiteInviteCommissionWithdrawable(&frozenRow, now.Add(time.Minute)))
+}
+
+func TestR37IsAdtyReferralEnabledForSiteWithRateOverride(t *testing.T) {
+	db := setupR37TestDB(t)
+	owner, site := createR37SiteWithOwner(t, db, "zero_rate_override")
+	vip := createR37SiteCustomer(t, db, site.Id, "vip_affiliate")
+
+	// 1. Enabled with 0% site rate and no affiliate override -> disabled.
+	require.NoError(t, SaveAdtyOwnerSiteMarketingWithAudit(site.Id, owner.Id, AdtySiteMarketingUpdate{
+		Rate:               strPtr("0"),
+		PendingCoverageCap: strPtr("500"),
+		ObservationDays:    strPtr("7"),
+		Enabled:            boolPtr(true),
+	}, "127.0.0.1", "test"))
+	assert.False(t, IsAdtyReferralEnabledForSite(site.Id))
+
+	// 2. Active affiliate with 0% override -> still disabled.
+	require.NoError(t, UpdateAdtyOwnerSiteReferralAffiliate(site.Id, owner.Id, vip.Id, AdtySiteAffiliateUpdateInput{
+		Action: "rate",
+		Rate:   float64Ptr(0),
+	}, "127.0.0.1", "test"))
+	assert.False(t, IsAdtyReferralEnabledForSite(site.Id))
+
+	// 3. Active affiliate with positive override (15%) -> enabled.
+	require.NoError(t, UpdateAdtyOwnerSiteReferralAffiliate(site.Id, owner.Id, vip.Id, AdtySiteAffiliateUpdateInput{
+		Action: "rate",
+		Rate:   float64Ptr(15),
+	}, "127.0.0.1", "test"))
+	assert.True(t, IsAdtyReferralEnabledForSite(site.Id))
+
+	// 4. Disabling that affiliate -> disabled again.
+	require.NoError(t, UpdateAdtyOwnerSiteReferralAffiliate(site.Id, owner.Id, vip.Id, AdtySiteAffiliateUpdateInput{
+		Action: "disable",
+		Reason: "paused",
+	}, "127.0.0.1", "test"))
+	assert.False(t, IsAdtyReferralEnabledForSite(site.Id))
+
+	// 5. Restoring affiliate restores enabled, while turning site Enabled=false turns it off.
+	require.NoError(t, UpdateAdtyOwnerSiteReferralAffiliate(site.Id, owner.Id, vip.Id, AdtySiteAffiliateUpdateInput{
+		Action: "restore",
+		Reason: "restored",
+	}, "127.0.0.1", "test"))
+	assert.True(t, IsAdtyReferralEnabledForSite(site.Id))
+
+	require.NoError(t, SaveAdtyOwnerSiteMarketingWithAudit(site.Id, owner.Id, AdtySiteMarketingUpdate{
+		Enabled: boolPtr(false),
+	}, "127.0.0.1", "test"))
+	assert.False(t, IsAdtyReferralEnabledForSite(site.Id))
+
+	// 6. Nil model.DB must return false safely without panicking.
+	savedDB := model.DB
+	model.DB = nil
+	assert.False(t, IsAdtyReferralEnabledForSite(site.Id))
+	model.DB = savedDB
 }

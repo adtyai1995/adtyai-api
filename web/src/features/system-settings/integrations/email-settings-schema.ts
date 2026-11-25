@@ -18,6 +18,44 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import * as z from 'zod'
 
+const SIMPLE_EMAIL_RE = /^[^\s<>@,"]+@[^\s<>@,"]+\.[^\s<>@,"]+$/
+const QUOTED_DISPLAY_NAME_RE = /^"(?:[^"\\\r\n]|\\[^\r\n])*"$/
+const UNQUOTED_DISPLAY_NAME_RE = /^[^<>@,;:"\\[\]()\r\n]+$/
+
+/**
+ * Accepts empty/blank, bare email (`noreply@example.com`), or RFC-5322 named
+ * address (`ADTY AI <noreply@example.com>` / `"ADTY, Inc." <noreply@example.com>`),
+ * while rejecting malformed strings and header-injection CR/LF/NUL characters.
+ */
+function isValidSmtpFrom(value: string): boolean {
+  if (/[\r\n]/.test(value) || value.includes('\0')) {
+    return false
+  }
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return true
+  }
+  if (SIMPLE_EMAIL_RE.test(trimmed)) {
+    return true
+  }
+  const named = trimmed.match(/^(.*?)\s*<([^<>]+)>$/)
+  if (!named) {
+    return false
+  }
+  const displayName = named[1].trim()
+  const email = named[2]
+  if (!SIMPLE_EMAIL_RE.test(email)) {
+    return false
+  }
+  if (!displayName) {
+    return true
+  }
+  return (
+    QUOTED_DISPLAY_NAME_RE.test(displayName) ||
+    UNQUOTED_DISPLAY_NAME_RE.test(displayName)
+  )
+}
+
 export const createEmailSchema = (t: (key: string) => string) =>
   z
     .object({
@@ -76,8 +114,7 @@ export const createEmailSchema = (t: (key: string) => string) =>
           message: t('Port must be a positive integer'),
         })
       }
-      const from = values.SMTPFrom.trim()
-      if (from && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(from)) {
+      if (!isValidSmtpFrom(values.SMTPFrom)) {
         context.addIssue({
           code: 'custom',
           path: ['SMTPFrom'],

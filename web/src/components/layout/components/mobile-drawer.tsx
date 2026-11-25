@@ -28,6 +28,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import useDialogState from '@/hooks/use-dialog'
 import { useIsSidebarModuleVisible } from '@/hooks/use-sidebar-config'
 import { useUserDisplay } from '@/hooks/use-user-display'
+import { ROLE } from '@/lib/roles'
 import type { AuthUser } from '@/stores/auth-store'
 
 import { MOBILE_DRAWER_ANIMATION, MOBILE_DRAWER_CONFIG } from '../constants'
@@ -82,7 +83,15 @@ function MobileUserProfile({ user, onNavigate }: MobileUserProfileProps) {
   const { t } = useTranslation()
   const [signOutOpen, setSignOutOpen] = useDialogState()
   const { displayName, initials, roleLabel } = useUserDisplay(user)
-  const isSecurityVisible = useIsSidebarModuleVisible('/security')
+  const isSiteStaff = (user?.staff_site_id ?? 0) > 0
+  const isPureSiteOwner = Boolean(
+    user?.adty_site_owner && user.role < ROLE.ADMIN
+  )
+  const hideCustomerAccountLinks = isSiteStaff || isPureSiteOwner
+  const isWalletVisible =
+    useIsSidebarModuleVisible('/wallet') && !hideCustomerAccountLinks
+  const isSecurityVisible =
+    useIsSidebarModuleVisible('/security') && !isSiteStaff
 
   if (!user) return null
 
@@ -102,27 +111,21 @@ function MobileUserProfile({ user, onNavigate }: MobileUserProfileProps) {
             </p>
             <div className='flex items-center gap-1.5'>
               <span className='text-muted-foreground text-xs'>{roleLabel}</span>
-              {user.group && (
-                <>
-                  <span className='text-muted-foreground text-xs'>·</span>
-                  <span className='text-muted-foreground text-xs'>
-                    {String(user.group)}
-                  </span>
-                </>
-              )}
             </div>
           </div>
         </div>
 
         {/* Navigation links - same style as top nav */}
-        <Link
-          to='/profile'
-          onClick={onNavigate}
-          className='text-primary/60 hover:text-primary/80 border-border flex items-center gap-2.5 border-b p-2.5 transition-colors'
-        >
-          <User className='size-4' />
-          {t('Profile')}
-        </Link>
+        {!hideCustomerAccountLinks && (
+          <Link
+            to='/profile'
+            onClick={onNavigate}
+            className='text-primary/60 hover:text-primary/80 border-border flex items-center gap-2.5 border-b p-2.5 transition-colors'
+          >
+            <User className='size-4' />
+            {t('Profile')}
+          </Link>
+        )}
 
         {isSecurityVisible && (
           <Link
@@ -135,14 +138,16 @@ function MobileUserProfile({ user, onNavigate }: MobileUserProfileProps) {
           </Link>
         )}
 
-        <Link
-          to='/wallet'
-          onClick={onNavigate}
-          className='text-primary/60 hover:text-primary/80 border-border flex items-center gap-2.5 border-b p-2.5 transition-colors'
-        >
-          <Wallet className='size-4' />
-          {t('Wallet')}
-        </Link>
+        {isWalletVisible && (
+          <Link
+            to='/wallet'
+            onClick={onNavigate}
+            className='text-primary/60 hover:text-primary/80 border-border flex items-center gap-2.5 border-b p-2.5 transition-colors'
+          >
+            <Wallet className='size-4' />
+            {t('Wallet')}
+          </Link>
+        )}
 
         {/* Sign out - consistent style */}
         <Button

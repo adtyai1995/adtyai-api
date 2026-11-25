@@ -411,7 +411,7 @@ func registerAdtyReferralRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.GET("/adty/referral/public-settings", controller.GetAdtyReferralPublicSettings)
 	apiRouter.GET("/referral-assets/*path", controller.GetReferralAsset)
 
-	user := apiRouter.Group("/user/referral", middleware.UserAuth())
+	user := apiRouter.Group("/user/referral", middleware.UserAuth(), controller.RejectAdminUserReferral)
 	for _, route := range []struct {
 		method, path, scope string
 		handler             gin.HandlerFunc

@@ -89,7 +89,7 @@ export function useTopNavLinks(): TopNavLink[] {
     })
   }
 
-  // Model Status (authenticated console entry for ordinary and admin users)
+  // Channel Status (authenticated console entry for ordinary and admin users)
   if (
     isAuthed &&
     !isPureSiteOwner &&
@@ -98,7 +98,7 @@ export function useTopNavLinks(): TopNavLink[] {
   ) {
     links.push({
       id: 'model-status',
-      title: t('Model Status'),
+      title: t('Channel Status'),
       href: '/model-status',
     })
   }

@@ -105,13 +105,40 @@ func GetAdtySiteWithdrawals(c *gin.Context) {
 	common.ApiSuccess(c, page)
 }
 
-// PostAdtySiteWithdrawalQR uploads a site owner's Alipay payout QR image using
-// the referral asset pipeline (<=5MB, PNG/JPEG/WebP, signed URL).
+// PostAdtySiteWithdrawalQR retires owner Alipay withdrawal QR uploads (R-34 #4,
+// returning 410 Gone for default/withdrawal_qr purpose) while retaining
+// purpose=payment_proof for active site owners uploading customer
+// invite-commission payout proof screenshots.
 func PostAdtySiteWithdrawalQR(c *gin.Context) {
-	if _, ok := adtyOwnerAccountingSite(c); !ok {
+	site, ok := adtyOwnerAccountingSite(c)
+	if !ok {
 		return
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 5<<20+64<<10)
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.ContentType())), "multipart/form-data") {
+		if _, err := c.MultipartForm(); err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				common.ApiErrorT(c, "The image must be at most 5 MB")
+				return
+			}
+			common.ApiErrorT(c, "Choose an image to upload")
+			return
+		}
+	}
+	purpose := strings.TrimSpace(c.PostForm("purpose"))
+	if purpose == "" || purpose == model.ReferralAssetPurposeWithdrawalQR {
+		common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Owner Alipay withdrawal QR upload has been disabled"))
+		return
+	}
+	if purpose != model.ReferralAssetPurposePaymentProof {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if site.Status == model.AdtySiteStatusClosed {
+		common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtySiteNotOwner)
+		return
+	}
 	header, err := c.FormFile("file")
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
@@ -147,16 +174,6 @@ func PostAdtySiteWithdrawalQR(c *gin.Context) {
 	case "image/png", "image/jpeg", "image/webp":
 	default:
 		common.ApiErrorT(c, "Only PNG, JPEG or WebP images are accepted")
-		return
-	}
-	purpose := strings.TrimSpace(c.PostForm("purpose"))
-	if purpose == "" {
-		purpose = model.ReferralAssetPurposeWithdrawalQR
-	}
-	switch purpose {
-	case model.ReferralAssetPurposeWithdrawalQR, model.ReferralAssetPurposePaymentProof:
-	default:
-		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	link, err := service.SaveReferralAsset(data, contentType, c.GetInt("id"), purpose, "site_owner")

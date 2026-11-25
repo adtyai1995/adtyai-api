@@ -531,7 +531,7 @@ export type SettlementSheet = {
     id: number
     before: SettlementSheet
     after: SettlementSheet
-    sources: string[]
+    sources?: string[]
     created_at: number
   }[]
   owner_self_use_topup_usd?: string
@@ -546,8 +546,8 @@ export type SettlementSheet = {
   timezone: string
   day_start: number
   day_end: number
-  event_watermark: number
-  batch_id: string
+  event_watermark?: number
+  batch_id?: string
   topup_face_usd: string
   paid_usd: string
   paid_by_currency: string

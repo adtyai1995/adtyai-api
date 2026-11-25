@@ -372,12 +372,6 @@ func resolveUptimeGroupRatios(c *gin.Context, siteID int, items []UptimeGroupRes
 		return nil
 	}
 	userID := c.GetInt("id")
-	var userGroup string
-	if userID > 0 {
-		if user, err := model.GetUserCache(userID); err == nil && user != nil {
-			userGroup = user.Group
-		}
-	}
 
 	baseRatios := ratio_setting.GetGroupRatioCopy()
 	groupRatio := make(map[string]float64, len(items))
@@ -399,14 +393,6 @@ func resolveUptimeGroupRatios(c *gin.Context, siteID int, items []UptimeGroupRes
 	}
 	if len(groupRatio) == 0 {
 		return nil
-	}
-
-	if userID > 0 && userGroup != "" {
-		for g := range groupRatio {
-			if ratio, ok := ratio_setting.GetGroupGroupRatio(userGroup, g); ok {
-				groupRatio[g] = ratio
-			}
-		}
 	}
 
 	rawGroupRatio := maps.Clone(groupRatio)

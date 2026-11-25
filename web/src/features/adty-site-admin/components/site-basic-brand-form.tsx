@@ -551,7 +551,7 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
             ) : (
               <p className='text-muted-foreground text-xs'>
                 {t(
-                  'Optional external link shown to customers on the wallet page for purchasing recharge codes.'
+                  'Optional external link shown to customers on the wallet page for purchasing redemption codes.'
                 )}
               </p>
             )}

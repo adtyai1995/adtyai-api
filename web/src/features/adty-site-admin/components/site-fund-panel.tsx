@@ -201,7 +201,7 @@ export function SiteFundPanel(props: { siteId: number }) {
         <h3 className='text-sm font-medium'>{t('Direct margin credit')}</h3>
         <p className='text-muted-foreground text-sm'>
           {t(
-            'Credits the site margin wallet directly and opens a new 90% margin cycle without touching any main-site customer wallet. Excess margin above the site level deposit floor can also be used by the owner for manual customer/team balance credits and recharge codes.'
+            'Credits the site margin wallet directly and opens a new 90% margin cycle without touching any main-site customer wallet. Excess margin above the site level deposit floor can also be used by the owner to issue customer redemption codes.'
           )}
         </p>
         <div className='grid max-w-2xl gap-3 sm:grid-cols-2'>

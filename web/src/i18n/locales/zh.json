@@ -10982,6 +10982,21 @@
     "SSL/TLS and STARTTLS cannot be enabled at the same time": "SSL/TLS 与 STARTTLS 不能同时启用",
     "Sender display name must be at most 128 characters": "发件人显示名称最多 128 个字符",
     "This affiliate is disabled": "该推广员已被禁用",
-    "This site already has a custom domain for this purpose; remove it first to replace": "本站已绑定该用途的自定义域名，请先删除后再更换"
+    "This site already has a custom domain for this purpose; remove it first to replace": "本站已绑定该用途的自定义域名，请先删除后再更换",
+    "Redemption code issued": "签发兑换码",
+    "Redemption code cancelled": "取消兑换码",
+    "Redemption code redeemed": "兑换码已兑换",
+    "No redemption codes": "还没有兑换码",
+    "No margin recharge codes": "还没有保证金充值码",
+    "Optional external link shown to customers on the wallet page for purchasing redemption codes.": "可选，在客户钱包页面展示的兑换码外部购买链接。",
+    "External http(s) link where customers can buy redemption codes": "客户可用于购买兑换码的外部 http(s) 链接",
+    "Close request sent. When the site closes, customer balances and unredeemed redemption codes are automatically inherited by the main site.": "关站申请已提交。分站关闭后，客户余额与未核销兑换码将自动由主站承接。",
+    "Frozen amounts are held for redemption codes, commission or withdrawals and cannot be used until released.": "冻结金额是为兑换码、佣金或提现预留的，释放之前不能使用。",
+    "Credits the site margin wallet directly and opens a new 90% margin cycle without touching any main-site customer wallet. Excess margin above the site level deposit floor can also be used by the owner to issue customer redemption codes.": "直接向该分站保证金钱包入账并开启新的 90% 保证金周期，不改动任何主站客户钱包。超出当前分站等级底线的超额保证金也可供站长发行客户兑换码。",
+    "Administrators cannot use user referral endpoints": "管理员无法使用用户推广返佣接口",
+    "Owner Alipay withdrawal QR upload has been disabled": "站长支付宝提现收款码上传已停用",
+    "Site customer terms acceptance has been disabled": "分站客户条款确认已停用",
+    "Owner self-use features have been disabled": "站长自用功能已停用",
+    "Group health monitoring has been disabled": "分组健康监控已停用"
   }
 }

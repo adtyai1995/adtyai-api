@@ -35,6 +35,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { SiteCommissionPanel } from '@/features/wallet/adty/site-commission-panel'
 import { api } from '@/lib/api'
 import { formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
@@ -270,7 +271,10 @@ export function SiteCustomerReferral() {
                       id: 'invitee',
                       header: t('User'),
                       cell: (row) =>
-                        `${row.invitee_username || '-'} (#${row.invitee_id})`,
+                        formatUserIdentity(
+                          row.invitee_id,
+                          row.invitee_username
+                        ),
                     },
                     {
                       id: 'rate',

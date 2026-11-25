@@ -106,77 +106,19 @@ func GetAdtyOwnerWallets(c *gin.Context) {
 }
 
 func PostOwnerPersonalTransfer(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
-	if !ok {
-		return
-	}
-	var body struct {
-		AmountUSD string `json:"amount_usd"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
-	if err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	ref, err := service.TransferAdtyEarningsToPersonal(site.Id, c.GetInt("id"), amount, c.GetHeader("Idempotency-Key"))
-	if err != nil {
-		if errors.Is(err, model.ErrAdtyIdempotencyConflict) || errors.Is(err, service.ErrAdtySiteWalletIdempotencyConflict) {
-			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
-			return
-		}
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, gin.H{"transfer_id": ref})
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Owner self-use features have been disabled"))
 }
 
 func GetOwnerSelfUseBalance(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
-	if !ok {
-		return
-	}
-	q, err := model.AdtyOwnerPrincipalAvailable(model.DB, c.GetInt("id"), site.Id)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, gin.H{"available_usd": service.QuotaToUSD(q)})
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Owner self-use features have been disabled"))
 }
 
 func GetOwnerSelfUseUsage(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
-	if !ok {
-		return
-	}
-	page, offset, limit := adtyPage(c)
-	items, total, err := service.ListAdtyOwnerSelfUseUsage(site.Id, c.GetInt("id"), offset, limit)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	page.SetTotal(int(total))
-	page.SetItems(items)
-	common.ApiSuccess(c, page)
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Owner self-use features have been disabled"))
 }
 
 func GetOwnerPrincipalTransfers(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
-	if !ok {
-		return
-	}
-	page, offset, limit := adtyPage(c)
-	items, total, err := service.ListAdtyOwnerPrincipalTransfers(site.Id, c.GetInt("id"), offset, limit)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	page.SetTotal(int(total))
-	page.SetItems(items)
-	common.ApiSuccess(c, page)
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Owner self-use features have been disabled"))
 }
 
 func GetAdtyOwnerWalletLedger(c *gin.Context) {

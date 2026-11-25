@@ -282,13 +282,16 @@ func adtyPlatformSender() (string, string) {
 	smtpFrom, smtpAccount := common.SMTPFrom, common.SMTPAccount
 	common.OptionMapRWMutex.RUnlock()
 	if provider == "resend" {
-		if parsed, err := mail.ParseAddress(strings.TrimSpace(resendFrom)); err == nil {
-			return parsed.Address, provider
+		if parsed, err := mail.ParseAddress(strings.TrimSpace(resendFrom)); err == nil && parsed != nil {
+			return strings.TrimSpace(parsed.Address), provider
 		}
 	}
-	from := smtpFrom
+	from := strings.TrimSpace(smtpFrom)
 	if from == "" {
-		from = smtpAccount
+		from = strings.TrimSpace(smtpAccount)
+	}
+	if parsed, err := mail.ParseAddress(from); err == nil && parsed != nil && strings.TrimSpace(parsed.Address) != "" {
+		return strings.TrimSpace(parsed.Address), provider
 	}
 	return from, provider
 }

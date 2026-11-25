@@ -48,7 +48,7 @@ export function OwnerWalletBalances() {
         <h2 className='text-sm font-medium'>{t('Wallets')}</h2>
         <p className='text-muted-foreground text-sm'>
           {t(
-            'Frozen amounts are held for recharge codes, commission or withdrawals and cannot be used until released.'
+            'Frozen amounts are held for redemption codes, commission or withdrawals and cannot be used until released.'
           )}
         </p>
       </div>

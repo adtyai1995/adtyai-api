@@ -477,16 +477,9 @@ func AddToken(c *gin.Context) {
 	addPersonalToken(c, 0)
 }
 
+// AddOwnerSelfUseToken 站长自用 API Key 已停用（R-32 #4）。
 func AddOwnerSelfUseToken(c *gin.Context) {
-	site, ok := adtyOwnerSiteOr403(c)
-	if !ok {
-		return
-	}
-	if site.Status != model.AdtySiteStatusActive || service.AdtyRequestSiteID(c) != site.Id {
-		common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtySiteNotOwner)
-		return
-	}
-	addPersonalToken(c, site.Id)
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Owner self-use features have been disabled"))
 }
 
 func addPersonalToken(c *gin.Context, ownerSite int) {

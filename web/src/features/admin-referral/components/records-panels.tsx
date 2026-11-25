@@ -48,6 +48,7 @@ import {
   getReferralAuditLogs,
   getReferralLedgers,
   retryCommissionJob,
+  type ReferralLedgerEntry,
 } from '../api'
 
 const JOB_STATUSES = [
@@ -315,7 +316,8 @@ export function LedgerPanel() {
     queryFn: () => getReferralLedgers({ p: page, affiliate_id: affiliateId }),
     placeholderData: keepPreviousData,
   })
-  const rows = Array.isArray(query.data?.items) ? query.data.items : []
+  const rows: Array<ReferralLedgerEntry & { operator_username?: string }> =
+    Array.isArray(query.data?.items) ? query.data.items : []
   return (
     <section className='flex flex-col gap-3 pt-4'>
       <div className='flex flex-wrap items-start justify-between gap-3'>
@@ -423,7 +425,7 @@ export function LedgerPanel() {
                 cell: (row) =>
                   !row.operator || row.operator === 'system'
                     ? t('System')
-                    : `#${row.operator}`,
+                    : formatUserIdentity(row.operator, row.operator_username),
               },
             ]}
           />

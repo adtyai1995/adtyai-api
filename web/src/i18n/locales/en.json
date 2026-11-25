@@ -10982,6 +10982,21 @@
     "SSL/TLS and STARTTLS cannot be enabled at the same time": "SSL/TLS and STARTTLS cannot be enabled at the same time",
     "Sender display name must be at most 128 characters": "Sender display name must be at most 128 characters",
     "This affiliate is disabled": "This affiliate is disabled",
-    "This site already has a custom domain for this purpose; remove it first to replace": "This site already has a custom domain for this purpose; remove it first to replace"
+    "This site already has a custom domain for this purpose; remove it first to replace": "This site already has a custom domain for this purpose; remove it first to replace",
+    "Redemption code issued": "Redemption code issued",
+    "Redemption code cancelled": "Redemption code cancelled",
+    "Redemption code redeemed": "Redemption code redeemed",
+    "No redemption codes": "No redemption codes",
+    "No margin recharge codes": "No margin recharge codes",
+    "Optional external link shown to customers on the wallet page for purchasing redemption codes.": "Optional external link shown to customers on the wallet page for purchasing redemption codes.",
+    "External http(s) link where customers can buy redemption codes": "External http(s) link where customers can buy redemption codes",
+    "Close request sent. When the site closes, customer balances and unredeemed redemption codes are automatically inherited by the main site.": "Close request sent. When the site closes, customer balances and unredeemed redemption codes are automatically inherited by the main site.",
+    "Frozen amounts are held for redemption codes, commission or withdrawals and cannot be used until released.": "Frozen amounts are held for redemption codes, commission or withdrawals and cannot be used until released.",
+    "Credits the site margin wallet directly and opens a new 90% margin cycle without touching any main-site customer wallet. Excess margin above the site level deposit floor can also be used by the owner to issue customer redemption codes.": "Credits the site margin wallet directly and opens a new 90% margin cycle without touching any main-site customer wallet. Excess margin above the site level deposit floor can also be used by the owner to issue customer redemption codes.",
+    "Administrators cannot use user referral endpoints": "Administrators cannot use user referral endpoints",
+    "Owner Alipay withdrawal QR upload has been disabled": "Owner Alipay withdrawal QR upload has been disabled",
+    "Site customer terms acceptance has been disabled": "Site customer terms acceptance has been disabled",
+    "Owner self-use features have been disabled": "Owner self-use features have been disabled",
+    "Group health monitoring has been disabled": "Group health monitoring has been disabled"
   }
 }

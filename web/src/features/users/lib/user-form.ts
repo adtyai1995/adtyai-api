@@ -27,7 +27,6 @@ import {
 import { quotaUnitsToDollars } from '@/lib/format'
 import { ROLE } from '@/lib/roles'
 
-import { DEFAULT_GROUP } from '../constants'
 import type { UserFormData, User } from '../types'
 
 // ============================================================================
@@ -81,7 +80,7 @@ export const USER_FORM_DEFAULT_VALUES: UserFormValues = {
   password: '',
   role: 1, // Default to common user
   quota_dollars: 0,
-  group: DEFAULT_GROUP,
+  group: '',
   remark: '',
   // Filled against the backend catalog at render time; see UsersMutateDrawer.
   admin_permissions: {},
@@ -121,8 +120,8 @@ export function transformFormDataToPayload(
   if (userId === undefined) {
     payload.role = role
   } else {
-    // For update: quota is adjusted atomically via /api/user/manage, not sent here
-    payload.group = data.group
+    // For update: quota is adjusted atomically via /api/user/manage, not sent here.
+    // Users do not manage groups in UI; omit group so backend preserves existing state.
     payload.remark = data.remark || undefined
     payload.id = userId
   }
@@ -142,7 +141,7 @@ export function transformUserToFormDefaults(user: User): UserFormValues {
     password: '',
     role: user.role,
     quota_dollars: quotaUnitsToDollars(user.live_quota ?? user.quota),
-    group: user.group || DEFAULT_GROUP,
+    group: user.group ?? '',
     remark: user.remark || '',
     admin_permissions: user.admin_permissions ?? {},
   }

@@ -47,8 +47,13 @@ export function ProfileDropdown() {
   const user = useAuthStore((state) => state.auth.user)
   const { displayName, roleLabel } = useUserDisplay(user)
   const isSiteStaff = (user?.staff_site_id ?? 0) > 0
+  const isPureSiteOwner = Boolean(
+    user?.adty_site_owner && user.role < ROLE.ADMIN
+  )
+  const hideCustomerAccountLinks = isSiteStaff || isPureSiteOwner
   const isSuperAdmin = user?.role === ROLE.SUPER_ADMIN && !isSiteStaff
-  const isWalletVisible = useIsSidebarModuleVisible('/wallet') && !isSiteStaff
+  const isWalletVisible =
+    useIsSidebarModuleVisible('/wallet') && !hideCustomerAccountLinks
   const isSecurityVisible =
     useIsSidebarModuleVisible('/security') && !isSiteStaff
   const avatarName = user?.username || displayName
@@ -91,21 +96,13 @@ export function ProfileDropdown() {
                 <span className='text-muted-foreground text-xs'>
                   {roleLabel}
                 </span>
-                {user?.group && (
-                  <>
-                    <span className='text-muted-foreground text-xs'>·</span>
-                    <span className='text-muted-foreground truncate text-xs'>
-                      {String(user.group)}
-                    </span>
-                  </>
-                )}
               </div>
             </div>
           </div>
 
           <DropdownMenuSeparator />
 
-          {!isSiteStaff && (
+          {!hideCustomerAccountLinks && (
             <DropdownMenuItem onClick={() => navigate({ to: '/profile' })}>
               <User className='size-4' />
               {t('Profile')}

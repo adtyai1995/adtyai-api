@@ -426,7 +426,7 @@ export function buildSettlementSheetCsv(
       formatCsvRow([
         { value: t('Admin audit details') },
         { value: t('Batch') },
-        { value: sheet.batch_id },
+        { value: sheet.batch_id ?? '' },
         { value: '' },
       ])
     )
@@ -434,7 +434,7 @@ export function buildSettlementSheetCsv(
       formatCsvRow([
         { value: t('Admin audit details') },
         { value: t('Event watermark') },
-        { value: String(sheet.event_watermark) },
+        { value: String(sheet.event_watermark ?? '') },
         { value: '' },
       ])
     )
@@ -563,8 +563,8 @@ export function buildSettlementSheetPrintHtml(
   let adminHtml = ''
   if (isAdmin) {
     const auditRows: string[] = [
-      `<tr><td class="lbl">${escapeHtml(t('Batch'))}</td><td class="val mono">${escapeHtml(sheet.batch_id)}</td></tr>`,
-      `<tr><td class="lbl">${escapeHtml(t('Event watermark'))}</td><td class="val mono">${escapeHtml(String(sheet.event_watermark))}</td></tr>`,
+      `<tr><td class="lbl">${escapeHtml(t('Batch'))}</td><td class="val mono">${escapeHtml(sheet.batch_id ?? '')}</td></tr>`,
+      `<tr><td class="lbl">${escapeHtml(t('Event watermark'))}</td><td class="val mono">${escapeHtml(String(sheet.event_watermark ?? ''))}</td></tr>`,
     ]
     if (
       (options?.sources && options.sources.length > 0) ||
@@ -1197,13 +1197,13 @@ export function SettlementSheetLines({
             <div className='flex items-baseline justify-between gap-4 px-4 py-2.5'>
               <dt className='text-muted-foreground'>{t('Batch')}</dt>
               <dd className='text-right font-mono text-xs break-all'>
-                {activeSheet.batch_id}
+                {activeSheet.batch_id ?? ''}
               </dd>
             </div>
             <div className='flex items-baseline justify-between gap-4 px-4 py-2.5'>
               <dt className='text-muted-foreground'>{t('Event watermark')}</dt>
               <dd className='text-right font-mono text-xs tabular-nums'>
-                {String(activeSheet.event_watermark)}
+                {String(activeSheet.event_watermark ?? '')}
               </dd>
             </div>
             {revision && (
@@ -1212,8 +1212,8 @@ export function SettlementSheetLines({
                   {t('Source records')}
                 </dt>
                 <dd className='text-right font-mono text-xs break-all'>
-                  {revision.sources.length > 0
-                    ? revision.sources.join(', ')
+                  {(revision.sources?.length ?? 0) > 0
+                    ? revision.sources?.join(', ')
                     : t('None')}
                 </dd>
               </div>

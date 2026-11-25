@@ -64,7 +64,8 @@ type referralCommissionAdminItem struct {
 
 type referralLedgerAdminItem struct {
 	model.ReferralCommissionLedger
-	Username string `json:"username"`
+	Username         string `json:"username"`
+	OperatorUsername string `json:"operator_username,omitempty"`
 }
 
 type referralAdminAuditLogItem struct {
@@ -626,16 +627,24 @@ func GetReferralLedgers(c *gin.Context) {
 	if !ok {
 		return
 	}
-	ids := make([]int, 0, len(rows))
+	ids := make([]int, 0, len(rows)*2)
 	for _, row := range rows {
 		ids = append(ids, row.UserId)
+		if opID, err := strconv.Atoi(strings.TrimSpace(row.Operator)); err == nil && opID > 0 {
+			ids = append(ids, opID)
+		}
 	}
 	names := model.LookupUsernamesByIDs(model.DB, ids)
 	items := make([]referralLedgerAdminItem, len(rows))
 	for i, row := range rows {
+		opName := ""
+		if opID, err := strconv.Atoi(strings.TrimSpace(row.Operator)); err == nil && opID > 0 {
+			opName = names[opID]
+		}
 		items[i] = referralLedgerAdminItem{
 			ReferralCommissionLedger: row,
 			Username:                 names[row.UserId],
+			OperatorUsername:         opName,
 		}
 	}
 	pageInfo.SetItems(items)

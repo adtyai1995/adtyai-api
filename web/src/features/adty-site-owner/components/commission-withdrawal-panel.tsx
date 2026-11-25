@@ -64,7 +64,12 @@ import {
   type SiteInviteCommissionWithdrawal,
 } from '../api'
 
-type CommissionWithdrawalRow = SiteInviteCommissionWithdrawal
+type CommissionWithdrawalRow = SiteInviteCommissionWithdrawal & {
+  legacy_decision_by_username?: string
+  reviewed_by_username?: string
+  paid_by_username?: string
+  failure_by_username?: string
+}
 
 const WITHDRAWAL_STATUS_OPTIONS: ReferralWithdrawalStatus[] = [
   'pending',
@@ -494,23 +499,31 @@ export function CommissionWithdrawalPanel(
                 cell: (row) => {
                   const auditEntries = props.closed
                     ? [
-                        [
-                          t('Legacy decision record'),
-                          row.legacy_decision_by,
-                          row.legacy_decision_at,
-                        ],
-                        [
-                          t('Withdrawal reviewer'),
-                          row.reviewed_by,
-                          row.reviewed_at,
-                        ],
-                        [t('Payment recorded by'), row.paid_by, row.paid_at],
-                        [
-                          t('Failed payout recorded by'),
-                          row.failure_by,
-                          row.failure_at,
-                        ],
-                      ].filter(([, , at]) => Boolean(at))
+                        {
+                          label: t('Legacy decision record'),
+                          actor: row.legacy_decision_by,
+                          actorUsername: row.legacy_decision_by_username,
+                          at: row.legacy_decision_at,
+                        },
+                        {
+                          label: t('Withdrawal reviewer'),
+                          actor: row.reviewed_by,
+                          actorUsername: row.reviewed_by_username,
+                          at: row.reviewed_at,
+                        },
+                        {
+                          label: t('Payment recorded by'),
+                          actor: row.paid_by,
+                          actorUsername: row.paid_by_username,
+                          at: row.paid_at,
+                        },
+                        {
+                          label: t('Failed payout recorded by'),
+                          actor: row.failure_by,
+                          actorUsername: row.failure_by_username,
+                          at: row.failure_at,
+                        },
+                      ].filter((entry) => Boolean(entry.at))
                     : []
                   return (
                     <div className='flex max-w-xs flex-col items-start gap-1'>
@@ -551,15 +564,20 @@ export function CommissionWithdrawalPanel(
                           {row.reject_reason}
                         </span>
                       )}
-                      {auditEntries.map(([label, actor, at]) => (
-                        <span
-                          key={String(label)}
-                          className='text-muted-foreground text-[11px] tabular-nums'
-                        >
-                          {label} {actor ? `#${actor}` : t('Unknown')} ·{' '}
-                          {formatTimestamp(Number(at))}
-                        </span>
-                      ))}
+                      {auditEntries.map(
+                        ({ label, actor, actorUsername, at }) => (
+                          <span
+                            key={label}
+                            className='text-muted-foreground text-[11px] tabular-nums'
+                          >
+                            {label}{' '}
+                            {actor || actorUsername?.trim()
+                              ? formatUserIdentity(actor, actorUsername)
+                              : t('Unknown')}{' '}
+                            · {formatTimestamp(Number(at))}
+                          </span>
+                        )
+                      )}
                     </div>
                   )
                 },

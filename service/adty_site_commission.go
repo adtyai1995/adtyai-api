@@ -593,7 +593,13 @@ func applySiteCommissionFreezeTx(tx *gorm.DB, siteID int, kind, tradeNo string, 
 func markSiteCommissionCovered(tx *gorm.DB, row *model.AdtySiteInviteCommission, now time.Time, days int64) error {
 	row.Status = model.AdtySiteCommissionCovered
 	if days == 0 {
-		row.Status = model.AdtySiteCommissionAvailable
+		aff, found, err := loadSiteReferralAffiliateTx(tx, row.SiteId, row.InviterId)
+		if err != nil {
+			return err
+		}
+		if !found || aff.SettlementEnabled {
+			row.Status = model.AdtySiteCommissionAvailable
+		}
 	}
 	row.CoveredAt = now.Unix()
 	row.AvailableAt = now.Unix() + days*86400

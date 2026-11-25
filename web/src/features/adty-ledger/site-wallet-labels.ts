@@ -36,6 +36,7 @@ export type SiteWalletLedgerEntry = {
   ref_id: string
   reason: string
   operator_id: number
+  operator_username?: string
   allow_overdraft: boolean
   created_at: number
 }
@@ -109,13 +110,13 @@ export function siteWalletLedgerTypeLabel(t: TFunction, type: string): string {
     case 'gift_spend':
       return t('Bonus paid out')
     case 'voucher_freeze':
-      return t('Recharge code issued')
+      return t('Redemption code issued')
     case 'voucher_margin':
       return t('Margin code redeemed')
     case 'voucher_release':
-      return t('Recharge code cancelled')
+      return t('Redemption code cancelled')
     case 'voucher_spend':
-      return t('Recharge code redeemed')
+      return t('Redemption code redeemed')
     case 'owner_customer_balance':
       return t('Manual customer balance credit')
     case 'owner_team_balance':

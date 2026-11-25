@@ -39,6 +39,7 @@ import {
 import { qrContent, mobileTarget } from '../lib/payment-links'
 import { clearPendingPayment, savePendingPayment } from '../lib/pending-payment'
 import type { AdtyOrder, AdtyTopupBusiness } from '../types'
+import { PaymentMethodIcon } from './payment-logos'
 
 type EpayPayDialogProps = {
   gatewayReturn?: boolean
@@ -189,9 +190,17 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
         if (!open) props.onClose()
       }}
       title={
-        props.method === 'wxpay'
-          ? t('Pay with WeChat Pay')
-          : t('Pay with Alipay')
+        <span className='inline-flex items-center gap-2.5'>
+          <PaymentMethodIcon
+            method={props.method === 'wxpay' ? 'wxpay' : 'alipay'}
+            className='size-6'
+          />
+          <span>
+            {props.method === 'wxpay'
+              ? t('Pay with WeChat Pay')
+              : t('Pay with Alipay')}
+          </span>
+        </span>
       }
       contentHeight='auto'
       bodyClassName='space-y-4'

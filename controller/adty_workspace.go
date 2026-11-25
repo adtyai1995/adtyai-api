@@ -837,59 +837,19 @@ func GetAdtyGroupHealth(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"scope": scope, "groups": rows})
 }
 
+// GetAdtyAdminGroupHealth 分组健康配置管理已停用（R-32 #5）。
 func GetAdtyAdminGroupHealth(c *gin.Context) {
-	view, err := service.GetAdtyGroupHealthConfig()
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, view)
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Group health monitoring has been disabled"))
 }
 
+// PutAdtyGroupHealth 分组健康配置管理已停用（R-32 #5）。
 func PutAdtyGroupHealth(c *gin.Context) {
-	var body struct {
-		SuccessMin   string `json:"success_min"`
-		StaleSeconds int    `json:"stale_seconds"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	event := prepareManageAudit(c, c.GetInt("id"), "adty.group_health.config", map[string]any{"success_min": body.SuccessMin, "stale_seconds": body.StaleSeconds})
-	if err := service.PutAdtyGroupHealthConfig(body.SuccessMin, body.StaleSeconds, event); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	deliverCommittedAudits(c, []model.AuditLog{event})
-	common.ApiSuccess(c, gin.H{"saved": true})
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Group health monitoring has been disabled"))
 }
 
+// PostAdtyGroupProbe 分组健康探针管理已停用（R-32 #5）。
 func PostAdtyGroupProbe(c *gin.Context) {
-	var body struct {
-		SiteId  int    `json:"site_id"`
-		Group   string `json:"group"`
-		Model   string `json:"model"`
-		Ok      *bool  `json:"ok"`
-		Execute bool   `json:"execute"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	if body.Execute || body.Ok == nil {
-		sample, err := service.ExecuteAdtyGroupProbe(body.SiteId, body.Group, body.Model, time.Now())
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		common.ApiSuccess(c, gin.H{"recorded": true, "sample": sample})
-		return
-	}
-	if err := service.RecordAdtyGroupProbe(body.SiteId, body.Group, body.Model, *body.Ok, time.Now()); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, gin.H{"recorded": true})
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Group health monitoring has been disabled"))
 }
 
 func PutAdtyTicketImagePolicy(c *gin.Context) {

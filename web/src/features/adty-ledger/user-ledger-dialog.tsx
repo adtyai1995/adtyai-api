@@ -27,6 +27,7 @@ import { ErrorState } from '@/components/error-state'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { api } from '@/lib/api'
 import { formatQuota, formatTimestamp } from '@/lib/format'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
 type LedgerEntry = {
@@ -40,6 +41,7 @@ type LedgerEntry = {
   ref_id: string
   reason: string
   operator_id: number
+  operator_username?: string
   created_at: number
 }
 
@@ -81,7 +83,7 @@ export function UserLedgerDialog(props: {
     manual_adjust: t('Manual adjustment'),
     commission_transfer: t('Commission to balance'),
     topup: t('Top-up'),
-    voucher: t('Recharge code redeemed'),
+    voucher: t('Redemption code redeemed'),
     root_expiring_gift: t('Expiring trial gift'),
     gift_expire: t('Expiring gift cleared'),
     gift_fulfillment: t('Pending bonus fulfilled'),
@@ -154,7 +156,10 @@ export function UserLedgerDialog(props: {
             {
               id: 'operator',
               header: t('Operator'),
-              cell: (row) => (row.operator_id > 0 ? `#${row.operator_id}` : '-'),
+              cell: (row) =>
+                row.operator_id > 0
+                  ? formatUserIdentity(row.operator_id, row.operator_username)
+                  : '-',
             },
           ]}
         />

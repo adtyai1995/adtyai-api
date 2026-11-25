@@ -323,7 +323,7 @@ function BrandCard(props: { site: OwnerSite }) {
           'voucher_purchase_url',
           t('Voucher purchase link'),
           false,
-          t('External http(s) link where customers can buy recharge codes')
+          t('External http(s) link where customers can buy redemption codes')
         )}
         {field('support_contact', t('Support contact'))}
         <div className='grid gap-3 sm:grid-cols-2'>
@@ -822,7 +822,7 @@ function CloseRequestCard(props: { site: OwnerSite }) {
     onSuccess: () => {
       toast.success(
         t(
-          'Close request sent. When the site closes, customer balances and unredeemed recharge codes are automatically inherited by the main site.'
+          'Close request sent. When the site closes, customer balances and unredeemed redemption codes are automatically inherited by the main site.'
         )
       )
       setReason('')

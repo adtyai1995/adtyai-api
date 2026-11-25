@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -521,7 +522,8 @@ func adtyScheme() string {
 
 // IsAdtyReferralEnabledForSite reports whether referral/invite commissions are currently enabled for siteID.
 // Main site (siteID == 0): checks adty_setting.GetReferralSetting().Enabled.
-// Subsite (siteID > 0): checks site is active (not closed) and adty_site_referral_rates has enabled=true && rate > 0.
+// Subsite (siteID > 0): checks site is active (not closed) and adty_site_referral_rates has enabled=true
+// with either a positive site rate or at least one active affiliate carrying a positive rate_override.
 func IsAdtyReferralEnabledForSite(siteID int) bool {
 	if siteID < 0 {
 		return false
@@ -541,10 +543,24 @@ func IsAdtyReferralEnabledForSite(siteID int) bool {
 	}
 	var rate model.AdtySiteReferralRate
 	lookup := model.DB.Where("site_id = ?", siteID).Limit(1).Find(&rate)
-	if lookup.Error != nil || lookup.RowsAffected == 0 {
+	if lookup.Error != nil || lookup.RowsAffected == 0 || !rate.Enabled {
 		return false
 	}
-	return rate.Enabled && rate.Rate.IsPositive()
+	if rate.Rate.IsPositive() {
+		return true
+	}
+	if !model.DB.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
+		return false
+	}
+	var overrides []model.AdtySiteReferralAffiliate
+	if err := model.DB.Select("rate_override").
+		Where("site_id = ? AND status <> ? AND rate_override IS NOT NULL", siteID, model.AdtySiteAffiliateStatusDisabled).
+		Find(&overrides).Error; err != nil {
+		return false
+	}
+	return slices.ContainsFunc(overrides, func(aff model.AdtySiteReferralAffiliate) bool {
+		return aff.RateOverride != nil && aff.RateOverride.IsPositive()
+	})
 }
 
 // AdtyOverrideStatus 在 /api/status 末尾调用（controller/misc.go）：当前请求是分站时，换成分站的站名、Logo、

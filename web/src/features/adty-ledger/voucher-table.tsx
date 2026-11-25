@@ -49,6 +49,7 @@ export function VoucherTable(props: {
   onFreeze: (voucher: Voucher) => void
   onCancel: (voucher: Voucher) => void
   showIssuer?: boolean
+  emptyText?: string
 }) {
   const { t } = useTranslation()
   const [pending, setPending] = useState<PendingAction | null>(null)
@@ -65,7 +66,10 @@ export function VoucherTable(props: {
         data={props.rows}
         getRowKey={(row) => String(row.id)}
         emptyContent={
-          <EmptyState className='min-h-24' title={t('No recharge codes')} />
+          <EmptyState
+            className='min-h-24'
+            title={props.emptyText ?? t('No redemption codes')}
+          />
         }
         columns={[
           {

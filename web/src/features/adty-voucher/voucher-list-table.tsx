@@ -55,6 +55,7 @@ export function VoucherListTable(props: {
   showSource?: boolean
   showTargetSite?: boolean
   formatTargetSite?: (siteId: number) => string
+  emptyText?: string
 }) {
   const { t } = useTranslation()
   const [pending, setPending] = useState<PendingAction | null>(null)
@@ -202,7 +203,15 @@ export function VoucherListTable(props: {
         data={props.rows}
         getRowKey={(row) => String(row.id)}
         emptyContent={
-          <EmptyState className='min-h-24' title={t('No recharge codes')} />
+          <EmptyState
+            className='min-h-24'
+            title={
+              props.emptyText ??
+              (props.showTargetSite
+                ? t('No margin recharge codes')
+                : t('No redemption codes'))
+            }
+          />
         }
         columns={columns}
       />

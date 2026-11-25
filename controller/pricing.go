@@ -264,15 +264,6 @@ func GetPricing(c *gin.Context) {
 			}
 		}
 	}
-	if userID > 0 && group != "" {
-		for g := range groupRatio {
-			ratio, ok := ratio_setting.GetGroupGroupRatio(group, g)
-			if ok {
-				groupRatio[g] = ratio
-			}
-		}
-	}
-
 	rawUsable := service.GetUserUsableGroups(group)
 	for g, desc := range rawUsable {
 		if g == "" || g == "auto" {
@@ -304,18 +295,10 @@ func GetPricing(c *gin.Context) {
 			usableGroup[g] = setting.GetUsableGroupDescription(g)
 		}
 	}
-	if desc, ok := rawUsable["auto"]; ok && (siteID == 0 || len(usableGroup) > 0) {
-		usableGroup["auto"] = desc
-	}
 
 	requested := strings.TrimSpace(c.Query("group"))
 	if requested != "" && requested != "all" {
-		if requested == "auto" {
-			if _, ok := usableGroup["auto"]; !ok {
-				common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
-				return
-			}
-		} else if !service.SiteGroupAllowed(siteID, requested) {
+		if requested == "auto" || !service.SiteGroupAllowed(siteID, requested) {
 			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("No permission to perform this action"))
 			return
 		}
@@ -323,7 +306,7 @@ func GetPricing(c *gin.Context) {
 
 	pricing = filterPricingByUsableGroups(pricing, usableGroup, siteID)
 	adjustGroup := group
-	if adjustGroup != "" && adjustGroup != "auto" && !service.SiteGroupAllowed(siteID, adjustGroup) {
+	if adjustGroup == "auto" || (adjustGroup != "" && !service.SiteGroupAllowed(siteID, adjustGroup)) {
 		adjustGroup = ""
 	}
 	if requested != "" && requested != "all" {
@@ -357,16 +340,7 @@ func GetPricing(c *gin.Context) {
 		}
 	}
 
-	rawAutoGroups := service.GetUserAutoGroup(group)
-	autoGroups := make([]string, 0, len(rawAutoGroups))
-	for _, g := range rawAutoGroups {
-		if _, deleted := deletedAdtyGroups[g]; deleted {
-			continue
-		}
-		if service.SiteGroupAllowed(siteID, g) {
-			autoGroups = append(autoGroups, g)
-		}
-	}
+	autoGroups := []string{}
 
 	c.JSON(200, gin.H{
 		"success":            true,

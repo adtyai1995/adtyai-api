@@ -12,6 +12,8 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
 
@@ -631,4 +633,157 @@ func TestR37MailSubsiteDeliveryRouting(t *testing.T) {
 	if strings.Contains(entry.AfterValue, "top-secret-smtp") || strings.Contains(entry.AfterValue, "re_top_secret_key") {
 		t.Fatalf("expected smtp_token and resend_api_key to be redacted, got %s", entry.AfterValue)
 	}
+}
+
+func TestR37PlatformSMTPFromStripsMainSiteDisplayName(t *testing.T) {
+	db := setupR37MailTest(t)
+	site := createR37MailTestSite(t, db, 401, "subalpha", "SubSite")
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	var (
+		mu       sync.Mutex
+		mailFrom string
+		dataBody string
+	)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, acceptErr := ln.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+		writeLine := func(line string) {
+			_, _ = rw.WriteString(line + "\r\n")
+			_ = rw.Flush()
+		}
+		writeLine("220 mock.smtp.test ESMTP")
+		inData := false
+		var bodyLines []string
+		for {
+			line, readErr := rw.ReadString('\n')
+			if readErr != nil {
+				return
+			}
+			trimmed := strings.TrimRight(line, "\r\n")
+			if inData {
+				if trimmed == "." {
+					inData = false
+					mu.Lock()
+					dataBody = strings.Join(bodyLines, "\r\n")
+					mu.Unlock()
+					writeLine("250 2.0.0 OK")
+					continue
+				}
+				bodyLines = append(bodyLines, trimmed)
+				continue
+			}
+			upper := strings.ToUpper(trimmed)
+			switch {
+			case strings.HasPrefix(upper, "EHLO"), strings.HasPrefix(upper, "HELO"):
+				writeLine("250-mock.smtp.test")
+				writeLine("250 OK")
+			case strings.HasPrefix(upper, "MAIL FROM:"):
+				mu.Lock()
+				mailFrom = strings.TrimSpace(trimmed[len("MAIL FROM:"):])
+				mu.Unlock()
+				writeLine("250 OK")
+			case upper == "DATA":
+				inData = true
+				writeLine("354 Start mail input")
+			case upper == "QUIT":
+				writeLine("221 Bye")
+				return
+			default:
+				writeLine("250 OK")
+			}
+		}
+	}()
+
+	host, portStr, err := net.SplitHostPort(ln.Addr().String())
+	require.NoError(t, err)
+	var port int
+	_, err = fmt.Sscanf(portStr, "%d", &port)
+	require.NoError(t, err)
+
+	common.OptionMapRWMutex.Lock()
+	oldOptionMapNil := common.OptionMap == nil
+	if common.OptionMap == nil {
+		common.OptionMap = map[string]string{}
+	}
+	oldProvider, hadProvider := common.OptionMap["EmailProvider"]
+	oldSystemName := common.SystemName
+	oldSMTPServer := common.SMTPServer
+	oldSMTPPort := common.SMTPPort
+	oldSMTPAccount := common.SMTPAccount
+	oldSMTPFrom := common.SMTPFrom
+	oldSMTPToken := common.SMTPToken
+	oldSMTPSSL := common.SMTPSSLEnabled
+	oldSMTPStartTLS := common.SMTPStartTLSEnabled
+	oldSMTPForceLogin := common.SMTPForceAuthLogin
+	oldSMTPInsecure := common.SMTPInsecureSkipVerify
+
+	common.OptionMap["EmailProvider"] = "smtp"
+	common.SystemName = "MainSite System"
+	common.SMTPServer = host
+	common.SMTPPort = port
+	common.SMTPAccount = ""
+	common.SMTPFrom = "MainSite <noreply@main.com>"
+	common.SMTPToken = ""
+	common.SMTPSSLEnabled = false
+	common.SMTPStartTLSEnabled = false
+	common.SMTPForceAuthLogin = false
+	common.SMTPInsecureSkipVerify = false
+	common.OptionMapRWMutex.Unlock()
+
+	t.Cleanup(func() {
+		common.OptionMapRWMutex.Lock()
+		common.SystemName = oldSystemName
+		common.SMTPServer = oldSMTPServer
+		common.SMTPPort = oldSMTPPort
+		common.SMTPAccount = oldSMTPAccount
+		common.SMTPFrom = oldSMTPFrom
+		common.SMTPToken = oldSMTPToken
+		common.SMTPSSLEnabled = oldSMTPSSL
+		common.SMTPStartTLSEnabled = oldSMTPStartTLS
+		common.SMTPForceAuthLogin = oldSMTPForceLogin
+		common.SMTPInsecureSkipVerify = oldSMTPInsecure
+		if oldOptionMapNil {
+			common.OptionMap = nil
+		} else if hadProvider {
+			common.OptionMap["EmailProvider"] = oldProvider
+		} else {
+			delete(common.OptionMap, "EmailProvider")
+		}
+		common.OptionMapRWMutex.Unlock()
+	})
+
+	// 1. AdtySenderFor strips the main-site display name from common.SMTPFrom.
+	sender := AdtySenderFor(&site)
+	assert.Equal(t, "SubSite <noreply@main.com>", sender)
+	assert.NotContains(t, sender, "MainSite")
+
+	// 2. End-to-end SMTP delivery via resolveSMTPFrom yields the subsite display name, never main-site.
+	require.NoError(t, common.SendSMTPEmailFrom(sender, "Verify Email", "customer@example.org", "<p>hello</p>"))
+	<-done
+
+	mu.Lock()
+	gotMailFrom := mailFrom
+	gotBody := dataBody
+	mu.Unlock()
+	assert.Equal(t, "<noreply@main.com>", gotMailFrom)
+	assert.Contains(t, gotBody, `From: "SubSite" <noreply@main.com>`)
+	assert.NotContains(t, gotBody, "MainSite")
+
+	// 3. Fallback to common.SMTPAccount also strips any display name cleanly.
+	common.OptionMapRWMutex.Lock()
+	common.SMTPFrom = "   "
+	common.SMTPAccount = "MainAcct <acct@main.com>"
+	common.OptionMapRWMutex.Unlock()
+
+	assert.Equal(t, "SubSite <acct@main.com>", AdtySenderFor(&site))
 }

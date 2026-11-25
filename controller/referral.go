@@ -93,8 +93,30 @@ type referralProfile struct {
 	Funnel               map[string]any                   `json:"funnel"`
 }
 
+func rejectAdminUserReferral(c *gin.Context) bool {
+	if c.GetInt("role") >= common.RoleAdminUser {
+		common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Administrators cannot use user referral endpoints"))
+		c.Abort()
+		return true
+	}
+	return false
+}
+
+// RejectAdminUserReferral blocks Admin and Root accounts from consumer
+// /api/user/referral/* endpoints so they cannot auto-create affiliate records
+// or invoke user referral flows directly (R-32 #4).
+func RejectAdminUserReferral(c *gin.Context) {
+	if rejectAdminUserReferral(c) {
+		return
+	}
+	c.Next()
+}
+
 // GetReferralProfile 返回推广资料：推广员（没有就兜底建一个）、账户、比例、规则、提现汇率（查库）。
 func GetReferralProfile(c *gin.Context) {
+	if rejectAdminUserReferral(c) {
+		return
+	}
 	userID := c.GetInt("id")
 	affiliate, err := service.Referral.EnsureAffiliate(userID)
 	if err != nil {
@@ -157,6 +179,9 @@ func ApplyReferralPartner(c *gin.Context) {
 
 // GetReferralCommissions 分页列出本人的佣金。
 func GetReferralCommissions(c *gin.Context) {
+	if rejectAdminUserReferral(c) {
+		return
+	}
 	affiliate, err := service.Referral.EnsureAffiliate(c.GetInt("id"))
 	if err != nil {
 		common.ApiError(c, err)
@@ -181,6 +206,9 @@ func GetReferralCommissions(c *gin.Context) {
 
 // GetReferralWithdrawals 分页列出本人的提现；收款码和凭证链接重新签名。
 func GetReferralWithdrawals(c *gin.Context) {
+	if rejectAdminUserReferral(c) {
+		return
+	}
 	pageInfo := common.GetPageQuery(c)
 	var items []model.ReferralWithdrawal
 	var total int64
@@ -244,6 +272,9 @@ type referralWithdrawRequest struct {
 
 // CreateReferralWithdrawal 提交提现。人民币汇率变了时返回 rate_changed 和新的汇率、人民币金额。
 func CreateReferralWithdrawal(c *gin.Context) {
+	if rejectAdminUserReferral(c) {
+		return
+	}
 	var req referralWithdrawRequest
 	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -274,6 +305,9 @@ func CreateReferralWithdrawal(c *gin.Context) {
 
 // CancelReferralWithdrawal 在撤回窗口内撤回提现。
 func CancelReferralWithdrawal(c *gin.Context) {
+	if rejectAdminUserReferral(c) {
+		return
+	}
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -292,6 +326,8 @@ func UploadReferralAsset(c *gin.Context) {
 	createdBy := "user"
 	if strings.HasPrefix(c.FullPath(), "/api/user/admin/") {
 		purpose, createdBy = model.ReferralAssetPurposePaymentProof, "admin"
+	} else if rejectAdminUserReferral(c) {
+		return
 	}
 	header, err := c.FormFile("file")
 	if err != nil {

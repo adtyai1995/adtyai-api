@@ -727,7 +727,7 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 		Invites:            invites,
 		HasInviter:         hasInviter,
 		InviterUsername:    inviterUsername,
-		CanBind:            !hasInviter && paid == 0 && rateConfigured && rateRow.Enabled && rateRow.Rate.IsPositive() && siteOpen,
+		CanBind:            !hasInviter && paid == 0 && IsAdtyReferralEnabledForSite(site.Id) && siteOpen,
 	}
 	if rateConfigured {
 		profile.Rate = effectiveRate.String()
@@ -744,7 +744,7 @@ func BindSiteInviteByCodeFromIP(siteID int, code string, inviteeID int, ipHash s
 		return common.NewMessage("Invalid site invite code")
 	}
 	var rate model.AdtySiteReferralRate
-	if err := model.DB.Where("site_id = ?", siteID).First(&rate).Error; err != nil || !rate.Enabled || !rate.Rate.IsPositive() {
+	if err := model.DB.Where("site_id = ?", siteID).First(&rate).Error; err != nil || !rate.Enabled {
 		return common.NewMessage("Site referral is not enabled")
 	}
 	var cust model.AdtySiteCustomer
@@ -754,6 +754,18 @@ func BindSiteInviteByCodeFromIP(siteID int, code string, inviteeID int, ipHash s
 	}
 	if lookup.RowsAffected == 0 || cust.UserId <= 0 {
 		return common.NewMessage("Invalid site invite code")
+	}
+	effectiveRate := rate.Rate
+	if aff, found, affErr := loadSiteReferralAffiliateTx(model.DB, siteID, cust.UserId); affErr == nil && found {
+		if aff.Status == model.AdtySiteAffiliateStatusDisabled {
+			return common.NewMessage("Site referral is not enabled")
+		}
+		if aff.RateOverride != nil {
+			effectiveRate = *aff.RateOverride
+		}
+	}
+	if !effectiveRate.IsPositive() {
+		return common.NewMessage("Site referral is not enabled")
 	}
 	if cust.UserId == inviteeID {
 		return common.NewMessage("You cannot invite yourself")
