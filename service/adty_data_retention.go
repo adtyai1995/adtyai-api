@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -785,12 +786,25 @@ func deleteOneExpiredSupportTicket(ctx context.Context, ticketID int64, cutoff i
 		}
 		// The translation index also stores the full reply. Remove its copies
 		// in the same transaction as the source message.
-		translations := tx.Model(&model.AdtyTicketMessage{}).Select("'ticket-reply:' || CAST(id AS TEXT)").Where("ticket_id = ?", ticketID)
-		if err := tx.Where("object_key IN (?)", translations).Delete(&model.AdtyTranslationJob{}).Error; err != nil {
+		var msgIDs []int64
+		if err := tx.Model(&model.AdtyTicketMessage{}).Where("ticket_id = ?", ticketID).Pluck("id", &msgIDs).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("object_key IN (?)", translations).Delete(&model.AdtyTranslationHead{}).Error; err != nil {
-			return err
+		if len(msgIDs) > 0 {
+			const keyBatchSize = 500
+			for start := 0; start < len(msgIDs); start += keyBatchSize {
+				end := min(start+keyBatchSize, len(msgIDs))
+				keys := make([]string, 0, end-start)
+				for _, msgID := range msgIDs[start:end] {
+					keys = append(keys, "ticket-reply:"+strconv.FormatInt(msgID, 10))
+				}
+				if err := tx.Where("object_key IN ?", keys).Delete(&model.AdtyTranslationJob{}).Error; err != nil {
+					return err
+				}
+				if err := tx.Where("object_key IN ?", keys).Delete(&model.AdtyTranslationHead{}).Error; err != nil {
+					return err
+				}
+			}
 		}
 		var snapshotTeamID int64
 		if ticket.TeamShared {

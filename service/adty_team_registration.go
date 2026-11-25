@@ -264,7 +264,7 @@ func ListAdtyOwnerSiteTeamRegistrations(ownerId, siteId int) ([]AdtyTeamRegistra
 	if siteId <= 0 {
 		return nil, ErrAdtyTeamForbidden
 	}
-	if _, err := lockOwnerSite(siteId, ownerId); err != nil {
+	if _, err := verifyOwnerSiteReadable(siteId, ownerId); err != nil {
 		return nil, err
 	}
 	return listAdtyTeamRegistrations(siteId)
@@ -306,9 +306,6 @@ func RevokeAdtyOwnerSiteTeamRegistration(ownerId, siteId int, linkId int64) (*Ad
 	if siteId <= 0 {
 		return nil, ErrAdtyTeamForbidden
 	}
-	if _, err := lockOwnerSite(siteId, ownerId); err != nil {
-		return nil, err
-	}
 	view, _, err := revokeAdtyTeamRegistrationWithAudit(ownerId, siteId, linkId)
 	return view, err
 }
@@ -321,6 +318,11 @@ func revokeAdtyTeamRegistrationWithAudit(actorId, siteId int, linkId int64) (*Ad
 	var createdBy int
 	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if siteId > 0 {
+			if _, err := verifyOwnerSiteWritableTx(tx, siteId, actorId); err != nil {
+				return err
+			}
+		}
 		var link model.AdtyTeamRegistrationLink
 		lookup := model.AdtyLockForUpdate(tx).Where("id = ? AND site_id = ?", linkId, siteId).Limit(1).Find(&link)
 		if lookup.Error != nil {

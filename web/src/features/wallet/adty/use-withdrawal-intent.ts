@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import i18next from 'i18next'
 import { useSyncExternalStore } from 'react'
 
 import { api } from '@/lib/api'
@@ -61,8 +62,9 @@ export function useWithdrawalIntent(
       !userId ||
       userId !== useAuthStore.getState().auth.user?.id ||
       siteId <= 0
-    )
-      {throw new Error('Invalid parameters')}
+    ) {
+      throw new Error(i18next.t('Invalid parameters'))
+    }
   }
   async function lookup(previous: Saved) {
     requireScope()
@@ -77,10 +79,13 @@ export function useWithdrawalIntent(
       }
     )
     const id = requireServerSuccess(res.data).data?.id
-    if (!Number.isSafeInteger(id) || id < 0) throw new Error('Invalid response')
+    if (!Number.isSafeInteger(id) || id < 0) {
+      throw new Error(i18next.t('Invalid response'))
+    }
     requireScope()
-    if (current()?.key !== previous.key)
-      {throw new Error('Check previous request')}
+    if (current()?.key !== previous.key) {
+      throw new Error(i18next.t('Check previous request'))
+    }
     if (id) write({ ...previous, accepted: true, receipt: id })
     return id
   }

@@ -1,12 +1,15 @@
 package helper
 
 import (
+	"bytes"
+	"encoding/json"
 	"maps"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 )
@@ -29,8 +32,82 @@ func ResolveIncomingBillingExprRequestInput(c *gin.Context, info *relaycommon.Re
 	if err != nil {
 		return billingexpr.RequestInput{}, err
 	}
+	if info != nil && len(bodyBytes) > 0 && bytes.Contains(bodyBytes, []byte("_")) {
+		_, isGeminiReq := info.Request.(*dto.GeminiChatRequest)
+		if isGeminiReq || info.RelayMode == relayconstant.RelayModeGemini {
+			if normalized, ok := normalizeGeminiBillingBody(bodyBytes); ok {
+				bodyBytes = normalized
+			}
+		}
+	}
 	input.Body = bodyBytes
 	return input, nil
+}
+
+func normalizeGeminiBillingBody(raw []byte) ([]byte, bool) {
+	var root map[string]any
+	if err := common.Unmarshal(raw, &root); err != nil || root == nil {
+		return raw, false
+	}
+	changed := false
+	if _, hasCamel := root["generationConfig"]; !hasCamel {
+		if snakeGen, ok := root["generation_config"]; ok {
+			root["generationConfig"] = snakeGen
+			changed = true
+		}
+	}
+	if gen, ok := root["generationConfig"].(map[string]any); ok && gen != nil {
+		for _, pair := range [][2]string{
+			{"thinkingConfig", "thinking_config"},
+			{"imageConfig", "image_config"},
+			{"maxOutputTokens", "max_output_tokens"},
+			{"candidateCount", "candidate_count"},
+			{"responseModalities", "response_modalities"},
+			{"mediaResolution", "media_resolution"},
+		} {
+			if _, hasCamel := gen[pair[0]]; !hasCamel {
+				if v, ok := gen[pair[1]]; ok {
+					gen[pair[0]] = v
+					changed = true
+				}
+			}
+		}
+		if tc, ok := gen["thinkingConfig"].(map[string]any); ok && tc != nil {
+			for _, pair := range [][2]string{
+				{"thinkingBudget", "thinking_budget"},
+				{"thinkingLevel", "thinking_level"},
+				{"includeThoughts", "include_thoughts"},
+			} {
+				if _, hasCamel := tc[pair[0]]; !hasCamel {
+					if v, ok := tc[pair[1]]; ok {
+						tc[pair[0]] = v
+						changed = true
+					}
+				}
+			}
+		}
+		if ic, ok := gen["imageConfig"].(map[string]any); ok && ic != nil {
+			for _, pair := range [][2]string{
+				{"imageSize", "image_size"},
+				{"aspectRatio", "aspect_ratio"},
+			} {
+				if _, hasCamel := ic[pair[0]]; !hasCamel {
+					if v, ok := ic[pair[1]]; ok {
+						ic[pair[0]] = v
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	if !changed {
+		return raw, false
+	}
+	encoded, err := common.Marshal(root)
+	if err != nil {
+		return raw, false
+	}
+	return encoded, true
 }
 
 // ResolveImageBillingRequestInput freezes only the validated scalar image
@@ -46,6 +123,39 @@ func ResolveImageBillingRequestInput(c *gin.Context, info *relaycommon.RelayInfo
 		return input, err
 	}
 	body := map[string]any{"model": request.Model, "n": count, "size": request.Size, "quality": request.Quality}
+	if request.ResponseFormat != "" {
+		body["response_format"] = request.ResponseFormat
+	}
+	if request.Watermark != nil {
+		body["watermark"] = *request.Watermark
+	}
+	addScalarRaw := func(key string, raw json.RawMessage) {
+		if len(raw) == 0 {
+			return
+		}
+		if _, exists := body[key]; exists {
+			return
+		}
+		var value any
+		if err := common.Unmarshal(raw, &value); err != nil {
+			return
+		}
+		switch value.(type) {
+		case string, float64, bool:
+			body[key] = value
+		}
+	}
+	addScalarRaw("style", request.Style)
+	addScalarRaw("background", request.Background)
+	addScalarRaw("moderation", request.Moderation)
+	addScalarRaw("output_format", request.OutputFormat)
+	addScalarRaw("output_compression", request.OutputCompression)
+	addScalarRaw("partial_images", request.PartialImages)
+	addScalarRaw("input_fidelity", request.InputFidelity)
+	addScalarRaw("complexity", request.Complexity)
+	addScalarRaw("frame_count", request.FrameCount)
+	addScalarRaw("frame_duration_ms", request.FrameDurationMs)
+	addScalarRaw("watermark_enabled", request.WatermarkEnabled)
 	// Freeze provider-specific scalar params (e.g. xAI grok-imagine's
 	// resolution and aspect_ratio) so pricing expressions can branch on them.
 	// Non-scalar extras are excluded to keep large payloads out of the
@@ -54,17 +164,7 @@ func ResolveImageBillingRequestInput(c *gin.Context, info *relaycommon.RelayInfo
 		if key == "" {
 			continue
 		}
-		if _, exists := body[key]; exists {
-			continue
-		}
-		var value any
-		if err := common.Unmarshal(raw, &value); err != nil {
-			continue
-		}
-		switch value.(type) {
-		case string, float64, bool:
-			body[key] = value
-		}
+		addScalarRaw(key, raw)
 	}
 	if request.BillingParameters != nil {
 		body["parameters"] = request.BillingParameters

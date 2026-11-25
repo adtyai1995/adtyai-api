@@ -57,7 +57,7 @@
 - 先写测试并确认失败，再实现并确认通过，然后提交。
 - 后端用 testify 的 require/assert。
 - （v2.5）我们写的、要用数据库的测试一律连 PostgreSQL，统一用各包的 `adtyTestDB(t)`（文件 `adty_testhelper_test.go`，任务 2.1 起）：
-  - 连接串读环境变量 `ADTY_TEST_PG_DSN`，没设就 `t.Skip` 并说明原因。按 `[R-30]`，GitHub Actions CI（`.github/workflows/ci.yml`）仅运行轻量编译与静态检查（后端 `go vet`/`go build`，前端 typecheck/build/i18n/lint/copyright/doc-refs），不连数据库跑测试；本地 PostgreSQL 18 测试与门禁由 `scripts/adty/check.sh` 执行（跑后端时要求 `ADTY_TEST_PG_DSN` 有值，因此门禁里数据库测试不会被跳过）。验收读取连接实例的 `server_version_num` 并记录，要求 180000 <= server_version_num < 190000，逐一核对实际连接及具名断言。
+  - 连接串读环境变量 `ADTY_TEST_PG_DSN`，没设就 `t.Skip` 并说明原因。按 `[R-30]`，GitHub Actions CI（`.github/workflows/ci.yml`）与本地检查脚本 `scripts/adty/check.sh` 均仅运行轻量编译与静态门禁（后端三个 Go 模块的 `go vet` + `go build`，前端 `install`、`check-plugins`、`typecheck`、`build`、`lint` 基线棘轮、`i18n` 检查、`copyright` 基线棘轮、`check-docs`），不连数据库、也不执行自动化测试套件；本地 PostgreSQL 18 数据库测试与验收按需在设置了 `ADTY_TEST_PG_DSN` 的环境中显式执行。验收读取连接实例的 `server_version_num` 并记录，要求 180000 <= server_version_num < 190000，逐一核对实际连接及具名断言。
   - 每个测试建一个随机名字的 schema，连接时用 `search_path` 指向它，测试结束删掉。`go test` 会同时跑多个包，各测试互不干扰。
   - 单个测试若临时切换数据库，应在测试内切库并在清理阶段恢复数据库类型与列名状态；历史上基于 `adtyTestDB` 的测试辅助及上游测试文件已按 `[R-30]` 清理并登记在 [deleted-paths.txt](deleted-paths.txt)，后续按需新增本地数据库测试时仍遵守按测试隔离 schema 并完整还原的约束。
 - 历史自动化测试文件（含原上游内存 SQLite 单测与早期删表回归测试）已按 `[R-30]` 统一清理并登记在 [deleted-paths.txt](deleted-paths.txt)；后续如有新增特征测试或合并上游时带回的测试，不得破坏已改动的上游代码，也不作为 ADTY PostgreSQL 18 验收替代证据。
@@ -83,7 +83,7 @@
 - WSL 实例在没有 wsl.exe 连着时会自动停；/tmp 是内存盘，停一次就清空。中间结果和日志放 `~/.cache/`，不放 /tmp。
 - 测试使用自己的隔离 PostgreSQL 实例和独立数据库或 schema，配置 `ADTY_TEST_PG_DSN`。连接后记录 `server_version_num`，要求主版本为 18。主库及配置的独立日志库均在隔离的 PostgreSQL 18 上验收。保留上游 SQLite、MySQL 兼容代码和已有单测，只用于避免破坏上游资产，不作为 ADTY 验收证据；缺失、未执行或失败不阻塞验收。资金集成验证必须用真实 PostgreSQL 和真实 Redis，并覆盖进程重启、缓存丢失、并发和故障恢复。系统自带的正式 PostgreSQL、Redis 服务和生产数据卷不用于测试。已有数据目录升级主要版本时，必须另建目录迁移并核对账目，不能直接换镜像启动。
 - Docker 没装：镜像在 GitHub Actions 里构建；做 10.1 时如果要在本地试跑 compose 再装（要 sudo）。
-- 检查脚本 `bash scripts/adty/check.sh`（在副本里跑）：`--backend` 跑三个 Go 模块（根模块、relaykit、tokenkit）的 go vet、go build、go test；`--frontend` 跑 typecheck、lint、test、copyright:check；不带参数两个都跑。脚本开头 `set -euo pipefail`，任何一步失败就停。
+- 检查脚本 `bash scripts/adty/check.sh`（在副本里跑，仅运行编译与静态门禁，不执行自动化测试）：`--backend` 跑三个 Go 模块（根模块、relaykit、tokenkit）的 `go vet` 和 `go build`；`--frontend` 依次跑 `bun install --frozen-lockfile`、`make check-plugins`、`bun run typecheck`、`bun run build`、`node scripts/adty/ratchet.mjs lint`、`web/scripts/adty/i18n-check.mjs`、`node scripts/adty/ratchet.mjs copyright` 和 `make check-docs`；不带参数两个都跑。脚本开头 `set -euo pipefail`，任何一步失败就停。
 - 单测：后端 `GOWORK=off go test ./model -run TestXxx -count=1`；前端在 `web` 目录 `bun run test -- <文件名>`；都写进任务脚本，经 wrun.sh 在副本里跑。
 
 **约定 I：已确认产品边界**

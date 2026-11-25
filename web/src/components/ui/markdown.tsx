@@ -54,6 +54,8 @@ const allowedAttributes = [
   'target',
 ]
 
+const SAFE_CODE_LANGUAGE_CLASS = /^language-[a-z0-9_+-]+$/i
+
 const internalVisualAttributes = [
   'aria-hidden',
   'class',
@@ -837,6 +839,34 @@ function finalizeMarkdownHtml(
     if (isChecked) {
       input.setAttribute('checked', '')
     }
+  })
+
+  // Strip untrusted classes strictly before expanding [data-md-trusted] KaTeX/SVG blocks.
+  template.content.querySelectorAll('[class]').forEach((el) => {
+    const tag = el.tagName.toLowerCase()
+    const tokens = (el.getAttribute('class') ?? '')
+      .split(/\s+/)
+      .filter(Boolean)
+    if (tag === 'hr') {
+      if (tokens.includes('markdown-page-break')) {
+        el.setAttribute('class', 'markdown-page-break')
+      } else {
+        el.removeAttribute('class')
+      }
+      return
+    }
+    if (tag === 'code') {
+      const safeClasses = tokens.filter((token) =>
+        SAFE_CODE_LANGUAGE_CLASS.test(token)
+      )
+      if (safeClasses.length > 0) {
+        el.setAttribute('class', safeClasses.join(' '))
+      } else {
+        el.removeAttribute('class')
+      }
+      return
+    }
+    el.removeAttribute('class')
   })
 
   const prefix = `${collector.nonce}-`

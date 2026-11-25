@@ -299,6 +299,26 @@ func CacheGetChannel(id int) (*Channel, error) {
 	return c, nil
 }
 
+// CacheGetChannelClone clones the cached channel while holding channelSyncLock.RLock
+// so callers never read or copy an unlocked shared cached *Channel pointer.
+func CacheGetChannelClone(id int) (*Channel, error) {
+	if !common.MemoryCacheEnabled {
+		return GetChannelById(id, true)
+	}
+	channelSyncLock.RLock()
+	if channelCacheInvalid {
+		channelSyncLock.RUnlock()
+		return GetChannelById(id, true)
+	}
+	defer channelSyncLock.RUnlock()
+
+	c, ok := channelsIDM[id]
+	if !ok {
+		return nil, fmt.Errorf("channel #%d no longer exists", id)
+	}
+	return cloneChannelForCache(c), nil
+}
+
 func CacheGetChannelInfo(id int) (*ChannelInfo, error) {
 	info, _, err := cacheGetChannelInfo(id)
 	return info, err
@@ -345,6 +365,9 @@ func cloneChannelForCache(src *Channel) *Channel {
 	}
 	if src.ChannelInfo.MultiKeyDisabledTime != nil {
 		copied.ChannelInfo.MultiKeyDisabledTime = maps.Clone(src.ChannelInfo.MultiKeyDisabledTime)
+	}
+	if src.Keys != nil {
+		copied.Keys = append([]string(nil), src.Keys...)
 	}
 	return &copied
 }

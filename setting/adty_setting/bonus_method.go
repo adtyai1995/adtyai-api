@@ -241,37 +241,6 @@ func MergeMainMethodBonus(current string, method string, enabled bool, rate stri
 	return marshalBonusSetting(next)
 }
 
-// MergeSiteMethodAuth 校验一次站点授权变更，并把它合并进 current。理由同上：
-// 基准取库里加锁读到的当前值，不取内存快照。
-func MergeSiteMethodAuth(current string, siteID int, method string, allowed bool) (string, error) {
-	if siteID <= 0 {
-		return "", errBonusMethod("site is required")
-	}
-	key, err := canonicalBonusMethod(method)
-	if err != nil {
-		return "", err
-	}
-	var next map[int][]string
-	if err := unmarshalBonusSetting(current, &next); err != nil {
-		return "", err
-	}
-	if next == nil {
-		next = map[int][]string{}
-	}
-	authorized := next[siteID]
-	updated := make([]string, 0, len(authorized)+1)
-	for _, item := range authorized {
-		if item != key {
-			updated = append(updated, item)
-		}
-	}
-	if allowed {
-		updated = append(updated, key)
-	}
-	next[siteID] = updated
-	return marshalBonusSetting(next)
-}
-
 // MergeSiteMethodBonusWithAuth validates and merges a site bonus rule into currentBonus.
 // currentAuth is ignored now that per-site main-site authorization has been removed.
 func MergeSiteMethodBonusWithAuth(currentBonus, _ string, siteID int, method string, enabled bool, rate string) (string, error) {

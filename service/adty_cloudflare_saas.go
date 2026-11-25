@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -611,6 +612,12 @@ func AddAdtySiteDomainWithRole(ctx context.Context, ownerUserId int, rawHost, ro
 		if found && existing.Status != model.AdtySiteDomainRemoved && existing.DesiredState == "removed" {
 			return common.NewMessage("Domain removal is in progress; please try again shortly")
 		}
+		if found && existing.Status != model.AdtySiteDomainRemoved && existing.LeaseUntil > time.Now().Unix() && existing.LeaseToken != "" {
+			if strings.HasPrefix(existing.LeaseToken, "remove:") {
+				return common.NewMessage("Domain removal is in progress; please try again shortly")
+			}
+			return common.NewMessage("Domain automation is in progress for this site; please try again shortly")
+		}
 		if found && existing.SiteId != site.Id && existing.Status != model.AdtySiteDomainRemoved {
 			return ErrAdtyCustomDomainTaken
 		}
@@ -751,6 +758,12 @@ func AddAdtySiteDomainPair(ctx context.Context, ownerUserId int, rawSiteHost, ra
 			if item.found && item.existing.Status != model.AdtySiteDomainRemoved && item.existing.DesiredState == "removed" {
 				return common.NewMessage("Domain removal is in progress; please try again shortly")
 			}
+			if item.found && item.existing.Status != model.AdtySiteDomainRemoved && item.existing.LeaseUntil > time.Now().Unix() && item.existing.LeaseToken != "" {
+				if strings.HasPrefix(item.existing.LeaseToken, "remove:") {
+					return common.NewMessage("Domain removal is in progress; please try again shortly")
+				}
+				return common.NewMessage("Domain automation is in progress for this site; please try again shortly")
+			}
 			if item.found && item.existing.SiteId != site.Id && item.existing.Status != model.AdtySiteDomainRemoved {
 				return ErrAdtyCustomDomainTaken
 			}
@@ -864,9 +877,9 @@ func adtyDomainSnapshotQuery(tx *gorm.DB, domain *model.AdtySiteDomain) *gorm.DB
 }
 
 // The write acquires a database row lock on PostgreSQL/MySQL and a writer lock
-// on SQLite before reading. All lifecycle entry points hold this transaction
-// across their external requests, so another node cannot remove/reassign an
-// in-flight attachment, widget update or timeout cleanup.
+// on SQLite before reading. Callers keep transactions short (validation/lease
+// acquisition and final state persistence only) and NEVER hold a DB transaction
+// or row lock across external network I/O, DNS lookups, HTTPS probes, or sleeps (R4-16).
 func adtyLockDomainRow(tx *gorm.DB, id int, current *model.AdtySiteDomain) error {
 	if err := tx.Model(&model.AdtySiteDomain{}).Where("id = ?", id).UpdateColumn("id", gorm.Expr("id")).Error; err != nil {
 		return err
@@ -874,9 +887,72 @@ func adtyLockDomainRow(tx *gorm.DB, id int, current *model.AdtySiteDomain) error
 	return model.AdtyLockForUpdate(tx).First(current, id).Error
 }
 
-func adtyWithDomainLifecycle(ctx context.Context, snapshot *model.AdtySiteDomain, action func(*gorm.DB, *model.AdtySiteDomain) error) error {
-	return model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var current model.AdtySiteDomain
+type adtyKeyedLockEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
+type adtyKeyedLocker[K comparable] struct {
+	mu      sync.Mutex
+	entries map[K]*adtyKeyedLockEntry
+}
+
+func newAdtyKeyedLocker[K comparable]() *adtyKeyedLocker[K] {
+	return &adtyKeyedLocker[K]{entries: map[K]*adtyKeyedLockEntry{}}
+}
+
+func (l *adtyKeyedLocker[K]) Lock(key K) func() {
+	l.mu.Lock()
+	entry, ok := l.entries[key]
+	if !ok {
+		entry = &adtyKeyedLockEntry{}
+		l.entries[key] = entry
+	}
+	entry.refs++
+	l.mu.Unlock()
+
+	entry.mu.Lock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			entry.mu.Unlock()
+			l.mu.Lock()
+			entry.refs--
+			if entry.refs == 0 && l.entries[key] == entry {
+				delete(l.entries, key)
+			}
+			l.mu.Unlock()
+		})
+	}
+}
+
+// Canonical in-process lock order: adtyDomainLocks -> adtyTurnstileAccountLocks.
+// Short DB transactions are leaf operations and must never wrap external I/O.
+var adtyDomainLocks = newAdtyKeyedLocker[int]()
+
+const adtyDomainLifecycleLeaseTTL int64 = 180
+
+func adtyNewDomainLeaseToken(prefix string) (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return prefix + ":" + hex.EncodeToString(buf), nil
+}
+
+func adtyReleaseDomainLease(domainID int, leaseToken string) {
+	if domainID <= 0 || leaseToken == "" || model.DB == nil {
+		return
+	}
+	releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = model.DB.WithContext(releaseCtx).Model(&model.AdtySiteDomain{}).
+		Where("id = ? AND lease_token = ?", domainID, leaseToken).
+		Updates(map[string]any{"lease_token": "", "lease_until": 0}).Error
+}
+
+func adtyAcquireDomainLifecycleLease(ctx context.Context, snapshot *model.AdtySiteDomain, prefix string, nowUnix int64, allowedStatuses ...string) (current model.AdtySiteDomain, leaseToken string, acquired bool, err error) {
+	err = model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := adtyLockDomainRow(tx, snapshot.Id, &current); err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil
@@ -886,8 +962,20 @@ func adtyWithDomainLifecycle(ctx context.Context, snapshot *model.AdtySiteDomain
 		if current.SiteId != snapshot.SiteId || current.Hostname != snapshot.Hostname || current.OwnershipToken != snapshot.OwnershipToken || current.DesiredState == "removed" || current.AutomationState != "" {
 			return nil
 		}
-		if current.LeaseUntil > time.Now().Unix() && current.LeaseToken != "" {
+		if current.LeaseUntil > nowUnix && current.LeaseToken != "" {
 			return nil
+		}
+		if len(allowedStatuses) > 0 {
+			matchedStatus := false
+			for _, st := range allowedStatuses {
+				if current.Status == st {
+					matchedStatus = true
+					break
+				}
+			}
+			if !matchedStatus {
+				return nil
+			}
 		}
 		var site model.AdtySite
 		if err := tx.Select("id", "status").First(&site, current.SiteId).Error; err != nil {
@@ -899,28 +987,100 @@ func adtyWithDomainLifecycle(ctx context.Context, snapshot *model.AdtySiteDomain
 		if site.Status == model.AdtySiteStatusDeleting {
 			return nil
 		}
-		if err := action(tx, &current); err != nil {
+		token, tokErr := adtyNewDomainLeaseToken(prefix)
+		if tokErr != nil {
+			return tokErr
+		}
+		leaseUntil := max(time.Now().Unix(), nowUnix) + adtyDomainLifecycleLeaseTTL
+		if err := tx.Model(&model.AdtySiteDomain{}).Where("id = ?", current.Id).Updates(map[string]any{
+			"lease_token": token,
+			"lease_until": leaseUntil,
+		}).Error; err != nil {
 			return err
 		}
-		*snapshot = current
+		current.LeaseToken = token
+		current.LeaseUntil = leaseUntil
+		leaseToken = token
+		acquired = true
 		return nil
 	})
+	return current, leaseToken, acquired, err
+}
+
+func adtyVerifyLeasedDomainTx(tx *gorm.DB, snapshot *model.AdtySiteDomain, leaseToken string) (*model.AdtySiteDomain, bool, error) {
+	var current model.AdtySiteDomain
+	if err := adtyLockDomainRow(tx, snapshot.Id, &current); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if current.SiteId != snapshot.SiteId || current.Hostname != snapshot.Hostname || current.OwnershipToken != snapshot.OwnershipToken ||
+		current.Status != snapshot.Status || current.CFHostnameId != snapshot.CFHostnameId ||
+		current.DesiredState == "removed" || current.AutomationState != "" || current.LeaseToken != leaseToken {
+		return nil, false, nil
+	}
+	var site model.AdtySite
+	if err := tx.Select("id", "status").First(&site, current.SiteId).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if site.Status == model.AdtySiteStatusDeleting {
+		return nil, false, nil
+	}
+	return &current, true, nil
+}
+
+func adtyUpdateLeasedDomainSnapshot(ctx context.Context, domain *model.AdtySiteDomain, leaseToken string, updates map[string]any) (int64, error) {
+	var rowsAffected int64
+	err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if _, ok, err := adtyVerifyLeasedDomainTx(tx, domain, leaseToken); err != nil || !ok {
+			return err
+		}
+		res := adtyDomainSnapshotQuery(tx, domain).Where("lease_token = ?", leaseToken).Updates(updates)
+		if res.Error != nil {
+			return res.Error
+		}
+		rowsAffected = res.RowsAffected
+		return nil
+	})
+	return rowsAffected, err
 }
 
 func adtyAttachCustomHostname(ctx context.Context, domain *model.AdtySiteDomain) error {
-	return adtyWithDomainLifecycle(ctx, domain, func(tx *gorm.DB, current *model.AdtySiteDomain) error {
-		return adtyAttachCustomHostnameLocked(ctx, tx, current)
-	})
+	if domain == nil || domain.Id <= 0 {
+		return nil
+	}
+	unlock := adtyDomainLocks.Lock(domain.Id)
+	defer unlock()
+
+	current, leaseToken, acquired, err := adtyAcquireDomainLifecycleLease(ctx, domain, "attach", time.Now().Unix(), model.AdtySiteDomainPending)
+	if err != nil || !acquired {
+		return err
+	}
+	defer adtyReleaseDomainLease(current.Id, leaseToken)
+
+	if err := adtyAttachCustomHostnameWithLease(ctx, &current, leaseToken); err != nil {
+		return err
+	}
+	current.LeaseToken, current.LeaseUntil = "", 0
+	*domain = current
+	return nil
 }
 
-func adtyAttachCustomHostnameLocked(ctx context.Context, tx *gorm.DB, domain *model.AdtySiteDomain) error {
+func adtyAttachCustomHostnameWithLease(ctx context.Context, domain *model.AdtySiteDomain, leaseToken string) error {
 	if domain.Status != model.AdtySiteDomainPending || domain.CFHostnameId != "" || domain.OwnershipToken == "" {
 		return nil
 	}
+	// External DNS lookup runs OUTSIDE any DB transaction.
 	matched, err := adtyOwnershipTXTMatches(ctx, domain.Hostname, domain.OwnershipToken)
 	if err != nil {
 		common.SysError(common.LogText("ownership lookup failed for domain %d: %s", domain.Id, err.Error()))
-		_ = adtyDomainSnapshotQuery(tx, domain).Update("last_error", common.NewMessage("Domain ownership lookup failed").Error()).Error
+		_, _ = adtyUpdateLeasedDomainSnapshot(ctx, domain, leaseToken, map[string]any{
+			"last_error": common.NewMessage("Domain ownership lookup failed").Error(),
+		})
 		return nil
 	}
 	if !matched {
@@ -928,19 +1088,43 @@ func adtyAttachCustomHostnameLocked(ctx context.Context, tx *gorm.DB, domain *mo
 	}
 	cfg := resellerSetting()
 	zone := adtyDomainEffectiveZone(domain, cfg)
-	if domain.CFCreateStartedAt == 0 {
-		startedAt := time.Now().Unix()
-		if err := adtyDomainSnapshotQuery(tx, domain).Update("cf_create_started_at", startedAt).Error; err != nil {
+
+	// Tx1: Durably commit cf_create_started_at BEFORE calling createCustomHostname so a
+	// remote creation followed by local error/timeout always leaves a recovery marker on disk (R4-16).
+	proceed := false
+	if err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		current, ok, err := adtyVerifyLeasedDomainTx(tx, domain, leaseToken)
+		if err != nil || !ok {
 			return err
 		}
-		domain.CFCreateStartedAt = startedAt
+		if current.Status != model.AdtySiteDomainPending || current.CFHostnameId != "" || current.OwnershipToken == "" {
+			*domain = *current
+			return nil
+		}
+		if current.CFCreateStartedAt == 0 {
+			startedAt := time.Now().Unix()
+			if err := adtyDomainSnapshotQuery(tx, current).Where("lease_token = ?", leaseToken).Update("cf_create_started_at", startedAt).Error; err != nil {
+				return err
+			}
+			current.CFCreateStartedAt = startedAt
+		}
+		*domain = *current
+		proceed = true
+		return nil
+	}); err != nil {
+		return err
 	}
+	if !proceed {
+		return nil
+	}
+
+	// External Cloudflare API calls and retry/record delay run OUTSIDE any DB transaction.
 	created, err := AdtyCloudflare.createCustomHostname(ctx, zone, domain)
 	var apiErr *AdtyCloudflareError
 	if errors.As(err, &apiErr) && apiErr.Code == adtyCloudflareDuplicateCode {
 		// R9-018: Never blindly adopt an unowned duplicate 1406 hostname. Only
 		// recover a resource ID already journaled for this exact domain generation.
-		recordedID, _, lookupErr := adtyLookupCloudResourceState(tx, zone, domain)
+		recordedID, _, lookupErr := adtyLookupCloudResourceState(model.DB.WithContext(ctx), zone, domain)
 		if lookupErr == nil && recordedID != "" {
 			created = &adtyCustomHostname{Id: recordedID, Hostname: domain.Hostname}
 			err = nil
@@ -959,15 +1143,21 @@ func adtyAttachCustomHostnameLocked(ctx context.Context, tx *gorm.DB, domain *mo
 	}
 	now := time.Now().Unix()
 	records := verifyRecordsFor(domain.Hostname, strings.TrimSpace(cfg.CnameTarget), detail)
-	result := adtyDomainSnapshotQuery(tx, domain).Updates(map[string]any{
-		"cf_hostname_id": created.Id, "ssl_status": detail.SSL.Status,
-		"verify_records": records, "last_error": "", "last_checked_at": now,
+
+	// Tx2: Re-verify leased domain state and persist the Cloudflare hostname record.
+	rowsAffected, err := adtyUpdateLeasedDomainSnapshot(ctx, domain, leaseToken, map[string]any{
+		"cf_hostname_id":  created.Id,
+		"ssl_status":      detail.SSL.Status,
+		"verify_records":  records,
+		"last_error":      "",
+		"last_checked_at": now,
 	})
-	if result.Error == nil && result.RowsAffected > 0 {
+	if err == nil && rowsAffected > 0 {
 		domain.CFHostnameId, domain.SSLStatus = created.Id, detail.SSL.Status
 		domain.VerifyRecords, domain.LastCheckedAt = records, now
+		domain.LastError = ""
 	}
-	return result.Error
+	return err
 }
 
 // Archived domains are limited to the external websites bound by the requesting owner.
@@ -1036,6 +1226,18 @@ func removeAdtySiteDomain(ctx context.Context, domain *model.AdtySiteDomain) err
 }
 
 func removeAdtySiteDomainForActor(ctx context.Context, domain *model.AdtySiteDomain, actorID, actorRole int, denyAdminTarget bool) error {
+	if domain == nil || domain.Id <= 0 {
+		return ErrAdtySiteNotFound
+	}
+	unlock := adtyDomainLocks.Lock(domain.Id)
+	defer unlock()
+
+	var snapshot model.AdtySiteDomain
+	var zone, hostnameID, leaseToken string
+	var createAttempted, done bool
+
+	// Tx1: Lock site & domain, validate actor permissions and removability, capture
+	// cleanup snapshot, and acquire a short removal lease (or enqueue automation removal).
 	err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if domain.SiteId > 0 {
 			var site model.AdtySite
@@ -1056,26 +1258,175 @@ func removeAdtySiteDomainForActor(ctx context.Context, domain *model.AdtySiteDom
 		}
 		var current model.AdtySiteDomain
 		if err := adtyLockDomainRow(tx, domain.Id, &current); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAdtySiteNotFound
+			}
 			return err
 		}
 		if current.SiteId != domain.SiteId || current.Hostname != domain.Hostname || current.OwnershipToken != domain.OwnershipToken {
 			return ErrAdtySiteNotFound
 		}
+		if current.ManagedBy == "platform" {
+			return common.NewMessage("Platform domains are managed by the platform")
+		}
 		if current.Status == model.AdtySiteDomainRemoved {
+			done = true
 			return nil
 		}
-		if current.LeaseUntil > time.Now().Unix() && current.LeaseToken != "" {
+		nowUnix := time.Now().Unix()
+		if current.LeaseUntil > nowUnix && current.LeaseToken != "" {
 			return common.NewMessage("Domain automation is in progress for this site; please try again shortly")
 		}
 		if current.AutomationState != "" {
 			if current.DesiredState == "removed" || current.Status == model.AdtySiteDomainRemoved {
+				done = true
 				return nil
 			}
-			return tx.Model(&current).Updates(map[string]any{"desired_state": "removed", "automation_state": "queued", "generation": gorm.Expr("generation + 1"), "next_run_at": 0}).Error
+			if err := tx.Model(&current).Updates(map[string]any{"desired_state": "removed", "automation_state": "queued", "generation": gorm.Expr("generation + 1"), "next_run_at": 0}).Error; err != nil {
+				return err
+			}
+			done = true
+			return nil
 		}
-		return removeAdtySiteDomainLocked(ctx, tx, &current)
+		zone = adtyDomainEffectiveZone(&current, resellerSetting())
+		hostnameID = current.CFHostnameId
+		createAttempted = current.CFCreateStartedAt > 0
+		if hostnameID == "" {
+			var lookupErr error
+			hostnameID, createAttempted, lookupErr = adtyLookupCloudResourceState(tx, zone, &current)
+			if lookupErr != nil {
+				return lookupErr
+			}
+		}
+		token, tokErr := adtyNewDomainLeaseToken("remove")
+		if tokErr != nil {
+			return tokErr
+		}
+		leaseUntil := nowUnix + adtyDomainLifecycleLeaseTTL
+		if err := tx.Model(&model.AdtySiteDomain{}).Where("id = ?", current.Id).Updates(map[string]any{
+			"lease_token": token,
+			"lease_until": leaseUntil,
+		}).Error; err != nil {
+			return err
+		}
+		current.LeaseToken = token
+		current.LeaseUntil = leaseUntil
+		leaseToken = token
+		snapshot = current
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if done {
+		InvalidateAdtySiteCache()
+		return nil
+	}
+	leaseCleared := false
+	defer func() {
+		if !leaseCleared {
+			adtyReleaseDomainLease(snapshot.Id, leaseToken)
+		}
+	}()
+
+	// External Cloudflare / Turnstile cleanup runs OUTSIDE any DB transaction (R4-16).
+	if hostnameID == "" && createAttempted {
+		// A remote create was attempted and may have succeeded before the database
+		// transaction rolled back. Only our exact generation marker proves it is ours;
+		// an unrecorded candidate fails closed so removal cannot orphan it in Cloudflare (R8-030 / R9-018).
+		candidate, err := AdtyCloudflare.findCustomHostname(ctx, zone, snapshot.Hostname)
+		if err != nil {
+			return adtyCloudflareUserError(err)
+		}
+		if candidate != nil {
+			if candidate.Metadata["site_id"] == strconv.Itoa(snapshot.SiteId) &&
+				candidate.Metadata["adty_domain_id"] == strconv.Itoa(snapshot.Id) && candidate.Metadata["adty_generation"] == adtyCustomHostnameGeneration(&snapshot) {
+				hostnameID = candidate.Id
+			} else {
+				return common.NewMessage("Unrecorded Cloudflare creation requires reconciliation before cleanup")
+			}
+		}
+	}
+	// Scan configured widgets too: a successful remote PUT may not have been
+	// recorded before rollback. The domain lease remains held here.
+	if hostnameID != "" || snapshot.TurnstileWidget != "" {
+		if err := adtyTurnstileRemoveDomain(ctx, snapshot.TurnstileWidget, snapshot.Hostname); err != nil {
+			return adtyCloudflareUserError(err)
+		}
+	}
+	if hostnameID != "" {
+		if err := AdtyCloudflare.deleteCustomHostname(ctx, zone, hostnameID); err != nil {
+			return adtyCloudflareUserError(err)
+		}
+	}
+
+	// Tx2: Re-lock site & domain, re-verify permissions and lease, and persist removed state.
+	var updatedDomain model.AdtySiteDomain
+	err = model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if snapshot.SiteId > 0 {
+			var site model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).Select("id", "owner_user_id", "status").Where("id = ?", snapshot.SiteId).First(&site).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAdtySiteNotFound
+				}
+				return err
+			}
+			if site.Status == model.AdtySiteStatusDeleting {
+				return ErrAdtySiteStatus
+			}
+			if actorRole > 0 || denyAdminTarget {
+				if err := checkAdtySiteTargetActorTx(tx, &site, actorID, actorRole, denyAdminTarget); err != nil {
+					return err
+				}
+			}
+		}
+		var current model.AdtySiteDomain
+		if err := adtyLockDomainRow(tx, snapshot.Id, &current); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAdtySiteNotFound
+			}
+			return err
+		}
+		if current.SiteId != snapshot.SiteId || current.Hostname != snapshot.Hostname || current.OwnershipToken != snapshot.OwnershipToken {
+			return ErrAdtySiteNotFound
+		}
+		if current.Status == model.AdtySiteDomainRemoved {
+			updatedDomain = current
+			return nil
+		}
+		if current.LeaseToken != leaseToken {
+			return common.NewMessage("Domain automation is in progress for this site; please try again shortly")
+		}
+		res := adtyDomainSnapshotQuery(tx, &snapshot).Where("lease_token = ?", leaseToken).Updates(map[string]any{
+			"status":               model.AdtySiteDomainRemoved,
+			"cf_hostname_id":       "",
+			"cf_create_started_at": 0,
+			"turnstile_widget":     "",
+			"lease_token":          "",
+			"lease_until":          0,
+			"generation":           gorm.Expr("generation + 1"),
+			"last_checked_at":      time.Now().Unix(),
+		})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return common.NewMessage("Domain automation is in progress for this site; please try again shortly")
+		}
+		if tx.Migrator().HasTable(&model.AdtyDomainCloudResource{}) {
+			if err := tx.Where("domain_id = ?", snapshot.Id).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
+				return err
+			}
+		}
+		updatedDomain = snapshot
+		updatedDomain.Status, updatedDomain.CFHostnameId, updatedDomain.CFCreateStartedAt, updatedDomain.TurnstileWidget = model.AdtySiteDomainRemoved, "", 0, ""
+		updatedDomain.LeaseToken, updatedDomain.LeaseUntil = "", 0
+		updatedDomain.Generation = current.Generation + 1
+		return nil
 	})
 	if err == nil {
+		leaseCleared = true
+		*domain = updatedDomain
 		InvalidateAdtySiteCache()
 	}
 	return err
@@ -1093,72 +1444,6 @@ func adtyDomainEffectiveZone(domain *model.AdtySiteDomain, cfg *adty_setting.Res
 	return strings.TrimSpace(cfg.CloudflareZoneId)
 }
 
-func removeAdtySiteDomainLocked(ctx context.Context, tx *gorm.DB, domain *model.AdtySiteDomain) error {
-	if domain.Status == model.AdtySiteDomainRemoved {
-		return nil
-	}
-	zone := adtyDomainEffectiveZone(domain, resellerSetting())
-	hostnameID := domain.CFHostnameId
-	createAttempted := domain.CFCreateStartedAt > 0
-	if hostnameID == "" {
-		var err error
-		hostnameID, createAttempted, err = adtyLookupCloudResourceState(tx, zone, domain)
-		if err != nil {
-			return err
-		}
-	}
-	if hostnameID == "" && createAttempted {
-		// A remote create was attempted and may have succeeded before the database
-		// transaction rolled back. Only our exact generation marker proves it is ours;
-		// an unrecorded candidate fails closed so removal cannot orphan it in Cloudflare (R8-030 / R9-018).
-		candidate, err := AdtyCloudflare.findCustomHostname(ctx, zone, domain.Hostname)
-		if err != nil {
-			return adtyCloudflareUserError(err)
-		}
-		if candidate != nil {
-			if candidate.Metadata["site_id"] == strconv.Itoa(domain.SiteId) &&
-				candidate.Metadata["adty_domain_id"] == strconv.Itoa(domain.Id) && candidate.Metadata["adty_generation"] == adtyCustomHostnameGeneration(domain) {
-				hostnameID = candidate.Id
-			} else {
-				return common.NewMessage("Unrecorded Cloudflare creation requires reconciliation before cleanup")
-			}
-		}
-	}
-	// Scan configured widgets too: a successful remote PUT may not have been
-	// recorded before rollback. The domain generation remains locked here.
-	if hostnameID != "" || domain.TurnstileWidget != "" {
-		if err := adtyTurnstileRemoveDomain(ctx, tx, domain.TurnstileWidget, domain.Hostname); err != nil {
-			return adtyCloudflareUserError(err)
-		}
-	}
-	if hostnameID != "" {
-		if err := AdtyCloudflare.deleteCustomHostname(ctx, zone, hostnameID); err != nil {
-			return adtyCloudflareUserError(err)
-		}
-	}
-	if err := adtyDomainSnapshotQuery(tx, domain).Updates(map[string]any{
-		"status":               model.AdtySiteDomainRemoved,
-		"cf_hostname_id":       "",
-		"cf_create_started_at": 0,
-		"turnstile_widget":     "",
-		"lease_token":          "",
-		"lease_until":          0,
-		"generation":           gorm.Expr("generation + 1"),
-		"last_checked_at":      time.Now().Unix(),
-	}).Error; err != nil {
-		return err
-	}
-	if tx.Migrator().HasTable(&model.AdtyDomainCloudResource{}) {
-		if err := tx.Where("domain_id = ?", domain.Id).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
-			return err
-		}
-	}
-	domain.Status, domain.CFHostnameId, domain.CFCreateStartedAt, domain.TurnstileWidget = model.AdtySiteDomainRemoved, "", 0, ""
-	domain.LeaseToken, domain.LeaseUntil = "", 0
-	domain.Generation++
-	return nil
-}
-
 // adtyRemoveDomainsOfClosedSite 在关站后删掉这个站的所有域名（AdtyOnSiteClosed）。失败只记日志，
 // 行保持原状，管理员可以在分站管理里再删。
 func adtyRemoveDomainsOfClosedSite(site *model.AdtySite) {
@@ -1168,22 +1453,24 @@ func adtyRemoveDomainsOfClosedSite(site *model.AdtySite) {
 }
 
 // adtyMarkCustomDomainFailed 把超时的域名标成 failed。Cloudflare 上还有主机名（含仅写进云资源流水或已发起创建的）时先删掉；删不掉或存在未记账远端资源就保持 pending，下次再试。
-func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, domain *model.AdtySiteDomain, updates map[string]any) error {
+func adtyMarkCustomDomainFailed(ctx context.Context, zone string, domain *model.AdtySiteDomain, leaseToken string, updates map[string]any) error {
 	hostnameID := domain.CFHostnameId
 	createAttempted := domain.CFCreateStartedAt > 0
 	if hostnameID == "" {
 		var err error
-		hostnameID, createAttempted, err = adtyLookupCloudResourceState(tx, zone, domain)
+		hostnameID, createAttempted, err = adtyLookupCloudResourceState(model.DB.WithContext(ctx), zone, domain)
 		if err != nil {
 			return err
 		}
 	}
+	// External Cloudflare / Turnstile cleanup runs OUTSIDE any DB transaction (R4-16).
 	if hostnameID == "" && createAttempted {
 		candidate, err := AdtyCloudflare.findCustomHostname(ctx, zone, domain.Hostname)
 		if err != nil {
 			common.SysError(common.LogText("lookup timed out custom hostname for domain %d failed", domain.Id))
 			updates["last_error"] = adtyDomainAutomationUserError(err).Error()
-			return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
+			_, updErr := adtyUpdateLeasedDomainSnapshot(ctx, domain, leaseToken, updates)
+			return updErr
 		}
 		if candidate != nil {
 			if candidate.Metadata["site_id"] == strconv.Itoa(domain.SiteId) &&
@@ -1191,16 +1478,18 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 				hostnameID = candidate.Id
 			} else {
 				updates["last_error"] = common.NewMessage("Unrecorded Cloudflare creation requires reconciliation before cleanup").Error()
-				return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
+				_, updErr := adtyUpdateLeasedDomainSnapshot(ctx, domain, leaseToken, updates)
+				return updErr
 			}
 		}
 	}
 	clearedTurnstile := false
 	if domain.TurnstileWidget != "" || (hostnameID != "" && resellerSetting().TurnstileConfigured()) {
-		if err := adtyTurnstileRemoveDomain(ctx, tx, domain.TurnstileWidget, domain.Hostname); err != nil {
+		if err := adtyTurnstileRemoveDomain(ctx, domain.TurnstileWidget, domain.Hostname); err != nil {
 			common.SysError(common.LogText("remove timed out turnstile domain %d failed", domain.Id))
 			updates["last_error"] = adtyDomainAutomationUserError(err).Error()
-			return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
+			_, updErr := adtyUpdateLeasedDomainSnapshot(ctx, domain, leaseToken, updates)
+			return updErr
 		}
 		updates["turnstile_widget"] = ""
 		clearedTurnstile = true
@@ -1210,7 +1499,8 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 		if err := AdtyCloudflare.deleteCustomHostname(ctx, zone, hostnameID); err != nil {
 			common.SysError(common.LogText("delete timed out custom hostname for domain %d failed", domain.Id))
 			updates["last_error"] = adtyDomainAutomationUserError(err).Error()
-			return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
+			_, updErr := adtyUpdateLeasedDomainSnapshot(ctx, domain, leaseToken, updates)
+			return updErr
 		}
 		updates["cf_hostname_id"] = ""
 		clearedCFHostname = true
@@ -1220,12 +1510,27 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 	// R7-15: Keep domain.CFHostnameId intact until adtyDomainSnapshotQuery matches
 	// the persisted row; otherwise WHERE cf_hostname_id = '' updates 0 rows and
 	// loops forever against Cloudflare API.
-	res := adtyDomainSnapshotQuery(tx, domain).Updates(updates)
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return errors.New("custom domain snapshot changed during timeout cleanup")
+	if err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if _, ok, err := adtyVerifyLeasedDomainTx(tx, domain, leaseToken); err != nil {
+			return err
+		} else if !ok {
+			return errors.New("custom domain snapshot changed during timeout cleanup")
+		}
+		res := adtyDomainSnapshotQuery(tx, domain).Where("lease_token = ?", leaseToken).Updates(updates)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return errors.New("custom domain snapshot changed during timeout cleanup")
+		}
+		if tx.Migrator().HasTable(&model.AdtyDomainCloudResource{}) {
+			if err := tx.Where("domain_id = ?", domain.Id).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	if clearedTurnstile {
 		domain.TurnstileWidget = ""
@@ -1235,19 +1540,14 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 	}
 	domain.CFCreateStartedAt = 0
 	domain.Status = model.AdtySiteDomainFailed
-	if tx.Migrator().HasTable(&model.AdtyDomainCloudResource{}) {
-		if err := tx.Where("domain_id = ?", domain.Id).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
-func adtyAssignCheckedDomainTurnstile(ctx context.Context, tx *gorm.DB, domain *model.AdtySiteDomain) error {
+func adtyAssignCheckedDomainTurnstile(ctx context.Context, domain *model.AdtySiteDomain, leaseToken string) error {
 	if domain.Status != model.AdtySiteDomainActive || domain.TurnstileWidget != "" {
 		return nil
 	}
-	widget, err := adtyTurnstileAssign(ctx, tx, domain.Hostname)
+	widget, err := adtyTurnstileAssign(ctx, domain.Hostname)
 	if err != nil {
 		common.SysError(common.LogText("turnstile assign for domain %d failed", domain.Id))
 		return nil
@@ -1255,10 +1555,57 @@ func adtyAssignCheckedDomainTurnstile(ctx context.Context, tx *gorm.DB, domain *
 	if widget == "" {
 		return nil
 	}
-	if err := adtyDomainSnapshotQuery(tx, domain).Where("turnstile_widget = ?", "").Update("turnstile_widget", widget).Error; err != nil {
+	var rowsAffected int64
+	compensateRemove := false
+	if err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current model.AdtySiteDomain
+		if err := adtyLockDomainRow(tx, domain.Id, &current); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				compensateRemove = true
+				return nil
+			}
+			return err
+		}
+		if current.LeaseToken != leaseToken {
+			return nil
+		}
+		if current.Status == model.AdtySiteDomainRemoved || current.DesiredState == "removed" || current.DesiredState == "redirect_only" {
+			compensateRemove = true
+			return nil
+		}
+		if current.SiteId != domain.SiteId || current.Hostname != domain.Hostname || current.OwnershipToken != domain.OwnershipToken ||
+			current.Status != model.AdtySiteDomainActive || current.CFHostnameId != domain.CFHostnameId ||
+			current.AutomationState != "" || current.TurnstileWidget != "" {
+			return nil
+		}
+		var site model.AdtySite
+		if err := tx.Select("id", "status").First(&site, current.SiteId).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				compensateRemove = true
+				return nil
+			}
+			return err
+		}
+		if site.Status == model.AdtySiteStatusDeleting {
+			compensateRemove = true
+			return nil
+		}
+		res := adtyDomainSnapshotQuery(tx, &current).Where("lease_token = ? AND turnstile_widget = ?", leaseToken, "").Update("turnstile_widget", widget)
+		if res.Error != nil {
+			return res.Error
+		}
+		rowsAffected = res.RowsAffected
+		return nil
+	}); err != nil {
 		return err
 	}
-	domain.TurnstileWidget = widget
+	if compensateRemove {
+		_ = adtyTurnstileRemoveDomain(ctx, widget, domain.Hostname)
+		return nil
+	}
+	if rowsAffected > 0 {
+		domain.TurnstileWidget = widget
+	}
 	return nil
 }
 
@@ -1300,88 +1647,168 @@ func RunAdtySiteDomainCheckOnce(ctx context.Context, now time.Time) error {
 }
 
 func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain, now time.Time) (changed bool, err error) {
-	err = adtyWithDomainLifecycle(ctx, snapshot, func(tx *gorm.DB, domain *model.AdtySiteDomain) error {
-		cfg := resellerSetting()
-		zone := adtyDomainEffectiveZone(domain, cfg)
-		if domain.Status == model.AdtySiteDomainActive {
-			detail, err := AdtyCloudflare.getCustomHostname(ctx, zone, domain.CFHostnameId)
-			if err != nil {
-				return err
-			}
-			if detail.Status != "active" || detail.SSL.Status != "active" {
-				changed = true
-				return adtyDomainSnapshotQuery(tx, domain).Updates(map[string]any{"status": model.AdtySiteDomainPending, "ssl_status": detail.SSL.Status, "verify_records": verifyRecordsFor(domain.Hostname, cfg.CnameTarget, detail), "last_checked_at": now.Unix(), "created_at": now.Unix()}).Error
-			}
-			if err := adtyProbeDomainHTTPS(ctx, domain); err != nil {
-				changed = true
-				return adtyDomainSnapshotQuery(tx, domain).Updates(map[string]any{"status": model.AdtySiteDomainPending, "last_error": adtyDomainAutomationUserError(err).Error(), "created_at": now.Unix()}).Error
-			}
-			return adtyAssignCheckedDomainTurnstile(ctx, tx, domain)
+	if snapshot == nil || snapshot.Id <= 0 {
+		return false, nil
+	}
+	unlock := adtyDomainLocks.Lock(snapshot.Id)
+	defer unlock()
+
+	// Tx1: Validate preconditions and acquire a short lifecycle lease.
+	domain, leaseToken, acquired, err := adtyAcquireDomainLifecycleLease(
+		ctx, snapshot, "check", now.Unix(),
+		model.AdtySiteDomainActive, model.AdtySiteDomainPending,
+	)
+	if err != nil || !acquired {
+		return false, err
+	}
+	defer adtyReleaseDomainLease(domain.Id, leaseToken)
+
+	syncSnapshot := func() {
+		domain.LeaseToken, domain.LeaseUntil = "", 0
+		*snapshot = domain
+	}
+
+	cfg := resellerSetting()
+	zone := adtyDomainEffectiveZone(&domain, cfg)
+	if domain.Status == model.AdtySiteDomainActive {
+		detail, err := AdtyCloudflare.getCustomHostname(ctx, zone, domain.CFHostnameId)
+		if err != nil {
+			return false, err
 		}
-		if domain.Status != model.AdtySiteDomainPending {
-			return nil
+		if detail.Status != "active" || detail.SSL.Status != "active" {
+			rowsAffected, err := adtyUpdateLeasedDomainSnapshot(ctx, &domain, leaseToken, map[string]any{
+				"status":          model.AdtySiteDomainPending,
+				"ssl_status":      detail.SSL.Status,
+				"verify_records":  verifyRecordsFor(domain.Hostname, strings.TrimSpace(cfg.CnameTarget), detail),
+				"last_checked_at": now.Unix(),
+				"created_at":      now.Unix(),
+			})
+			if err != nil {
+				return false, err
+			}
+			if rowsAffected > 0 {
+				changed = true
+				domain.Status = model.AdtySiteDomainPending
+				domain.SSLStatus = detail.SSL.Status
+				domain.LastCheckedAt = now.Unix()
+				domain.CreatedAt = now.Unix()
+				syncSnapshot()
+			}
+			return changed, nil
+		}
+		if err := adtyProbeDomainHTTPS(ctx, &domain); err != nil {
+			rowsAffected, updErr := adtyUpdateLeasedDomainSnapshot(ctx, &domain, leaseToken, map[string]any{
+				"status":     model.AdtySiteDomainPending,
+				"last_error": adtyDomainAutomationUserError(err).Error(),
+				"created_at": now.Unix(),
+			})
+			if updErr != nil {
+				return false, updErr
+			}
+			if rowsAffected > 0 {
+				changed = true
+				domain.Status = model.AdtySiteDomainPending
+				domain.LastError = adtyDomainAutomationUserError(err).Error()
+				domain.CreatedAt = now.Unix()
+				syncSnapshot()
+			}
+			return changed, nil
+		}
+		if err := adtyAssignCheckedDomainTurnstile(ctx, &domain, leaseToken); err != nil {
+			return false, err
+		}
+		syncSnapshot()
+		return false, nil
+	}
+	if domain.Status != model.AdtySiteDomainPending {
+		return false, nil
+	}
+	if domain.CFHostnameId == "" {
+		if now.Sub(time.Unix(domain.CreatedAt, 0)) > adtyCustomDomainTimeout {
+			if err := adtyMarkCustomDomainFailed(ctx, zone, &domain, leaseToken, map[string]any{"last_checked_at": now.Unix()}); err != nil {
+				return false, err
+			}
+			syncSnapshot()
+			return false, nil
+		}
+		if err := adtyAttachCustomHostnameWithLease(ctx, &domain, leaseToken); err != nil {
+			// Cloudflare 拒绝这个主机名（非法、已被别的 zone 占用、token 缺权限……）
+			// 是这一行的属性，不是整批的：记账，并让超时判断也能看到它。
+			// 其它错误（DB 写失败之类）照旧上抛：事务已经坏了，不能装作没事。
+			if !errors.Is(err, ErrAdtyCloudflareFailed) && !errors.Is(err, ErrAdtyCloudflareRejected) {
+				return false, err
+			}
+			updates := map[string]any{"last_checked_at": now.Unix(), "last_error": adtyDomainAutomationUserError(err).Error()}
+			if now.Sub(time.Unix(domain.CreatedAt, 0)) > adtyCustomDomainTimeout {
+				if failErr := adtyMarkCustomDomainFailed(ctx, zone, &domain, leaseToken, updates); failErr != nil {
+					return false, failErr
+				}
+				syncSnapshot()
+				return false, nil
+			}
+			if _, updErr := adtyUpdateLeasedDomainSnapshot(ctx, &domain, leaseToken, updates); updErr != nil {
+				return false, updErr
+			}
+			syncSnapshot()
+			return false, nil
 		}
 		if domain.CFHostnameId == "" {
+			updates := map[string]any{"last_checked_at": now.Unix()}
 			if now.Sub(time.Unix(domain.CreatedAt, 0)) > adtyCustomDomainTimeout {
-				return adtyMarkCustomDomainFailed(ctx, tx, zone, domain, map[string]any{"last_checked_at": now.Unix()})
-			}
-			if err := adtyAttachCustomHostnameLocked(ctx, tx, domain); err != nil {
-				// Cloudflare 拒绝这个主机名（非法、已被别的 zone 占用、token 缺权限……）
-				// 是这一行的属性，不是整批的：记账，并让超时判断也能看到它。
-				// 其它错误（DB 写失败之类）照旧上抛：事务已经坏了，不能装作没事。
-				if !errors.Is(err, ErrAdtyCloudflareFailed) && !errors.Is(err, ErrAdtyCloudflareRejected) {
-					return err
+				if failErr := adtyMarkCustomDomainFailed(ctx, zone, &domain, leaseToken, updates); failErr != nil {
+					return false, failErr
 				}
-				updates := map[string]any{"last_checked_at": now.Unix(), "last_error": adtyDomainAutomationUserError(err).Error()}
-				if now.Sub(time.Unix(domain.CreatedAt, 0)) > adtyCustomDomainTimeout {
-					return adtyMarkCustomDomainFailed(ctx, tx, zone, domain, updates)
-				}
-				return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
+				syncSnapshot()
+				return false, nil
 			}
-			if domain.CFHostnameId == "" {
-				updates := map[string]any{"last_checked_at": now.Unix()}
-				if now.Sub(time.Unix(domain.CreatedAt, 0)) > adtyCustomDomainTimeout {
-					return adtyMarkCustomDomainFailed(ctx, tx, zone, domain, updates)
-				}
-				return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
+			if _, updErr := adtyUpdateLeasedDomainSnapshot(ctx, &domain, leaseToken, updates); updErr != nil {
+				return false, updErr
 			}
+			syncSnapshot()
+			return false, nil
 		}
-		updates := map[string]any{"last_checked_at": now.Unix()}
-		detail, err := AdtyCloudflare.getCustomHostname(ctx, zone, domain.CFHostnameId)
-		switch {
-		case err != nil:
-			// 网络或 Cloudflare 出错：保持 pending，下次再查。
+	}
+	updates := map[string]any{"last_checked_at": now.Unix()}
+	detail, err := AdtyCloudflare.getCustomHostname(ctx, zone, domain.CFHostnameId)
+	switch {
+	case err != nil:
+		// 网络或 Cloudflare 出错：保持 pending，下次再查。
+		updates["last_error"] = adtyDomainAutomationUserError(err).Error()
+	case detail.Status == "active" && detail.SSL.Status == "active":
+		if err := adtyProbeDomainHTTPS(ctx, &domain); err != nil {
 			updates["last_error"] = adtyDomainAutomationUserError(err).Error()
-		case detail.Status == "active" && detail.SSL.Status == "active":
-			if err := adtyProbeDomainHTTPS(ctx, domain); err != nil {
-				updates["last_error"] = adtyDomainAutomationUserError(err).Error()
-			} else {
-				updates["status"], updates["ssl_status"], updates["last_error"] = model.AdtySiteDomainActive, detail.SSL.Status, ""
-			}
-		default:
-			updates["ssl_status"] = detail.SSL.Status
-			updates["verify_records"] = verifyRecordsFor(domain.Hostname, strings.TrimSpace(cfg.CnameTarget), detail)
-			if len(detail.VerificationErrors) > 0 {
-				updates["last_error"] = strings.Join(detail.VerificationErrors, "; ")
-			}
+		} else {
+			updates["status"], updates["ssl_status"], updates["last_error"] = model.AdtySiteDomainActive, detail.SSL.Status, ""
 		}
-		if updates["status"] == nil && now.Sub(time.Unix(domain.CreatedAt, 0)) > adtyCustomDomainTimeout {
-			return adtyMarkCustomDomainFailed(ctx, tx, zone, domain, updates)
+	default:
+		updates["ssl_status"] = detail.SSL.Status
+		updates["verify_records"] = verifyRecordsFor(domain.Hostname, strings.TrimSpace(cfg.CnameTarget), detail)
+		if len(detail.VerificationErrors) > 0 {
+			updates["last_error"] = strings.Join(detail.VerificationErrors, "; ")
 		}
-		result := adtyDomainSnapshotQuery(tx, domain).Updates(updates)
-		if result.Error != nil {
-			return result.Error
+	}
+	if updates["status"] == nil && now.Sub(time.Unix(domain.CreatedAt, 0)) > adtyCustomDomainTimeout {
+		if failErr := adtyMarkCustomDomainFailed(ctx, zone, &domain, leaseToken, updates); failErr != nil {
+			return false, failErr
 		}
-		if result.RowsAffected > 0 && updates["status"] == model.AdtySiteDomainActive {
-			changed = true
-			domain.Status = model.AdtySiteDomainActive
-			if err := adtyAssignCheckedDomainTurnstile(ctx, tx, domain); err != nil {
-				return err
-			}
+		syncSnapshot()
+		return false, nil
+	}
+	rowsAffected, err := adtyUpdateLeasedDomainSnapshot(ctx, &domain, leaseToken, updates)
+	if err != nil {
+		return false, err
+	}
+	if rowsAffected > 0 && updates["status"] == model.AdtySiteDomainActive {
+		changed = true
+		domain.Status = model.AdtySiteDomainActive
+		domain.SSLStatus = detail.SSL.Status
+		domain.LastError = ""
+		if err := adtyAssignCheckedDomainTurnstile(ctx, &domain, leaseToken); err != nil {
+			return changed, err
 		}
-		return nil
-	})
-	return changed, err
+	}
+	syncSnapshot()
+	return changed, nil
 }
 
 // adtyLoadActiveCustomDomains 是站点识别用的「active 的自定义域名 → 站点 id」（AdtyLoadCustomDomains）。

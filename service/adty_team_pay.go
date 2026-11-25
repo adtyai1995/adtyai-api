@@ -326,19 +326,19 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 	if !IsAdtyUSDTMethod(ext.Method) && (!IsAdtyEpayMethod(ext.Method) || ext.ChannelId <= 0) {
 		return nil, ErrAdtyTeamInvalid
 	}
-	claim := model.DB.Model(ext).Where("checkout_stage = ?", "local").UpdateColumn("checkout_stage", "submitting")
-	if claim.Error != nil {
-		return nil, claim.Error
-	}
+	unlockResume := lockAdtyTeamTopupKey(teamID, "resume:"+tradeNo)
+	defer unlockResume()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	var (
 		alreadyDone bool
+		isReplay    bool
 		extSnapshot model.AdtyTopupOrder
 		epayChannel *model.AdtyEpayChannel
 	)
-	// Tx 1: Validate state and capture immutable checkout inputs before calling
-	// external payment gateways (never hold FOR UPDATE row locks across HTTP I/O).
+	// Tx 1: Validate state, atomically claim checkout_stage=submitting, and
+	// capture immutable checkout inputs before calling external gateways
+	// (never hold FOR UPDATE row locks across HTTP I/O).
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		var top model.TopUp
 		if err := model.AdtyLockForUpdate(tx).Where("trade_no = ? AND user_id = ?", tradeNo, leaderID).First(&top).Error; err != nil {
@@ -374,6 +374,15 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 			}
 			epayChannel = ch
 		}
+		if ext.CheckoutStage == "local" {
+			if err := tx.Model(ext).UpdateColumn("checkout_stage", "submitting").Error; err != nil {
+				return err
+			}
+			ext.CheckoutStage = "submitting"
+			isReplay = false
+		} else {
+			isReplay = true
+		}
 		extSnapshot = *ext
 		return nil
 	})
@@ -383,7 +392,7 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 	if alreadyDone {
 		return model.GetAdtyTopupOrder(tradeNo)
 	}
-	fields, recoverErr := recoverTeamCheckout(ctx, &extSnapshot, epayChannel, clientIP, claim.RowsAffected == 0)
+	fields, recoverErr := recoverTeamCheckout(ctx, &extSnapshot, epayChannel, clientIP, isReplay)
 	if errors.Is(recoverErr, ErrAdtyPaymentDetected) {
 		if err := RecoverAdtyHostedPayment(ctx, &extSnapshot); err != nil {
 			return nil, err
@@ -393,7 +402,13 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 	if recoverErr != nil {
 		return nil, recoverErr
 	}
-	// Tx 2: Re-lock and persist checkout fields only if still pending and unready.
+	// Tx 2: Re-lock and persist checkout fields only if still pending, unready,
+	// and the team remains active under the same leader.
+	var (
+		discarded         bool
+		teamForbidden     bool
+		curGatewayTradeID string
+	)
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		var top model.TopUp
 		if err := model.AdtyLockForUpdate(tx).Where("trade_no = ? AND user_id = ?", tradeNo, leaderID).First(&top).Error; err != nil {
@@ -403,14 +418,39 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 		if err := model.AdtyLockForUpdate(tx).First(&cur, extSnapshot.Id).Error; err != nil {
 			return err
 		}
+		curGatewayTradeID = cur.GatewayTradeId
 		if top.Status != common.TopUpStatusPending || teamCheckoutReady(&cur) {
+			discarded = true
+			return nil
+		}
+		var team model.AdtyTeam
+		if err := tx.First(&team, teamID).Error; err != nil {
+			discarded = true
+			teamForbidden = true
+			return nil
+		}
+		if team.LeaderUserId != leaderID || team.Status != model.AdtyTeamStatusActive {
+			discarded = true
+			teamForbidden = true
 			return nil
 		}
 		fields["checkout_stage"] = "ready"
 		return tx.Model(&cur).Updates(fields).Error
 	})
-	if err != nil {
-		return nil, err
+	if err != nil || discarded {
+		if extSnapshot.Provider == model.PaymentProviderAdtyBEpusdt {
+			if gwID, _ := fields["gateway_trade_id"].(string); gwID != "" && gwID != curGatewayTradeID {
+				if cancelErr := CancelBEpusdtOrder(gwID); cancelErr != nil {
+					common.SysError(common.LogText("failed to cancel discarded team BEpusdt order %s: %s", gwID, cancelErr.Error()))
+				}
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+		if teamForbidden {
+			return nil, ErrAdtyTeamForbidden
+		}
 	}
 	return model.GetAdtyTopupOrder(tradeNo)
 }

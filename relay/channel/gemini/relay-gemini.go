@@ -999,6 +999,10 @@ func FetchGeminiModels(baseURL, apiKey string, setting dto.ChannelSettings) ([]s
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %v", common.SanitizeOutboundError(err, apiKey))
 	}
+	noRedirectClient := *client
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 
 	allModels := make([]string, 0)
 	nextPageToken := ""
@@ -1019,7 +1023,7 @@ func FetchGeminiModels(baseURL, apiKey string, setting dto.ChannelSettings) ([]s
 
 		request.Header.Set("x-goog-api-key", apiKey)
 
-		response, err := client.Do(request)
+		response, err := noRedirectClient.Do(request)
 		if err != nil {
 			cancel()
 			return nil, fmt.Errorf("request failed: %v", common.SanitizeOutboundError(err, apiKey))

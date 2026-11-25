@@ -21,7 +21,10 @@ import { isAxiosError } from 'axios'
 import { t } from 'i18next'
 
 import { api } from '@/lib/api'
-import { createServerError } from '@/lib/server-error-message'
+import {
+  createServerError,
+  getServerErrorMessage,
+} from '@/lib/server-error-message'
 
 import type { Model, Vendor } from './types'
 
@@ -52,6 +55,8 @@ export type VendorOperationResult = {
 type VendorErrorPayload = {
   code?: string
   message?: string
+  message_key?: string
+  message_params?: Record<string, unknown>
   reference_counts?: Record<string, number>
 }
 export function vendorErrorMessage(error: unknown): string {
@@ -70,6 +75,9 @@ export function vendorErrorMessage(error: unknown): string {
       'Vendors still have {{count}} linked model records. Transfer or clear their assignments first.',
       { count }
     )
+  }
+  if (payload?.message_key) {
+    return getServerErrorMessage(error, t('Operation failed'))
   }
   const message =
     payload?.message || (error instanceof Error ? error.message : '')
@@ -90,7 +98,7 @@ export function vendorErrorMessage(error: unknown): string {
     case 'a selected model no longer exists':
       return t('A selected model no longer exists. Reload the model list.')
     default:
-      return message || t('Operation failed')
+      return getServerErrorMessage(error, t('Operation failed'))
   }
 }
 

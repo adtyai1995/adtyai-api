@@ -84,6 +84,7 @@ import {
 export function TeamDetailSheet(props: {
   scope: TeamAdminScope
   teamId: number | null
+  closing?: boolean
   onOpenChange: (open: boolean) => void
 }) {
   const { t } = useTranslation()
@@ -120,6 +121,7 @@ export function TeamDetailSheet(props: {
                 key={team.id}
                 scope={props.scope}
                 team={team}
+                closing={props.closing}
               />
               <Tabs defaultValue='members'>
                 <TabsList>
@@ -201,6 +203,7 @@ function TeamSummary(props: { team: TeamAdminDetail }) {
 function TeamDiscountEditor(props: {
   scope: TeamAdminScope
   team: TeamAdminDetail
+  closing?: boolean
 }) {
   const { t } = useTranslation()
   const client = useQueryClient()
@@ -208,7 +211,7 @@ function TeamDiscountEditor(props: {
   const isSubsite = team.site_id > 0
   const [draft, setDraft] = useState('')
   // Both Root (for main-site and subsite teams) and site owners (for their own site teams) can edit active teams.
-  const editable = team.status === 'active'
+  const editable = team.status === 'active' && !props.closing
   const trimmed = draft.trim()
   const valid = validTeamDiscount(trimmed, isSubsite)
   const showError = trimmed !== '' && !valid

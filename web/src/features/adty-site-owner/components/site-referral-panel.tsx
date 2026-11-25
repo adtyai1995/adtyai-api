@@ -193,7 +193,7 @@ function buildSiteReferralUpdate(
 }
 
 /** Unified subsite referral settings matching main-site SettingsPanel (R-37 #1). */
-export function SiteReferralPanel() {
+export function SiteReferralPanel(props: { closing?: boolean }) {
   const { t } = useTranslation()
   const client = useQueryClient()
   const query = useQuery({
@@ -259,7 +259,7 @@ export function SiteReferralPanel() {
   if (query.isError) return <ErrorState onRetry={() => void query.refetch()} />
   if (!saved || !draft) return <LoadingState />
 
-  const disabled = save.isPending
+  const disabled = Boolean(props.closing) || save.isPending
   const set = (key: keyof SiteSettingsDraft, value: string) =>
     setDraft((prev) => (prev ? { ...prev, [key]: value } : prev))
 

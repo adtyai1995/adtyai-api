@@ -21,6 +21,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/QuantumNous/new-api/setting/system_setting"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -606,6 +607,15 @@ func adtyWatcherNoticePermitted(notifyType string, canChannel, canEpay bool) boo
 	return canChannel
 }
 
+func adtyWatcherNoticeNotHiddenSQL(db *gorm.DB) string {
+	keyCol := adtyQuoteColumn(db, "key")
+	watcherKeyExpr := "'watcher:' || adty_channel_watcher_notices.read_key"
+	if db != nil && db.Dialector != nil && db.Dialector.Name() == "mysql" {
+		watcherKeyExpr = "CONCAT('watcher:', adty_channel_watcher_notices.read_key)"
+	}
+	return "NOT EXISTS (SELECT 1 FROM adty_notification_hides h WHERE h.user_id = ? AND (h." + keyCol + " = adty_channel_watcher_notices.read_key OR h." + keyCol + " = " + watcherKeyExpr + "))"
+}
+
 func adtyWatcherNoticeInboxItems(userID int, site *model.AdtySite, tokenScopes ...[]string) []map[string]any {
 	if userID <= 0 || site != nil || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
 		return nil
@@ -621,10 +631,7 @@ func adtyWatcherNoticeInboxItems(userID int, site *model.AdtySite, tokenScopes .
 		q = q.Where("notify_type = ?", adtyNotifyTypeEpayMaintenance)
 	}
 	if model.DB.Migrator().HasTable(&model.AdtyNotificationHide{}) {
-		q = q.Where(
-			"NOT EXISTS (SELECT 1 FROM adty_notification_hides h WHERE h.user_id = ? AND (h.key = adty_channel_watcher_notices.read_key OR h.key = 'watcher:' || adty_channel_watcher_notices.read_key))",
-			userID,
-		)
+		q = q.Where(adtyWatcherNoticeNotHiddenSQL(model.DB), userID)
 	}
 	var notices []AdtyChannelWatcherNotice
 	if err := q.Order("id DESC").Limit(adtyWatcherNoticeListLimit).Find(&notices).Error; err != nil || len(notices) == 0 {
@@ -687,10 +694,7 @@ func adtyUnreadWatcherNoticeCount(userID int, site *model.AdtySite, tokenScopes 
 		)
 	}
 	if model.DB.Migrator().HasTable(&model.AdtyNotificationHide{}) {
-		q = q.Where(
-			"NOT EXISTS (SELECT 1 FROM adty_notification_hides h WHERE h.user_id = ? AND (h.key = adty_channel_watcher_notices.read_key OR h.key = 'watcher:' || adty_channel_watcher_notices.read_key))",
-			userID,
-		)
+		q = q.Where(adtyWatcherNoticeNotHiddenSQL(model.DB), userID)
 	}
 	var unread int64
 	if err := q.Count(&unread).Error; err != nil {

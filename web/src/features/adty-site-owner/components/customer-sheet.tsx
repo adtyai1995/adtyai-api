@@ -73,9 +73,11 @@ const CUSTOMER_PASSWORD_ACTION: SiteOwnerAction = 'customer.password'
 /** Customer drawer: profile, requests, top-ups, keys, password management and report. */
 export function CustomerSheet(props: {
   customerId: number | null
+  closing?: boolean
   onOpenChange: (open: boolean) => void
 }) {
   const { t, i18n } = useTranslation()
+  const closing = Boolean(props.closing)
   const queryClient = useQueryClient()
   const ownerVerification = useOwnerVerification()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
@@ -370,7 +372,9 @@ export function CustomerSheet(props: {
                 className='space-y-2'
                 onSubmit={(event) => {
                   event.preventDefault()
-                  if (!passwordCheck.success || isPasswordPending) return
+                  if (closing || !passwordCheck.success || isPasswordPending) {
+                    return
+                  }
                   setManualPassword.mutate(newPassword)
                 }}
               >
@@ -386,7 +390,7 @@ export function CustomerSheet(props: {
                         value={newPassword}
                         placeholder={t('Enter new password (8-128 characters)')}
                         aria-invalid={passwordInvalid}
-                        disabled={isPasswordPending}
+                        disabled={closing || isPasswordPending}
                         onChange={(event) => setNewPassword(event.target.value)}
                       />
                     </div>
@@ -394,6 +398,7 @@ export function CustomerSheet(props: {
                       type='submit'
                       variant='brand'
                       disabled={
+                        closing ||
                         isPasswordPending ||
                         newPassword === '' ||
                         !passwordCheck.success
@@ -418,7 +423,7 @@ export function CustomerSheet(props: {
                     <NativeSelect
                       id='owner-customer-random-length'
                       value={String(randomLength)}
-                      disabled={isPasswordPending}
+                      disabled={closing || isPasswordPending}
                       onChange={(event) =>
                         setRandomLength(Number(event.target.value))
                       }
@@ -433,8 +438,10 @@ export function CustomerSheet(props: {
                   <Button
                     type='button'
                     variant='outline'
-                    disabled={isPasswordPending}
-                    onClick={() => resetRandomPassword.mutate(randomLength)}
+                    disabled={closing || isPasswordPending}
+                    onClick={() => {
+                      if (!closing) resetRandomPassword.mutate(randomLength)
+                    }}
                   >
                     {t('Reset Random Password')}
                   </Button>
@@ -454,13 +461,16 @@ export function CustomerSheet(props: {
                 aria-labelledby='report-title'
                 maxLength={1000}
                 value={reason}
+                disabled={closing || report.isPending}
                 onChange={(event) => setReason(event.target.value)}
               />
               <Button
                 type='button'
                 variant='outline'
-                disabled={!reason.trim() || report.isPending}
-                onClick={() => report.mutate()}
+                disabled={closing || !reason.trim() || report.isPending}
+                onClick={() => {
+                  if (!closing) report.mutate()
+                }}
               >
                 {t('Send report')}
               </Button>

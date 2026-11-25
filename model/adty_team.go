@@ -1,9 +1,9 @@
 package model
 
 import (
-	"errors"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
@@ -321,7 +321,7 @@ func ValidateAdtyTeamTopupCreateTx(tx *gorm.DB, ext *AdtyTopupOrder) error {
 			return err
 		}
 		if team.Status != AdtyTeamStatusActive || team.LeaderUserId != ext.UserId {
-			return errors.New("no permission to perform this action")
+			return common.NewMessage("No permission to perform this action")
 		}
 	}
 	if siblings := AdtyTeamTopupSiblingTradeNos(ext.TradeNo); len(siblings) > 0 {

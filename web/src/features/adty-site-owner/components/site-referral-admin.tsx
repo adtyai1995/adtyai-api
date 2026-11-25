@@ -274,9 +274,10 @@ function SiteReferralKpiStrip(props: { data: SiteReferralOverview }) {
   )
 }
 
-function SiteManualBindingsCard() {
+function SiteManualBindingsCard(props: { closing?: boolean }) {
   const { t } = useTranslation()
   const client = useQueryClient()
+  const closing = Boolean(props.closing)
   const [open, setOpen] = useState(false)
   const [inviterId, setInviterId] = useState('')
   const [inviteeId, setInviteeId] = useState('')
@@ -331,6 +332,7 @@ function SiteManualBindingsCard() {
             onSubmit={(event) => {
               event.preventDefault()
               if (
+                closing ||
                 bind.isPending ||
                 !rules.data?.rate_configured ||
                 inviterId.trim() === '' ||
@@ -348,6 +350,7 @@ function SiteManualBindingsCard() {
                 value={inviterId}
                 inputMode='numeric'
                 placeholder={t('User ID')}
+                disabled={closing}
                 onChange={(event) => setInviterId(event.target.value)}
               />
             </div>
@@ -358,6 +361,7 @@ function SiteManualBindingsCard() {
                 value={inviteeId}
                 inputMode='numeric'
                 placeholder={t('User ID')}
+                disabled={closing}
                 onChange={(event) => setInviteeId(event.target.value)}
               />
             </div>
@@ -365,6 +369,7 @@ function SiteManualBindingsCard() {
               type='submit'
               variant='outline'
               disabled={
+                closing ||
                 bind.isPending ||
                 !rules.data?.rate_configured ||
                 inviterId.trim() === '' ||
@@ -435,10 +440,12 @@ function SiteManualBindingsCard() {
 }
 
 function SiteAffiliatesTab(props: {
+  closing?: boolean
   onViewCommissions: (affiliate: SiteReferralAffiliateItem) => void
 }) {
   const { t, i18n } = useTranslation()
   const queryClient = useQueryClient()
+  const closing = Boolean(props.closing)
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [page, setPage] = useState(1)
   const [keyword, setKeyword] = useState('')
@@ -504,7 +511,7 @@ function SiteAffiliatesTab(props: {
     affiliate: SiteReferralAffiliateItem,
     action: SiteReferralAffiliateAction
   ) => {
-    if (update.isPending) return
+    if (closing || update.isPending) return
     if (action === 'rate' && rateInvalid) return
     update.mutate({ affiliate, action })
   }
@@ -647,6 +654,7 @@ function SiteAffiliatesTab(props: {
                     <Button
                       size='sm'
                       variant='outline'
+                      disabled={closing}
                       onClick={() => openEditing(row)}
                     >
                       {t('Adjust')}
@@ -684,7 +692,7 @@ function SiteAffiliatesTab(props: {
               <Input
                 id='site-adjust-reason'
                 value={reason}
-                disabled={update.isPending}
+                disabled={closing || update.isPending}
                 onChange={(event) => setReason(event.target.value)}
               />
             </div>
@@ -700,7 +708,7 @@ function SiteAffiliatesTab(props: {
                     min={0}
                     max={MAX_SITE_REFERRAL_RATE_PERCENT}
                     step='0.01'
-                    disabled={update.isPending}
+                    disabled={closing || update.isPending}
                     aria-invalid={rateInvalid}
                     value={rate}
                     onChange={(event) => setRate(event.target.value)}
@@ -708,7 +716,7 @@ function SiteAffiliatesTab(props: {
                 </div>
                 <Button
                   type='button'
-                  disabled={update.isPending || rateInvalid}
+                  disabled={closing || update.isPending || rateInvalid}
                   onClick={() => act(editing, 'rate')}
                 >
                   {t('Set rate')}
@@ -731,7 +739,7 @@ function SiteAffiliatesTab(props: {
                   variant={
                     editing.status === 'disabled' ? 'outline' : 'destructive'
                   }
-                  disabled={update.isPending}
+                  disabled={closing || update.isPending}
                   onClick={() =>
                     act(
                       editing,
@@ -747,7 +755,7 @@ function SiteAffiliatesTab(props: {
                   type='button'
                   size='sm'
                   variant='outline'
-                  disabled={update.isPending}
+                  disabled={closing || update.isPending}
                   onClick={() =>
                     act(
                       editing,
@@ -765,7 +773,7 @@ function SiteAffiliatesTab(props: {
                   type='button'
                   size='sm'
                   variant='outline'
-                  disabled={update.isPending}
+                  disabled={closing || update.isPending}
                   onClick={() =>
                     act(
                       editing,
@@ -785,7 +793,7 @@ function SiteAffiliatesTab(props: {
         )}
       </Dialog>
 
-      <SiteManualBindingsCard />
+      <SiteManualBindingsCard closing={closing} />
     </div>
   )
 }
@@ -1150,9 +1158,10 @@ function SiteAuditLogTab() {
 }
 
 /** Unified subsite Promotion Management workspace matching main-site /admin-referral (R-34 #1, R-37 #1). */
-export function SiteReferralAdmin() {
+export function SiteReferralAdmin(props: { closing?: boolean }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const closing = Boolean(props.closing)
   const [activeTab, setActiveTab] = useState('withdrawals')
   const [commissionAffiliateFilter, setCommissionAffiliateFilter] =
     useState<SubsiteAffiliateFilter | null>(null)
@@ -1267,6 +1276,7 @@ export function SiteReferralAdmin() {
         </TabsContent>
         <TabsContent value='affiliates'>
           <SiteAffiliatesTab
+            closing={closing}
             onViewCommissions={(row) => {
               setCommissionAffiliateFilter({
                 userId: row.user_id,
@@ -1286,7 +1296,7 @@ export function SiteReferralAdmin() {
           <SiteAuditLogTab />
         </TabsContent>
         <TabsContent value='settings' className='pt-4'>
-          <SiteReferralPanel />
+          <SiteReferralPanel closing={closing} />
         </TabsContent>
       </Tabs>
     </div>

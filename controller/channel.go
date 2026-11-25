@@ -1323,7 +1323,8 @@ func UpdateChannel(c *gin.Context) {
 	if _, ok := requestData["base_url"]; ok || channel.BaseURL != nil {
 		candidate.BaseURL = channel.BaseURL
 	}
-	if _, ok := requestData["other"]; ok {
+	_, otherProvided := requestData["other"]
+	if otherProvided {
 		candidate.Other = channel.Other
 	}
 	if _, ok := requestData["setting"]; ok || channel.Setting != nil {
@@ -1332,7 +1333,8 @@ func UpdateChannel(c *gin.Context) {
 	if _, ok := requestData["settings"]; ok {
 		candidate.OtherSettings = channel.OtherSettings
 	}
-	if _, ok := requestData["models"]; ok {
+	_, modelsProvided := requestData["models"]
+	if modelsProvided {
 		candidate.Models = channel.Models
 	}
 	if groupProvided || channel.Group != "" {
@@ -1421,17 +1423,29 @@ func UpdateChannel(c *gin.Context) {
 
 				// 处理 Vertex AI 的特殊情况
 				if effectiveType == constant.ChannelTypeVertexAi && candidate.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey {
-					// 尝试解析新密钥为JSON数组
-					if strings.HasPrefix(strings.TrimSpace(channel.Key), "[") {
-						array, err := getVertexArrayKeys(channel.Key)
-						if err != nil {
-							common.ApiErrorT(c, "Failed to parse appended keys: {{error}}", map[string]any{"error": err.Error()})
-							return
+					trimmedKey := strings.TrimSpace(channel.Key)
+					if trimmedKey != "" {
+						// 尝试解析新密钥为JSON数组或单个JSON对象并压缩为单行
+						if strings.HasPrefix(trimmedKey, "[") {
+							array, err := getVertexArrayKeys(trimmedKey)
+							if err != nil {
+								common.ApiErrorT(c, "Failed to parse appended keys: {{error}}", map[string]any{"error": err.Error()})
+								return
+							}
+							newKeys = array
+						} else {
+							var keyObj map[string]any
+							if err := common.Unmarshal([]byte(trimmedKey), &keyObj); err != nil || keyObj == nil {
+								common.ApiErrorT(c, "Vertex AI service account key must be valid JSON")
+								return
+							}
+							compacted, err := common.Marshal(keyObj)
+							if err != nil {
+								common.ApiErrorT(c, "Vertex AI service account key must be valid JSON")
+								return
+							}
+							newKeys = []string{string(compacted)}
 						}
-						newKeys = array
-					} else {
-						// 单个JSON密钥
-						newKeys = []string{channel.Key}
 					}
 				} else {
 					// 普通渠道的处理
@@ -1514,7 +1528,9 @@ func UpdateChannel(c *gin.Context) {
 		// channel.Update reloads the stored group column and skips re-validating it.
 		channel.Group = ""
 	}
-	err = channel.Update()
+	clearModels := modelsProvided && channel.Models == ""
+	clearOther := otherProvided && channel.Other == ""
+	err = channel.UpdateWithClearFlags(clearModels, clearOther)
 	if err != nil {
 		writeChannelMutationError(c, err)
 		return

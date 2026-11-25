@@ -35,10 +35,17 @@ import type {
 // User Profile APIs
 // ============================================================================
 
+type LocalizedApiResponse<T = unknown> = ApiResponse<T> & {
+  message_key?: string
+  message_params?: Record<string, unknown>
+}
+
 /**
  * Get current user profile
  */
-export async function getUserProfile(): Promise<ApiResponse<UserProfile>> {
+export async function getUserProfile(): Promise<
+  LocalizedApiResponse<UserProfile>
+> {
   const res = await api.get('/api/user/self')
   return res.data
 }
@@ -76,10 +83,15 @@ export function changeAccountPassword(
  */
 export async function updateUserSettings(
   data: UpdateUserSettingsRequest
-): Promise<ApiResponse> {
+): Promise<LocalizedApiResponse> {
   const profile = await getUserProfile()
   if (!profile.success || !profile.data) {
-    return { success: false, message: profile.message }
+    return {
+      success: false,
+      message: profile.message,
+      message_key: profile.message_key,
+      message_params: profile.message_params,
+    }
   }
   const settings = normalizeUserSettings(profile.data.setting)
   const res = await api.put('/api/user/setting', { ...settings, ...data })

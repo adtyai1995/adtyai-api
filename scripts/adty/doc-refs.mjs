@@ -37,6 +37,7 @@ const DOC_FILES = [
   'docs/adty/features.md',
   'docs/adty/deploy.md',
   'docs/adty/conventions.md',
+  'docs/adty/upstream-merge.md',
   'docs/adty/upstream-touchpoints.md',
   'docs/authentication.md',
   'AGENTS.md',

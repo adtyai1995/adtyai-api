@@ -76,9 +76,11 @@ function ttlSecondsFromHours(value: string): number | null {
  */
 export function TeamRegistrationLinksSection(props: {
   actor: TeamRegistrationActor
+  closing?: boolean
 }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const closing = Boolean(props.closing)
   const queryKey = ['adty-team-registrations', props.actor] as const
   const links = useQuery({
     queryKey,
@@ -111,6 +113,7 @@ export function TeamRegistrationLinksSection(props: {
   }
 
   const revoke = async (id: number) => {
+    if (closing) return
     setPending(true)
     setError('')
     try {
@@ -187,7 +190,7 @@ export function TeamRegistrationLinksSection(props: {
                     type='button'
                     variant='outline'
                     size='sm'
-                    disabled={pending}
+                    disabled={closing || pending}
                     onClick={() => void revoke(row.id)}
                   >
                     {t('Revoke registration link')}

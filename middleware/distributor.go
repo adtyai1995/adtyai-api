@@ -47,7 +47,8 @@ func Distribute() func(c *gin.Context) {
 		service.AppendTaskPluginIdentityFilter(c, c.GetString("expected_task_plugin_key"))
 		modelRequest, shouldSelectChannel, err := getModelRequest(c)
 		if err != nil {
-			abortWithOpenAiMessage(c, invalidRequestStatus(err), i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
+			status, msg := safeBodyReadError(c, "distributor.get_model_request", err)
+			abortWithOpenAiMessage(c, status, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": msg}))
 			return
 		}
 		checkModelPolicy := shouldSelectChannel || (c.Request.Method == http.MethodPost && modelRequest.Model != "")
@@ -309,6 +310,98 @@ var billingSensitiveJSONPaths = []string{
 	"background",
 }
 
+var midjourneySensitiveJSONPaths = []string{
+	"taskId",
+	"customId",
+	"action",
+	"index",
+	"content",
+	"prompt",
+	"notifyHook",
+	"accountFilter",
+	"sourceBase64",
+	"targetBase64",
+	"maskBase64",
+	"base64",
+	"base64Array",
+	"state",
+	"mode",
+}
+
+func safeBodyReadError(c *gin.Context, label string, err error) (int, string) {
+	if common.IsRequestBodyTooLargeError(err) {
+		return http.StatusRequestEntityTooLarge, "request body too large"
+	}
+	if common.IsInternalInfraError(err) {
+		method, path := "", ""
+		if c != nil {
+			if c.Request != nil {
+				method = c.Request.Method
+			}
+			path = c.FullPath()
+		}
+		common.SysError(common.LogText("%s redacted (%s %s): %s", label, method, path, err.Error()))
+		return http.StatusInternalServerError, "failed to read request body"
+	}
+	return invalidRequestStatus(err), err.Error()
+}
+
+func validateGeminiNoCamelSnakeConflict(requestBody []byte) error {
+	if !bytes.Contains(requestBody, []byte("_")) {
+		return nil
+	}
+	checkPair := func(obj gjson.Result, camel, snake string) error {
+		if !obj.IsObject() {
+			return nil
+		}
+		if obj.Get(camel).Exists() && obj.Get(snake).Exists() {
+			return fmt.Errorf("conflicting fields %q and %q", camel, snake)
+		}
+		return nil
+	}
+	root := gjson.ParseBytes(requestBody)
+	if err := checkPair(root, "generationConfig", "generation_config"); err != nil {
+		return err
+	}
+	for _, genKey := range []string{"generationConfig", "generation_config"} {
+		gen := root.Get(genKey)
+		if !gen.IsObject() {
+			continue
+		}
+		for _, pair := range [][2]string{
+			{"thinkingConfig", "thinking_config"},
+			{"imageConfig", "image_config"},
+			{"maxOutputTokens", "max_output_tokens"},
+			{"candidateCount", "candidate_count"},
+			{"responseModalities", "response_modalities"},
+			{"mediaResolution", "media_resolution"},
+		} {
+			if err := checkPair(gen, pair[0], pair[1]); err != nil {
+				return err
+			}
+		}
+		for _, thinkKey := range []string{"thinkingConfig", "thinking_config"} {
+			tc := gen.Get(thinkKey)
+			if err := checkPair(tc, "thinkingBudget", "thinking_budget"); err != nil {
+				return err
+			}
+			if err := checkPair(tc, "thinkingLevel", "thinking_level"); err != nil {
+				return err
+			}
+		}
+		for _, imgKey := range []string{"imageConfig", "image_config"} {
+			ic := gen.Get(imgKey)
+			if err := checkPair(ic, "imageSize", "image_size"); err != nil {
+				return err
+			}
+			if err := checkPair(ic, "aspectRatio", "aspect_ratio"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
 	storage, err := common.GetBodyStorage(c)
 	if err != nil {
@@ -374,6 +467,29 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			relayMode == relayconstant.RelayModeMidjourneyTaskImageSeed {
 			shouldSelectChannel = false
 		} else {
+			if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
+				if !common.IsJSONMediaType(common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))) {
+					return nil, false, errors.New("unsupported Content-Type: expected application/json")
+				}
+				storage, storageErr := common.GetBodyStorage(c)
+				if storageErr != nil {
+					return nil, false, storageErr
+				}
+				requestBody, bytesErr := storage.Bytes()
+				if bytesErr != nil {
+					return nil, false, bytesErr
+				}
+				if !gjson.ValidBytes(requestBody) {
+					return nil, false, errors.New("invalid JSON request body")
+				}
+				if err := common.ValidateJSONNoDuplicateOrFoldedKeys(requestBody, midjourneySensitiveJSONPaths); err != nil {
+					return nil, false, err
+				}
+				if _, seekErr := storage.Seek(0, io.SeekStart); seekErr != nil {
+					return nil, false, seekErr
+				}
+				c.Request.Body = io.NopCloser(storage)
+			}
 			midjourneyRequest := taskdto.MidjourneyRequest{}
 			err = common.UnmarshalBodyReusable(c, &midjourneyRequest)
 			if err != nil {
@@ -456,6 +572,9 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 						return nil, false, errors.New("invalid JSON request body")
 					}
 					if err := common.ValidateJSONNoDuplicateOrFoldedKeys(requestBody, billingSensitiveJSONPaths); err != nil {
+						return nil, false, err
+					}
+					if err := validateGeminiNoCamelSnakeConflict(requestBody); err != nil {
 						return nil, false, err
 					}
 				}

@@ -349,7 +349,7 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 					continue
 				}
 				switch key {
-				case "prompt", "model", "n", "quality", "size", "parameters", "stream", "image", "mask", "watermark":
+				case "prompt", "model", "n", "quality", "size", "parameters", "stream", "image", "mask":
 					continue
 				}
 				val := values[0]

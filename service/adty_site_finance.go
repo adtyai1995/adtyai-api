@@ -708,6 +708,9 @@ func TransferAdtyEarningToMargin(siteID, operator int, amount decimal.Decimal, k
 			if site.OwnerUserId != operator || site.Status != model.AdtySiteStatusActive {
 				return common.NewMessage("Site is not active")
 			}
+			if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: siteID, AccountID: operator}); err != nil {
+				return err
+			}
 		}
 		if _, err := applyAdtySiteWalletChangeTx(tx, siteID, model.AdtySiteWalletEarnings, amount.Neg(), AdtySiteWalletChange{
 			Type: "earning_to_margin", IdempotencyKey: earnKey, OperatorID: operator,

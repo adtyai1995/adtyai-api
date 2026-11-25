@@ -172,6 +172,10 @@ func exchangeJwtForAccessToken(signedJWT string, proxy string) (string, time.Dur
 	if err != nil {
 		return "", 0, fmt.Errorf("new proxy http client failed: %w", err)
 	}
+	noRedirectClient := *client
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -180,7 +184,7 @@ func exchangeJwtForAccessToken(signedJWT string, proxy string) (string, time.Dur
 		return "", 0, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := client.Do(req)
+	resp, err := noRedirectClient.Do(req)
 	if err != nil {
 		return "", 0, err
 	}

@@ -283,7 +283,13 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 				return common.NewMessage("Invalid parameters")
 			}
 			site := lockedSite
-			if site.OwnerUserId != issuer.Id || site.Status != model.AdtySiteStatusActive {
+			if site.OwnerUserId != issuer.Id {
+				return ErrAdtyVoucherForbidden
+			}
+			if site.Status == model.AdtySiteStatusClosing {
+				return ErrAdtySiteClosing
+			}
+			if site.Status != model.AdtySiteStatusActive {
 				return ErrAdtyVoucherForbidden
 			}
 			if input.DesignatedOwnerId != 0 && input.DesignatedOwnerId != site.OwnerUserId {
@@ -547,7 +553,13 @@ func IssueAdtyVoucherBatch(input AdtyVoucherIssueInput) (*AdtyVoucherBatchIssued
 				return common.NewMessage("Invalid parameters")
 			}
 			site := lockedSite
-			if site.OwnerUserId != issuer.Id || site.Status != model.AdtySiteStatusActive {
+			if site.OwnerUserId != issuer.Id {
+				return ErrAdtyVoucherForbidden
+			}
+			if site.Status == model.AdtySiteStatusClosing {
+				return ErrAdtySiteClosing
+			}
+			if site.Status != model.AdtySiteStatusActive {
 				return ErrAdtyVoucherForbidden
 			}
 			if input.DesignatedOwnerId != 0 && input.DesignatedOwnerId != site.OwnerUserId {
@@ -1196,7 +1208,13 @@ func adtyVoucherManageAllowedTx(tx *gorm.DB, actor *model.User, voucher *model.A
 			}
 			site = &loaded
 		}
-		if site.OwnerUserId != actor.Id || site.Status == model.AdtySiteStatusClosing || site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting {
+		if site.OwnerUserId != actor.Id {
+			return ErrAdtyVoucherForbidden
+		}
+		if site.Status == model.AdtySiteStatusClosing {
+			return ErrAdtySiteClosing
+		}
+		if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting {
 			return ErrAdtyVoucherForbidden
 		}
 	}

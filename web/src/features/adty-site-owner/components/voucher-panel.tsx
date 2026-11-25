@@ -68,9 +68,10 @@ const PAGE_SIZE = 20
  * Funded automatically from available earnings first and excess margin above
  * the level deposit floor second. Every write asks the owner to verify first.
  */
-export function VoucherPanel(props: { siteId: number }) {
+export function VoucherPanel(props: { siteId: number; closing?: boolean }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const closing = Boolean(props.closing)
 
   const [amount, setAmount] = useState('')
   const [countRaw, setCountRaw] = useState('1')
@@ -304,8 +305,10 @@ export function VoucherPanel(props: { siteId: number }) {
                 type='button'
                 size='sm'
                 variant='outline'
-                disabled={cancelAndReplace.isPending}
-                onClick={() => cancelAndReplace.mutate(reconciled.id)}
+                disabled={closing || cancelAndReplace.isPending}
+                onClick={() => {
+                  if (!closing) cancelAndReplace.mutate(reconciled.id)
+                }}
               >
                 {t('Cancel code and replace')}
               </Button>
@@ -340,6 +343,7 @@ export function VoucherPanel(props: { siteId: number }) {
           onSubmit={(event) => {
             event.preventDefault()
             if (
+              closing ||
               issue.isPending ||
               reconciled !== null ||
               !batchSummary.valid ||
@@ -371,6 +375,7 @@ export function VoucherPanel(props: { siteId: number }) {
                 inputMode='decimal'
                 placeholder='10.00'
                 value={amount}
+                disabled={closing}
                 onChange={(event) => {
                   setAmount(event.target.value)
                   setReconciled(null)
@@ -387,6 +392,7 @@ export function VoucherPanel(props: { siteId: number }) {
                 max={VOUCHER_BATCH_MAX_COUNT}
                 step={1}
                 value={countRaw}
+                disabled={closing}
                 onChange={(event) => {
                   setCountRaw(event.target.value)
                   setReconciled(null)
@@ -424,6 +430,7 @@ export function VoucherPanel(props: { siteId: number }) {
               id='voucher-reason'
               placeholder={t('e.g. Customer campaign / offline top-up')}
               value={reason}
+              disabled={closing}
               onChange={(event) => {
                 setReason(event.target.value)
                 setReconciled(null)
@@ -436,6 +443,7 @@ export function VoucherPanel(props: { siteId: number }) {
               variant='brand'
               type='submit'
               disabled={
+                closing ||
                 issue.isPending ||
                 reconciled !== null ||
                 !batchSummary.valid ||
@@ -521,10 +529,14 @@ export function VoucherPanel(props: { siteId: number }) {
             <VoucherListTable
               label={t('Issued codes')}
               rows={rows}
-              busy={freeze.isPending || cancel.isPending}
+              busy={closing || freeze.isPending || cancel.isPending}
               showSource
-              onFreeze={(voucher) => freeze.mutate(voucher.id)}
-              onCancel={(voucher) => cancel.mutate(voucher.id)}
+              onFreeze={(voucher) => {
+                if (!closing) freeze.mutate(voucher.id)
+              }}
+              onCancel={(voucher) => {
+                if (!closing) cancel.mutate(voucher.id)
+              }}
             />
             <PageSwitcher
               page={page}

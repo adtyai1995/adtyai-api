@@ -113,11 +113,16 @@ func isUsernameUniqueViolation(err error) bool {
 			return true
 		}
 	}
+	if !isAdtyUniqueViolation(err) {
+		return false
+	}
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, strings.ToLower(usernameUniqueIndex)) ||
 		strings.Contains(text, "uni_users_username") ||
 		strings.Contains(text, "users_username_key") ||
-		strings.Contains(text, "unique constraint failed: users.username")
+		strings.Contains(text, "unique constraint failed: users.username") ||
+		strings.Contains(text, "for key 'users.username'") ||
+		strings.Contains(text, "for key 'username'")
 }
 
 // EnsureUsernameUniqueIndex installs a case-insensitive unique index on

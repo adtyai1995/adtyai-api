@@ -719,12 +719,11 @@ func UpdateChannelBalance(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid channel ID")
 		return
 	}
-	cached, err := model.CacheGetChannel(id)
+	channel, err := model.CacheGetChannelClone(id)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	channel := *cached
 	if channel.Type == constant.ChannelTypeTaskPlugin {
 		common.ApiErrorT(c, "Task Plugin channels do not support balance queries")
 		return
@@ -733,7 +732,7 @@ func UpdateChannelBalance(c *gin.Context) {
 		common.ApiErrorT(c, "Multi-key channels do not support balance queries")
 		return
 	}
-	result, err := updateChannelBalance(&channel)
+	result, err := updateChannelBalance(channel)
 	if err != nil {
 		common.ApiError(c, err)
 		return

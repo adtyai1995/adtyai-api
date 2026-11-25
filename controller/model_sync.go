@@ -504,9 +504,49 @@ func SyncUpstreamModels(c *gin.Context) {
 			common.ApiErrorStatus(c, http.StatusBadRequest, err)
 			return
 		}
-		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Failed to apply metadata sync: {{error}}", map[string]any{"error": err.Error()}))
+		if isMetadataSyncValidationError(err) {
+			common.ApiErrorStatus(c, http.StatusBadRequest, err)
+			return
+		}
+		common.SysError(common.LogText("failed to apply metadata sync: %s", err.Error()))
+		common.ApiErrorStatus(c, http.StatusInternalServerError, common.NewMessage("Operation failed"))
 		return
 	}
 	recordManageAudit(c, "model.metadata.sync", map[string]any{"created_models": result.CreatedModels, "updated_models": result.UpdatedModels, "created_vendors": result.CreatedVendors})
 	common.ApiSuccess(c, result)
+}
+
+func isMetadataSyncValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	switch msg {
+	case "select metadata changes before applying",
+		"invalid or duplicate model selection",
+		"select fields to update",
+		"invalid metadata matching rule",
+		"invalid catalog visibility",
+		"endpoint types must be non-empty strings",
+		"endpoint type is required",
+		"endpoint paths must start with /",
+		"invalid endpoint HTTP method",
+		"endpoint configuration must be a path or object",
+		"endpoints must be a JSON object or array",
+		"vendor name is required",
+		"vendor name and icon must not exceed 128 characters",
+		"vendor name already exists":
+		return true
+	}
+	for _, prefix := range []string{
+		"unsupported metadata field:",
+		"metadata sync is disabled for ",
+		"upstream vendor not found:",
+		"invalid endpoints:",
+	} {
+		if strings.HasPrefix(msg, prefix) {
+			return true
+		}
+	}
+	return false
 }

@@ -99,8 +99,16 @@ func uploadDifyFile(c *gin.Context, info *relaycommon.RelayInfo, user string, me
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", info.ApiKey))
 
 		// Send request
-		client := service.GetHttpClient()
-		resp, err := client.Do(req)
+		client, err := service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
+		if err != nil {
+			common.SysLog(common.LogText("failed to configure http client: %s", err.Error()))
+			return nil
+		}
+		noRedirectClient := *client
+		noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		resp, err := noRedirectClient.Do(req)
 		if err != nil {
 			common.SysLog(common.LogText("failed to send request: %s", err.Error()))
 			return nil
@@ -111,7 +119,7 @@ func uploadDifyFile(c *gin.Context, info *relaycommon.RelayInfo, user string, me
 		var result struct {
 			Id string `json:"id"`
 		}
-		if err := common.DecodeJson(resp.Body, &result); err != nil {
+		if err := common.DecodeJson(io.LimitReader(resp.Body, 4<<20), &result); err != nil {
 			common.SysLog(common.LogText("failed to decode response: %s", err.Error()))
 			return nil
 		}

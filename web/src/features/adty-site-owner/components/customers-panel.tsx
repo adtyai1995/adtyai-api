@@ -59,7 +59,7 @@ function RiskBadge(props: { customer: OwnerCustomer }) {
 }
 
 /** Customer list by sign-up time, exact lookup and the detail drawer (tasks 11.6, 11.7). */
-export function CustomersPanel() {
+export function CustomersPanel(props: { closing?: boolean }) {
   const { t } = useTranslation()
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
@@ -179,6 +179,7 @@ export function CustomersPanel() {
       />
       <CustomerSheet
         customerId={openId}
+        closing={props.closing}
         onOpenChange={(open) => !open && setOpenId(null)}
       />
     </div>

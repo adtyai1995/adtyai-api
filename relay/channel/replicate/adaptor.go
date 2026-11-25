@@ -497,7 +497,11 @@ func uploadFileFromForm(c *gin.Context, info *relaycommon.RelayInfo, fieldCandid
 	if err != nil {
 		return "", fmt.Errorf("replicate adaptor: configure http client failed: %w", err)
 	}
-	resp, err := client.Do(req)
+	noRedirectClient := *client
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := noRedirectClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("replicate adaptor: upload image failed: %w", err)
 	}

@@ -118,6 +118,9 @@ type TaskContentRequest struct {
 	Headers        map[string]string
 	Body           []byte
 	Credentialless bool
+	ResponseType   string
+	ContentPath    string
+	MimeType       string
 }
 
 type TaskContentRequestProvider interface {

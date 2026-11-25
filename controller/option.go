@@ -234,6 +234,7 @@ func isRetiredOptionKey(k string) bool {
 	switch k {
 	case "payment_setting.amount_discount",
 		"adty_topup_setting.bonus_rates",
+		adty_setting.TopupSettingKeySiteMethodAuth,
 		"adty_reseller_setting.max_site_bonus_extra",
 		"adty_reseller_setting.invite_code_enabled",
 		"adty_reseller_setting.sender_domain_enabled",
@@ -398,7 +399,6 @@ func UpdateOption(c *gin.Context) {
 		common.ApiError(c, service.ErrAdtyAmountTierRetired)
 		return
 	case adty_setting.TopupSettingKeyMethodBonus,
-		adty_setting.TopupSettingKeySiteMethodAuth,
 		adty_setting.TopupSettingKeySiteMethodBonus,
 		adty_setting.TopupSettingKeySiteBonusMarginFill:
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Bonus method settings can only be updated via the dedicated bonus methods API"))

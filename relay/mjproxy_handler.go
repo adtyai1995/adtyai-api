@@ -419,7 +419,32 @@ func coverMidjourneyTaskDto(c *gin.Context, originTask *model.Midjourney) (midjo
 	return
 }
 
+func validateMidjourneyJSONRequest(c *gin.Context) *dto.MidjourneyResponse {
+	if !common.IsJSONMediaType(common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))) {
+		return service.MidjourneyErrorWrapper(constant.MjRequestError, "invalid_content_type")
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return service.MidjourneyErrorWrapper(constant.MjRequestError, "bind_request_body_failed")
+	}
+	rawBody, err := storage.Bytes()
+	if err != nil {
+		return service.MidjourneyErrorWrapper(constant.MjRequestError, "bind_request_body_failed")
+	}
+	if err := common.ValidateJSONNoDuplicateOrFoldedKeys(rawBody, []string{
+		"taskId", "customId", "action", "index", "content", "prompt",
+		"notifyHook", "accountFilter", "sourceBase64", "targetBase64",
+		"maskBase64", "base64", "base64Array", "state", "mode",
+	}); err != nil {
+		return service.MidjourneyErrorWrapper(constant.MjRequestError, "bind_request_body_failed")
+	}
+	return nil
+}
+
 func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyResponse {
+	if mjErr := validateMidjourneyJSONRequest(c); mjErr != nil {
+		return mjErr
+	}
 	var swapFaceRequest dto.SwapFaceRequest
 	err := common.UnmarshalBodyReusable(c, &swapFaceRequest)
 	if err != nil {
@@ -681,6 +706,9 @@ func RelayMidjourneyTask(c *gin.Context, relayMode int) *dto.MidjourneyResponse 
 }
 
 func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dto.MidjourneyResponse {
+	if mjErr := validateMidjourneyJSONRequest(c); mjErr != nil {
+		return mjErr
+	}
 	consumeQuota := true
 	var midjRequest dto.MidjourneyRequest
 	err := common.UnmarshalBodyReusable(c, &midjRequest)
@@ -716,7 +744,11 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		midjRequest.Action = constant.MjActionBlend
 	} else if relayInfo.RelayMode == relayconstant.RelayModeMidjourneyUpload { //绘画任务，此类任务可重复
 		midjRequest.Action = constant.MjActionUpload
-	} else if relayInfo.RelayMode == relayconstant.RelayModeMidjourneySimpleChange || midjRequest.TaskId != "" { //放大、变换任务，此类任务，如果重复且已有结果，远端api会直接返回最终结果
+	} else if relayInfo.RelayMode == relayconstant.RelayModeMidjourneySimpleChange ||
+		relayInfo.RelayMode == relayconstant.RelayModeMidjourneyChange ||
+		relayInfo.RelayMode == relayconstant.RelayModeMidjourneyModal ||
+		relayInfo.RelayMode == relayconstant.RelayModeMidjourneyVideo ||
+		midjRequest.TaskId != "" { //放大、变换任务，此类任务，如果重复且已有结果，远端api会直接返回最终结果
 		mjId := ""
 		if relayInfo.RelayMode == relayconstant.RelayModeMidjourneyChange {
 			if midjRequest.TaskId == "" {
@@ -741,9 +773,9 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			midjRequest.Action = params.Action
 			midjRequest.Index = params.Index
 		} else if relayInfo.RelayMode == relayconstant.RelayModeMidjourneyModal {
-			//if midjRequest.MaskBase64 == "" {
-			//	return service.MidjourneyErrorWrapper(constant.MjRequestError, "mask_base64_is_required")
-			//}
+			if midjRequest.TaskId == "" {
+				return service.MidjourneyErrorWrapper(constant.MjRequestError, "task_id_is_required")
+			}
 			mjId = midjRequest.TaskId
 			midjRequest.Action = constant.MjActionModal
 		} else if relayInfo.RelayMode == relayconstant.RelayModeMidjourneyVideo {
@@ -753,6 +785,8 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			} else if midjRequest.Action == "" {
 				return service.MidjourneyErrorWrapper(constant.MjRequestError, "action_is_required")
 			}
+			mjId = midjRequest.TaskId
+		} else {
 			mjId = midjRequest.TaskId
 		}
 

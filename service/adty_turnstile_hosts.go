@@ -2,8 +2,6 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,8 +12,6 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // Turnstile 和自定义域名（任务 11.8）。免费版每个 widget 最多 10 个域名、每个账号最多 20 个 widget。
@@ -75,9 +71,15 @@ func (c *AdtyCloudflareClient) putTurnstileWidget(ctx context.Context, account, 
 	return c.do(ctx, http.MethodPut, adtyWidgetPath(account, widgetId), body, nil)
 }
 
+// adtyTurnstileAccountLocks serializes Cloudflare Turnstile widget GET+PUT
+// read-modify-write mutations per Cloudflare account in-process without holding
+// any database transaction or options row lock across external HTTP calls (R4-16).
+// Canonical in-process lock order: adtyDomainLocks -> adtyTurnstileAccountLocks.
+var adtyTurnstileAccountLocks = newAdtyKeyedLocker[string]()
+
 // adtyTurnstileAssign 把一个自定义域名登记进还有空位的 widget，返回 widget id。名额全满时返回空串
 // （这个域名照常能用，人机验证改在平台子域名上做）。已经在某个 widget 里的直接返回它。
-func adtyTurnstileAssign(ctx context.Context, tx *gorm.DB, hostname string) (string, error) {
+func adtyTurnstileAssign(ctx context.Context, hostname string) (string, error) {
 	cfg := resellerSetting()
 	account := strings.TrimSpace(cfg.CloudflareAccountId)
 	if account == "" || len(cfg.TurnstileWidgets) == 0 {
@@ -95,9 +97,8 @@ func adtyTurnstileAssign(ctx context.Context, tx *gorm.DB, hostname string) (str
 			hostname, missingTurnstileConfig(cfg)))
 		return "", nil
 	}
-	if err := adtyLockTurnstileWidgets(tx, account); err != nil {
-		return "", err
-	}
+	unlock := adtyTurnstileAccountLocks.Lock(account)
+	defer unlock()
 	for _, configured := range cfg.TurnstileWidgets {
 		widget, err := AdtyCloudflare.getTurnstileWidget(ctx, account, configured.Id)
 		if err != nil {
@@ -119,7 +120,7 @@ func adtyTurnstileAssign(ctx context.Context, tx *gorm.DB, hostname string) (str
 }
 
 // adtyTurnstileRemoveDomain 从 widget 的 domains 里去掉一个域名。
-func adtyTurnstileRemoveDomain(ctx context.Context, tx *gorm.DB, widgetId, hostname string) error {
+func adtyTurnstileRemoveDomain(ctx context.Context, widgetId, hostname string) error {
 	cfg := resellerSetting()
 	account := strings.TrimSpace(cfg.CloudflareAccountId)
 	if account == "" {
@@ -128,9 +129,8 @@ func adtyTurnstileRemoveDomain(ctx context.Context, tx *gorm.DB, widgetId, hostn
 		}
 		return nil
 	}
-	if err := adtyLockTurnstileWidgets(tx, account); err != nil {
-		return err
-	}
+	unlock := adtyTurnstileAccountLocks.Lock(account)
+	defer unlock()
 	ids := []string{}
 	if widgetId != "" {
 		ids = append(ids, widgetId)
@@ -154,18 +154,6 @@ func adtyTurnstileRemoveDomain(ctx context.Context, tx *gorm.DB, widgetId, hostn
 		}
 	}
 	return nil
-}
-
-// Widget PUT replaces the whole hostname list. Serialize every widget in an
-// account across nodes, using the existing Option-anchor locking pattern.
-// Callers acquire their domain row first and never lock another domain after
-// this anchor. One account anchor avoids ordering multiple widget locks.
-func adtyLockTurnstileWidgets(tx *gorm.DB, account string) error {
-	anchor := model.Option{Key: fmt.Sprintf("adty_turnstile_lock_%x", sha256.Sum256([]byte(account)))}
-	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&anchor).Error; err != nil {
-		return err
-	}
-	return model.AdtyLockForUpdate(tx).Where(&model.Option{Key: anchor.Key}).First(&anchor).Error
 }
 
 // AdtyTurnstileChoice 是当前请求用哪个 widget：SiteKey 给 /api/status，Secret 给 TurnstileCheck。

@@ -124,7 +124,11 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 			cancel()
 			continue
 		}
-		resp, err := httpClient.Do(req)
+		noRedirectClient := *httpClient
+		noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		resp, err := noRedirectClient.Do(req)
 		if err != nil {
 			logger.LogError(ctx, common.LogText("Get Task Do req error: %v", service.SanitizeOutboundError(err)))
 			cancel()

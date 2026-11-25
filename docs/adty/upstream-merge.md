@@ -34,14 +34,14 @@ git config remote.upstream.tagopt --no-tags
    - `web/bun.lock` 有冲突也不手工合：先 `git checkout --theirs -- web/bun.lock`，合好 `web/package.json`，再在副本里 `bun install` 重新生成，用 adty-pull.sh 拉回来。
    - 处理完一个冲突就 `git add` 或 `git rm` 一个。
 4. 重新生成和刷新。下面的命令在 WSL 的测试副本 `~/adtyai/mirror/main` 里跑：写进任务脚本，经 wrun.sh 运行，它先把 Windows 仓库的工作区同步过去（约定 H）。
-   - 在 `web` 里先 `bun install --frozen-lockfile`（上游常改依赖），再 `bun run build` 重新生成 `web/src/routeTree.gen.ts`，再 `bun run i18n:sync`。然后在副本根目录用 `bash ~/adtyai/bin/adty-pull.sh web/src/routeTree.gen.ts web/src/i18n/locales/*.json` 把 routeTree.gen.ts 和语言包拉回 Windows 仓库。
-   - 刷新 `web/scripts/adty/upstream-en-keys.json`（任务 9.2 起有）：换成新标签的 `web/src/i18n/locales/en.json` 的键。
-   - 后端语言包只有 `i18n/locales/zh-CN.yaml`、`en.yaml` 和我们的 `adty.zh-CN.yaml`、`adty.en.yaml`；上游新加的键两种语言都要有，`TestLocalesRenderEveryKey` 会列出缺哪些。其余六种语言的 yaml 和前端语言包在删除清单里，合并脚本会自动去掉，不用补。
-   - 刷新 check.sh 用的 lint 和版权头基线清单（任务 0.3）：在副本里 `node scripts/adty/ratchet.mjs --update`，用 adty-pull.sh 拉回 `scripts/adty/baseline-lint.txt` 和 `scripts/adty/baseline-copyright.txt`，再用 `git diff scripts/adty/` 确认新增的只有上游文件（见 [baseline.md](baseline.md) 的「基线清单」）。
-5. 在副本里跑 `bash scripts/adty/check.sh`。重点看：
-   - 删除守卫测试（任务 1.6）：`TestAdtyDeletedRoutesAbsent`、`TestAdtyDeletedSchemaAbsent`、`TestAdtyDeletedOptionKeysAbsent`，以及前端的 `web/src/features/adty-guards/__tests__/deleted-features.test.ts`。
-   - 品牌守卫测试（任务 8.9）：`common/adty_brand_guard_test.go`、`web/src/features/adty-guards/__tests__/brand.test.ts`。任务 8.9 做完才有。
-   - 后台权限（任务 2.6）：`TestMainEnablesAdtyAdminPermissions`、`TestEveryUpstreamAdminScopeClassified`、`TestAdminRouteInventory`。上游新加的管理接口按 2.6 归类，更新 `middleware/testdata/adty_admin_routes.txt`。任务 2.6 做完才有。
+   - 在 `web` 里先 `bun install --frozen-lockfile`（上游常改依赖），再 `bun run build` 重新生成 `web/src/routeTree.gen.ts`，再 `bun run i18n:sync`。然后在副本根目录用 `bash ~/adtyai/bin/adty-pull.sh web/src/routeTree.gen.ts web/src/i18n/locales/en.json web/src/i18n/locales/zh.json` 把 routeTree.gen.ts 和中英语言包拉回 Windows 仓库。
+   - 刷新 `web/scripts/adty/upstream-en-keys.json`：换成新标签的 `web/src/i18n/locales/en.json` 的键，并在 `web` 目录跑 `node scripts/adty/i18n-check.mjs`（仓库路径 `web/scripts/adty/i18n-check.mjs`）确认我们新增的前端文案在 `web/src/i18n/locales/en.json` 和 `web/src/i18n/locales/zh.json` 中齐全。
+   - 后端语言包只有 `i18n/locales/zh-CN.yaml`、`i18n/locales/en.yaml` 和我们的 `i18n/locales/adty.zh-CN.yaml`、`i18n/locales/adty.en.yaml`；核对上游新加的键在 `i18n/locales/zh-CN.yaml` 与 `i18n/locales/en.yaml` 中齐全且无占位符错误。其余六种语言的 yaml 和前端语言包已在 [deleted-paths.txt](deleted-paths.txt) 里，合并脚本会自动去掉，不用补。
+   - 刷新 `scripts/adty/check.sh` 用的 lint 和版权头基线清单：在副本里跑 `node scripts/adty/ratchet.mjs --update`，用 adty-pull.sh 拉回 `scripts/adty/baseline-lint.txt` 和 `scripts/adty/baseline-copyright.txt`，再用 `git diff scripts/adty/` 确认新增的只有上游文件（见 [baseline.md](baseline.md) 的「基线清单」）。
+5. 在副本里跑 `bash scripts/adty/check.sh`（覆盖三个 Go 模块的 `go vet`/`go build`，以及前端 `bun install --frozen-lockfile`、`make check-plugins`、`bun run typecheck`、`bun run build`、`node scripts/adty/ratchet.mjs lint`、`web/scripts/adty/i18n-check.mjs`、`node scripts/adty/ratchet.mjs copyright` 与 `node scripts/adty/doc-refs.mjs`），并在仓库根目录跑 `node scripts/adty/doc-refs.mjs --strict`。重点核对：
+   - 已删功能与删除清单：确认 `node scripts/adty/doc-refs.mjs --strict` 报 0 问题——它会同时核对 [deleted-paths.txt](deleted-paths.txt) 中登记的路径未重新出现在工作区、最近删除的文件已补入清单，以及 OpenAPI 路由与 `router/` 实际注册一致；共享文件里上游新引入的已退役功能（订阅、旧优惠码、上游邀请奖励等）按 [deleted-features.md](deleted-features.md) 清理。
+   - 品牌与对外文案：对照 [conventions.md](conventions.md) 约定 E，检查上游新增页面、页脚与报错文案，确认对外展示统一使用 `common/adty_brand.go` 和 `web/src/lib/adty-brand.ts` 定义的品牌常量，不带回旧项目署名或公开链接。
+   - 后台权限与访问令牌路由：核对 `router/api-router.go`、`router/adty-router.go` 中上游新增的管理与用户接口，确认在 `middleware/adty_admin_guard.go` 的后台权限策略以及 `middleware/access_token_routes.go`、`middleware/adty_access_token_routes.go` 的访问令牌规则中均已正确登记。
 
    都通过后 `git commit` 完成合并，提交身份按约定 H 写在命令里。
 6. 推送分支：`git push origin merge/<新标签>`，等 CI 跑完。

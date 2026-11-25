@@ -88,7 +88,7 @@ export function RootTeamAdmin() {
 }
 
 /** The site owner's team management: teams on its site, discounts and past registration links. */
-export function OwnerTeamAdmin() {
+export function OwnerTeamAdmin(props: { closing?: boolean }) {
   const [openTeam, setOpenTeam] = useState<number | null>(null)
   return (
     <div className='flex flex-col gap-8'>
@@ -96,10 +96,11 @@ export function OwnerTeamAdmin() {
         scope='owner'
         onOpenTeam={(team) => setOpenTeam(team.id)}
       />
-      <TeamRegistrationLinksSection actor='owner' />
+      <TeamRegistrationLinksSection actor='owner' closing={props.closing} />
       <TeamDetailSheet
         scope='owner'
         teamId={openTeam}
+        closing={props.closing}
         onOpenChange={(open) => !open && setOpenTeam(null)}
       />
     </div>

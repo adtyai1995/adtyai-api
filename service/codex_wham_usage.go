@@ -42,7 +42,11 @@ func FetchCodexWhamUsage(
 	}
 	setCodexWhamRequestHeaders(req, at, aid)
 
-	resp, err := client.Do(req)
+	noRedirectClient := *client
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := noRedirectClient.Do(req)
 	if err != nil {
 		return 0, nil, common.SanitizeOutboundError(err, at)
 	}
@@ -84,7 +88,11 @@ func FetchCodexWhamRateLimitResetCredits(
 	}
 	setCodexWhamRequestHeaders(req, at, aid)
 
-	resp, err := client.Do(req)
+	noRedirectClient := *client
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := noRedirectClient.Do(req)
 	if err != nil {
 		return 0, nil, common.SanitizeOutboundError(err, at)
 	}
@@ -154,7 +162,11 @@ func ConsumeCodexWhamRateLimitResetCredit(
 	setCodexWhamRequestHeaders(req, at, aid)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := client.Do(req)
+	noRedirectClient := *client
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := noRedirectClient.Do(req)
 	if err != nil {
 		return 0, nil, common.SanitizeOutboundError(err, at)
 	}

@@ -180,8 +180,12 @@ func isSiteEmailUniqueViolation(err error) bool {
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return strings.Contains(pgErr.ConstraintName, siteEmailUniqueIndex)
 	}
-	text := err.Error()
-	return strings.Contains(text, siteEmailUniqueIndex)
+	if !isAdtyUniqueViolation(err) {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, strings.ToLower(siteEmailUniqueIndex)) ||
+		(strings.Contains(text, "users.site_id") && strings.Contains(text, "email"))
 }
 
 // EnsureSiteEmailUniqueIndex makes a non-empty email unique within a live site

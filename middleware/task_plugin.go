@@ -1525,12 +1525,14 @@ func PrepareTaskPluginSubmit() gin.HandlerFunc {
 		)
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
-			c.AbortWithStatusJSON(invalidRequestStatus(err), gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
+			status, msg := safeBodyReadError(c, "task_plugin.get_body_storage", err)
+			c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"message": msg, "type": "invalid_request_error"}})
 			return
 		}
 		rawBody, err := storage.Bytes()
 		if err != nil {
-			c.AbortWithStatusJSON(invalidRequestStatus(err), gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
+			status, msg := safeBodyReadError(c, "task_plugin.body_bytes", err)
+			c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"message": msg, "type": "invalid_request_error"}})
 			return
 		}
 		if !utf8.Valid(rawBody) {
@@ -1591,7 +1593,8 @@ func PrepareTaskPluginSubmit() gin.HandlerFunc {
 				raw, err = storage.Bytes()
 			}
 			if err != nil {
-				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
+				status, msg := safeBodyReadError(c, "task_plugin.body_text", err)
+				c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"message": msg, "type": "invalid_request_error"}})
 				return
 			}
 			c.Set(pluginruntime.ContextKeyRequestBodyText, json.RawMessage(raw))

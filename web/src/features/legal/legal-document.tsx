@@ -28,6 +28,10 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useStatus } from '@/hooks/use-status'
 import { toContentLang } from '@/lib/adty-lang'
 import { isHttpUrl, isLikelyHtml } from '@/lib/content-format'
+import {
+  getServerErrorMessage,
+  getServerMessage,
+} from '@/lib/server-error-message'
 import { subsiteDocument } from '@/lib/subsite-document'
 
 import { getLegalDocument, type LegalDoc } from './api'
@@ -56,7 +60,7 @@ export function LegalDocument({
   )
   // adty: the text depends on the language, so a language switch refetches.
   const lang = toContentLang(i18n.resolvedLanguage || i18n.language)
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ['legal', doc, lang],
     queryFn: () => getLegalDocument(doc, lang),
     staleTime: 10 * 60 * 1000,
@@ -82,7 +86,14 @@ export function LegalDocument({
     )
   }
 
-  if (!success || !hasContent) {
+  if ((!hidden && isError) || !success || !hasContent) {
+    let description = emptyMessage
+    if (!hidden && isError) {
+      description = getServerErrorMessage(error, t('Operation failed'))
+    } else if (!hidden && data && !data.success) {
+      description = getServerMessage(data) || t('Operation failed')
+    }
+
     return (
       <PublicLayout>
         <div className='mx-auto max-w-[680px] py-12'>
@@ -93,9 +104,7 @@ export function LegalDocument({
               </div>
               <div className='space-y-1'>
                 <CardTitle className='text-lg font-semibold'>{title}</CardTitle>
-                <p className='text-muted-foreground text-sm'>
-                  {(!hidden && data?.message) || emptyMessage}
-                </p>
+                <p className='text-muted-foreground text-sm'>{description}</p>
               </div>
             </CardHeader>
           </Card>

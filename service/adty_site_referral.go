@@ -169,13 +169,36 @@ func parseSiteMarketingDecimal(raw string) (decimal.Decimal, error) {
 	return decimal.NewFromString(raw)
 }
 
-func lockOwnerSite(siteID, ownerID int) (*model.AdtySite, error) {
+func verifyOwnerSiteReadable(siteID, ownerID int) (*model.AdtySite, error) {
 	var site model.AdtySite
 	if err := model.DB.First(&site, siteID).Error; err != nil {
 		return nil, err
 	}
 	if site.OwnerUserId != ownerID {
 		return nil, common.NewMessage("No permission to perform this action")
+	}
+	if site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && site.Status != model.AdtySiteStatusClosing {
+		return nil, common.NewMessage("Site is not open for registration")
+	}
+	return &site, nil
+}
+
+func verifyOwnerSiteWritableTx(tx *gorm.DB, siteID, ownerID int) (*model.AdtySite, error) {
+	db := tx
+	if db == nil {
+		db = model.DB
+	} else {
+		db = model.AdtyLockForUpdate(db)
+	}
+	var site model.AdtySite
+	if err := db.First(&site, siteID).Error; err != nil {
+		return nil, err
+	}
+	if site.OwnerUserId != ownerID {
+		return nil, common.NewMessage("No permission to perform this action")
+	}
+	if site.Status == model.AdtySiteStatusClosing {
+		return nil, ErrAdtySiteClosing
 	}
 	if site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused {
 		return nil, common.NewMessage("Site is not open for registration")
@@ -195,13 +218,11 @@ func SaveAdtyOwnerSiteMarketingWithAudit(siteID, ownerID int, input AdtySiteMark
 		return common.NewMessage("Trial credit budgets have been retired")
 	}
 	return model.DB.Transaction(func(tx *gorm.DB) error {
-		var site model.AdtySite
-		if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
+		sitePtr, err := verifyOwnerSiteWritableTx(tx, siteID, ownerID)
+		if err != nil {
 			return err
 		}
-		if site.OwnerUserId != ownerID || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused) {
-			return common.NewMessage("No permission to perform this action")
-		}
+		site := *sitePtr
 		policy := site.MarketingPolicy
 		oldMethods, oldNetworks := effectiveSiteInviteWithdrawConfig(policy)
 		oldSnap := map[string]any{
@@ -397,7 +418,7 @@ func SetAdtyOwnerSiteReferralEnabled(siteID, ownerID int, enabled bool) error {
 }
 
 func LoadAdtyOwnerSiteReferral(siteID, ownerID int) (AdtySiteReferralView, error) {
-	site, err := lockOwnerSite(siteID, ownerID)
+	site, err := verifyOwnerSiteReadable(siteID, ownerID)
 	if err != nil {
 		return AdtySiteReferralView{}, err
 	}
@@ -423,7 +444,7 @@ func LoadAdtyOwnerSiteReferral(siteID, ownerID int) (AdtySiteReferralView, error
 // BindAdtyOwnerSiteInvite records one direct invite on the owner's site.
 // It does not pay commission. A customer who already has a successful top-up cannot be bound.
 func BindAdtyOwnerSiteInvite(siteID, ownerID, inviterID, inviteeID int) error {
-	if _, err := lockOwnerSite(siteID, ownerID); err != nil {
+	if _, err := verifyOwnerSiteWritableTx(nil, siteID, ownerID); err != nil {
 		return err
 	}
 	return BindSiteInviteFromIP(siteID, inviterID, inviteeID, "")
@@ -436,10 +457,10 @@ func BindAdtyOwnerSiteInviteFromIP(siteID, ownerID, inviterID, inviteeID int, ip
 
 // BindAdtyOwnerSiteInviteFromIPWithAudit binds an invite for the owner's site and logs an audit entry atomically.
 func BindAdtyOwnerSiteInviteFromIPWithAudit(siteID, ownerID, inviterID, inviteeID int, ipHash, ip, ua string) error {
-	if _, err := lockOwnerSite(siteID, ownerID); err != nil {
-		return err
-	}
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if _, err := verifyOwnerSiteWritableTx(tx, siteID, ownerID); err != nil {
+			return err
+		}
 		if err := bindSiteInviteFromIPTx(tx, siteID, inviterID, inviteeID, ipHash); err != nil {
 			return err
 		}
@@ -460,9 +481,6 @@ func BindAdtyOwnerSiteInviteFromIPWithAudit(siteID, ownerID, inviterID, inviteeI
 // Subsite teams use team_price = max(supply_price, supply_price * discount) with 1 <= discount <= 10.
 // Shared quota is not changed.
 func SaveAdtyOwnerSiteTeamDiscount(siteID, ownerID int, teamID int64, raw string) error {
-	if _, err := lockOwnerSite(siteID, ownerID); err != nil {
-		return err
-	}
 	value, err := common.ParseBoundedDecimalString(raw, 4, 4)
 	if teamID <= 0 || err != nil {
 		return common.NewMessage("Invalid parameters")
@@ -472,6 +490,9 @@ func SaveAdtyOwnerSiteTeamDiscount(siteID, ownerID int, teamID int64, raw string
 	}
 	var event model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		if _, err := verifyOwnerSiteWritableTx(tx, siteID, ownerID); err != nil {
+			return err
+		}
 		var team model.AdtyTeam
 		if err := model.AdtyLockForUpdate(tx).First(&team, teamID).Error; err != nil {
 			return err
@@ -497,7 +518,7 @@ func SaveAdtyOwnerSiteTeamDiscount(siteID, ownerID int, teamID int64, raw string
 
 // ListAdtyOwnerSiteTeams returns active teams on the owner's site.
 func ListAdtyOwnerSiteTeams(siteID, ownerID, offset, limit int, search string) ([]model.AdtyTeam, int64, error) {
-	if _, err := lockOwnerSite(siteID, ownerID); err != nil {
+	if _, err := verifyOwnerSiteReadable(siteID, ownerID); err != nil {
 		return nil, 0, err
 	}
 	q := model.DB.Model(&model.AdtyTeam{}).Where("site_id = ? AND status = ?", siteID, model.AdtyTeamStatusActive)
@@ -520,7 +541,7 @@ func ListAdtyOwnerSiteTeams(siteID, ownerID, offset, limit int, search string) (
 
 // ListAdtySiteInvites returns the owner's direct site invites. It does not create any.
 func ListAdtySiteInvites(siteID, ownerID int) ([]model.AdtySiteInvite, error) {
-	if _, err := lockOwnerSite(siteID, ownerID); err != nil {
+	if _, err := verifyOwnerSiteReadable(siteID, ownerID); err != nil {
 		return nil, err
 	}
 	var rows []model.AdtySiteInvite
@@ -1757,12 +1778,8 @@ func UpdateAdtyOwnerSiteReferralAffiliate(siteID, ownerID, targetUserID int, inp
 		return common.NewMessage("Invalid parameters")
 	}
 	return model.DB.Transaction(func(tx *gorm.DB) error {
-		var site model.AdtySite
-		if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
+		if _, err := verifyOwnerSiteWritableTx(tx, siteID, ownerID); err != nil {
 			return err
-		}
-		if site.OwnerUserId != ownerID || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused) {
-			return common.NewMessage("No permission to perform this action")
 		}
 		var target model.User
 		if err := tx.Select("id", "site_id", "staff_site_id").First(&target, targetUserID).Error; err != nil {

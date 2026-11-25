@@ -121,6 +121,9 @@ func adtyFreezeOwnerAutoFundingTx(tx *gorm.DB, siteID, operatorID int, amountUSD
 			return AdtyOwnerFundingSplit{}, err
 		}
 	}
+	if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: siteID, AccountID: ownerID}); err != nil {
+		return AdtyOwnerFundingSplit{}, err
+	}
 	split, err := adtyResolveOwnerFundingSplitTx(tx, siteID, ownerID, amountUSD)
 	if err != nil {
 		return AdtyOwnerFundingSplit{}, err

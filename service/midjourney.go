@@ -597,7 +597,11 @@ func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestU
 			return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "do_request_failed", http.StatusInternalServerError), nullBytes, clientErr
 		}
 	}
-	resp, err := httpClient.Do(req)
+	noRedirectClient := *httpClient
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := noRedirectClient.Do(req)
 	if err != nil {
 		sanitized := sanitizeOutboundError(err)
 		common.SysLog(common.LogText("do request failed: %s", sanitized.Error()))

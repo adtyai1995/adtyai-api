@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -25,6 +26,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -32,6 +34,7 @@ var errTaskMediaRequestRejected = errors.New("task media request rejected")
 
 var taskMediaResponseHeaderTimeout = 60 * time.Second
 var taskMediaDataURLMaxEncodedBytes = 64 << 20
+var taskMediaJSONMaxBytes int64 = 128 << 20
 
 type taskMediaProxyError struct {
 	status  int
@@ -183,9 +186,21 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.T
 		}
 	}
 
+	isJSONContent := strings.EqualFold(strings.TrimSpace(descriptor.ResponseType), "json")
+	if isJSONContent && strings.TrimSpace(descriptor.ContentPath) == "" {
+		return &taskMediaProxyError{
+			status: http.StatusBadGateway, code: "artifact_plugin_error",
+			message: "Artifact content plugin returned no content path",
+		}
+	}
+
 	method := strings.ToUpper(strings.TrimSpace(descriptor.Method))
 	if method == "" {
-		method = c.Request.Method
+		if isJSONContent && c.Request.Method == http.MethodHead {
+			method = http.MethodGet
+		} else {
+			method = c.Request.Method
+		}
 	}
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodPost:
@@ -241,7 +256,10 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.T
 		}
 	}
 
-	clientHeaders := taskArtifactClientHeaders(c.Request.Header)
+	var clientHeaders map[string]string
+	if !isJSONContent {
+		clientHeaders = taskArtifactClientHeaders(c.Request.Header)
+	}
 	var resp *http.Response
 	if trustedOrigin == nil && proxy != "" {
 		resp, err = doTaskMediaProxiedRequest(
@@ -316,6 +334,15 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.T
 
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusPartialContent, http.StatusNotModified, http.StatusRequestedRangeNotSatisfiable:
+		if isJSONContent {
+			if resp.StatusCode != http.StatusOK {
+				return &taskMediaProxyError{
+					status: http.StatusBadGateway, code: "artifact_upstream_error",
+					message: fmt.Sprintf("Artifact upstream returned status %d", resp.StatusCode),
+				}
+			}
+			return writeJSONExtractedTaskMedia(c, resp.Body, descriptor.ContentPath, descriptor.MimeType)
+		}
 		copyTaskMediaResponseHeaders(c.Writer.Header(), resp.Header)
 		setTaskMediaResponseSecurityHeaders(c.Writer.Header())
 		c.Status(resp.StatusCode)
@@ -860,4 +887,198 @@ func writeVideoDataURL(c *gin.Context, dataURL string) error {
 	}
 	_, err := io.Copy(c.Writer, base64.NewDecoder(encoding, strings.NewReader(payload)))
 	return err
+}
+
+type taskMediaJSONPathSegment struct {
+	field   string
+	index   int
+	isIndex bool
+}
+
+func parseTaskMediaJSONPath(path string) ([]taskMediaJSONPathSegment, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("empty content path")
+	}
+	var segments []taskMediaJSONPathSegment
+	i := 0
+	for i < len(path) {
+		switch path[i] {
+		case '.':
+			if i == 0 || i == len(path)-1 || path[i-1] == '.' {
+				return nil, fmt.Errorf("invalid content path")
+			}
+			i++
+		case '[':
+			end := strings.IndexByte(path[i+1:], ']')
+			if end <= 0 {
+				return nil, fmt.Errorf("invalid array index in content path")
+			}
+			idxStr := path[i+1 : i+1+end]
+			idx, err := strconv.Atoi(idxStr)
+			if err != nil || idx < 0 {
+				return nil, fmt.Errorf("invalid array index in content path")
+			}
+			segments = append(segments, taskMediaJSONPathSegment{index: idx, isIndex: true})
+			i += end + 2
+		default:
+			start := i
+			for i < len(path) && path[i] != '.' && path[i] != '[' && path[i] != ']' {
+				i++
+			}
+			if i == start {
+				return nil, fmt.Errorf("invalid content path")
+			}
+			segments = append(segments, taskMediaJSONPathSegment{field: path[start:i]})
+		}
+		if len(segments) > 64 {
+			return nil, fmt.Errorf("content path too deep")
+		}
+	}
+	if len(segments) == 0 {
+		return nil, fmt.Errorf("empty content path")
+	}
+	return segments, nil
+}
+
+func escapeGJSONLiteralKey(key string) string {
+	var b strings.Builder
+	b.Grow(len(key))
+	for i := 0; i < len(key); i++ {
+		switch key[i] {
+		case '\\', '.', '*', '?', '#', '@', '|', '[', ']', '{', '}', '(', ')', ':', ',', '!', '~':
+			b.WriteByte('\\')
+		}
+		b.WriteByte(key[i])
+	}
+	return b.String()
+}
+
+func extractTaskMediaJSONString(rawJSON []byte, path string) (string, error) {
+	if !gjson.ValidBytes(rawJSON) {
+		return "", fmt.Errorf("invalid json response")
+	}
+	segments, err := parseTaskMediaJSONPath(path)
+	if err != nil {
+		return "", err
+	}
+	cur := gjson.ParseBytes(rawJSON)
+	for _, seg := range segments {
+		if seg.isIndex {
+			if !cur.IsArray() {
+				return "", fmt.Errorf("expected json array at path")
+			}
+			cur = cur.Get(strconv.Itoa(seg.index))
+		} else if cur.IsArray() {
+			idx, convErr := strconv.Atoi(seg.field)
+			if convErr != nil || idx < 0 {
+				return "", fmt.Errorf("expected json object at path")
+			}
+			cur = cur.Get(strconv.Itoa(idx))
+		} else if cur.IsObject() {
+			cur = cur.Get(escapeGJSONLiteralKey(seg.field))
+		} else {
+			return "", fmt.Errorf("path segment not found")
+		}
+		if !cur.Exists() {
+			return "", fmt.Errorf("path not found")
+		}
+	}
+	if cur.Type != gjson.String {
+		return "", fmt.Errorf("target value is not a string")
+	}
+	return cur.String(), nil
+}
+
+func sanitizeTaskMediaMimeType(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || len(trimmed) > 255 {
+		return "application/octet-stream"
+	}
+	mediaType, _, err := mime.ParseMediaType(trimmed)
+	if err != nil {
+		return "application/octet-stream"
+	}
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	if len(mediaType) > 255 || !httpguts.ValidHeaderFieldValue(mediaType) {
+		return "application/octet-stream"
+	}
+	if strings.HasPrefix(mediaType, "video/") ||
+		strings.HasPrefix(mediaType, "audio/") ||
+		(strings.HasPrefix(mediaType, "image/") && mediaType != "image/svg+xml") {
+		return mediaType
+	}
+	return "application/octet-stream"
+}
+
+func writeJSONExtractedTaskMedia(c *gin.Context, body io.Reader, contentPath, rawMimeType string) error {
+	rawJSON, err := io.ReadAll(io.LimitReader(body, taskMediaJSONMaxBytes+1))
+	if err != nil {
+		return &taskMediaProxyError{
+			status: http.StatusBadGateway, code: "artifact_upstream_error",
+			message: "Failed to read artifact content", err: err,
+		}
+	}
+	if int64(len(rawJSON)) > taskMediaJSONMaxBytes {
+		return &taskMediaProxyError{
+			status: http.StatusBadGateway, code: "artifact_upstream_error",
+			message: "Artifact content exceeds size limit",
+		}
+	}
+	extracted, err := extractTaskMediaJSONString(rawJSON, contentPath)
+	if err != nil {
+		return &taskMediaProxyError{
+			status: http.StatusBadGateway, code: "artifact_upstream_error",
+			message: "Failed to extract artifact content", err: err,
+		}
+	}
+	payload := strings.TrimSpace(extracted)
+	mimeCandidate := rawMimeType
+	if strings.HasPrefix(payload, "data:") {
+		parts := strings.SplitN(payload, ",", 2)
+		if len(parts) != 2 || !strings.Contains(parts[0], ";base64") {
+			return &taskMediaProxyError{
+				status: http.StatusBadGateway, code: "artifact_upstream_error",
+				message: "Failed to decode artifact content",
+			}
+		}
+		if strings.TrimSpace(mimeCandidate) == "" {
+			header := strings.TrimPrefix(parts[0], "data:")
+			if idx := strings.Index(header, ";"); idx >= 0 {
+				mimeCandidate = header[:idx]
+			} else {
+				mimeCandidate = header
+			}
+		}
+		payload = strings.TrimSpace(parts[1])
+	}
+	if payload == "" {
+		return &taskMediaProxyError{
+			status: http.StatusBadGateway, code: "artifact_upstream_error",
+			message: "Failed to decode artifact content",
+		}
+	}
+	decoded, decodeErr := base64.StdEncoding.DecodeString(payload)
+	if decodeErr != nil {
+		decoded, decodeErr = base64.RawStdEncoding.DecodeString(payload)
+	}
+	if decodeErr != nil {
+		return &taskMediaProxyError{
+			status: http.StatusBadGateway, code: "artifact_upstream_error",
+			message: "Failed to decode artifact content", err: decodeErr,
+		}
+	}
+	contentType := sanitizeTaskMediaMimeType(mimeCandidate)
+	c.Writer.Header().Set("Content-Type", contentType)
+	c.Writer.Header().Set("Content-Length", strconv.Itoa(len(decoded)))
+	setTaskMediaResponseSecurityHeaders(c.Writer.Header())
+	c.Status(http.StatusOK)
+	c.Writer.WriteHeaderNow()
+	if c.Request.Method == http.MethodHead {
+		return nil
+	}
+	if _, err := c.Writer.Write(decoded); err != nil {
+		logger.LogError(c.Request.Context(), common.LogText("Failed to write task media: %v", err))
+	}
+	return nil
 }

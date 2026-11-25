@@ -62,6 +62,16 @@ var channelUpstreamModelUpdateSelectFields = []string{
 	"header_override",
 }
 
+var errUpstreamModelUpdatePersistence = errors.New("failed to persist upstream model updates")
+
+type maskedUpstreamUpdateError struct {
+	msg string
+	err error
+}
+
+func (e maskedUpstreamUpdateError) Error() string { return e.msg }
+func (e maskedUpstreamUpdateError) Unwrap() error { return e.err }
+
 var channelUpstreamModelUpdateNotifyState = struct {
 	sync.Mutex
 	lastNotifiedAt      int64
@@ -339,7 +349,11 @@ func getFetchModelsResponseBody(method string, requestURL string, channel *model
 	if err != nil {
 		return nil, err
 	}
-	response, err := client.Do(request)
+	noRedirectClient := *client
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	response, err := noRedirectClient.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -542,7 +556,7 @@ func checkAndPersistChannelUpstreamModelUpdates(
 			lockedSettings.UpstreamModelUpdateLastCheckTime = now
 			return updateChannelUpstreamModelSettings(tx, &locked, lockedSettings, false)
 		}); updateErr != nil {
-			return false, 0, updateErr
+			return false, 0, fmt.Errorf("%w: %w", errUpstreamModelUpdatePersistence, updateErr)
 		}
 		return false, 0, fetchErr
 	}
@@ -581,7 +595,7 @@ func checkAndPersistChannelUpstreamModelUpdates(
 		}
 		return locked.UpdateAbilities(tx)
 	}); err != nil {
-		return false, autoAdded, err
+		return false, autoAdded, fmt.Errorf("%w: %w", errUpstreamModelUpdatePersistence, err)
 	}
 	return modelsChanged, autoAdded, nil
 }
@@ -982,8 +996,17 @@ func DetectChannelUpstreamModelUpdates(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			common.ApiErrorT(c, "Channel not found")
+			return
+		}
+		common.SysError(common.LogText("failed to detect upstream model updates: channel_id=%d error=%s", channel.Id, err.Error()))
+		if errors.Is(err, errUpstreamModelUpdatePersistence) {
+			common.ApiError(c, common.NewMessage("Operation failed"))
+			return
+		}
 		maskedErr := common.MaskSensitiveInfo(err.Error(), channel.GetBaseURL(), channel.GetSetting().Proxy)
-		common.ApiErrorT(c, "Failed to detect upstream model updates: {{error}}", map[string]any{"error": maskedErr})
+		common.ApiError(c, maskedUpstreamUpdateError{msg: maskedErr, err: err})
 		return
 	}
 	if modelsChanged {

@@ -108,19 +108,19 @@ type VendorOperationResult struct {
 
 func buildVendorOperationPreview(db *gorm.DB, operation VendorOperation) (*VendorOperationPreview, error) {
 	if operation.Action != "assign" && operation.Action != "merge" && operation.Action != "delete" {
-		return nil, errors.New("unsupported vendor operation")
+		return nil, common.NewMessage("Unsupported vendor operation")
 	}
 	ids := append([]int{}, operation.VendorIDs...)
 	if operation.Action == "assign" {
 		ids = append([]int{}, operation.ModelIDs...)
 	}
 	if len(ids) == 0 || len(ids) > 1000 {
-		return nil, errors.New("select between 1 and 1000 records")
+		return nil, common.NewMessage("Select between 1 and 1000 records")
 	}
 	slices.Sort(ids)
 	for i, id := range ids {
 		if id <= 0 || i > 0 && ids[i-1] == id {
-			return nil, errors.New("invalid or duplicate selection")
+			return nil, common.NewMessage("Invalid or duplicate selection")
 		}
 	}
 	preview := &VendorOperationPreview{Action: operation.Action, Sources: []Vendor{}, Models: []VendorAssignmentModel{}}
@@ -154,7 +154,7 @@ func buildVendorOperationPreview(db *gorm.DB, operation VendorOperation) (*Vendo
 				return nil, fmt.Errorf("%w: source vendor does not exist", ErrVendorConflict)
 			}
 			if operation.Action == "merge" && id == operation.TargetVendorID {
-				return nil, errors.New("target vendor cannot also be a source")
+				return nil, common.NewMessage("Target vendor cannot also be a source")
 			}
 			preview.Sources = append(preview.Sources, *vendor)
 		}

@@ -59,7 +59,7 @@ func MarkAdtyBadgeSeen(userID int, keys []string, seenAt int64) error {
 	return DB.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "user_id"}, {Name: "menu_key"}},
 		DoUpdates: clause.Assignments(map[string]any{
-			"seen_at": gorm.Expr("CASE WHEN adty_badge_seens.seen_at < EXCLUDED.seen_at THEN EXCLUDED.seen_at ELSE adty_badge_seens.seen_at END"),
+			"seen_at": gorm.Expr("CASE WHEN adty_badge_seens.seen_at < ? THEN ? ELSE adty_badge_seens.seen_at END", seenAt, seenAt),
 		}),
 	}).Create(&rows).Error
 }

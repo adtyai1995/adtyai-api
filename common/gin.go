@@ -311,7 +311,7 @@ func ApiErrorStatus(c *gin.Context, status int, err error, fields ...gin.H) {
 	var message *Message
 	if errors.As(err, &message) {
 		maps.Copy(body, message.Fields())
-	} else if isInternalInfraError(err) {
+	} else if IsInternalInfraError(err) {
 		method, path := "", ""
 		if c != nil {
 			if c.Request != nil {
@@ -330,7 +330,7 @@ func ApiErrorStatus(c *gin.Context, status int, err error, fields ...gin.H) {
 	c.JSON(status, body)
 }
 
-func isInternalInfraError(err error) bool {
+func IsInternalInfraError(err error) bool {
 	if err == nil {
 		return false
 	}

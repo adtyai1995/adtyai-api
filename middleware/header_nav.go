@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -110,10 +109,13 @@ func HeaderNavModuleAuth(module string) gin.HandlerFunc {
 				RootAuth()(c)
 				return
 			}
-			c.JSON(http.StatusForbidden, gin.H{
-				"success": false,
-				"message": fmt.Sprintf("%s is disabled", module),
-			})
+			if module == "pricing" {
+				common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Model pricing is disabled"))
+			} else if module == "rankings" {
+				common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Rankings are disabled"))
+			} else {
+				common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("This feature is currently disabled"))
+			}
 			c.Abort()
 			return
 		}

@@ -680,6 +680,10 @@ func (channel *Channel) Insert() error {
 }
 
 func (channel *Channel) Update() error {
+	return channel.UpdateWithClearFlags(false, false)
+}
+
+func (channel *Channel) UpdateWithClearFlags(clearModels, clearOther bool) error {
 	// If this is a multi-key channel, recalculate MultiKeySize based on the current key list to avoid inconsistency after editing keys
 	if channel.ChannelInfo.IsMultiKey {
 		var keyStr string
@@ -757,6 +761,18 @@ func (channel *Channel) Update() error {
 		).Updates(channel).Error; err != nil {
 			return err
 		}
+		clearUpdates := make(map[string]any, 2)
+		if clearModels && channel.Models == "" {
+			clearUpdates["models"] = ""
+		}
+		if clearOther && channel.Other == "" {
+			clearUpdates["other"] = ""
+		}
+		if len(clearUpdates) > 0 {
+			if err := tx.Model(&Channel{}).Where("id = ?", channel.Id).Updates(clearUpdates).Error; err != nil {
+				return err
+			}
+		}
 		if err := tx.First(channel, "id = ?", channel.Id).Error; err != nil {
 			return err
 		}
@@ -765,9 +781,9 @@ func (channel *Channel) Update() error {
 }
 
 func (channel *Channel) UpdateResponseTime(responseTime int64) {
-	err := DB.Model(channel).Select("response_time", "test_time").Updates(Channel{
-		TestTime:     common.GetTimestamp(),
-		ResponseTime: int(responseTime),
+	err := DB.Model(&Channel{}).Where("id = ?", channel.Id).Updates(map[string]any{
+		"test_time":     common.GetTimestamp(),
+		"response_time": int(responseTime),
 	}).Error
 	if err != nil {
 		common.SysLog(common.LogText("failed to update response time: channel_id=%d, error=%v", channel.Id, err))
@@ -775,9 +791,9 @@ func (channel *Channel) UpdateResponseTime(responseTime int64) {
 }
 
 func (channel *Channel) UpdateBalance(balance float64) {
-	err := DB.Model(channel).Select("balance_updated_time", "balance").Updates(Channel{
-		BalanceUpdatedTime: common.GetTimestamp(),
-		Balance:            balance,
+	err := DB.Model(&Channel{}).Where("id = ?", channel.Id).Updates(map[string]any{
+		"balance_updated_time": common.GetTimestamp(),
+		"balance":              balance,
 	}).Error
 	if err != nil {
 		common.SysLog(common.LogText("failed to update balance: channel_id=%d, error=%v", channel.Id, err))

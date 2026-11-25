@@ -160,7 +160,12 @@ func isActiveTeamMembershipUniqueViolation(err error) bool {
 			return true
 		}
 	}
+	if !isAdtyUniqueViolation(err) {
+		return false
+	}
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, strings.ToLower(activeTeamMembershipUniqueIndex)) ||
-		strings.Contains(text, "idx_adty_team_member")
+		strings.Contains(text, "idx_adty_team_member") ||
+		strings.Contains(text, "adty_team_members.user_id") ||
+		strings.Contains(text, "adty_team_members.team_id, adty_team_members.user_id")
 }

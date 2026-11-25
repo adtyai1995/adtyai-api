@@ -195,6 +195,9 @@ func isAdtyVoucherTradeNoUniqueViolation(err error) bool {
 			return true
 		}
 	}
+	if !isAdtyUniqueViolation(err) {
+		return false
+	}
 	text := strings.ToLower(err.Error())
 	if !strings.Contains(text, "trade_no") && !strings.Contains(text, "tradeno") {
 		return strings.Contains(text, strings.ToLower(adtyVoucherTradeNoUniqueIndex))

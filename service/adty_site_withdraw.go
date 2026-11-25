@@ -558,7 +558,11 @@ func MarkAdtySiteWithdrawalPayingWithAudit(id int64, reviewerID int, expected ..
 		if row.Status != model.AdtySiteWithdrawPending || row.AttemptNumber != previous || row.AttemptOpen {
 			return ErrAdtySiteWithdrawLocked
 		}
-		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: row.SiteId, AccountID: row.OwnerUserId}); err != nil {
+		ownerID, ownerErr := model.ResolveAdtySiteFinancialOwnerTx(tx, row.SiteId, row.OwnerUserId)
+		if ownerErr != nil {
+			return ownerErr
+		}
+		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: row.SiteId, AccountID: ownerID}); err != nil {
 			return err
 		}
 		before := siteWithdrawalAuditSnapshot(&row)
@@ -730,7 +734,11 @@ func MarkAdtySiteWithdrawalPaidWithAudit(id int64, reviewerID int, txID, proof s
 		if row.Method == "usdt" && txID == "" {
 			return common.NewMessage("Enter the payout reference")
 		}
-		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: row.SiteId, AccountID: row.OwnerUserId}); err != nil {
+		ownerID, ownerErr := model.ResolveAdtySiteFinancialOwnerTx(tx, row.SiteId, row.OwnerUserId)
+		if ownerErr != nil {
+			return ownerErr
+		}
+		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: row.SiteId, AccountID: ownerID}); err != nil {
 			return err
 		}
 		reference := txID

@@ -63,6 +63,7 @@ export function SiteOwnerCenter(props: {
     queryFn: getOwnerSite,
     enabled: props.section !== 'history',
   })
+  const closing = site.data?.status === 'closing'
   const labels: Record<SiteOwnerSectionId, string> = {
     overview: t('Site Overview'),
     customers: t('Customers'),
@@ -109,7 +110,7 @@ export function SiteOwnerCenter(props: {
             )}
             {site.data && (
               <div className='flex flex-col gap-4'>
-                {site.data.status === 'closing' && (
+                {closing && (
                   <Alert>
                     <AlertDescription>
                       {t(
@@ -136,10 +137,12 @@ export function SiteOwnerCenter(props: {
                 {props.section === 'overview' && <OverviewPanel />}
                 {props.section === 'customers' && (
                   <div className='flex flex-col gap-5'>
-                    <CustomersPanel />
+                    <CustomersPanel closing={closing} />
                   </div>
                 )}
-                {props.section === 'teams' && <OwnerTeamAdmin />}
+                {props.section === 'teams' && (
+                  <OwnerTeamAdmin closing={closing} />
+                )}
                 {props.section === 'orders' && (
                   <RechargeAudit ownerMode ownerSiteId={site.data.id} />
                 )}
@@ -147,7 +150,9 @@ export function SiteOwnerCenter(props: {
                   <PricingPanel site={site.data} />
                 )}
                 {props.section === 'bonus' && <BonusPanel site={site.data} />}
-                {props.section === 'commissions' && <SiteReferralAdmin />}
+                {props.section === 'commissions' && (
+                  <SiteReferralAdmin closing={closing} />
+                )}
                 {props.section === 'earnings' && <EarningsPanel />}
                 {props.section === 'withdrawals' && (
                   <WithdrawalPanel
@@ -178,19 +183,20 @@ export function SiteOwnerCenter(props: {
                   />
                 )}
                 {props.section === 'vouchers' && (
-                  <VoucherPanel siteId={site.data.id} />
+                  <VoucherPanel siteId={site.data.id} closing={closing} />
                 )}
                 {props.section === 'notices' && (
                   <div className='flex flex-col gap-6'>
-                    <NotificationManager mode='owner' siteId={site.data.id} />
+                    <NotificationManager
+                      mode='owner'
+                      siteId={site.data.id}
+                      closing={closing}
+                    />
                     <TelegramBindCard purpose='admin' />
                   </div>
                 )}
                 {props.section === 'staff' && (
-                  <StaffPanel
-                    siteId={site.data.id}
-                    closing={site.data.status === 'closing'}
-                  />
+                  <StaffPanel siteId={site.data.id} closing={closing} />
                 )}
                 {props.section === 'tickets' && <TicketCenter scope='owner' />}
                 {props.section === 'mail' && (

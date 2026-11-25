@@ -38,6 +38,8 @@ import (
 
 type requestDescriptor struct {
 	ResponseType   string            `json:"responseType"`
+	ContentPath    any               `json:"contentPath"`
+	MimeType       string            `json:"mimeType"`
 	URL            string            `json:"url"`
 	Method         string            `json:"method"`
 	Headers        map[string]string `json:"headers"`
@@ -60,6 +62,8 @@ type requestDescriptor struct {
 // with the body kept as that text.
 type orderedRequestDescriptor struct {
 	ResponseType   string            `json:"responseType"`
+	ContentPath    any               `json:"contentPath"`
+	MimeType       string            `json:"mimeType"`
 	URL            string            `json:"url"`
 	Method         string            `json:"method"`
 	Headers        map[string]string `json:"headers"`
@@ -1408,13 +1412,81 @@ func (a *TaskAdaptor) BuildContentRequest(ctx context.Context, task *model.Task,
 			}
 		}
 	}
+	responseType := strings.ToLower(strings.TrimSpace(descriptor.ResponseType))
+	contentPath, err := normalizeContentPath(descriptor.ContentPath)
+	if err != nil {
+		return nil, err
+	}
+	switch responseType {
+	case "", "binary", "bytes":
+		responseType = ""
+	case "json":
+		if contentPath == "" {
+			return nil, fmt.Errorf("plugin JSON artifact content request requires contentPath")
+		}
+	default:
+		return nil, fmt.Errorf("plugin returned an unsupported artifact responseType")
+	}
 	return &channel.TaskContentRequest{
 		URL:            descriptor.URL,
 		Method:         method,
 		Headers:        headers,
 		Body:           body,
 		Credentialless: descriptor.Credentialless,
+		ResponseType:   responseType,
+		ContentPath:    contentPath,
+		MimeType:       strings.TrimSpace(descriptor.MimeType),
 	}, nil
+}
+
+func normalizeContentPath(raw any) (string, error) {
+	if raw == nil {
+		return "", nil
+	}
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v), nil
+	case []any:
+		if len(v) == 0 {
+			return "", nil
+		}
+		if len(v) > 64 {
+			return "", fmt.Errorf("plugin contentPath has too many segments")
+		}
+		var b strings.Builder
+		for _, seg := range v {
+			switch s := seg.(type) {
+			case string:
+				if s == "" || strings.ContainsAny(s, ".[]") {
+					return "", fmt.Errorf("plugin contentPath has invalid segment")
+				}
+				if b.Len() > 0 {
+					b.WriteByte('.')
+				}
+				b.WriteString(s)
+			case float64:
+				if math.IsNaN(s) || math.IsInf(s, 0) || s < 0 || s != math.Trunc(s) || s > float64(math.MaxInt32) {
+					return "", fmt.Errorf("plugin contentPath has invalid array index")
+				}
+				fmt.Fprintf(&b, "[%d]", int(s))
+			case int:
+				if s < 0 {
+					return "", fmt.Errorf("plugin contentPath has invalid array index")
+				}
+				fmt.Fprintf(&b, "[%d]", s)
+			case int64:
+				if s < 0 || s > math.MaxInt32 {
+					return "", fmt.Errorf("plugin contentPath has invalid array index")
+				}
+				fmt.Fprintf(&b, "[%d]", s)
+			default:
+				return "", fmt.Errorf("plugin contentPath segment must be a string or non-negative integer")
+			}
+		}
+		return b.String(), nil
+	default:
+		return "", fmt.Errorf("plugin contentPath must be a string or array")
+	}
 }
 
 // headerOverrideInfo carries the channel's Request Header Override for a
@@ -1662,7 +1734,8 @@ func (a *TaskAdaptor) requestDescriptor(ctx context.Context, hook string, args .
 		return requestDescriptor{}, err
 	}
 	descriptor := requestDescriptor{
-		ResponseType: ordered.ResponseType, URL: ordered.URL, Method: ordered.Method, Headers: ordered.Headers,
+		ResponseType: ordered.ResponseType, ContentPath: ordered.ContentPath, MimeType: ordered.MimeType,
+		URL: ordered.URL, Method: ordered.Method, Headers: ordered.Headers,
 		Credentialless: ordered.Credentialless, Action: ordered.Action, Model: ordered.Model,
 		RewriteModel: ordered.RewriteModel, BodyType: ordered.BodyType, Parts: ordered.Parts,
 	}

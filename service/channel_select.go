@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -410,9 +411,14 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			if usingGroup == "auto" {
 				showGroup = fmt.Sprintf("auto(%s)", selectGroup)
 			}
+			errMsg := err.Error()
+			if common.IsInternalInfraError(err) || strings.Contains(strings.ToLower(errMsg), "database") {
+				common.SysError(common.LogText("channel select failed for group=%s model=%s: %s", showGroup, modelName, errMsg))
+				errMsg = "service temporarily unavailable"
+			}
 			return nil, selectGroup, &ChannelSelectError{
 				StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, MessageID: i18n.MsgDistributorGetChannelFailed,
-				Params: map[string]any{"Group": showGroup, "Model": modelName, "Error": err.Error()},
+				Params: map[string]any{"Group": showGroup, "Model": modelName, "Error": errMsg},
 			}
 		}
 		if channel == nil {

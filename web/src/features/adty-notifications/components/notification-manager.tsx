@@ -51,9 +51,11 @@ function NotificationManagement(props: {
   mode: NotificationMode
   siteId: number
   userId: number
+  closing?: boolean
 }) {
   const { t } = useTranslation()
   const client = useQueryClient()
+  const closing = Boolean(props.closing)
   const [page, setPage] = useState(1)
   const [editing, setEditing] = useState<{ row: Publication | null } | null>(
     null
@@ -100,7 +102,11 @@ function NotificationManagement(props: {
         props.mode === 'root' ? 'Targeted notifications' : 'Site announcements'
       )}
       actions={
-        <Button size='sm' onClick={() => setEditing({ row: null })}>
+        <Button
+          size='sm'
+          disabled={closing}
+          onClick={() => setEditing({ row: null })}
+        >
           {t('New notification')}
         </Button>
       }
@@ -179,6 +185,7 @@ function NotificationManagement(props: {
                       <Button
                         size='sm'
                         variant='outline'
+                        disabled={closing}
                         onClick={() => setEditing({ row })}
                       >
                         {t('Edit')}
@@ -186,6 +193,7 @@ function NotificationManagement(props: {
                       <Button
                         size='sm'
                         variant='outline'
+                        disabled={closing}
                         onClick={() => setWithdrawing(row)}
                       >
                         {t('Withdraw notification')}
@@ -205,7 +213,9 @@ function NotificationManagement(props: {
       )}
       {editing && (
         <NotificationEditor
-          {...props}
+          mode={props.mode}
+          siteId={props.siteId}
+          userId={props.userId}
           row={editing.row}
           onClose={() => setEditing(null)}
         />
@@ -222,7 +232,7 @@ function NotificationManagement(props: {
         destructive
         isLoading={withdraw.isPending}
         handleConfirm={() => {
-          if (withdrawing) withdraw.mutate(withdrawing)
+          if (withdrawing && !closing) withdraw.mutate(withdrawing)
         }}
       />
     </ContentSection>
@@ -232,6 +242,7 @@ function NotificationManagement(props: {
 export function NotificationManager(props: {
   mode: NotificationMode
   siteId?: number
+  closing?: boolean
 }) {
   const user = useAuthStore((state) => state.auth.user)
   if (!user || (props.mode === 'root' && user.role < ROLE.SUPER_ADMIN)) {
@@ -243,6 +254,7 @@ export function NotificationManager(props: {
       mode={props.mode}
       siteId={props.siteId ?? 0}
       userId={user.id}
+      closing={props.closing}
     />
   )
 }

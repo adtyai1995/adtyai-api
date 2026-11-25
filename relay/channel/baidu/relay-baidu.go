@@ -307,7 +307,11 @@ func getBaiduAccessTokenHelper(apiKey string, settings dto.ChannelSettings) (*Ba
 	if err != nil {
 		return nil, fmt.Errorf("failed to build baidu token http client: %w", err)
 	}
-	res, err := client.Do(req)
+	noRedirectClient := *client
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	res, err := noRedirectClient.Do(req)
 	if err != nil {
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) && urlErr.Err != nil {

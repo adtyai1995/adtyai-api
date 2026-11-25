@@ -448,23 +448,52 @@ func cleanupAdtySiteCloudDomainsForHardDelete(ctx context.Context, siteID int) e
 			}
 		}
 		if row.TurnstileWidget != "" || (row.ManagedBy != "platform" && (hadCFResource || row.Status == model.AdtySiteDomainActive) && cfg.TurnstileConfigured()) {
-			if err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-				// R5-09: Lock the domain row BEFORE touching Turnstile options/widgets
-				// to match canonical AdtySiteDomain -> Turnstile lock order.
-				var current model.AdtySiteDomain
-				if err := adtyLockDomainRow(tx, row.Id, &current); err != nil {
-					return err
-				}
-				if err := adtyTurnstileRemoveDomain(ctx, tx, current.TurnstileWidget, current.Hostname); err != nil {
-					return err
-				}
-				return tx.Model(&model.AdtySiteDomain{}).Where("id = ?", row.Id).Update("turnstile_widget", "").Error
-			}); err != nil {
+			if err := cleanupAdtySiteDomainTurnstileForHardDelete(ctx, row.Id); err != nil {
 				return adtyDomainAutomationUserError(err)
 			}
 		}
 	}
 	return nil
+}
+
+func cleanupAdtySiteDomainTurnstileForHardDelete(ctx context.Context, domainID int) error {
+	unlock := adtyDomainLocks.Lock(domainID)
+	defer unlock()
+
+	var widgetID, hostname string
+	found := false
+	if err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current model.AdtySiteDomain
+		if err := adtyLockDomainRow(tx, domainID, &current); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		widgetID = current.TurnstileWidget
+		hostname = current.Hostname
+		found = true
+		return nil
+	}); err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	// External Turnstile API call runs OUTSIDE any DB transaction (R4-16).
+	if err := adtyTurnstileRemoveDomain(ctx, widgetID, hostname); err != nil {
+		return err
+	}
+	return model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current model.AdtySiteDomain
+		if err := adtyLockDomainRow(tx, domainID, &current); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		return tx.Model(&model.AdtySiteDomain{}).Where("id = ?", domainID).Update("turnstile_widget", "").Error
+	})
 }
 
 func cleanupAdtySiteSenderDomainsForHardDelete(ctx context.Context, siteID int) error {

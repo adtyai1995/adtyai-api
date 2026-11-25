@@ -59,8 +59,8 @@ unless a row says otherwise (aligned with `controller/adty_sidebar_badges.go`,
 | Non-root platform admin | Main site only (`users.site_id = 0` / `site_id = 0`). Kinds still require the corresponding admin permission when the permission system is on (finance read, referral read). Unauthorized kinds are omitted, not returned as zero (EMP-017). | Tickets on the main site, including those tickets' `team_id`. |
 | Site owner | This site only. | Tickets for this site, including those tickets' `team_id`. |
 | Site staff (enabled) | Authorized site only, and only kinds the staff grant actually covers. Disabled or unauthorized staff must not learn that other sites' work exists or how many items there are (EMP-017). | Tickets for the authorized site, including those tickets' `team_id`. |
-| Team leader | Self plus the active team (`team_id` of the single active membership). | Ticket scope is `user_id = self OR team_id = this team`. Notification team scope is unconfirmed (part B). |
-| Team member | Self only. | Other members' tickets in the same team are not counted. Notification team scope is unconfirmed (part B). |
+| Team leader | Self plus the active team (`team_id` of the single active membership). | Ticket scope is `participant`: `(user_id = self AND COALESCE(team_shared, false) = false) OR team_id = this team`. Notification team scope is unconfirmed (part B). |
+| Team member | Self plus shared tickets of the active team (`participant` scope). | Ticket scope is `(user_id = self AND COALESCE(team_shared, false) = false) OR (team_id = self.team_id AND team_shared = true)` (personal unshared tickets plus shared team tickets; other members' unshared tickets are not counted). Notification team scope is unconfirmed (part B). |
 | Ordinary user | Self only. | Not a team actor. |
 
 Notification unread stays a distinct field from finance, order, and
@@ -288,8 +288,11 @@ that number in.
 ### A.12 客服工单等待用户 (`tickets_waiting_user`)
 
 - 待办定义: Official `waiting_user` tickets in the caller's existing
-  ticket scope (customer: own tickets; team leader: `user_id = self OR
-  team_id = this team`; team member: own tickets only; enabled staff:
+  ticket scope (customer: own tickets; team leader: `participant` scope
+  `(user_id = self AND COALESCE(team_shared, false) = false) OR team_id = this team`;
+  team member: `participant` scope personal unshared tickets plus shared team
+  tickets `(user_id = self AND COALESCE(team_shared, false) = false) OR
+  (team_id = self.team_id AND team_shared = true)`; enabled staff:
   authorized site `staff` scope).
 - 数据来源: `countAdtyTicketBadges.WaitingUser` (`adty_tickets`,
   `updated_at > seen_at`).

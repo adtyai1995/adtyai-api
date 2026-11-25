@@ -856,7 +856,7 @@ func TestChannel(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid channel ID")
 		return
 	}
-	channel, err := model.CacheGetChannel(channelId)
+	channel, err := model.CacheGetChannelClone(channelId)
 	if err != nil {
 		channel, err = model.GetChannelById(channelId, true)
 		if err != nil {
