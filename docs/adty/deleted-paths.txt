@@ -324,6 +324,9 @@ controller/wechat.go
 controller/wechat_site_register_test.go
 deploy/adty/services_env_test.go
 docs/ionet-client.md
+docs/superpowers/plans/2026-11-18-owner-topup.md
+docs/superpowers/plans/2026-11-20-homepage-startup.md
+docs/superpowers/plans/2026-11-23-homepage-performance.md
 docs/translation-glossary.fr.md
 docs/translation-glossary.ru.md
 dto/channel_constraints_test.go

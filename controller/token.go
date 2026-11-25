@@ -653,29 +653,32 @@ func UpdateToken(c *gin.Context) {
 	}
 	params["name"] = cleanToken.Name
 	previous := *cleanToken
-	if token.Status == common.TokenStatusEnabled {
-		if cleanToken.Status == common.TokenStatusExpired && cleanToken.ExpiredTime <= common.GetTimestamp() && cleanToken.ExpiredTime != -1 {
-			common.ApiErrorT(c, "Token has expired and cannot be enabled. Please modify the expiration time or set it to never expire")
-			return
-		}
-		if cleanToken.Status == common.TokenStatusExhausted && cleanToken.RemainQuota <= 0 && !cleanToken.UnlimitedQuota {
-			common.ApiErrorT(c, "Token quota is exhausted and cannot be enabled. Please modify the remaining quota or set it to unlimited")
-			return
-		}
-	}
 	replaceRemainQuota := false
 	keyLimitPatch := model.AdtyKeyLimitPatch{}
+	siteID := tokenRequestSiteID(c)
+	if cleanToken.OwnerSelfUseSiteId > 0 {
+		siteID = cleanToken.OwnerSelfUseSiteId
+	}
 	if statusOnly != "" {
 		if token.Status != common.TokenStatusEnabled && token.Status != common.TokenStatusDisabled {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
 		}
+		if token.Status == common.TokenStatusEnabled {
+			if cleanToken.ExpiredTime != -1 && cleanToken.ExpiredTime <= common.GetTimestamp() {
+				common.ApiErrorT(c, "Token has expired and cannot be enabled. Please modify the expiration time or set it to never expire")
+				return
+			}
+			if !cleanToken.UnlimitedQuota && cleanToken.RemainQuota <= 0 {
+				common.ApiErrorT(c, "Token quota is exhausted and cannot be enabled. Please modify the remaining quota or set it to unlimited")
+				return
+			}
+			if !validatePersonalTokenGroup(c, siteID, cleanToken.Group) {
+				return
+			}
+		}
 		cleanToken.Status = token.Status
 	} else {
-		siteID := tokenRequestSiteID(c)
-		if cleanToken.OwnerSelfUseSiteId > 0 {
-			siteID = cleanToken.OwnerSelfUseSiteId
-		}
 		// If you add more fields, please also update token.Update()
 		cleanToken.Name = token.Name
 		cleanToken.ExpiredTime = token.ExpiredTime
@@ -693,6 +696,21 @@ func UpdateToken(c *gin.Context) {
 		}
 		if cleanToken.OwnerSelfUseSiteId > 0 {
 			cleanToken.AllowUserQuotaQuery = false
+		}
+		isExpired := cleanToken.ExpiredTime != -1 && cleanToken.ExpiredTime <= common.GetTimestamp()
+		isExhausted := !cleanToken.UnlimitedQuota && cleanToken.RemainQuota <= 0
+		if token.Status == common.TokenStatusEnabled {
+			if isExpired {
+				common.ApiErrorT(c, "Token has expired and cannot be enabled. Please modify the expiration time or set it to never expire")
+				return
+			}
+			if isExhausted {
+				common.ApiErrorT(c, "Token quota is exhausted and cannot be enabled. Please modify the remaining quota or set it to unlimited")
+				return
+			}
+		}
+		if (cleanToken.Status == common.TokenStatusExpired || cleanToken.Status == common.TokenStatusExhausted) && !isExpired && !isExhausted {
+			cleanToken.Status = common.TokenStatusEnabled
 		}
 		if !validateTokenKeyLimits(c, request) {
 			return

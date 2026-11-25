@@ -66,6 +66,12 @@ export interface UserProfile {
   created_time: number
   /** User settings (JSON string) */
   setting?: string
+  /** Whether a webhook secret is configured */
+  has_webhook_secret?: boolean
+  /** Whether a Bark push URL is configured */
+  has_bark_url?: boolean
+  /** Whether a Gotify application token is configured */
+  has_gotify_token?: boolean
   /** WeChat ID (OAuth) */
   wechat_id?: string
   /** GitHub ID (OAuth) */
@@ -99,14 +105,20 @@ export interface UserSettings {
   webhook_url?: string
   /** Webhook secret */
   webhook_secret?: string
+  /** Whether a webhook secret is configured */
+  has_webhook_secret?: boolean
   /** Notification email */
   notification_email?: string
   /** Bark URL */
   bark_url?: string
+  /** Whether a Bark push URL is configured */
+  has_bark_url?: boolean
   /** Gotify server URL */
   gotify_url?: string
   /** Gotify application token */
   gotify_token?: string
+  /** Whether a Gotify application token is configured */
+  has_gotify_token?: boolean
   /** Gotify message priority (0-10) */
   gotify_priority?: number
   /** Accept unset model ratio model */

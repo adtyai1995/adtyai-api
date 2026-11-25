@@ -125,7 +125,7 @@ func mainConfiguredHosts(tx *gorm.DB) []string {
 		common.OptionMapRWMutex.RUnlock()
 		if raw == "" && tx != nil && tx.Migrator().HasTable(&Option{}) {
 			var opt Option
-			if tx.Where("key = ?", key).Limit(1).Find(&opt).RowsAffected > 0 {
+			if tx.Where(&Option{Key: key}).Limit(1).Find(&opt).RowsAffected > 0 {
 				raw = opt.Value
 			}
 		}

@@ -101,13 +101,20 @@ func Login(c *gin.Context) {
 		case errors.Is(err, model.ErrEmailAmbiguous):
 			common.ApiErrorStatus(c, http.StatusOK, common.NewMessage(model.EmailAmbiguousPrompt), gin.H{"code": model.EmailAmbiguousCode})
 		default:
-			if err := adtyRecordLoginFailure(username); err != nil {
-				common.SysLog(common.LogText("login failure lock unavailable: %s", err.Error()))
+			lockUnavailable := false
+			if recErr := adtyRecordLoginFailure(username); recErr != nil {
+				common.SysError(common.LogText("login failure lock unavailable: %s", recErr.Error()))
+				lockUnavailable = true
 			}
 			if hasCand {
-				if err := adtyRecordLoginFailureUser(candID); err != nil {
-					common.SysLog(common.LogText("login failure lock unavailable: %s", err.Error()))
+				if recErr := adtyRecordLoginFailureUser(candID); recErr != nil {
+					common.SysError(common.LogText("login failure lock unavailable: %s", recErr.Error()))
+					lockUnavailable = true
 				}
+			}
+			if lockUnavailable {
+				common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Please try again later"))
+				return
 			}
 			common.ApiError(c, adtyLoginFailureResponse())
 		}
@@ -511,28 +518,32 @@ func sanitizeAdminUserSetting(raw string) string {
 	return string(encoded)
 }
 
-func sanitizeSelfUserSetting(raw string) (string, bool, bool) {
+func sanitizeSelfUserSetting(raw string) (string, bool, bool, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return "", false, false
+		return "", false, false, false
 	}
 	var parsed map[string]any
 	if err := common.UnmarshalJsonStr(trimmed, &parsed); err != nil || parsed == nil {
-		return "", false, false
+		return "", false, false, false
 	}
 	webhookSecret, _ := parsed["webhook_secret"].(string)
+	barkUrl, _ := parsed["bark_url"].(string)
 	gotifyToken, _ := parsed["gotify_token"].(string)
 	hasWebhookSecret := strings.TrimSpace(webhookSecret) != ""
+	hasBarkUrl := strings.TrimSpace(barkUrl) != ""
 	hasGotifyToken := strings.TrimSpace(gotifyToken) != ""
 	delete(parsed, "webhook_secret")
+	delete(parsed, "bark_url")
 	delete(parsed, "gotify_token")
 	parsed["has_webhook_secret"] = hasWebhookSecret
+	parsed["has_bark_url"] = hasBarkUrl
 	parsed["has_gotify_token"] = hasGotifyToken
 	encoded, err := common.Marshal(parsed)
 	if err != nil {
-		return "", hasWebhookSecret, hasGotifyToken
+		return "", hasWebhookSecret, hasBarkUrl, hasGotifyToken
 	}
-	return string(encoded), hasWebhookSecret, hasGotifyToken
+	return string(encoded), hasWebhookSecret, hasBarkUrl, hasGotifyToken
 }
 
 func buildAdminUserResponses(users []*model.User) ([]adminUserResponse, error) {
@@ -790,7 +801,7 @@ func GetSelf(c *gin.Context) {
 // administrator-only remarks.
 func buildSelfUserData(user *model.User) map[string]any {
 	userSetting := user.GetSetting()
-	sanitizedSetting, hasWebhookSecret, hasGotifyToken := sanitizeSelfUserSetting(user.Setting)
+	sanitizedSetting, hasWebhookSecret, hasBarkUrl, hasGotifyToken := sanitizeSelfUserSetting(user.Setting)
 	permissions := calculateUserPermissions(user.Role)
 	permissions["admin_permissions"] = authz.Capabilities(user.Id, user.Role)
 	required, version := service.AdtySiteTermsStatus(user.Id)
@@ -817,6 +828,7 @@ func buildSelfUserData(user *model.User) map[string]any {
 		"linux_do_id":              user.LinuxDOId,
 		"setting":                  sanitizedSetting,
 		"has_webhook_secret":       hasWebhookSecret,
+		"has_bark_url":             hasBarkUrl,
 		"has_gotify_token":         hasGotifyToken,
 		"stripe_customer":          user.StripeCustomer,
 		"sidebar_modules":          userSetting.SidebarModules, // 正确提取sidebar_modules字段
@@ -2045,6 +2057,7 @@ type UpdateUserSettingRequest struct {
 	ClearWebhookSecret               bool    `json:"clear_webhook_secret,omitempty"`
 	NotificationEmail                string  `json:"notification_email,omitempty"`
 	BarkUrl                          string  `json:"bark_url,omitempty"`
+	ClearBarkUrl                     bool    `json:"clear_bark_url,omitempty"`
 	GotifyUrl                        string  `json:"gotify_url,omitempty"`
 	GotifyToken                      string  `json:"gotify_token,omitempty"`
 	ClearGotifyToken                 bool    `json:"clear_gotify_token,omitempty"`
@@ -2105,14 +2118,10 @@ func UpdateUserSetting(c *gin.Context) {
 		req.NotificationEmail = validatedEmail
 	}
 
-	// 如果是Bark类型，验证Bark URL
-	if req.QuotaWarningType == dto.NotifyTypeBark {
-		if req.BarkUrl == "" {
-			common.ApiErrorT(c, "Bark push URL cannot be empty")
-			return
-		}
+	// 如果是Bark类型，验证Bark URL格式（留空时允许沿用已保存密文）
+	if req.QuotaWarningType == dto.NotifyTypeBark && strings.TrimSpace(req.BarkUrl) != "" {
 		// 验证URL格式
-		parsedBark, err := url.ParseRequestURI(req.BarkUrl)
+		parsedBark, err := url.ParseRequestURI(strings.TrimSpace(req.BarkUrl))
 		if err != nil {
 			common.ApiErrorT(c, "Invalid Bark push URL")
 			return
@@ -2153,6 +2162,7 @@ func UpdateUserSetting(c *gin.Context) {
 	// 请求未携带的开关也保持原值
 	settings := user.GetSetting()
 	prevWebhookSecret := settings.WebhookSecret
+	prevBarkUrl := settings.BarkUrl
 	prevGotifyToken := settings.GotifyToken
 	settings.NotifyType = req.QuotaWarningType
 	settings.QuotaWarningThreshold = req.QuotaWarningThreshold
@@ -2194,7 +2204,24 @@ func UpdateUserSetting(c *gin.Context) {
 	case dto.NotifyTypeEmail:
 		settings.NotificationEmail = req.NotificationEmail
 	case dto.NotifyTypeBark:
-		settings.BarkUrl = req.BarkUrl
+		trimmedBark := strings.TrimSpace(req.BarkUrl)
+		if req.ClearBarkUrl {
+			common.ApiErrorT(c, "Bark push URL cannot be empty")
+			return
+		}
+		if trimmedBark != "" {
+			sealed, sealErr := model.SealAdtyPurposeSecret(fmt.Sprintf("user_notify:%d:bark_url", user.Id), trimmedBark)
+			if sealErr != nil {
+				common.ApiError(c, sealErr)
+				return
+			}
+			settings.BarkUrl = sealed
+		} else if strings.TrimSpace(prevBarkUrl) != "" {
+			settings.BarkUrl = prevBarkUrl
+		} else {
+			common.ApiErrorT(c, "Bark push URL cannot be empty")
+			return
+		}
 	case dto.NotifyTypeGotify:
 		settings.GotifyUrl = req.GotifyUrl
 		trimmedToken := strings.TrimSpace(req.GotifyToken)

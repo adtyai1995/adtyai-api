@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import DOMPurify from 'dompurify'
+import DOMPurify, { type Config } from 'dompurify'
 import * as katex from 'katex'
 
 import 'katex/dist/katex.min.css'
@@ -49,18 +49,26 @@ const emojiShortcodes: Record<string, string> = {
 const allowedAttributes = [
   'checked',
   'class',
+  'data-md-trusted',
+  'disabled',
+  'target',
+]
+
+const internalVisualAttributes = [
+  'aria-hidden',
+  'class',
   'd',
   'data-diagram',
-  'disabled',
+  'dominant-baseline',
+  'dy',
   'fill',
   'height',
-  'id',
   'marker-end',
-  'markerheight',
   'markerHeight',
   'markerUnits',
-  'markerunits',
   'markerWidth',
+  'markerheight',
+  'markerunits',
   'markerwidth',
   'offset',
   'orient',
@@ -69,31 +77,28 @@ const allowedAttributes = [
   'preserveaspectratio',
   'r',
   'refX',
-  'refx',
   'refY',
+  'refx',
   'refy',
   'rx',
   'ry',
   'stroke',
   'stroke-dasharray',
   'stroke-width',
-  'style',
-  'target',
   'text-anchor',
-  'dominant-baseline',
-  'dy',
   'viewBox',
   'viewbox',
   'width',
   'x',
   'x1',
   'x2',
+  'xmlns',
   'y',
   'y1',
   'y2',
 ]
 
-const allowedTags = [
+const internalVisualTags = [
   'annotation',
   'circle',
   'defs',
@@ -128,10 +133,74 @@ const allowedTags = [
   'tspan',
 ]
 
+const forbiddenMarkdownTags = [
+  'form',
+  'textarea',
+  'select',
+  'option',
+  'button',
+  'iframe',
+  'object',
+  'embed',
+  'base',
+  'link',
+  'meta',
+  'script',
+  'style',
+]
+
+const forbiddenInternalTags = ['input', ...forbiddenMarkdownTags]
+
 const sanitizeOptions = {
   ADD_ATTR: allowedAttributes,
-  ADD_TAGS: allowedTags,
-} as const
+  FORBID_ATTR: ['style', 'id'],
+  FORBID_TAGS: forbiddenMarkdownTags,
+} satisfies Config
+
+const katexSanitizeOptions = {
+  ADD_ATTR: [...internalVisualAttributes, 'style'],
+  ADD_TAGS: internalVisualTags,
+  FORBID_ATTR: ['id'],
+  FORBID_TAGS: forbiddenInternalTags,
+} satisfies Config
+
+const diagramSanitizeOptions = {
+  ADD_ATTR: [...internalVisualAttributes, 'id'],
+  ADD_TAGS: internalVisualTags,
+  FORBID_ATTR: ['style'],
+  FORBID_TAGS: forbiddenInternalTags,
+} satisfies Config
+
+type TrustedBlockCollector = {
+  nonce: string
+  blocks: string[]
+}
+
+let activeTrustedBlocks: TrustedBlockCollector | null = null
+let placeholderCounter = 0
+
+function createPlaceholderNonce(markdown: string): string {
+  let nonce = ''
+  do {
+    placeholderCounter += 1
+    nonce = `md-trusted-${placeholderCounter}-${Math.random().toString(36).slice(2, 10)}`
+  } while (markdown.includes(nonce))
+  return nonce
+}
+
+function registerTrustedBlock(
+  sanitizedHtml: string,
+  inline: boolean
+): string {
+  if (!activeTrustedBlocks) {
+    return sanitizedHtml
+  }
+  const token = `${activeTrustedBlocks.nonce}-${activeTrustedBlocks.blocks.length}`
+  activeTrustedBlocks.blocks.push(sanitizedHtml)
+  return inline
+    ? `<span data-md-trusted="${token}"></span>`
+    : `<div data-md-trusted="${token}"></div>`
+}
 
 type FlowNode = {
   id: string
@@ -183,11 +252,14 @@ function normalizeMathSource(source: string): string {
 }
 
 function renderMath(source: string, displayMode: boolean): string {
-  return katex.renderToString(normalizeMathSource(source), {
+  const rendered = katex.renderToString(normalizeMathSource(source), {
     displayMode,
     output: 'htmlAndMathml',
     throwOnError: false,
+    trust: false,
   })
+  const sanitized = DOMPurify.sanitize(rendered, katexSanitizeOptions)
+  return registerTrustedBlock(sanitized, !displayMode)
 }
 
 function replaceEmojiShortcodes(value: string): string {
@@ -450,7 +522,7 @@ function renderFlowDiagram(source: string): string {
     })
     .join('')
 
-  return `
+  const diagramHtml = `
     <div class="not-prose markdown-diagram">
       <svg data-diagram="flow" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="xMidYMin meet">
         <defs>
@@ -463,6 +535,10 @@ function renderFlowDiagram(source: string): string {
       </svg>
     </div>
   `
+  return registerTrustedBlock(
+    DOMPurify.sanitize(diagramHtml, diagramSanitizeOptions),
+    false
+  )
 }
 
 function parseSequenceDiagram(source: string): {
@@ -589,7 +665,7 @@ function renderSequenceDiagram(source: string): string {
     })
     .join('')
 
-  return `
+  const diagramHtml = `
     <div class="not-prose markdown-diagram">
       <svg data-diagram="sequence" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="xMidYMin meet">
         <defs>
@@ -602,6 +678,10 @@ function renderSequenceDiagram(source: string): string {
       </svg>
     </div>
   `
+  return registerTrustedBlock(
+    DOMPurify.sanitize(diagramHtml, diagramSanitizeOptions),
+    false
+  )
 }
 
 const markdownRenderer = new Renderer()
@@ -720,13 +800,65 @@ const markdownParser = new Marked({
 
 markdownParser.use(...markdownExtensions)
 
-function addExternalLinkAttributes(html: string, baseUrl?: string): string {
+function finalizeMarkdownHtml(
+  html: string,
+  baseUrl: string | undefined,
+  collector: TrustedBlockCollector
+): string {
   if (typeof window === 'undefined') {
-    return html
+    let output = html
+    collector.blocks.forEach((blockHtml, index) => {
+      const token = `${collector.nonce}-${index}`
+      output = output
+        .replace(`<div data-md-trusted="${token}"></div>`, blockHtml)
+        .replace(`<span data-md-trusted="${token}"></span>`, blockHtml)
+    })
+    return output
   }
 
   const template = document.createElement('template')
   template.innerHTML = html
+
+  // Only permit disabled GFM task-list checkboxes; strip any other <input>.
+  template.content.querySelectorAll('input').forEach((input) => {
+    const isDisabledCheckbox =
+      input.getAttribute('type')?.toLowerCase() === 'checkbox' &&
+      input.hasAttribute('disabled')
+    if (!isDisabledCheckbox) {
+      input.remove()
+      return
+    }
+    const isChecked = input.hasAttribute('checked')
+    for (const attr of [...input.attributes]) {
+      input.removeAttribute(attr.name)
+    }
+    input.setAttribute('type', 'checkbox')
+    input.setAttribute('disabled', '')
+    if (isChecked) {
+      input.setAttribute('checked', '')
+    }
+  })
+
+  const prefix = `${collector.nonce}-`
+  template.content.querySelectorAll('[data-md-trusted]').forEach((node) => {
+    const token = node.getAttribute('data-md-trusted') ?? ''
+    if (!token.startsWith(prefix)) {
+      node.removeAttribute('data-md-trusted')
+      return
+    }
+    const index = Number(token.slice(prefix.length))
+    const blockHtml =
+      Number.isInteger(index) && index >= 0 && index < collector.blocks.length
+        ? collector.blocks[index]
+        : undefined
+    if (blockHtml === undefined) {
+      node.remove()
+      return
+    }
+    const fragmentTemplate = document.createElement('template')
+    fragmentTemplate.innerHTML = blockHtml
+    node.replaceWith(fragmentTemplate.content)
+  })
 
   template.content.querySelectorAll('a[href]').forEach((link) => {
     if (baseUrl) {
@@ -753,13 +885,23 @@ function renderMarkdown(
   breaks = false,
   baseUrl?: string
 ): string {
-  const parsedHtml = markdownParser.parse(markdown, {
-    ...markdownOptions,
-    breaks,
-  })
+  const collector: TrustedBlockCollector = {
+    nonce: createPlaceholderNonce(markdown),
+    blocks: [],
+  }
+  activeTrustedBlocks = collector
+  let parsedHtml = ''
+  try {
+    parsedHtml = markdownParser.parse(markdown, {
+      ...markdownOptions,
+      breaks,
+    })
+  } finally {
+    activeTrustedBlocks = null
+  }
   const html = DOMPurify.sanitize(parsedHtml, sanitizeOptions)
 
-  return addExternalLinkAttributes(html, baseUrl)
+  return finalizeMarkdownHtml(html, baseUrl, collector)
 }
 
 export function Markdown(props: MarkdownProps) {

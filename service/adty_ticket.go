@@ -437,10 +437,10 @@ func SearchAdtyTicketPageWithFilter(userId int, filter AdtyTicketSearchFilter, b
 			clauses = append(clauses, "id = ?")
 			args = append(args, ticketID)
 		}
-		clauses = append(clauses, "related_ref = ?", `LOWER(title) LIKE ? ESCAPE '\'`)
+		clauses = append(clauses, "related_ref = ?", `LOWER(title) LIKE ? ESCAPE '!'`)
 		args = append(args, search, likePattern)
 		if actor.isHandling() {
-			clauses = append(clauses, `user_id IN (SELECT id FROM users WHERE LOWER(username) LIKE ? ESCAPE '\')`)
+			clauses = append(clauses, `user_id IN (SELECT id FROM users WHERE LOWER(username) LIKE ? ESCAPE '!')`)
 			args = append(args, likePattern)
 		}
 		query = query.Where("("+strings.Join(clauses, " OR ")+")", args...)
@@ -516,7 +516,7 @@ func parseAdtyTicketSearchID(search string) int64 {
 }
 
 func escapeAdtyTicketLike(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	r := strings.NewReplacer("!", "!!", "%", "!%", "_", "!_")
 	return r.Replace(s)
 }
 
@@ -1675,14 +1675,21 @@ func adtyTicketAssigneesTx(tx *gorm.DB, ticket model.AdtyTicket, includePlatform
 		if err := tx.Where("id = ? AND status IN ?", ticket.HandlingSite(), []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).Limit(1).Find(&site).Error; err != nil {
 			return nil, err
 		}
-		if site.Id > 0 && AdtySiteAgreementAccepted(site.AgreementVer) {
-			ownerID = site.OwnerUserId
-			q := tx.Where("site_id = ? AND owner_user_id = ? AND status = ?", ticket.HandlingSite(), ownerID, "enabled")
-			if id > 0 {
-				q = q.Where("user_id = ?", id)
+		if site.Id > 0 && site.OwnerUserId > 0 && AdtySiteAgreementAccepted(site.AgreementVer) {
+			var owner model.User
+			ownerRes := tx.Select("id", "status", "staff_site_id").Where("id = ?", site.OwnerUserId).Limit(1).Find(&owner)
+			if ownerRes.Error != nil {
+				return nil, ownerRes.Error
 			}
-			if err := q.Find(&staff).Error; err != nil {
-				return nil, err
+			if ownerRes.RowsAffected == 1 && owner.Status == common.UserStatusEnabled && owner.StaffSiteId == 0 {
+				ownerID = site.OwnerUserId
+				q := tx.Where("site_id = ? AND owner_user_id = ? AND status = ?", ticket.HandlingSite(), ownerID, "enabled")
+				if id > 0 {
+					q = q.Where("user_id = ?", id)
+				}
+				if err := q.Find(&staff).Error; err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -1711,7 +1718,7 @@ func adtyTicketAssigneesTx(tx *gorm.DB, ticket model.AdtyTicket, includePlatform
 	}
 	result := []AdtyTicketAssignee{}
 	for _, user := range users {
-		local := user.Id == ownerID || (user.Role == common.RoleCommonUser && ticket.HandlingSite() > 0 && user.StaffSiteId == ticket.HandlingSite() && user.SiteId == ticket.HandlingSite())
+		local := ownerID > 0 && (user.Id == ownerID || (user.Role == common.RoleCommonUser && ticket.HandlingSite() > 0 && user.StaffSiteId == ticket.HandlingSite() && user.SiteId == ticket.HandlingSite()))
 		platform := includePlatform && user.Role >= common.RoleRootUser
 		if platformCan != nil && user.Role == common.RoleAdminUser {
 			platform = platformCan(user.Id, user.Role, authz.AdtyTicketManageAll) || (ticket.HandlingSite() == 0 && platformCan(user.Id, user.Role, authz.AdtyTicketManage))

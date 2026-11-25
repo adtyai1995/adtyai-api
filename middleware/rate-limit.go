@@ -38,6 +38,7 @@ return {1, count, ttl}
 
 var inMemoryRateLimiter common.InMemoryRateLimiter
 var criticalInMemoryRateLimiter common.InMemoryRateLimiter
+var userCriticalInMemoryRateLimiter common.InMemoryRateLimiter
 
 func initCriticalInMemoryRateLimiter() {
 	criticalInMemoryRateLimiter.Init(common.RateLimitKeyExpirationDuration)
@@ -232,7 +233,7 @@ func UserCriticalRateLimit(scope string) func(c *gin.Context) {
 		return defNext
 	}
 	return userRateLimitFactoryWith(
-		&criticalInMemoryRateLimiter,
+		&userCriticalInMemoryRateLimiter,
 		true,
 		common.CriticalRateLimitNum,
 		common.CriticalRateLimitDuration,

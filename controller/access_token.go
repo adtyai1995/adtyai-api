@@ -400,7 +400,7 @@ func GetAuditLogs(c *gin.Context) {
 			continue
 		}
 		switch strings.ToLower(strings.TrimSpace(entry.ObjectType)) {
-		case "user", "admin.user", "customer", "site_customer":
+		case "user", "admin.user", "adty.user", "adty.admin_permissions", "customer", "site_customer":
 			if uid, parseErr := strconv.Atoi(strings.TrimSpace(entry.ObjectId)); parseErr == nil && uid > 0 {
 				objectUserIDs[i] = uid
 				lookupIDs = append(lookupIDs, uid)

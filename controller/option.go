@@ -40,10 +40,10 @@ func readAuthoritativeEpayTimeouts() (map[string]string, error) {
 		return nil, common.NewMessage("Operation failed")
 	}
 	var rows []model.Option
-	if err := model.DB.Where("key IN ?", []string{
+	if err := model.DB.Where(map[string]any{"key": []string{
 		adty_setting.EpaySettingKeyChannelTimeout,
 		adty_setting.EpaySettingKeyTotalTimeout,
-	}).Find(&rows).Error; err != nil {
+	}}).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	if len(rows) == 0 {
@@ -264,7 +264,7 @@ func isRetiredOptionKey(k string) bool {
 func GetOptions(c *gin.Context) {
 	var options []*model.Option
 	optionValues := make(map[string]string)
-	common.OptionMapRWMutex.Lock()
+	common.OptionMapRWMutex.RLock()
 	for k, v := range common.OptionMap {
 		if strings.HasPrefix(k, "model_deployment.") || k == "theme.frontend" || k == "billing_setting.billing_mode" || k == "billing_setting.billing_expr" || k == "ResendKeyConfigured" || k == "TurnstileSecretConfigured" || isRetiredOptionKey(k) {
 			continue
@@ -286,7 +286,7 @@ func GetOptions(c *gin.Context) {
 	}, &model.Option{
 		Key: "TurnstileSecretConfigured", Value: strconv.FormatBool(strings.TrimSpace(common.OptionMap["TurnstileSecretKey"]) != ""),
 	})
-	common.OptionMapRWMutex.Unlock()
+	common.OptionMapRWMutex.RUnlock()
 	// Display the same effective expressions used by pricing and settlement,
 	// including built-in defaults absent from persisted administrator options.
 	for key, values := range map[string]map[string]string{

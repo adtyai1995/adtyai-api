@@ -25,7 +25,7 @@ import (
 var (
 	ErrReferralDisabled        = errors.New("referral disabled")
 	ErrReferralCodeInvalid     = errors.New("referral code invalid")
-	ErrReferralNotAffiliate    = errors.New("not an affiliate")
+	ErrReferralNotAffiliate    = common.NewMessage("This account does not have an active referral profile")
 	ErrReferralAlreadyBound    = errors.New("invitee already bound")
 	ErrReferralSelfOrCycle     = errors.New("self or cyclic invite")
 	ErrReferralInsufficient    = errors.New("insufficient available commission")
@@ -87,7 +87,7 @@ func BuildReferralCookie(code string, issuedAt time.Time) (string, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	secret := referralSecret()
 	if code == "" || secret == "" {
-		return "", errors.New("cannot sign referral cookie")
+		return "", common.NewMessage("Unable to issue the referral cookie right now")
 	}
 	payload := fmt.Sprintf("%s.%d", code, issuedAt.Unix())
 	return base64.StdEncoding.EncodeToString([]byte(payload + "." + common.HmacSha256(payload, secret))), nil
@@ -193,7 +193,7 @@ func (s *ReferralService) EnsureAffiliate(userId int) (*model.ReferralAffiliate,
 			return &existing[0], nil
 		}
 	}
-	return nil, errors.New("could not create affiliate")
+	return nil, common.NewMessage("Unable to initialize the referral profile right now")
 }
 
 // AffiliateByCode 取一个有效的推广员（未停用、允许拉新）。

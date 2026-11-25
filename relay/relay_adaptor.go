@@ -221,7 +221,7 @@ func ResolveTaskPluginVersion(key, version string) (*pluginruntime.LoadedPlugin,
 	}
 	if model.DB != nil {
 		var rows []model.TaskPlugin
-		if err := model.DB.Where("key = ? AND version = ?", key, version).Limit(1).Find(&rows).Error; err == nil && len(rows) > 0 && rows[0].Source != "" {
+		if err := model.DB.Where(map[string]any{"key": key, "version": version}).Limit(1).Find(&rows).Error; err == nil && len(rows) > 0 && rows[0].Source != "" {
 			if compiled, compileErr := pluginruntime.CompilePlugin(string(rows[0].Source), pluginruntime.Options{Key: rows[0].Key, Version: rows[0].Version}); compileErr == nil && compiled != nil {
 				pluginruntime.DefaultRegistry.CacheVersion(compiled)
 				return compiled, true

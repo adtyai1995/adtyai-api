@@ -500,7 +500,7 @@ func UpsertAdtySevereTodo(userID, siteID int, key, title, content, business stri
 			}
 		}
 		if found == nil || found.RowsAffected == 0 {
-			found = tx.Where("user_id = ? AND key = ?", userID, key).Limit(1).Find(&item)
+			found = tx.Where("user_id = ? AND "+adtyQuoteColumn(tx, "key")+" = ?", userID, key).Limit(1).Find(&item)
 			if found.Error != nil {
 				return found.Error
 			}
@@ -600,7 +600,7 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 		var user model.User
 		hasUser := tx.Select("id", "username", "role", "site_id").Where("id = ?", userID).Limit(1).Find(&user).RowsAffected > 0
 		var item AdtyTodoItem
-		found := model.AdtyLockForUpdate(tx).Where("user_id = ? AND key = ?", userID, key).Limit(1).Find(&item)
+		found := model.AdtyLockForUpdate(tx).Where("user_id = ? AND "+adtyQuoteColumn(tx, "key")+" = ?", userID, key).Limit(1).Find(&item)
 		if found.Error != nil {
 			return found.Error
 		}
@@ -755,43 +755,6 @@ func TransitionAdtyTodo(c *gin.Context, userID int, key, targetStatus, note stri
 	return result, nil
 }
 
-func writeAdtyTodoAudit(c *gin.Context, userID int, item *AdtyTodoItem, fromStatus string) {
-	if item == nil {
-		return
-	}
-	action := "adty.todo.transition"
-	if item.Status == AdtyTodoStatusCompleted {
-		action = "adty.todo.complete"
-	}
-	rec := model.OfficialAuditWrite{
-		UserId:     userID,
-		SiteID:     model.OfficialAuditSiteIDPointer(item.SiteId),
-		ObjectType: "todo",
-		ObjectID:   item.Key,
-		Action:     action,
-		Category:   model.AuditCategoryOperation,
-		Content:    action,
-		Before:     map[string]any{"key": item.Key, "status": fromStatus},
-		After:      map[string]any{"key": item.Key, "status": item.Status, "completed_at": item.CompletedAt, "revision": item.Revision},
-		Result:     model.AuditResultSuccess,
-		Success:    true,
-	}
-	var actor *model.User
-	if userID > 0 {
-		if user, err := model.GetUserById(userID, false); err == nil && user != nil {
-			actor = user
-			rec.Username = user.Username
-			rec.ActorRole = user.Role
-		}
-	}
-	if item.SiteId == 0 {
-		rec.SiteID = model.OfficialAuditSiteIDPointer(officialNotificationHideSiteID(c, actor))
-	}
-	if err := model.WriteOfficialAuditLog(c, rec); err != nil {
-		common.SysLog(common.LogText("official todo audit write failed: %s", err.Error()))
-	}
-}
-
 // CompleteAdtyTodo marks one severe inbox item done for that user, persisting
 // the state transition and preserving history rather than hiding the notice.
 func CompleteAdtyTodo(userID int, key string) error {
@@ -821,18 +784,82 @@ func MarkAdtyTodoInProgressFromRequest(c *gin.Context, userID int, key, note str
 	return TransitionAdtyTodo(c, userID, key, AdtyTodoStatusInProgress, note)
 }
 
-func adtyPublicationIsSevere(db *gorm.DB, pub *model.AdtyNotificationPublication) bool {
+func adtyPublicationIsSevereByFields(pub *model.AdtyNotificationPublication) bool {
 	if pub == nil || pub.Status != "published" {
 		return false
 	}
 	business := strings.TrimSpace(pub.Business)
 	readKey := strings.TrimSpace(pub.ReadKey)
-	if strings.HasSuffix(business, "_anomaly") || business == "severe_todo" || strings.HasPrefix(business, "severe:") || strings.HasPrefix(readKey, "severe:") {
+	return strings.HasSuffix(business, "_anomaly") || business == "severe_todo" || strings.HasPrefix(business, "severe:") || strings.HasPrefix(readKey, "severe:")
+}
+
+func adtyPublicationIsSevereWithRefs(pub *model.AdtyNotificationPublication, openAnomalyRefs map[string]bool) bool {
+	if pub == nil || pub.Status != "published" {
+		return false
+	}
+	if adtyPublicationIsSevereByFields(pub) {
+		return true
+	}
+	if len(openAnomalyRefs) == 0 {
+		return false
+	}
+	if readKey := strings.TrimSpace(pub.ReadKey); readKey != "" && openAnomalyRefs[readKey] {
+		return true
+	}
+	if business := strings.TrimSpace(pub.Business); business != "" && openAnomalyRefs[business] {
+		return true
+	}
+	return false
+}
+
+func adtyBatchOpenAnomalyRefs(db *gorm.DB, pubs []*model.AdtyNotificationPublication) (map[string]bool, bool) {
+	openRefs := map[string]bool{}
+	if db == nil || len(pubs) == 0 {
+		return openRefs, false
+	}
+	refSet := make(map[string]struct{})
+	for _, pub := range pubs {
+		if pub == nil || pub.Status != "published" || adtyPublicationIsSevereByFields(pub) {
+			continue
+		}
+		if rk := strings.TrimSpace(pub.ReadKey); rk != "" {
+			refSet[rk] = struct{}{}
+		}
+		if biz := strings.TrimSpace(pub.Business); biz != "" {
+			refSet[biz] = struct{}{}
+		}
+	}
+	if len(refSet) == 0 || !db.Migrator().HasTable(&model.AdtyAnomalyDisposition{}) {
+		return openRefs, false
+	}
+	refs := make([]string, 0, len(refSet))
+	for ref := range refSet {
+		refs = append(refs, ref)
+	}
+	var found []string
+	if err := db.Model(&model.AdtyAnomalyDisposition{}).
+		Where("ref IN ? AND status IN ?", refs, []string{"open", "reviewing"}).
+		Distinct("ref").
+		Pluck("ref", &found).Error; err == nil {
+		for _, ref := range found {
+			openRefs[ref] = true
+		}
+	}
+	return openRefs, true
+}
+
+func adtyPublicationIsSevere(db *gorm.DB, pub *model.AdtyNotificationPublication) bool {
+	if pub == nil || pub.Status != "published" {
+		return false
+	}
+	if adtyPublicationIsSevereByFields(pub) {
 		return true
 	}
 	if db == nil || !db.Migrator().HasTable(&model.AdtyAnomalyDisposition{}) {
 		return false
 	}
+	readKey := strings.TrimSpace(pub.ReadKey)
+	business := strings.TrimSpace(pub.Business)
 	refs := make([]string, 0, 2)
 	if readKey != "" {
 		refs = append(refs, readKey)
@@ -939,6 +966,182 @@ func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeComplet
 		return items, nil
 	}
 	hasPubTable := model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyNotificationPublication{})
+	pubByID := make(map[int]model.AdtyNotificationPublication)
+	pubByReadKey := make(map[string]model.AdtyNotificationPublication)
+	if hasPubTable {
+		pubIDSet := make(map[int]struct{})
+		for i := range items {
+			if items[i].PublicationId > 0 {
+				pubIDSet[items[i].PublicationId] = struct{}{}
+			}
+			if rawID, ok := strings.CutPrefix(items[i].Key, "publication:"); ok {
+				if id, err := strconv.Atoi(strings.TrimSpace(rawID)); err == nil && id > 0 {
+					pubIDSet[id] = struct{}{}
+				}
+			}
+		}
+		if len(pubIDSet) > 0 {
+			pubIDs := make([]int, 0, len(pubIDSet))
+			for id := range pubIDSet {
+				pubIDs = append(pubIDs, id)
+			}
+			var pubs []model.AdtyNotificationPublication
+			if err := model.DB.Where("id IN ?", pubIDs).Find(&pubs).Error; err != nil {
+				return nil, err
+			}
+			for _, p := range pubs {
+				pubByID[p.Id] = p
+			}
+		}
+		readKeySet := make(map[string]struct{})
+		for i := range items {
+			resolvedByID := false
+			if items[i].PublicationId > 0 {
+				if _, ok := pubByID[items[i].PublicationId]; ok {
+					resolvedByID = true
+				}
+			}
+			if !resolvedByID {
+				if rawID, ok := strings.CutPrefix(items[i].Key, "publication:"); ok {
+					if id, err := strconv.Atoi(strings.TrimSpace(rawID)); err == nil && id > 0 {
+						if _, ok := pubByID[id]; ok {
+							resolvedByID = true
+						}
+					}
+				}
+			}
+			if !resolvedByID && items[i].Key != "" {
+				readKeySet[items[i].Key] = struct{}{}
+			}
+		}
+		if len(readKeySet) > 0 {
+			readKeys := make([]string, 0, len(readKeySet))
+			for rk := range readKeySet {
+				readKeys = append(readKeys, rk)
+			}
+			var keyPubs []model.AdtyNotificationPublication
+			if err := model.DB.Where("read_key IN ?", readKeys).Order("id DESC").Find(&keyPubs).Error; err != nil {
+				return nil, err
+			}
+			for _, p := range keyPubs {
+				if _, exists := pubByReadKey[p.ReadKey]; !exists {
+					pubByReadKey[p.ReadKey] = p
+				}
+			}
+		}
+	}
+
+	resolvedPubs := make([]*model.AdtyNotificationPublication, len(items))
+	pubPtrsForSeverity := make([]*model.AdtyNotificationPublication, 0, len(items))
+	nonPubKeySet := make(map[string]struct{})
+	for i := range items {
+		var pub *model.AdtyNotificationPublication
+		if hasPubTable {
+			if items[i].PublicationId > 0 {
+				if p, ok := pubByID[items[i].PublicationId]; ok {
+					cp := p
+					pub = &cp
+				}
+			}
+			if pub == nil {
+				if rawID, ok := strings.CutPrefix(items[i].Key, "publication:"); ok {
+					if id, err := strconv.Atoi(strings.TrimSpace(rawID)); err == nil && id > 0 {
+						if p, ok := pubByID[id]; ok {
+							cp := p
+							pub = &cp
+						}
+					}
+				}
+			}
+			if pub == nil && items[i].Key != "" {
+				if p, ok := pubByReadKey[items[i].Key]; ok {
+					cp := p
+					pub = &cp
+				}
+			}
+		}
+		resolvedPubs[i] = pub
+		if pub != nil {
+			pubPtrsForSeverity = append(pubPtrsForSeverity, pub)
+		} else if items[i].PublicationId == 0 && items[i].Key != "" {
+			nonPubKeySet[items[i].Key] = struct{}{}
+		}
+	}
+
+	openAnomalyRefs, _ := adtyBatchOpenAnomalyRefs(model.DB, pubPtrsForSeverity)
+	severePubIDSet := make(map[int]struct{})
+	for _, pub := range resolvedPubs {
+		if pub != nil && pub.Id > 0 && pub.Status == "published" && adtyPublicationIsSevereWithRefs(pub, openAnomalyRefs) {
+			severePubIDSet[pub.Id] = struct{}{}
+		}
+	}
+	visiblePubSet := make(map[int]bool, len(severePubIDSet))
+	if len(severePubIDSet) > 0 {
+		severePubIDs := make([]int, 0, len(severePubIDSet))
+		for id := range severePubIDSet {
+			severePubIDs = append(severePubIDs, id)
+		}
+		pubQuery, err := adtyVisibleNotificationPublicationsWithDB(model.DB, userID, site)
+		if err != nil {
+			return nil, err
+		}
+		var visibleIDs []int
+		if err := pubQuery.Where("id IN ?", severePubIDs).Pluck("id", &visibleIDs).Error; err != nil {
+			return nil, err
+		}
+		for _, id := range visibleIDs {
+			visiblePubSet[id] = true
+		}
+	}
+	ownedFallbackSites := make(map[int]bool)
+	if site == nil && len(severePubIDSet) > 0 && model.DB.Migrator().HasTable(&model.AdtySite{}) {
+		fallbackSiteSet := make(map[int]struct{})
+		for _, pub := range resolvedPubs {
+			if pub != nil && pub.Id > 0 && pub.Status == "published" && adtyPublicationIsSevereWithRefs(pub, openAnomalyRefs) &&
+				!visiblePubSet[pub.Id] && pub.Audience == "site" && pub.TargetSiteId > 0 {
+				fallbackSiteSet[pub.TargetSiteId] = struct{}{}
+			}
+		}
+		if len(fallbackSiteSet) > 0 {
+			fallbackSiteIDs := make([]int, 0, len(fallbackSiteSet))
+			for sid := range fallbackSiteSet {
+				fallbackSiteIDs = append(fallbackSiteIDs, sid)
+			}
+			var ownedIDs []int
+			if err := model.DB.Model(&model.AdtySite{}).
+				Where("id IN ? AND owner_user_id = ? AND status NOT IN ?", fallbackSiteIDs, userID, []string{model.AdtySiteStatusClosed, model.AdtySiteStatusDeleting}).
+				Pluck("id", &ownedIDs).Error; err != nil {
+				return nil, err
+			}
+			for _, sid := range ownedIDs {
+				ownedFallbackSites[sid] = true
+			}
+		}
+	}
+
+	watcherNotifyByKey := make(map[string]string)
+	var canWatcherChannel, canWatcherEpay bool
+	if len(nonPubKeySet) > 0 && model.DB.Migrator().HasTable(&AdtyChannelWatcherNotice{}) {
+		nonPubKeys := make([]string, 0, len(nonPubKeySet))
+		for k := range nonPubKeySet {
+			nonPubKeys = append(nonPubKeys, k)
+		}
+		var notices []AdtyChannelWatcherNotice
+		if err := model.DB.Select("id", "read_key", "notify_type").
+			Where("user_id = ? AND read_key IN ?", userID, nonPubKeys).
+			Find(&notices).Error; err != nil {
+			return nil, err
+		}
+		for _, n := range notices {
+			if _, exists := watcherNotifyByKey[n.ReadKey]; !exists {
+				watcherNotifyByKey[n.ReadKey] = n.NotifyType
+			}
+		}
+		if len(watcherNotifyByKey) > 0 {
+			canWatcherChannel, canWatcherEpay = adtyWatcherNoticeAccess(userID, site, tokenScopes...)
+		}
+	}
+
 	type visibleTodoEntry struct {
 		item AdtyTodoItem
 		pub  *model.AdtyNotificationPublication
@@ -947,13 +1150,25 @@ func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeComplet
 	pubIDSeen := make(map[int]struct{})
 	translationKeys := make([]string, 0)
 	for i := range items {
-		var pub *model.AdtyNotificationPublication
-		if hasPubTable {
-			pub = lookupAdtyPublicationForTodoTx(model.DB, items[i].Key, items[i].PublicationId)
-		}
-		visible, err := adtyTodoItemVisibleForUserOnSite(model.DB, userID, site, &items[i], pub, tokenScopes...)
-		if err != nil {
-			return nil, err
+		item := items[i]
+		pub := resolvedPubs[i]
+		visible := false
+		if item.UserId != userID {
+			visible = false
+		} else if item.PublicationId > 0 || pub != nil {
+			if hasPubTable && pub != nil && pub.Status == "published" && adtyPublicationIsSevereWithRefs(pub, openAnomalyRefs) {
+				if visiblePubSet[pub.Id] {
+					visible = true
+				} else if site == nil && pub.Audience == "site" && pub.TargetSiteId > 0 && ownedFallbackSites[pub.TargetSiteId] {
+					visible = true
+				}
+			}
+		} else if notifyType, isWatcher := watcherNotifyByKey[item.Key]; isWatcher {
+			visible = adtyWatcherNoticePermitted(notifyType, canWatcherChannel, canWatcherEpay)
+		} else if site != nil && item.SiteId > 0 && item.SiteId != site.Id {
+			visible = false
+		} else {
+			visible = true
 		}
 		if !visible {
 			continue
@@ -967,7 +1182,7 @@ func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeComplet
 				)
 			}
 		}
-		visibleEntries = append(visibleEntries, visibleTodoEntry{item: items[i], pub: pub})
+		visibleEntries = append(visibleEntries, visibleTodoEntry{item: item, pub: pub})
 	}
 	if len(visibleEntries) == 0 {
 		return []AdtyTodoItem{}, nil
@@ -1040,8 +1255,9 @@ func GetAdtyTodoHistory(userID int, key string) ([]AdtyTodoStateHistory, error) 
 	if err := ensureAdtyTodoTables(model.DB); err != nil {
 		return nil, err
 	}
+	keyCol := adtyQuoteColumn(model.DB, "key")
 	var item AdtyTodoItem
-	found := model.DB.Where("user_id = ? AND key = ?", userID, key).Limit(1).Find(&item)
+	found := model.DB.Where("user_id = ? AND "+keyCol+" = ?", userID, key).Limit(1).Find(&item)
 	if found.Error != nil {
 		return nil, found.Error
 	}
@@ -1054,16 +1270,25 @@ func GetAdtyTodoHistory(userID int, key string) ([]AdtyTodoStateHistory, error) 
 	}
 	var history []AdtyTodoStateHistory
 	if item.Id > 0 {
-		err := model.DB.Where("user_id = ? AND (todo_id = ? OR key = ?)", userID, item.Id, key).Order("id ASC").Find(&history).Error
+		err := model.DB.Where("user_id = ? AND (todo_id = ? OR "+keyCol+" = ?)", userID, item.Id, key).Order("id ASC").Find(&history).Error
 		return history, err
 	}
-	err := model.DB.Where("user_id = ? AND key = ?", userID, key).Order("id ASC").Find(&history).Error
+	err := model.DB.Where("user_id = ? AND "+keyCol+" = ?", userID, key).Order("id ASC").Find(&history).Error
 	return history, err
 }
 
 // RenderAdtyTodoInboxItems enriches inbox announcement items with persisted todo state
 // so severe todo items remain in history with their live status and completion timestamp.
 func RenderAdtyTodoInboxItems(userID int, announcements []map[string]any) []map[string]any {
+	return renderAdtyTodoInboxItemsWithPreload(userID, announcements, nil, nil)
+}
+
+func renderAdtyTodoInboxItemsWithPreload(
+	userID int,
+	announcements []map[string]any,
+	preloadedPubs map[int]model.AdtyNotificationPublication,
+	preloadedOpenRefs map[string]bool,
+) []map[string]any {
 	if userID <= 0 || len(announcements) == 0 || model.DB == nil || !model.DB.Migrator().HasTable(&AdtyTodoItem{}) {
 		return announcements
 	}
@@ -1071,7 +1296,7 @@ func RenderAdtyTodoInboxItems(userID int, announcements []map[string]any) []map[
 	if err := model.DB.Where("user_id = ?", userID).Find(&todos).Error; err != nil || len(todos) == 0 {
 		return announcements
 	}
-	hasPubTable := model.DB.Migrator().HasTable(&model.AdtyNotificationPublication{})
+	hasPubTable := len(preloadedPubs) > 0 || model.DB.Migrator().HasTable(&model.AdtyNotificationPublication{})
 	severePubs := make(map[int]bool)
 	if hasPubTable {
 		pubIDSet := make(map[int]struct{})
@@ -1088,16 +1313,51 @@ func RenderAdtyTodoInboxItems(userID int, announcements []map[string]any) []map[
 			}
 		}
 		if len(pubIDSet) > 0 {
-			pubIDs := make([]int, 0, len(pubIDSet))
+			pubsByID := make(map[int]model.AdtyNotificationPublication, len(pubIDSet))
+			missingPubIDs := make([]int, 0)
 			for id := range pubIDSet {
-				pubIDs = append(pubIDs, id)
+				if pub, ok := preloadedPubs[id]; ok {
+					pubsByID[id] = pub
+				} else {
+					missingPubIDs = append(missingPubIDs, id)
+				}
 			}
-			var pubs []model.AdtyNotificationPublication
-			if err := model.DB.Where("id IN ?", pubIDs).Find(&pubs).Error; err == nil {
-				for i := range pubs {
-					if pubs[i].Status == "published" && adtyPublicationIsSevere(model.DB, &pubs[i]) {
-						severePubs[pubs[i].Id] = true
+			fetchedPubPtrs := make([]*model.AdtyNotificationPublication, 0, len(missingPubIDs))
+			if len(missingPubIDs) > 0 {
+				var pubs []model.AdtyNotificationPublication
+				if err := model.DB.Where("id IN ?", missingPubIDs).Find(&pubs).Error; err == nil {
+					for i := range pubs {
+						pubsByID[pubs[i].Id] = pubs[i]
+						cp := pubs[i]
+						fetchedPubPtrs = append(fetchedPubPtrs, &cp)
 					}
+				}
+			}
+			openRefs := preloadedOpenRefs
+			if openRefs == nil {
+				allPubPtrs := make([]*model.AdtyNotificationPublication, 0, len(pubsByID))
+				for _, pub := range pubsByID {
+					cp := pub
+					allPubPtrs = append(allPubPtrs, &cp)
+				}
+				openRefs, _ = adtyBatchOpenAnomalyRefs(model.DB, allPubPtrs)
+			} else if len(fetchedPubPtrs) > 0 {
+				extraRefs, _ := adtyBatchOpenAnomalyRefs(model.DB, fetchedPubPtrs)
+				if len(extraRefs) > 0 {
+					merged := make(map[string]bool, len(openRefs)+len(extraRefs))
+					for k, v := range openRefs {
+						merged[k] = v
+					}
+					for k, v := range extraRefs {
+						merged[k] = v
+					}
+					openRefs = merged
+				}
+			}
+			for id, pub := range pubsByID {
+				cp := pub
+				if cp.Status == "published" && adtyPublicationIsSevereWithRefs(&cp, openRefs) {
+					severePubs[id] = true
 				}
 			}
 		}
@@ -1676,8 +1936,14 @@ func ValidateAdtyNoticeTemplatePlaceholders(titleZh, contentZh, titleEn, content
 			return common.NewMessage("Chinese and English template placeholders do not match")
 		}
 	}
+	if strings.Count(titleZh, "{{value}}") != strings.Count(titleEn, "{{value}}") ||
+		strings.Count(contentZh, "{{value}}") != strings.Count(contentEn, "{{value}}") {
+		return common.NewMessage("Chinese and English template placeholders do not match")
+	}
 	return nil
 }
+
+const adtyNoticeTemplateMaxContentRunes = 8000
 
 func ensureAdtyNoticeTemplateTable(db *gorm.DB) error {
 	if db == nil {
@@ -1713,6 +1979,7 @@ func syncLegacyAdtyNoticeTemplatesTable(tx *gorm.DB, tpl AdtyBilingualNoticeTemp
 	if keyCol == "" {
 		return
 	}
+	quotedKeyCol := adtyQuoteColumn(tx, keyCol)
 	if colSet["locale"] {
 		for _, pair := range []struct {
 			locale  string
@@ -1736,9 +2003,9 @@ func syncLegacyAdtyNoticeTemplatesTable(tx *gorm.DB, tpl AdtyBilingualNoticeTemp
 				row["updated_at"] = tpl.UpdatedAt
 			}
 			var count int64
-			_ = tx.Table("adty_notice_templates").Where(keyCol+" = ? AND locale = ?", tpl.Key, pair.locale).Count(&count).Error
+			_ = tx.Table("adty_notice_templates").Where(quotedKeyCol+" = ? AND locale = ?", tpl.Key, pair.locale).Count(&count).Error
 			if count > 0 {
-				_ = tx.Table("adty_notice_templates").Where(keyCol+" = ? AND locale = ?", tpl.Key, pair.locale).Updates(row).Error
+				_ = tx.Table("adty_notice_templates").Where(quotedKeyCol+" = ? AND locale = ?", tpl.Key, pair.locale).Updates(row).Error
 			} else {
 				_ = tx.Table("adty_notice_templates").Create(row).Error
 			}
@@ -1772,9 +2039,9 @@ func syncLegacyAdtyNoticeTemplatesTable(tx *gorm.DB, tpl AdtyBilingualNoticeTemp
 		row["updated_at"] = tpl.UpdatedAt
 	}
 	var count int64
-	_ = tx.Table("adty_notice_templates").Where(keyCol+" = ?", tpl.Key).Count(&count).Error
+	_ = tx.Table("adty_notice_templates").Where(quotedKeyCol+" = ?", tpl.Key).Count(&count).Error
 	if count > 0 {
-		_ = tx.Table("adty_notice_templates").Where(keyCol+" = ?", tpl.Key).Updates(row).Error
+		_ = tx.Table("adty_notice_templates").Where(quotedKeyCol+" = ?", tpl.Key).Updates(row).Error
 	} else {
 		_ = tx.Table("adty_notice_templates").Create(row).Error
 	}
@@ -1793,12 +2060,31 @@ func SaveAdtyNoticeTemplateWithAudit(actorID, actorRole int, key, titleZh, conte
 	key = strings.TrimSpace(key)
 	titleZh, contentZh = strings.TrimSpace(titleZh), strings.TrimSpace(contentZh)
 	titleEn, contentEn = strings.TrimSpace(titleEn), strings.TrimSpace(contentEn)
-	if key == "" || len(key) > 128 || titleZh == "" || contentZh == "" || titleEn == "" || contentEn == "" ||
-		utf8.RuneCountInString(titleZh) > 255 || utf8.RuneCountInString(titleEn) > 255 {
+	def, ok := defaultAdtyBilingualNoticeTemplates[key]
+	if !ok || key == "" || len(key) > 128 || titleZh == "" || contentZh == "" || titleEn == "" || contentEn == "" ||
+		utf8.RuneCountInString(titleZh) > 255 || utf8.RuneCountInString(titleEn) > 255 ||
+		utf8.RuneCountInString(contentZh) > adtyNoticeTemplateMaxContentRunes || utf8.RuneCountInString(contentEn) > adtyNoticeTemplateMaxContentRunes {
 		return nil, "", common.NewMessage("Invalid parameters")
 	}
 	if err := ValidateAdtyNoticeTemplatePlaceholders(titleZh, contentZh, titleEn, contentEn); err != nil {
 		return nil, "", err
+	}
+	allowedTokens := map[string]bool{"{{SystemName}}": true}
+	for _, tok := range extractAdtyNoticePlaceholders(def.TitleZh, def.ContentZh, def.TitleEn, def.ContentEn) {
+		allowedTokens[tok] = true
+	}
+	for _, tok := range extractAdtyNoticePlaceholders(titleZh, contentZh, titleEn, contentEn) {
+		if !allowedTokens[tok] {
+			return nil, "", common.NewMessage("Invalid parameters")
+		}
+	}
+	defTitleValueCount := max(strings.Count(def.TitleZh, "{{value}}"), strings.Count(def.TitleEn, "{{value}}"))
+	defContentValueCount := max(strings.Count(def.ContentZh, "{{value}}"), strings.Count(def.ContentEn, "{{value}}"))
+	if strings.Count(titleZh, "{{value}}") != defTitleValueCount ||
+		strings.Count(titleEn, "{{value}}") != defTitleValueCount ||
+		strings.Count(contentZh, "{{value}}") != defContentValueCount ||
+		strings.Count(contentEn, "{{value}}") != defContentValueCount {
+		return nil, "", common.NewMessage("Chinese and English template placeholders do not match")
 	}
 	if err := ensureAdtyNoticeTemplateTable(model.DB); err != nil {
 		return nil, "", err
@@ -1809,12 +2095,12 @@ func SaveAdtyNoticeTemplateWithAudit(actorID, actorRole int, key, titleZh, conte
 	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var existing AdtyBilingualNoticeTemplate
-		found := tx.Where("key = ?", key).Limit(1).Find(&existing)
+		found := tx.Where(adtyQuoteColumn(tx, "key")+" = ?", key).Limit(1).Find(&existing)
 		if found.Error != nil {
 			return found.Error
 		}
 		category := "system"
-		if def, ok := defaultAdtyBilingualNoticeTemplates[key]; ok && def.Category != "" {
+		if def.Category != "" {
 			category = def.Category
 		}
 		if found.RowsAffected == 0 {
@@ -1873,7 +2159,7 @@ func GetAdtyNoticeTemplate(key string) (*AdtyBilingualNoticeTemplate, bool, erro
 	}
 	if model.DB != nil && model.DB.Migrator().HasTable(&AdtyBilingualNoticeTemplate{}) {
 		var row AdtyBilingualNoticeTemplate
-		res := model.DB.Where("key = ?", key).Limit(1).Find(&row)
+		res := model.DB.Where(adtyQuoteColumn(model.DB, "key")+" = ?", key).Limit(1).Find(&row)
 		if res.Error != nil {
 			return nil, false, res.Error
 		}
@@ -1896,7 +2182,7 @@ func ListAdtyNoticeTemplates() ([]AdtyBilingualNoticeTemplate, error) {
 	}
 	if model.DB != nil && model.DB.Migrator().HasTable(&AdtyBilingualNoticeTemplate{}) {
 		var rows []AdtyBilingualNoticeTemplate
-		if err := model.DB.Order("key ASC").Find(&rows).Error; err != nil {
+		if err := model.DB.Order(clause.OrderByColumn{Column: clause.Column{Name: "key"}}).Find(&rows).Error; err != nil {
 			return nil, err
 		}
 		for _, r := range rows {
@@ -1916,24 +2202,42 @@ func ListAdtyNoticeTemplates() ([]AdtyBilingualNoticeTemplate, error) {
 }
 
 func applyAdtyNoticeVars(text string, vars map[string]string, args ...any) string {
-	out := text
-	if strings.Contains(out, "{{SystemName}}") {
-		if sysName := common.GetSystemName(); sysName != "" {
-			out = strings.ReplaceAll(out, "{{SystemName}}", sysName)
-		}
+	if text == "" {
+		return ""
 	}
-	for k, v := range vars {
-		out = strings.ReplaceAll(out, "{{"+k+"}}", v)
-		out = strings.ReplaceAll(out, "{"+k+"}", v)
-	}
+	sysName := common.GetSystemName()
+	argStrings := make([]string, len(args))
 	for i, arg := range args {
-		val := fmt.Sprintf("%v", arg)
-		idx := strconv.Itoa(i + 1)
-		out = strings.ReplaceAll(out, "{{"+idx+"}}", val)
-		out = strings.ReplaceAll(out, "{"+idx+"}", val)
-		out = strings.Replace(out, "{{value}}", val, 1)
+		argStrings[i] = fmt.Sprintf("%v", arg)
 	}
-	return out
+	valueIdx := 0
+	return adtyNoticePlaceholderPattern.ReplaceAllStringFunc(text, func(token string) string {
+		if token == "{{SystemName}}" && sysName != "" {
+			return sysName
+		}
+		var name string
+		if strings.HasPrefix(token, "{{") && strings.HasSuffix(token, "}}") {
+			name = token[2 : len(token)-2]
+		} else if strings.HasPrefix(token, "{") && strings.HasSuffix(token, "}") {
+			name = token[1 : len(token)-1]
+		} else {
+			return token
+		}
+		if vars != nil {
+			if val, ok := vars[name]; ok {
+				return val
+			}
+		}
+		if idx, err := strconv.Atoi(name); err == nil && idx >= 1 && idx <= len(argStrings) {
+			return argStrings[idx-1]
+		}
+		if token == "{{value}}" && valueIdx < len(argStrings) {
+			val := argStrings[valueIdx]
+			valueIdx++
+			return val
+		}
+		return token
+	})
 }
 
 func isChineseNoticeLang(lang string) bool {
@@ -1958,14 +2262,24 @@ func RenderAdtyNoticeTemplate(key, lang string, vars map[string]string, args ...
 
 // RenderAdtyBilingualNotice renders a combined Chinese + English notice from the template.
 func RenderAdtyBilingualNotice(key string, vars map[string]string, args ...any) (string, string, error) {
-	zhTitle, zhBody, err := RenderAdtyNoticeTemplate(key, "zh-CN", vars, args...)
+	trimmedKey := strings.TrimSpace(key)
+	tpl, customized, err := GetAdtyNoticeTemplate(trimmedKey)
 	if err != nil {
 		return "", "", err
 	}
-	enTitle, enBody, err := RenderAdtyNoticeTemplate(key, "en", vars, args...)
-	if err != nil {
-		return "", "", err
+	if tpl == nil {
+		return "", "", common.NewMessage("Notice template not found")
 	}
+	if customized && hasUnfilledNoticePlaceholderWithVars([]string{tpl.TitleZh, tpl.ContentZh, tpl.TitleEn, tpl.ContentEn}, vars, len(args)) {
+		if def, ok := defaultAdtyBilingualNoticeTemplates[trimmedKey]; ok {
+			copyDef := def
+			tpl = &copyDef
+		}
+	}
+	zhTitle := applyAdtyNoticeVars(tpl.TitleZh, vars, args...)
+	zhBody := applyAdtyNoticeVars(tpl.ContentZh, vars, args...)
+	enTitle := applyAdtyNoticeVars(tpl.TitleEn, vars, args...)
+	enBody := applyAdtyNoticeVars(tpl.ContentEn, vars, args...)
 	title := zhTitle
 	if enTitle != "" && enTitle != zhTitle {
 		title = zhTitle + " / " + enTitle
@@ -2015,25 +2329,44 @@ func SavedAdtyBilingualNoticeText(key string) (string, bool) {
 	if en == "" {
 		en = strings.TrimSpace(tpl.TitleEn)
 	}
+	if hasUnfilledNoticePlaceholder([]string{zh, en}, 0) {
+		return "", false
+	}
+	zh = strings.TrimSpace(applyAdtyNoticeVars(zh, nil))
+	en = strings.TrimSpace(applyAdtyNoticeVars(en, nil))
+	var out string
 	switch {
 	case zh != "" && en != "":
-		return zh + "\n\n" + en, true
+		out = zh + "\n\n" + en
 	case zh != "":
-		return zh, true
+		out = zh
 	case en != "":
-		return en, true
+		out = en
 	default:
 		return "", false
 	}
+	if adtyTextHasOutboundSecret(out) {
+		return "", false
+	}
+	return out, true
 }
 
 func hasUnfilledNoticePlaceholder(rawTexts []string, valueCount int) bool {
+	return hasUnfilledNoticePlaceholderWithVars(rawTexts, nil, valueCount)
+}
+
+func hasUnfilledNoticePlaceholderWithVars(rawTexts []string, vars map[string]string, valueCount int) bool {
 	for _, raw := range rawTexts {
 		valueUses := 0
 		for _, token := range adtyNoticePlaceholderPattern.FindAllString(raw, -1) {
 			if token == "{{SystemName}}" {
 				if common.GetSystemName() != "" {
 					continue
+				}
+				if vars != nil {
+					if _, ok := vars["SystemName"]; ok {
+						continue
+					}
 				}
 				return true
 			}
@@ -2042,11 +2375,21 @@ func hasUnfilledNoticePlaceholder(rawTexts []string, valueCount int) bool {
 				if valueUses <= valueCount {
 					continue
 				}
+				if vars != nil {
+					if _, ok := vars["value"]; ok {
+						continue
+					}
+				}
 				return true
 			}
 			name := strings.TrimSuffix(strings.TrimPrefix(token, "{{"), "}}")
 			if name == token {
 				name = strings.TrimSuffix(strings.TrimPrefix(token, "{"), "}")
+			}
+			if vars != nil {
+				if _, ok := vars[name]; ok {
+					continue
+				}
 			}
 			if idx, err := strconv.Atoi(name); err == nil && idx >= 1 && idx <= valueCount {
 				continue

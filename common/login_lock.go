@@ -40,10 +40,59 @@ const (
 )
 
 var (
-	loginFailuresMu        sync.Mutex
-	loginFailures          = map[string]loginFailure{}
-	loginFailuresLastSweep time.Time
+	loginFailuresMu          sync.Mutex
+	loginFailures            = map[string]loginFailure{}
+	loginFailuresLockedCount int
+	loginFailuresLastSweep   time.Time
 )
+
+func sweepExpiredLoginFailuresLocked(now time.Time) {
+	loginFailuresLastSweep = now
+	for name, stored := range loginFailures {
+		if now.After(stored.until) {
+			if stored.count >= LoginLockLimit {
+				loginFailuresLockedCount--
+			}
+			delete(loginFailures, name)
+		}
+	}
+}
+
+func evictUnlockedLoginFailuresLocked(now time.Time, excludeKey string) {
+	// If active lockouts alone already fill capacity and we swept recently,
+	// short-circuit in O(1) instead of rescanning all 50k entries under mutex.
+	if loginFailuresLockedCount >= maxLoginFailureEntries && now.Sub(loginFailuresLastSweep) < loginFailureSweepInterval {
+		return
+	}
+	sweepExpiredLoginFailuresLocked(now)
+	if len(loginFailures) < maxLoginFailureEntries || loginFailuresLockedCount >= len(loginFailures) {
+		return
+	}
+	// Batch-evict unlocked entries only (preferring single-failure noise first)
+	// so random-username floods never evict active lockouts or scan per request.
+	targetSize := maxLoginFailureEntries - maxLoginFailureEntries/10
+	if targetSize < 0 {
+		targetSize = 0
+	}
+	for name, stored := range loginFailures {
+		if len(loginFailures) <= targetSize {
+			break
+		}
+		if stored.count == 1 && name != excludeKey {
+			delete(loginFailures, name)
+		}
+	}
+	if len(loginFailures) >= maxLoginFailureEntries {
+		for name, stored := range loginFailures {
+			if len(loginFailures) <= targetSize {
+				break
+			}
+			if stored.count < LoginLockLimit && name != excludeKey {
+				delete(loginFailures, name)
+			}
+		}
+	}
+}
 
 // LoginLockUserKey returns the canonical per-account lockout identifier.
 // Prefer LoginLockedUser / RecordLoginFailureUser / ClearLoginFailuresUser so
@@ -97,12 +146,26 @@ func loginLockedScoped(key string) bool {
 	}
 	loginFailuresMu.Lock()
 	defer loginFailuresMu.Unlock()
+	now := time.Now()
 	entry, ok := loginFailures[key]
-	if !ok || time.Now().After(entry.until) {
-		delete(loginFailures, key)
-		return false
+	if ok {
+		if now.After(entry.until) {
+			if entry.count >= LoginLockLimit {
+				loginFailuresLockedCount--
+			}
+			delete(loginFailures, key)
+			return false
+		}
+		return entry.count >= LoginLockLimit
 	}
-	return entry.count >= LoginLockLimit
+	if len(loginFailures) >= maxLoginFailureEntries {
+		evictUnlockedLoginFailuresLocked(now, key)
+		if len(loginFailures) >= maxLoginFailureEntries {
+			// Saturated by active lockouts: fail closed before password verification.
+			return true
+		}
+	}
+	return false
 }
 
 func recordLoginFailureScoped(key string) error {
@@ -127,60 +190,30 @@ func recordLoginFailureScoped(key string) error {
 	defer loginFailuresMu.Unlock()
 	now := time.Now()
 	entry, exists := loginFailures[key]
+	wasLocked := exists && entry.count >= LoginLockLimit
 	if exists && now.After(entry.until) {
+		if wasLocked {
+			loginFailuresLockedCount--
+			wasLocked = false
+		}
+		delete(loginFailures, key)
 		entry = loginFailure{}
 		exists = false
 	}
 	if !exists && len(loginFailures) >= maxLoginFailureEntries {
-		loginFailuresLastSweep = now
-		for name, stored := range loginFailures {
-			if now.After(stored.until) {
-				delete(loginFailures, name)
-			}
-		}
-		if len(loginFailures) >= maxLoginFailureEntries {
-			// Batch-evict unlocked entries only (preferring single-failure noise
-			// first) so random-username floods never evict active lockouts or
-			// force O(N) scans on every request.
-			targetSize := maxLoginFailureEntries - maxLoginFailureEntries/10
-			if targetSize < 0 {
-				targetSize = 0
-			}
-			for name, stored := range loginFailures {
-				if len(loginFailures) <= targetSize {
-					break
-				}
-				if stored.count == 1 && name != key {
-					delete(loginFailures, name)
-				}
-			}
-			if len(loginFailures) >= maxLoginFailureEntries {
-				for name, stored := range loginFailures {
-					if len(loginFailures) <= targetSize {
-						break
-					}
-					if stored.count < LoginLockLimit && name != key {
-						delete(loginFailures, name)
-					}
-				}
-			}
-		}
-		// If locked entries alone saturate capacity, fail closed rather than
-		// dropping an active lockout or growing memory unboundedly.
+		evictUnlockedLoginFailuresLocked(now, key)
 		if len(loginFailures) >= maxLoginFailureEntries {
 			return ErrLoginLockUnavailable
 		}
 	}
 	entry.count++
 	entry.until = now.Add(LoginLockWindow)
+	if !wasLocked && entry.count >= LoginLockLimit {
+		loginFailuresLockedCount++
+	}
 	loginFailures[key] = entry
 	if len(loginFailures) > loginFailureSweepThreshold && now.Sub(loginFailuresLastSweep) >= loginFailureSweepInterval {
-		loginFailuresLastSweep = now
-		for name, stored := range loginFailures {
-			if now.After(stored.until) {
-				delete(loginFailures, name)
-			}
-		}
+		sweepExpiredLoginFailuresLocked(now)
 	}
 	return nil
 }
@@ -193,7 +226,12 @@ func clearLoginFailuresScoped(key string) {
 		_ = RDB.Del(context.Background(), loginLockRedisKey(key)).Err()
 	}
 	loginFailuresMu.Lock()
-	delete(loginFailures, key)
+	if stored, ok := loginFailures[key]; ok {
+		if stored.count >= LoginLockLimit {
+			loginFailuresLockedCount--
+		}
+		delete(loginFailures, key)
+	}
 	loginFailuresMu.Unlock()
 }
 
@@ -233,5 +271,6 @@ func ResetLoginFailuresForTest() {
 	loginFailuresMu.Lock()
 	defer loginFailuresMu.Unlock()
 	loginFailures = map[string]loginFailure{}
+	loginFailuresLockedCount = 0
 	loginFailuresLastSweep = time.Time{}
 }

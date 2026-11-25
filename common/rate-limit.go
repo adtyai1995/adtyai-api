@@ -158,9 +158,15 @@ func (l *InMemoryRateLimiter) touchEntry(key string, now time.Time, windowDurati
 	if !ok {
 		if len(l.store) >= maxInMemoryRateLimitEntries {
 			// First reclaim genuinely expired buckets (honoring per-entry TTL).
+			// The LRU is ordered by lastActive, and every entry's effective TTL
+			// is at least l.expirationDuration, so we can break in O(1) once the
+			// tail entry is still within l.expirationDuration.
 			for cur := l.lru.Back(); cur != nil && len(l.store) >= maxInMemoryRateLimitEntries; {
 				prev := cur.Prev()
 				victim := cur.Value.(*rateLimitEntry)
+				if l.expirationDuration > 0 && now.Sub(victim.lastActive) < l.expirationDuration {
+					break
+				}
 				if l.reservations[victim.key] == 0 {
 					vttl := victim.ttl
 					if vttl < l.expirationDuration {

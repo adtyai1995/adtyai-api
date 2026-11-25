@@ -322,6 +322,16 @@ func applyFetchModelsHeaderOverrides(channel *model.Channel, key string, headers
 	return nil
 }
 
+func writeChannelSafeError(c *gin.Context, logPrefix string, err error, fallbackKey string) {
+	var msg *common.Message
+	if errors.As(err, &msg) {
+		common.ApiError(c, msg)
+		return
+	}
+	common.SysError(common.LogText("%s: %s", logPrefix, err.Error()))
+	common.ApiErrorT(c, fallbackKey)
+}
+
 func FetchUpstreamModels(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
@@ -331,13 +341,17 @@ func FetchUpstreamModels(c *gin.Context) {
 
 	channel, err := model.GetChannelById(id, true)
 	if err != nil {
-		common.ApiError(c, err)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			common.ApiErrorT(c, "Channel does not exist")
+			return
+		}
+		writeChannelSafeError(c, "failed to get channel", err, "Failed to fetch channel. Please try again later")
 		return
 	}
 
 	ids, err := fetchChannelUpstreamModelIDs(channel)
 	if err != nil {
-		common.ApiErrorT(c, "Failed to fetch models: {{error}}", map[string]any{"error": err.Error()})
+		writeChannelSafeError(c, "failed to fetch upstream models", err, "Failed to fetch models")
 		return
 	}
 
@@ -351,7 +365,7 @@ func FetchUpstreamModels(c *gin.Context) {
 func FixChannelsAbilities(c *gin.Context) {
 	success, fails, err := model.FixAbility()
 	if err != nil {
-		common.ApiError(c, err)
+		writeChannelSafeError(c, "failed to fix channel abilities", err, "Failed to fix abilities")
 		return
 	}
 	model.InvalidatePricingCache()
@@ -378,7 +392,7 @@ func SearchChannels(c *gin.Context) {
 	if enableTagMode {
 		tags, err := model.SearchTags(keyword, group, modelKeyword, idSort)
 		if err != nil {
-			common.ApiError(c, err)
+			writeChannelSafeError(c, "failed to search channel tags", err, "Failed to fetch tags. Please try again later")
 			return
 		}
 		for _, tag := range tags {
@@ -388,7 +402,7 @@ func SearchChannels(c *gin.Context) {
 					Omit("key").
 					Find(&tagChannels).Error
 				if err != nil {
-					common.ApiError(c, err)
+					writeChannelSafeError(c, "failed to get channels by tag", err, "Failed to fetch channels with this tag. Please try again later")
 					return
 				}
 				channelData = append(channelData, tagChannels...)
@@ -397,7 +411,7 @@ func SearchChannels(c *gin.Context) {
 	} else {
 		channels, err := model.SearchChannels(keyword, group, modelKeyword, idSort, sortOptions)
 		if err != nil {
-			common.ApiError(c, err)
+			writeChannelSafeError(c, "failed to search channels", err, "Failed to fetch channels. Please try again later")
 			return
 		}
 		channelData = channels
@@ -511,7 +525,11 @@ func GetChannel(c *gin.Context) {
 	}
 	channel, err := model.GetChannelById(id, false)
 	if err != nil {
-		common.ApiError(c, err)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			common.ApiErrorT(c, "Channel does not exist")
+			return
+		}
+		writeChannelSafeError(c, "failed to get channel", err, "Failed to fetch channel. Please try again later")
 		return
 	}
 	if channel != nil {
@@ -861,11 +879,15 @@ func AddChannel(c *gin.Context) {
 		} else {
 			cleanKeys := make([]string, 0)
 			for key := range strings.SplitSeq(addChannelRequest.Channel.Key, "\n") {
+				key = strings.TrimSpace(key)
 				if key == "" {
 					continue
 				}
-				key = strings.TrimSpace(key)
 				cleanKeys = append(cleanKeys, key)
+			}
+			if len(cleanKeys) == 0 {
+				common.ApiErrorT(c, "Batch adding requires at least one key")
+				return
 			}
 			addChannelRequest.Channel.ChannelInfo.MultiKeySize = len(cleanKeys)
 			addChannelRequest.Channel.Key = strings.Join(cleanKeys, "\n")
@@ -1448,7 +1470,27 @@ func UpdateChannel(c *gin.Context) {
 			}
 		case "replace":
 			// Disabled state belongs to the old keys, not their replacement indexes.
-			// An empty key leaves the stored keys unchanged.
+			// An empty or whitespace-only key leaves the stored keys unchanged.
+			if strings.TrimSpace(channel.Key) == "" {
+				channel.Key = ""
+			} else if effectiveType == constant.ChannelTypeVertexAi && candidate.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey {
+				array, err := getVertexArrayKeys(channel.Key)
+				if err != nil {
+					common.ApiError(c, err)
+					return
+				}
+				channel.Key = strings.Join(array, "\n")
+			} else {
+				cleanKeys := make([]string, 0)
+				for key := range strings.SplitSeq(channel.Key, "\n") {
+					key = strings.TrimSpace(key)
+					if key == "" {
+						continue
+					}
+					cleanKeys = append(cleanKeys, key)
+				}
+				channel.Key = strings.Join(cleanKeys, "\n")
+			}
 			if channel.Key != "" {
 				channel.ChannelInfo.MultiKeyStatusList = nil
 				channel.ChannelInfo.MultiKeyDisabledReason = nil
@@ -1456,7 +1498,7 @@ func UpdateChannel(c *gin.Context) {
 				info := originChannel.GetOtherInfo()
 				if (originChannel.Status == common.ChannelStatusManuallyDisabled || originChannel.Status == common.ChannelStatusAutoDisabled) &&
 					info["status_reason"] == model.ChannelStatusReasonAllKeysDisabled &&
-					strings.TrimSpace(channel.Key) != "" && hasEnabledMultiKey(&channel.Channel) &&
+					hasEnabledMultiKey(&channel.Channel) &&
 					(len(channel.GetGroups()) > 0 || (channel.Group == "" && len(originChannel.GetGroups()) > 0)) {
 					channel.Status = common.ChannelStatusEnabled
 					maps.Copy(info, channel.GetOtherInfo())

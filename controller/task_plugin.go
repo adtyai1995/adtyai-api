@@ -427,7 +427,9 @@ func DryRunTaskPlugin(c *gin.Context) {
 		output, err = loaded.Engine.CallMember(context.Background(), request.Hook, request.Member, args...)
 	}
 	if err != nil {
-		common.ApiErrorT(c, "Plugin execution failed: {{error}}", map[string]any{"error": err.Error()})
+		safeErr := common.SanitizeOutboundError(err)
+		common.SysError(common.LogText("task plugin %s dryrun failed: %s", c.Param("key"), safeErr.Error()))
+		common.ApiErrorT(c, "Plugin execution failed: {{error}}", map[string]any{"error": safeErr.Error()})
 		return
 	}
 	common.ApiSuccess(c, output)
@@ -442,12 +444,14 @@ func DeleteTaskPluginVersion(c *gin.Context) {
 			common.ApiErrorT(c, "Override plugin version not found; factory plugins cannot be deleted")
 			return
 		}
-		common.ApiError(c, lookupErr)
+		common.SysError(common.LogText("failed to load task plugin version %s@%s: %s", key, version, lookupErr.Error()))
+		common.ApiErrorT(c, "Operation failed")
 		return
 	}
 	channels, inFlight, usageErr := model.GetTaskPluginUsage(key)
 	if usageErr != nil {
-		common.ApiError(c, usageErr)
+		common.SysError(common.LogText("failed to check task plugin usage %s: %s", key, usageErr.Error()))
+		common.ApiErrorT(c, "Operation failed")
 		return
 	}
 	needsConfirm := inFlight > 0 || (plugin.Active && !taskPluginHasFactory(key) && len(channels) > 0)
@@ -461,7 +465,8 @@ func DeleteTaskPluginVersion(c *gin.Context) {
 			common.ApiErrorT(c, "Override plugin version not found; factory plugins cannot be deleted")
 			return
 		}
-		common.ApiError(c, err)
+		common.SysError(common.LogText("failed to delete task plugin version %s@%s: %s", key, version, err.Error()))
+		common.ApiErrorT(c, "Operation failed")
 		return
 	}
 	if err = syncTaskPluginsOnceContext(c.Request.Context()); err != nil {
@@ -601,7 +606,7 @@ func SetTaskPluginStatus(c *gin.Context) {
 			return
 		}
 		var existingOption model.Option
-		hadOptionRow := model.DB != nil && model.DB.Where("key = ?", setting.TaskPluginDisabledFactoryKeysKey).First(&existingOption).Error == nil
+		hadOptionRow := model.DB != nil && model.DB.Where(&model.Option{Key: setting.TaskPluginDisabledFactoryKeysKey}).First(&existingOption).Error == nil
 
 		keys := previousKeys
 		if *request.Enabled {
@@ -626,14 +631,14 @@ func SetTaskPluginStatus(c *gin.Context) {
 		}
 		restoreFactoryOption = func() {
 			if hadOptionRow {
-				_ = model.DB.Model(&model.Option{}).Where("key = ?", setting.TaskPluginDisabledFactoryKeysKey).Update("value", existingOption.Value).Error
+				_ = model.DB.Model(&model.Option{}).Where(&model.Option{Key: setting.TaskPluginDisabledFactoryKeysKey}).Update("value", existingOption.Value).Error
 				restored := setting.ParseTaskPluginDisabledFactoryKeys(existingOption.Value)
 				_ = setting.SetTaskPluginDisabledFactoryKeysOption(restored)
 				jsplugin.DefaultRegistry.SetDisabledFactoryKeys(restored)
 				return
 			}
 			if model.DB != nil {
-				_ = model.DB.Where("key = ?", setting.TaskPluginDisabledFactoryKeysKey).Delete(&model.Option{}).Error
+				_ = model.DB.Where(&model.Option{Key: setting.TaskPluginDisabledFactoryKeysKey}).Delete(&model.Option{}).Error
 			}
 			restored := setting.ParseTaskPluginDisabledFactoryKeys(previousEncoded)
 			_ = setting.SetTaskPluginDisabledFactoryKeysOption(restored)

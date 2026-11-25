@@ -213,6 +213,13 @@ func UpdateUserSetting(userId int, setting dto.UserSetting) error {
 		}
 		setting.GotifyToken = sealed
 	}
+	if bu := strings.TrimSpace(setting.BarkUrl); bu != "" && !strings.HasPrefix(bu, adtySecretPrefix) {
+		sealed, err := SealAdtyPurposeSecret(fmt.Sprintf("user_notify:%d:bark_url", userId), bu)
+		if err != nil {
+			return err
+		}
+		setting.BarkUrl = sealed
+	}
 	settingBytes, err := common.Marshal(setting)
 	if err != nil {
 		return err
@@ -389,7 +396,7 @@ func lockNormalizedEmail(tx *gorm.DB, email string, siteID int) error {
 		}
 	case common.UsingMainDatabase(common.DatabaseTypeMySQL):
 		var ids []int
-		if err := tx.Raw("SELECT id FROM users WHERE site_id = ? AND email = ? FOR UPDATE", siteID, email).Scan(&ids).Error; err != nil {
+		if err := lockForUpdate(tx).Unscoped().Model(&User{}).Select("id").Where("site_id = ? AND LOWER(email) = ?", siteID, email).Order("id").Pluck("id", &ids).Error; err != nil {
 			return err
 		}
 	}

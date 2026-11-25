@@ -26,7 +26,6 @@ type PricingPluginVariant struct {
 }
 
 type Pricing struct {
-	BillingDisplayMultiplier string                               `json:"billing_display_multiplier,omitempty"` // Read-only model/site factor; expressions remain unchanged.
 	BillingPluginVariants    []PricingPluginVariant               `json:"billing_plugin_variants,omitempty"`
 	ModelName                string                               `json:"model_name"`
 	Description              string                               `json:"description,omitempty"`

@@ -35,8 +35,8 @@
 - **公式**：
   - 加赠 = 面额 × rate（8 位小数）。
   - 入账额度 = (面额 + 加赠) × QuotaPerUnit，向下取整。
-  - USDT 应付 = 面额 × 分组充值倍率（8 位）；下单后改成网关返回的实际应付。
-  - 支付宝、微信应付 = 面额 × 人民币单价 `Price`（默认 7.3）× 分组充值倍率（2 位）。
+  - USDT 应付 = 面额（8 位，分组充值倍率已退役，固定按 1 计算）；下单后改成网关返回的实际应付。
+  - 支付宝、微信应付 = 面额 × 人民币单价 `Price`（默认 7.3，2 位；分组充值倍率已退役，固定按 1 计算）。
   - 返佣只按面额算，不含任何加赠。
 - **保障冻结与待履约**：下单/入账时按「站长出资的加赠」从收益钱包冻结，不够再用 Root 授权的保证金（流水 `gift_reserve`）；取消、过期、替换时按原路释放（`gift_release`）；客户实际消费赠金时，在结算事务中按原订单出资比例同时扣减原钱包的账面余额和冻结金额（`gift_spend`），未用保障继续冻结；预扣未用部分的释放不产生赠金支出（`service/adty_method_bonus.go`、`service/adty_gift_fulfillment.go`、`model/adty_fund_allocation.go`）。如果客户在订单取消或过期之后才付款、而站长当时保障不足：**本金照常入账，赠金记成「待履约」**（`adty_gift_fulfillments`，状态 `pending`），不可消费；站长把收益转进保证金（`POST /api/adty/site/wallets/earning-to-margin`）后，系统立即重取保障并补发（`service/adty_gift_fulfillment.go:340-472`、`service/adty_site_finance.go:420-425`）。整笔退款会把 pending 取消。
 - **分站客户**：只用主站已启用支付方式下站长自己启用的本站规则；站长没设或没开就不送，不存在「回落到主站规则」。
@@ -200,14 +200,14 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 **规则**：
 
-- **成立**：站长在本站设置一级返佣比例（0–100%）、待覆盖阈值（USD）和观察天数后可开启。每个新订单冻结当时的邀请人、比例、阈值和观察天数。先冻结本站收益。收益不够时，只在 Root 已授权的保证金周期额度内冻结。两边都不够就保持待覆盖，这时不能转余额，也不能提现。观察期从覆盖完成起算，零天表示足额覆盖后立即可用。
+- **成立**：站长在本站设置一级返佣比例（0–30%）、待覆盖阈值（USD）和观察天数后可开启。每个新订单冻结当时的邀请人、比例、阈值和观察天数。先冻结本站收益。收益不够时，只在 Root 已授权的保证金周期额度内冻结。两边都不够就保持待覆盖，这时不能转余额，也不能提现。观察期从覆盖完成起算，零天表示足额覆盖后立即可用。
 - **转站内余额**：扣掉对应冻结，并在同一事务里按 1 USD = 500000 给邀请人加可消费额度。
 - **现金提现**：可转入余额；外部打款仅为支付宝或 USDT。只提交申请不释放冻结。待审驳回、申请人在主站撤销时限内取消、审核通过后打款失败，冻结都留着。站长标记打款完成后，冻结退回原来的收益或保证金。站点营业期间审核人为该站站长；站点关闭后，存量分站客户邀请佣金提现由具备主站推广读取、审核与打款权限的主站推广财务席位（含 Root）承接审核与打款（`/api/user/admin/referral/closed-site-withdrawals`）。
 - **拆开用**：转余额的部分扣冻结，外部打款的部分释放冻结，两边按金额分别记账。
 - **退款**：按已完成本金比例。还冻着的释放；已转余额的冲回用户余额；已外部打款并释放的，不再扣站长，只记追偿。
 - **未设参数**：站长未配置本站最低提现额、USDT 手续费及人民币汇率时，现金方式拒绝。不抄 `adty_site_withdraw.*`，也不调用 `Referral.CreateWithdrawal`。
 
-**后台**：站长在站长中心「邀请佣金提现」设置本站规则，按状态筛选和分页审核本站客户的申请。客户在推广页（`/referral`）申请。
+**后台**：站长在站长中心「推广管理」设置本站规则，按状态筛选和分页审核本站客户的申请。客户在推广页（`/referral`）申请。
 
 **表和接口**：`adty_site_invite_commissions`、`adty_site_invite_withdrawals`、`adty_site_invite_withdrawal_items`。客户 `GET`/`POST /api/adty/site-commissions/withdrawals`；站长 `GET /api/adty/site/commission-withdrawals`、`POST /api/adty/site/commission-withdrawals/:id/review`、`POST /api/adty/site/commission-withdrawals/:id/paid`；关站后主站承接 `GET /api/user/admin/referral/closed-site-withdrawals`、`POST .../review|failed|paid`（旧全局 `PUT /api/adty/admin/site-invite-withdraw/rules` 已退役返回 410 Gone，由各分站独立配置）。
 
@@ -294,7 +294,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 **站长自用功能已全面退役（返回 410 Gone）**：站长账号为纯管理端账号，不再具备自用消费或 API 能力。原站长自用在线充值（`owner_self_use_topup`）、站长自用 API Key、可用收益转本人自用余额以及站长本人消费兑换码均已退役返回 410 Gone（涉及 `/api/adty/site/wallets/self-use`、`/api/adty/site/wallets/earning-to-personal`、`/api/adty/site/self-use/keys|transfers|usage` 等写入口）。历史已产生的自用订单、流水与日结单列项仅保留只读兼容展示，历史自用在线充值订单的退款仍由主站财务核查处理。
 
-站长中心（`/site-owner/<分区>`，侧边栏只对站长显示；原合并「收益」页已拆分为独立菜单）：概览（`/site-owner/overview`，收益数字、近 30 天、趋势）；客户（`/site-owner/customers`，列表、精确查找、详情：请求记录、充值、密钥、举报；不再提供按客户单独定价）；团队（`/site-owner/teams`）；订单管理（`/site-owner/orders`）；定价（`/site-owner/pricing`，单一全站售价倍率 `1.0x–10.0x` 与修订历史）；充值赠送（`/site-owner/bonus`）；邀请佣金提现（`/site-owner/commissions`）；收益明细（`/site-owner/earnings`，含 CSV 导出，邮箱一律打码）；收益提现（`/site-owner/withdrawals`，USDT 提现）；日结单（`/site-owner/settlements`）；站长钱包（`/site-owner/wallets`，收益钱包、保证金钱包、保证金充值码核销、收益转保证金、在线充值保证金与钱包流水）；兑换码（`/site-owner/vouchers`，仅签发 `site_customer` 兑换码；仅 Root 签发的 `site_margin` 称为「保证金充值码」）；公告（`/site-owner/notices`）；员工账号（`/site-owner/staff`）；工单管理（`/site-owner/tickets`）；邮件配置（`/site-owner/mail`）；站点设置（`/site-owner/settings`，品牌和 Logo、自定义域名、独立多语言条款、SEO 开关）；历史站点账号（`/site-owner/history`，有归档站点时显示）。
+站长中心（`/site-owner/<分区>`，侧边栏只对站长显示；原合并「收益」页已拆分为独立菜单）：概览（`/site-owner/overview`，收益数字、近 30 天、趋势）；客户（`/site-owner/customers`，列表、精确查找、详情：请求记录、充值、密钥、举报；不再提供按客户单独定价）；团队（`/site-owner/teams`）；订单管理（`/site-owner/orders`）；定价（`/site-owner/pricing`，单一全站售价倍率 `1.0x–10.0x` 与修订历史）；充值赠送（`/site-owner/bonus`）；推广管理（`/site-owner/commissions`）；收益明细（`/site-owner/earnings`，含 CSV 导出，邮箱一律打码）；收益提现（`/site-owner/withdrawals`，USDT 提现）；日结单（`/site-owner/settlements`）；站长钱包（`/site-owner/wallets`，收益钱包、保证金钱包、保证金充值码核销、收益转保证金、在线充值保证金与钱包流水）；兑换码（`/site-owner/vouchers`，仅签发 `site_customer` 兑换码；仅 Root 签发的 `site_margin` 称为「保证金充值码」）；公告（`/site-owner/notices`）；员工账号（`/site-owner/staff`）；工单管理（`/site-owner/tickets`）；邮件配置（`/site-owner/mail`）；站点设置（`/site-owner/settings`，品牌和 Logo、自定义域名、独立多语言条款、SEO 开关）；历史站点账号（`/site-owner/history`，有归档站点时显示）。
 
 改全站售价倍率、改充值赠送、签发/冻结/作废兑换码、USDT 提现、修改邮件配置、删自定义域名（及清理历史发件域名），都要重新验证身份（二次验证支持 2FA/TOTP、邮箱验证码或密码；前端 Passkey 已退役，产品不对外提供 Passkey 登录与验证；验证一次只能用一次，绑定具体操作和对象）。
 
@@ -325,7 +325,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 - **流程**：站长在站点设置里成对填写网站子域名与 API 子域名（不能是根域名，两者不能相同，不能在我们的根域名、主站域名、CNAME 目标、回源主机名下）→ 后端先为两个域名生成归属校验令牌并进入 `pending_verify` 状态，站长添加对应的归属验证 DNS TXT 记录 → 验证归属通过后，后端调 Cloudflare 建自定义主机名（HTTP 验证、DV 证书），3 秒后再查一次取验证记录 → 站长中心显示「把这个域名 CNAME 到 `cname_target`」和要加的 TXT 记录 → 主节点每 5 分钟查一次，主机名和证书都是 active 才启用；72 小时还不通标失败，站长重新提交就是重试。
 - **Turnstile**：域名启用后，按 `turnstile_widgets` 的顺序登记进第一个还有空位的 widget（每个 widget 最多 10 个域名）；名额满了域名照常能用，之后每 5 分钟重试登记。`/api/status` 按当前站点返回对应的 site key，校验时用对应的 secret，并核对 Cloudflare 返回的主机名。
 - `/api/status` 的 `server_address` 优先使用本站已激活的 `role=base_url` 域名，否则使用 `api-s<site_id>.<root_domain>`。原有主机名发生冲突时以站长后台返回的地址为准。同站 Key 换入口后继续按原个人或团队账户计费（原站长自用 Key 已退役返 410）。
-- 分站首份 HTML 根据请求主机名提供站名、标题与图标。未配置 Logo 时使用站名。外部客服使用本站联系方式，缺省时通过个人中心的工单联系本站。
+- 分站首份 HTML 根据请求主机名提供站名、标题与图标。未配置 Logo 时使用站名。外部客服使用本站联系方式，缺省时通过支持中心（`/support`）联系本站。
 - 切换前在现有版本先绑定独立 API 自定义域名并验证 DNS、TLS、模型列表、流式调用及在途任务查询，再向客户公布 Base URL 和切换日期。使用新默认域名的部署可先将专用主机引流到新版节点，迁移完成后升级网站入口。CDN 保留原始 Host，仅缓存静态资源，账户、支付及模型调用绕过共享缓存，流式接口支持 SSE/WebSocket。
 - 表：`adty_site_domains`（`role` 列）。接口：`GET /api/adty/site/domains`、`POST /api/adty/site/domains/pair`（推荐成对绑定）、`POST /api/adty/site/domains`（兼容单槽位接口，受每 role 上限 1 约束），`DELETE /api/adty/site/domains/:id`（要重新验证）。
 - 2026-11-01 还没用真实的 Cloudflare 账号测过，代码按官方 API 文档写，上线前按任务 11.0 实测。
@@ -404,7 +404,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 - 每个分组有系统生成的固定 ID（`g` 加 4 位随机字符）。正式显示名和说明只有简体中文和英文，稳定 ID 不翻译。旧的其他语言字段可以留存，但不作为正式语言。用户、密钥、渠道里存的都是 ID，后台改显示名不影响他们；前台到处只显示显示名，不露 ID。
 - 改法：在后台原来的分组倍率表上编辑显示名（系统设置 → 计费）。上游的 JSON 编辑模式关掉了，保存时校验：出现未知的分组 ID、或者删掉了还在用的分组，都会被拒绝。
-- 迁移和删除：可以把一个分组的用户、密钥、渠道整体迁到另一个分组，迁完才能删（`POST /api/adty/admin/groups/:id/migrate`、`DELETE /api/adty/admin/groups/:id`）。
+- 迁移和删除：可以把一个分组的用户、密钥、渠道整体迁到另一个分组（`POST /api/adty/admin/groups/:id/migrate`）；也可直接删除任意未删除分组（含 `default`，`DELETE /api/adty/admin/groups/:id`），只要系统里还剩下至少 1 个其他未删除分组。
 - 接口：公开 `GET /api/adty/groups/display`（已删除分组的名字也返回给登录用户）；后台 `GET`、`POST /api/adty/admin/groups`、`PUT /api/adty/admin/groups/:id`，都只有超级管理员。
 
 任务 2.1–2.5。
@@ -626,7 +626,7 @@ Root 在支付设置的 General 页新增、编辑、停用或删除支付场景
 
 站长中心的员工页签支持独立账号创建、姓名/角色/自定义权限、启停、改密和删除，以及带员工/客户编号的分页操作记录。客服、财务、运营、管理四种角色默认均只读，客户安全操作必须独立勾选；明确的空权限数组不授予任何客户权限。创建不走注册赠金，不生成客户归属关系。员工管理需站长本人、单次且绑定操作与目标的安全证明和当前版本，事务内重新验证当前站长身份与站点状态。
 
-员工使用现有登录进入 `/site-staff`，逐请求从 SQL 检查成员、用户状态/授权版本、本站当前站长和站点状态。客户列表/余额/充值/消费权限分别控制，且与平台可见性取交集；邮箱始终遮罩，客户 Key 不返回。充值和消费只读取加入本站之后的安全投影，消费不含请求体、Key/Token 名、IP、渠道或原始附加数据。读取须成功写入脱敏审计后才返回数据。站主中心标签栏在窄屏换行并自动增高，员工管理按钮保持可点击。
+员工使用现有登录进入 `/site-staff`，逐请求从 SQL 检查成员、用户状态/授权版本、本站当前站长和站点状态。客户列表/余额/充值/消费权限分别控制，且与平台可见性取交集；邮箱始终遮罩，客户 Key 不返回。充值和消费只读取加入本站之后的安全投影，消费不含请求体、Key/Token 名、IP、渠道或原始附加数据。读取须成功写入脱敏审计后才返回数据。
 
 修改权限、禁用、恢复、改密和删除均在同一审计事务内递增授权版本，旧 JWT 和 refresh 不能恢复；删除保留员工身份墓碑。管理及员工端点只接受会话，PAT 不可替代；员工默认拒绝白名单外的后台接口，钱包、提现、调额、客户 Key、站长/全局管理和跨站访问始终禁止。缓存 schema 5 包含员工标记，局部更新遇旧 schema 会丢弃旧缓存并重新从 SQL 读取。
 

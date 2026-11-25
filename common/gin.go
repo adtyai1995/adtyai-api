@@ -7,10 +7,13 @@ import (
 	"maps"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/QuantumNous/new-api/constant"
@@ -298,6 +301,9 @@ func ApiError(c *gin.Context, err error) {
 // ApiErrorStatus is ApiError with another HTTP status. fields adds response
 // fields such as a stable error code or data.
 func ApiErrorStatus(c *gin.Context, status int, err error, fields ...gin.H) {
+	if err == nil {
+		err = NewMessage("Operation failed")
+	}
 	body := gin.H{
 		"success": false,
 		"message": err.Error(),
@@ -305,11 +311,109 @@ func ApiErrorStatus(c *gin.Context, status int, err error, fields ...gin.H) {
 	var message *Message
 	if errors.As(err, &message) {
 		maps.Copy(body, message.Fields())
+	} else if isInternalInfraError(err) {
+		method, path := "", ""
+		if c != nil {
+			if c.Request != nil {
+				method = c.Request.Method
+			}
+			path = c.FullPath()
+		}
+		SysError(LogText("api error redacted (%s %s): %s", method, path, err.Error()))
+		fallback := NewMessage("Operation failed")
+		body["message"] = fallback.Error()
+		maps.Copy(body, fallback.Fields())
 	}
 	for _, extra := range fields {
 		maps.Copy(body, extra)
 	}
 	c.JSON(status, body)
+}
+
+func isInternalInfraError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return true
+	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return true
+	}
+	var linkErr *os.LinkError
+	if errors.As(err, &linkErr) {
+		return true
+	}
+	var syscallErr syscall.Errno
+	if errors.As(err, &syscallErr) {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(err.Error()))
+	if lower == "eof" || lower == "unexpected eof" || strings.HasSuffix(lower, ": eof") || strings.Contains(lower, "unexpected eof") {
+		return true
+	}
+	for _, marker := range []string{
+		"sqlstate",
+		"sql:",
+		"pq:",
+		"gorm:",
+		"redis:",
+		"dial tcp",
+		"dial unix",
+		"connection refused",
+		"connection reset",
+		"broken pipe",
+		"i/o timeout",
+		"tls:",
+		"x509:",
+		"runtime error:",
+		"invalid memory address",
+		"nil pointer",
+		"context canceled",
+		"context deadline exceeded",
+		"failed to connect to",
+		"relation \"",
+		"column \"",
+		"syntax error at or near",
+		"duplicate key value",
+		"violates foreign key",
+		"violates unique constraint",
+		"violates check constraint",
+		"violates not-null constraint",
+		"deadlock detected",
+		"database is locked",
+		"no such table",
+		"no such column",
+		"error 1062",
+		"error 1064",
+		"error 1146",
+		"error 1213",
+		"error 1451",
+		"error 1452",
+		"permission denied",
+		"no such file or directory",
+		"cannot assign requested address",
+		"too many open files",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // ApiErrorT responds with a web console message; key is the English source

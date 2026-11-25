@@ -28,7 +28,10 @@ import { Label } from '@/components/ui/label'
 import { useAdtySite } from '@/features/adty-site/api'
 import { api } from '@/lib/api'
 import { isHttpUrl } from '@/lib/content-format'
-import { getServerErrorMessage } from '@/lib/server-error-message'
+import {
+  getServerErrorMessage,
+  getServerMessage,
+} from '@/lib/server-error-message'
 
 export function VoucherRedeemCard(props: { onRedeemed: () => void }) {
   const { t } = useTranslation()
@@ -53,10 +56,12 @@ export function VoucherRedeemCard(props: { onRedeemed: () => void }) {
       const body = response.data as {
         success?: boolean
         message?: string
+        message_key?: string
+        message_params?: Record<string, unknown>
         data?: { trade_no?: string }
       }
       if (!body.success) {
-        setError(t(body.message || 'Voucher code is invalid'))
+        setError(getServerMessage(body) || t('Voucher code is invalid'))
         return
       }
       setTradeNo(body.data?.trade_no ?? '')

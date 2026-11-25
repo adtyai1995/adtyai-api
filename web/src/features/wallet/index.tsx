@@ -23,7 +23,6 @@ import { useTranslation } from 'react-i18next'
 
 import { ErrorState } from '@/components/error-state'
 import { SectionPageLayout } from '@/components/layout'
-import { RichContent } from '@/components/rich-content'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { useAdtySite } from '@/features/adty-site/api'
@@ -105,7 +104,9 @@ export function Wallet(props: WalletProps) {
               <Megaphone aria-hidden='true' />
               <AlertTitle>{t('Wallet Announcement')}</AlertTitle>
               <AlertDescription className='mt-1'>
-                <RichContent breaks content={walletNotice} className='text-sm' />
+                <p className='whitespace-pre-wrap break-words text-sm'>
+                  {walletNotice}
+                </p>
               </AlertDescription>
             </Alert>
           )}

@@ -709,12 +709,18 @@ func VerifySecurityInput(identity AuthIdentity, input VerificationInput) (*Secur
 		if common.PasswordLoginEncryptionEnabled {
 			password, err = common.DecryptPassword(input.PasswordEncrypted, input.EncryptionKeyID)
 			if err != nil {
-				_ = common.RecordLoginFailureUser(user.Id)
+				if recErr := common.RecordLoginFailureUser(user.Id); recErr != nil {
+					common.SysError(common.LogText("security verification login failure lock unavailable: %s", recErr.Error()))
+					return nil, model.ErrPasswordVerificationLocked
+				}
 				return nil, ErrVerificationFailed
 			}
 		}
 		if password == "" || user.Password == "" || !common.ValidatePasswordAndHash(password, user.Password) {
-			_ = common.RecordLoginFailureUser(user.Id)
+			if recErr := common.RecordLoginFailureUser(user.Id); recErr != nil {
+				common.SysError(common.LogText("security verification login failure lock unavailable: %s", recErr.Error()))
+				return nil, model.ErrPasswordVerificationLocked
+			}
 			return nil, ErrVerificationFailed
 		}
 		common.ClearLoginFailuresUser(user.Id)
@@ -785,7 +791,11 @@ func CheckLoginTwoFactor(twoFA *model.TwoFA, code string) (string, int64, error)
 	}
 	code = strings.TrimSpace(code)
 	if _, numericErr := common.ValidateNumericCode(code); numericErr == nil {
-		step, ok := common.MatchTOTPStep(twoFA.Secret, code, time.Now())
+		plainSecret, err := twoFA.OpenSecret(nil)
+		if err != nil {
+			return "", 0, err
+		}
+		step, ok := common.MatchTOTPStep(plainSecret, code, time.Now())
 		if !ok {
 			if err := twoFA.IncrementFailedAttempts(); err != nil {
 				return "", 0, err

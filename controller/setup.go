@@ -50,7 +50,7 @@ func getPersistedSetupOptions() (selfUse bool, demoSite bool, ok bool) {
 		return false, false, false
 	}
 	var opts []model.Option
-	if err := model.DB.Where("key IN ?", []string{"SelfUseModeEnabled", "DemoSiteEnabled"}).Find(&opts).Error; err != nil {
+	if err := model.DB.Where(map[string]any{"key": []string{"SelfUseModeEnabled", "DemoSiteEnabled"}}).Find(&opts).Error; err != nil {
 		return false, false, false
 	}
 	var hasSelfUse, hasDemo bool

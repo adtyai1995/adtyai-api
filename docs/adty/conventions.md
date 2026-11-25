@@ -59,8 +59,8 @@
 - （v2.5）我们写的、要用数据库的测试一律连 PostgreSQL，统一用各包的 `adtyTestDB(t)`（文件 `adty_testhelper_test.go`，任务 2.1 起）：
   - 连接串读环境变量 `ADTY_TEST_PG_DSN`，没设就 `t.Skip` 并说明原因。按 `[R-30]`，GitHub Actions CI（`.github/workflows/ci.yml`）仅运行轻量编译与静态检查（后端 `go vet`/`go build`，前端 typecheck/build/i18n/lint/copyright/doc-refs），不连数据库跑测试；本地 PostgreSQL 18 测试与门禁由 `scripts/adty/check.sh` 执行（跑后端时要求 `ADTY_TEST_PG_DSN` 有值，因此门禁里数据库测试不会被跳过）。验收读取连接实例的 `server_version_num` 并记录，要求 180000 <= server_version_num < 190000，逐一核对实际连接及具名断言。
   - 每个测试建一个随机名字的 schema，连接时用 `search_path` 指向它，测试结束删掉。`go test` 会同时跑多个包，各测试互不干扰。
-  - model 和 service 包已经有 TestMain（model/task_cas_test.go:19、service/task_billing_test.go:30），`adtyTestDB` 在单个测试里换库、用完换回，写法参照 service/text_quota_test.go:78-82。换库时调 `common.SetDatabaseTypes(PostgreSQL, PostgreSQL)` 并重跑列名初始化：上游的 `initCol` 未导出（model/main.go:43），在 `model/adty_testsupport.go` 加一个导出包装；恢复时把数据库类型和列名一起还原。
-- 上游自己的测试照旧用它们的内存 SQLite，我们改过的上游代码不能让它们失败（执行层决定 11 的例外）。钉住上游行为的特征测试（任务 1.1）也沿用上游包里现成的测试库。任务 1.6 的 `TestAdtyDeletedSchemaAbsent` 跑的是上游的完整迁移，也用内存 SQLite：删订阅时去掉的 SQLite 专用建表语句只在 SQLite 上执行，换成 PostgreSQL 就查不到它们回来没有；而且 P1 时 `adtyTestDB` 还没有。
+  - 单个测试若临时切换数据库，应在测试内切库并在清理阶段恢复数据库类型与列名状态；历史上基于 `adtyTestDB` 的测试辅助及上游测试文件已按 `[R-30]` 清理并登记在 [deleted-paths.txt](deleted-paths.txt)，后续按需新增本地数据库测试时仍遵守按测试隔离 schema 并完整还原的约束。
+- 历史自动化测试文件（含原上游内存 SQLite 单测与早期删表回归测试）已按 `[R-30]` 统一清理并登记在 [deleted-paths.txt](deleted-paths.txt)；后续如有新增特征测试或合并上游时带回的测试，不得破坏已改动的上游代码，也不作为 ADTY PostgreSQL 18 验收替代证据。
 - 前端测试放模块内的 `__tests__/`；新源文件带 AGPL 文件头（`bun run copyright`）。检查只要求文件头里有 QuantumNous、AGPL 和 `support@quantumnous.com`，空行和换行不影响构建。断言文件存在与否用 `node:fs`（`readFileSync`、`existsSync` 加 `import.meta.dirname`，上游 `theme-boot-script.test.ts:19-31` 就是这样写的），不用 `import.meta.glob`（类型检查不认）。
 - 每个任务结束都跑 `scripts/adty/check.sh`（任务 0.3），不允许新增失败；`docs/adty/baseline.md` 里记录的基线失败不算。
 

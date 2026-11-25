@@ -378,8 +378,10 @@ func TestAdtyEpayChannel(c *gin.Context) {
 		cancel()
 		item := adtyEpayTestResult{Method: method.Method}
 		if err != nil {
-			item.Message = err.Error()
-			if adtyEpayMethodNotOpen(err) {
+			safeErr := common.SanitizeOutboundError(err, channel.MerchantKey, channel.MerchantPrivateKey)
+			common.SysError(common.LogText("epay channel %d method %s test failed: %s", channel.Id, method.Method, safeErr.Error()))
+			item.Message = safeErr.Error()
+			if adtyEpayMethodNotOpen(safeErr) {
 				_ = model.SetAdtyEpayMethodEnabled(method.Id, false)
 				item.Disabled = true
 			}

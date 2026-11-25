@@ -47,6 +47,9 @@ export interface AuthUser {
   linux_do_id?: string
   language?: string
   setting?: Record<string, unknown> | string
+  has_webhook_secret?: boolean
+  has_bark_url?: boolean
+  has_gotify_token?: boolean
   stripe_customer?: string
   sidebar_modules?: string
   permissions?: UserPermissions

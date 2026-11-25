@@ -246,8 +246,10 @@ func getModelFromRequest(c *gin.Context) (*ModelRequest, error) {
 		}
 	}
 	mediaType := common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))
-	if mediaType == "" || mediaType == "application/json" ||
-		(mediaType != gin.MIMEPOSTForm && mediaType != gin.MIMEMultipartPOSTForm) {
+	if mediaType == gin.MIMEPOSTForm {
+		return nil, errors.New("Content-Type must be application/json")
+	}
+	if common.IsJSONMediaType(mediaType) || mediaType != gin.MIMEMultipartPOSTForm {
 		return getModelFromJSONBody(c)
 	}
 

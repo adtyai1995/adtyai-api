@@ -1163,7 +1163,13 @@ func sendAdtySiteCloseMigrationMailWithOptions(site *model.AdtySite, retryOnly b
 			if adtyCloseMailOutcomeUnknown(claimed.Provider, deliverErr) {
 				nextStatus = "review"
 			}
-			lastError = truncateText(deliverErr.Error(), 1000)
+			common.OptionMapRWMutex.RLock()
+			mailSecrets := []string{common.SMTPToken, common.OptionMap["ResendApiKey"]}
+			if common.SMTPToken != "" {
+				mailSecrets = append(mailSecrets, "\x00"+common.SMTPAccount+"\x00"+common.SMTPToken)
+			}
+			common.OptionMapRWMutex.RUnlock()
+			lastError = truncateText(common.SanitizeOutboundError(deliverErr, mailSecrets...).Error(), 1000)
 		}
 		if err := model.DB.Transaction(func(tx *gorm.DB) error {
 			update := tx.Model(&model.AdtySiteCloseMailRecipient{}).Where("id = ? AND status = ? AND attempt_count = ?", claimed.Id, AdtySiteCloseMailSending, claimed.AttemptCount).

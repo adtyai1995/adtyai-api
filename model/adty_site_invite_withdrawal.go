@@ -84,7 +84,7 @@ func backfillSiteInviteWithdrawals(db *gorm.DB) error {
 	minutes := int64(adty_setting.GetReferralSetting().CancelWindowMinutes)
 	if db.Migrator().HasTable(&Option{}) {
 		var opt Option
-		result := db.Where("key = ?", "adty_referral_setting.cancel_window_minutes").Limit(1).Find(&opt)
+		result := db.Where(&Option{Key: "adty_referral_setting.cancel_window_minutes"}).Limit(1).Find(&opt)
 		if result.Error != nil {
 			return result.Error
 		}

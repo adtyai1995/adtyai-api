@@ -61,7 +61,12 @@ const originalGet = api.get.bind(api)
 api.get = ((url: string, config: ApiRequestConfig = {}) => {
   if (config.disableDuplicate) return originalGet(url, config)
 
-  const params = config.params ? JSON.stringify(config.params) : '{}'
+  let params = '{}'
+  if (config.params instanceof URLSearchParams) {
+    params = config.params.toString()
+  } else if (config.params) {
+    params = JSON.stringify(config.params)
+  }
   const sessionSID = useAuthStore.getState().auth.session?.sid || 'anonymous'
   const key = `${sessionSID}:${url}?${params}`
   const existingRequest = inFlightGet.get(key)

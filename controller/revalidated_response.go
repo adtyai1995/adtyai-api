@@ -32,10 +32,8 @@ func serveRevalidatedJSON(c *gin.Context, content string) {
 		Data:    content,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.SysError(common.LogText("failed to marshal public content response: %s", err.Error()))
+		common.ApiErrorStatus(c, http.StatusInternalServerError, common.NewMessage("Operation failed"))
 		return
 	}
 

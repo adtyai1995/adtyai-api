@@ -106,11 +106,11 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
       if (id in pendingRequests.current) return pendingRequests.current[id]
 
       const request = (async () => {
-        const proofToken = await obtainApiKeyReadProof({ token_id: id })
-        if (!proofToken) return null
-
-        setLoadingKeys((prev) => ({ ...prev, [id]: true }))
         try {
+          const proofToken = await obtainApiKeyReadProof({ token_id: id })
+          if (!proofToken) return null
+
+          setLoadingKeys((prev) => ({ ...prev, [id]: true }))
           const res = await fetchTokenKey(id, proofToken)
           if (res.success && res.data?.key) {
             const fullKey = `sk-${res.data.key}`
@@ -125,6 +125,7 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
         } finally {
           delete pendingRequests.current[id]
           setLoadingKeys((prev) => {
+            if (!(id in prev)) return prev
             const next = { ...prev }
             delete next[id]
             return next

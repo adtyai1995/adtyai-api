@@ -418,7 +418,7 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 		// {base}/api/v3/...，见 relay/channel/volcengine 的 GetRequestURL），
 		// 不存在 /v1/models 端点。原拼接会导致「获取模型列表」固定 404 失败。
 		if plan, ok := constant.ChannelSpecialBases[baseURL]; ok && plan.OpenAIBaseURL != "" {
-			url = fmt.Sprintf("%s/v1/models", plan.OpenAIBaseURL)
+			url = fmt.Sprintf("%s/models", plan.OpenAIBaseURL)
 		} else {
 			url = fmt.Sprintf("%s/api/v3/models", baseURL)
 		}
@@ -587,16 +587,13 @@ func checkAndPersistChannelUpstreamModelUpdates(
 }
 
 func refreshChannelRuntimeCache() {
-	if common.MemoryCacheEnabled {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					common.SysLog(common.LogText("InitChannelCache panic: %v", r))
-				}
-			}()
-			_ = model.RefreshChannelCache()
-		}()
-	}
+	defer func() {
+		if r := recover(); r != nil {
+			common.SysLog(common.LogText("InitChannelCache panic: %v", r))
+		}
+	}()
+	_ = model.RefreshChannelCache()
+	model.InvalidatePricingCache()
 }
 
 func shouldSendUpstreamModelUpdateNotification(now int64, changedChannels int, failedChannels int) bool {

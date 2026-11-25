@@ -1233,7 +1233,7 @@ func rejectAdtyCustomerTokenWithDB(db *gorm.DB, token string) error {
 		return nil
 	}
 	var count int64
-	if err := db.Unscoped().Model(&model.Token{}).Where("key IN ?", candidates).Count(&count).Error; err != nil {
+	if err := db.Unscoped().Model(&model.Token{}).Where(map[string]any{"key": candidates}).Count(&count).Error; err != nil {
 		return err
 	}
 	if count > 0 {

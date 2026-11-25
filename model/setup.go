@@ -31,7 +31,7 @@ func IsSetupComplete() bool {
 	if err := DB.Model(&Setup{}).Count(&setups).Error; err != nil || setups == 0 {
 		return false
 	}
-	if err := DB.Model(&Option{}).Where("key IN ?", []string{"SelfUseModeEnabled", "DemoSiteEnabled"}).Count(&options).Error; err != nil {
+	if err := DB.Model(&Option{}).Where(map[string]any{"key": []string{"SelfUseModeEnabled", "DemoSiteEnabled"}}).Count(&options).Error; err != nil {
 		return false
 	}
 	return options == 2

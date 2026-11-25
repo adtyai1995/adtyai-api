@@ -1,7 +1,9 @@
 package service
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -479,6 +481,9 @@ func CreateAdtySiteWithdrawal(input AdtySiteWithdrawInput) (*model.AdtySiteWithd
 		if currentOwner && site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && site.Status != model.AdtySiteStatusClosing && site.Status != model.AdtySiteStatusClosed {
 			return common.NewMessage("No permission to perform this action")
 		}
+		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: site.Id, AccountID: input.OwnerID}); err != nil {
+			return err
+		}
 		cfg, err := loadAdtySiteWithdrawConfigTx(tx, true)
 		if err != nil {
 			return err
@@ -725,6 +730,25 @@ func MarkAdtySiteWithdrawalPaidWithAudit(id int64, reviewerID int, txID, proof s
 		if row.Method == "usdt" && txID == "" {
 			return common.NewMessage("Enter the payout reference")
 		}
+		if err := model.RejectRestrictedAdtyFundWrite(tx, model.AdtyFundWrite{SiteID: row.SiteId, AccountID: row.OwnerUserId}); err != nil {
+			return err
+		}
+		reference := txID
+		if reference == "" {
+			if canonical, ok := CanonicalReferralAssetURL(proof); ok {
+				reference = canonical
+			} else {
+				reference = proof
+			}
+		}
+		rk := fmt.Sprintf("%x", sha256.Sum256([]byte(row.Method+"|"+row.Network+"|"+reference)))
+		var dupCount int64
+		if err := tx.Model(&model.AdtySiteWithdrawal{}).Where("receipt_key = ? AND id <> ?", rk, row.Id).Count(&dupCount).Error; err != nil {
+			return err
+		}
+		if dupCount > 0 {
+			return common.NewMessage("This payout reference was already used for another withdrawal")
+		}
 		before := siteWithdrawalAuditSnapshot(&row)
 		if err := resolveSitePayoutAttempt(tx, &row, reviewerID, "paid", txID, proof); err != nil {
 			return err
@@ -736,8 +760,11 @@ func MarkAdtySiteWithdrawalPaidWithAudit(id int64, reviewerID int, txID, proof s
 			return err
 		}
 		if err := tx.Model(&row).Updates(map[string]any{
-			"status": model.AdtySiteWithdrawPaid, "attempt_open": false, "reviewer_id": reviewerID, "tx_id": txID, "proof_note": proof, "paid_at": time.Now().Unix(),
+			"status": model.AdtySiteWithdrawPaid, "attempt_open": false, "reviewer_id": reviewerID, "tx_id": txID, "proof_note": proof, "receipt_key": &rk, "paid_at": time.Now().Unix(),
 		}).Error; err != nil {
+			if isAdtyUniqueConflictError(err) {
+				return common.NewMessage("This payout reference was already used for another withdrawal")
+			}
 			return err
 		}
 		row.Status = model.AdtySiteWithdrawPaid

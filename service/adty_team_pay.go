@@ -332,7 +332,13 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	var paid bool
+	var (
+		alreadyDone bool
+		extSnapshot model.AdtyTopupOrder
+		epayChannel *model.AdtyEpayChannel
+	)
+	// Tx 1: Validate state and capture immutable checkout inputs before calling
+	// external payment gateways (never hold FOR UPDATE row locks across HTTP I/O).
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		var top model.TopUp
 		if err := model.AdtyLockForUpdate(tx).Where("trade_no = ? AND user_id = ?", tradeNo, leaderID).First(&top).Error; err != nil {
@@ -348,6 +354,7 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 			}
 		}
 		if top.Status != common.TopUpStatusPending || teamCheckoutReady(ext) {
+			alreadyDone = true
 			return nil
 		}
 		var team model.AdtyTeam
@@ -357,24 +364,53 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 		if team.LeaderUserId != leaderID || team.Status != model.AdtyTeamStatusActive {
 			return ErrAdtyTeamForbidden
 		}
-		fields, err := recoverTeamCheckout(ctx, tx, ext, clientIP, claim.RowsAffected == 0)
-		if errors.Is(err, ErrAdtyPaymentDetected) {
-			paid = true
-			return nil
+		if ext.Provider == model.PaymentProviderAdtyEpay && IsAdtyEpayMethod(ext.Method) {
+			ch := &model.AdtyEpayChannel{}
+			if err := tx.Preload("Methods").First(ch, ext.ChannelId).Error; err != nil {
+				return err
+			}
+			if ch.MethodFor(ext.Method) == nil || ch.Status != model.AdtyEpayStatusEnabled || !ch.HasCredentials() {
+				return ErrAdtyEpayChosenChannelUnavailable
+			}
+			epayChannel = ch
 		}
-		if err != nil {
-			return err
-		}
-		fields["checkout_stage"] = "ready"
-		return tx.Model(ext).Updates(fields).Error
+		extSnapshot = *ext
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	if paid {
-		if err := RecoverAdtyHostedPayment(ctx, ext); err != nil {
+	if alreadyDone {
+		return model.GetAdtyTopupOrder(tradeNo)
+	}
+	fields, recoverErr := recoverTeamCheckout(ctx, &extSnapshot, epayChannel, clientIP, claim.RowsAffected == 0)
+	if errors.Is(recoverErr, ErrAdtyPaymentDetected) {
+		if err := RecoverAdtyHostedPayment(ctx, &extSnapshot); err != nil {
 			return nil, err
 		}
+		return model.GetAdtyTopupOrder(tradeNo)
+	}
+	if recoverErr != nil {
+		return nil, recoverErr
+	}
+	// Tx 2: Re-lock and persist checkout fields only if still pending and unready.
+	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		var top model.TopUp
+		if err := model.AdtyLockForUpdate(tx).Where("trade_no = ? AND user_id = ?", tradeNo, leaderID).First(&top).Error; err != nil {
+			return err
+		}
+		var cur model.AdtyTopupOrder
+		if err := model.AdtyLockForUpdate(tx).First(&cur, extSnapshot.Id).Error; err != nil {
+			return err
+		}
+		if top.Status != common.TopUpStatusPending || teamCheckoutReady(&cur) {
+			return nil
+		}
+		fields["checkout_stage"] = "ready"
+		return tx.Model(&cur).Updates(fields).Error
+	})
+	if err != nil {
+		return nil, err
 	}
 	return model.GetAdtyTopupOrder(tradeNo)
 }
@@ -386,7 +422,7 @@ func teamCheckoutReady(ext *model.AdtyTopupOrder) bool {
 	return ext.PayURL != "" || ext.QRCode != "" || ext.URLScheme != ""
 }
 
-func recoverTeamCheckout(ctx context.Context, tx *gorm.DB, ext *model.AdtyTopupOrder, clientIP string, replay bool) (map[string]any, error) {
+func recoverTeamCheckout(ctx context.Context, ext *model.AdtyTopupOrder, channel *model.AdtyEpayChannel, clientIP string, replay bool) (map[string]any, error) {
 	trade := ext.TradeNo
 	callback := strings.TrimRight(GetCallbackAddress(), "/") + "/api/user/"
 	if ext.Provider == model.PaymentProviderAdtyBEpusdt && IsAdtyUSDTMethod(ext.Method) {
@@ -414,12 +450,11 @@ func recoverTeamCheckout(ctx context.Context, tx *gorm.DB, ext *model.AdtyTopupO
 	if ext.Provider != model.PaymentProviderAdtyEpay || !IsAdtyEpayMethod(ext.Method) {
 		return nil, ErrAdtyTeamInvalid
 	}
-	channel := &model.AdtyEpayChannel{}
-	if err := tx.Preload("Methods").First(channel, ext.ChannelId).Error; err != nil {
-		return nil, err
+	if channel == nil {
+		return nil, ErrAdtyEpayChosenChannelUnavailable
 	}
 	method := channel.MethodFor(ext.Method)
-	if method == nil || channel.Status != model.AdtyEpayStatusEnabled {
+	if method == nil || channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() {
 		return nil, ErrAdtyEpayChosenChannelUnavailable
 	}
 	var gatewayTradeNo string

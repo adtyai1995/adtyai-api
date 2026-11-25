@@ -1,8 +1,11 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
+	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
@@ -21,10 +24,17 @@ func GetRankings(c *gin.Context) {
 	}
 	result, err := service.GetRankingsSnapshotForSite(c.DefaultQuery("period", "week"), siteID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		var msg *common.Message
+		if errors.As(err, &msg) {
+			common.ApiErrorStatus(c, http.StatusBadRequest, msg)
+			return
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "period") {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
+			return
+		}
+		common.SysError(common.LogText("failed to load rankings: %s", err.Error()))
+		common.ApiErrorStatus(c, http.StatusInternalServerError, common.NewMessage("Operation failed"))
 		return
 	}
 

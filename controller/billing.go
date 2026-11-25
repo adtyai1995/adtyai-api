@@ -19,8 +19,9 @@ func GetSubscription(c *gin.Context) {
 		tokenId := c.GetInt("token_id")
 		token, err = model.GetTokenById(tokenId)
 		if err != nil {
+			common.SysError(common.LogText("GetSubscription failed to load token %d: %s", tokenId, err.Error()))
 			openAIError := types.OpenAIError{
-				Message: err.Error(),
+				Message: "Failed to retrieve billing subscription",
 				Type:    "upstream_error",
 			}
 			c.JSON(200, gin.H{
@@ -38,8 +39,9 @@ func GetSubscription(c *gin.Context) {
 		expiredTime = 0
 	}
 	if err != nil {
+		common.SysError(common.LogText("GetSubscription failed to load quota: %s", err.Error()))
 		openAIError := types.OpenAIError{
-			Message: err.Error(),
+			Message: "Failed to retrieve billing subscription",
 			Type:    "upstream_error",
 		}
 		c.JSON(200, gin.H{
@@ -85,8 +87,9 @@ func GetUsage(c *gin.Context) {
 		tokenId := c.GetInt("token_id")
 		token, err = model.GetTokenById(tokenId)
 		if err != nil {
+			common.SysError(common.LogText("GetUsage failed to load token %d: %s", tokenId, err.Error()))
 			openAIError := types.OpenAIError{
-				Message: err.Error(),
+				Message: "Failed to retrieve billing usage",
 				Type:    "adtyai_error",
 			}
 			c.JSON(200, gin.H{
@@ -100,8 +103,9 @@ func GetUsage(c *gin.Context) {
 		_, quota, err = model.UserQuotaForBilling(userId)
 	}
 	if err != nil {
+		common.SysError(common.LogText("GetUsage failed to load quota: %s", err.Error()))
 		openAIError := types.OpenAIError{
-			Message: err.Error(),
+			Message: "Failed to retrieve billing usage",
 			Type:    "adtyai_error",
 		}
 		c.JSON(200, gin.H{

@@ -1090,9 +1090,6 @@ func adtyAdjustModelPriceList(siteMultiplier decimal.Decimal, userId int, costFa
 			modelGroupRatio[group] = marked.InexactFloat64()
 		}
 		out[i].GroupRatio = modelGroupRatio
-		// R4-036: Per-group final retail ratios are supplied directly on each model;
-		// never leak a display-group-only internal markup factor.
-		out[i].BillingDisplayMultiplier = ""
 	}
 	return out
 }

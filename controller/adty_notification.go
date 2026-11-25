@@ -313,7 +313,7 @@ func PutAdtyNoticeTemplate(c *gin.Context) {
 		TitleEn   string `json:"title_en"`
 		ContentEn string `json:"content_en"`
 	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+	if err := common.DecodeJson(http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10), &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}

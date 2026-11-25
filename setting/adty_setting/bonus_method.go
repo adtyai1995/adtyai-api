@@ -553,7 +553,7 @@ func loadBonusOptionsTx(tx *gorm.DB, keys []string, lock bool) (map[string]strin
 			}
 		}
 	}
-	q := db.Table("options").Select("key, value").Where(map[string]any{"key": keys}).Order(clause.OrderByColumn{Column: clause.Column{Name: "key"}})
+	q := db.Table("options").Select([]string{"key", "value"}).Where(map[string]any{"key": keys}).Order(clause.OrderByColumn{Column: clause.Column{Name: "key"}})
 	if lock && tx != nil && bonusLockForUpdateFn != nil {
 		q = bonusLockForUpdateFn(q)
 	}

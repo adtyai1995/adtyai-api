@@ -121,7 +121,6 @@ func applyPricingTeamMultiplier(c *gin.Context, userID, siteID int, rawGroupRati
 	}
 	for i := range pricing {
 		pricing[i].GroupRatio = maps.Clone(groupRatio)
-		pricing[i].BillingDisplayMultiplier = ""
 	}
 	return pricing
 }

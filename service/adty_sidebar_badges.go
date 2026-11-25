@@ -481,11 +481,18 @@ func collectAdtyPaymentOrphanBadge(counts map[string]int64, actor adtyTicketActo
 }
 
 func countAdtyNotificationUnread(userID int, site *model.AdtySite, tokenScopes ...[]string) (int64, error) {
-	inbox, err := GetAdtyNotificationInboxWithScopes(userID, site, 0, 0, tokenScopes...)
+	if len(tokenScopes) > 0 && len(tokenScopes[0]) == 0 {
+		return countAdtyNotificationUnreadWithScopes(userID, site, tokenScopes...)
+	}
+	var flatScopes []string
+	if len(tokenScopes) > 0 {
+		flatScopes = tokenScopes[0]
+	}
+	n, err := CountAdtyNotificationUnread(userID, site, flatScopes...)
 	if err != nil {
 		return 0, err
 	}
-	return inbox.UnreadPublications, nil
+	return int64(n), nil
 }
 
 func countScoped(query *gorm.DB) (int64, error) {

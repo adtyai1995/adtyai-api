@@ -259,8 +259,12 @@ func ReadResponseBody(c *gin.Context, resp *http.Response, readErrCode types.Err
 	if resp == nil || resp.Body == nil {
 		return nil, types.NewOpenAIError(errors.New("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
-	responseBody, err := io.ReadAll(resp.Body)
+	const maxNonStreamResponseBodyBytes = 64 << 20
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxNonStreamResponseBodyBytes+1))
 	if err == nil {
+		if len(responseBody) > maxNonStreamResponseBodyBytes {
+			return nil, types.NewOpenAIError(errors.New("upstream response body too large"), types.ErrorCodeBadResponse, http.StatusBadGateway)
+		}
 		return responseBody, nil
 	}
 	if ClientRequestCanceled(c) {

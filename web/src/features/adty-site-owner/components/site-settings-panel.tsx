@@ -34,6 +34,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { adtySiteQueryKey } from '@/features/adty-site/api'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
+import { formatDomainLastError } from '@/lib/domain-error'
 import { handleServerError } from '@/lib/handle-server-error'
 import { toSquareIconFile } from '@/lib/square-icon'
 import { STATUS_QUERY_KEY } from '@/lib/status-query'
@@ -132,6 +133,7 @@ function domainAutomationLabel(t: TFunction, state: string): string {
 function BrandCard(props: { site: OwnerSite }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const closing = props.site.status === 'closing'
   const [brand, setBrand] = useState<SiteBrand>(props.site.brand)
   const [acknowledged, setAcknowledged] = useState<{
     previous: SiteBrand
@@ -248,6 +250,7 @@ function BrandCard(props: { site: OwnerSite }) {
       maxLength: BRAND_LIMITS[key],
       value: brand[key] ?? '',
       placeholder,
+      disabled: closing || save.isPending,
       'aria-invalid': isUrlInvalid || undefined,
       onChange: (event: { target: { value: string } }) =>
         editBrand({ [key]: event.target.value }),
@@ -283,7 +286,7 @@ function BrandCard(props: { site: OwnerSite }) {
         id={`brand-${key}`}
         type='file'
         accept='image/png,image/jpeg,image/webp'
-        disabled={upload.isPending}
+        disabled={closing || upload.isPending}
         onChange={(event) => {
           const file = event.target.files?.[0]
           if (file) upload.mutate({ key, file })
@@ -300,8 +303,10 @@ function BrandCard(props: { site: OwnerSite }) {
             className='h-12 w-12 rounded border object-contain'
           />
           <Button
+            type='button'
             size='sm'
             variant='outline'
+            disabled={closing || upload.isPending || save.isPending}
             onClick={() => editBrand({ [key]: '' })}
           >
             {removeLabel}
@@ -342,6 +347,7 @@ function BrandCard(props: { site: OwnerSite }) {
             <Button
               type='button'
               variant='outline'
+              disabled={closing || save.isPending}
               onClick={() => {
                 setBrand({
                   ...observed,
@@ -391,6 +397,7 @@ function BrandCard(props: { site: OwnerSite }) {
             type='button'
             variant='brand'
             disabled={
+              closing ||
               save.isPending ||
               !changed.length ||
               conflicts.length > 0 ||
@@ -591,7 +598,7 @@ function DomainsCard(props: { site: OwnerSite }) {
                             size='sm'
                             variant='outline'
                             onClick={() => setDeleting(domain)}
-                            disabled={domain.managed_by === 'platform'}
+                            disabled={closing || domain.managed_by === 'platform'}
                           >
                             {t('Delete')}
                           </Button>
@@ -660,7 +667,7 @@ function DomainsCard(props: { site: OwnerSite }) {
                         ))}
                       {domain.last_error && (
                         <p className='text-destructive text-xs'>
-                          {domain.last_error}
+                          {formatDomainLastError(domain.last_error, t)}
                         </p>
                       )}
                     </div>
@@ -827,6 +834,7 @@ function DomainsCard(props: { site: OwnerSite }) {
 function SearchCard(props: { site: OwnerSite }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const closing = props.site.status === 'closing'
   const seo = useMutation({
     mutationFn: (value: boolean) => saveOwnerSite({ seo_index: value }),
     onSuccess: () =>
@@ -846,7 +854,7 @@ function SearchCard(props: { site: OwnerSite }) {
           <Switch
             id='seo-index'
             checked={props.site.seo_index}
-            disabled={seo.isPending}
+            disabled={closing || seo.isPending}
             onCheckedChange={(checked) => seo.mutate(checked)}
           />
         </div>
@@ -860,7 +868,8 @@ function CloseRequestCard(props: { site: OwnerSite }) {
   const queryClient = useQueryClient()
   const [reason, setReason] = useState('')
   useDraftNavigation(reason !== '')
-  const requested = (props.site.close_requested_at ?? 0) > 0
+  const requested =
+    (props.site.close_requested_at ?? 0) > 0 || props.site.status === 'closing'
   const request = useMutation({
     mutationFn: () => requestSiteClose(reason.trim()),
     onSuccess: () => {

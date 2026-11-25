@@ -54,13 +54,16 @@ import type {
 
 type UserSettingSecretMeta = {
   has_webhook_secret?: boolean
+  has_bark_url?: boolean
   has_gotify_token?: boolean
   webhook_secret?: string
+  bark_url?: string
   gotify_token?: string
 }
 
 function readSecretConfiguredFlags(profile: UserProfile | null): {
   hasWebhookSecret: boolean
+  hasBarkUrl: boolean
   hasGotifyToken: boolean
 } {
   const topLevel = profile as (UserProfile & UserSettingSecretMeta) | null
@@ -81,6 +84,11 @@ function readSecretConfiguredFlags(profile: UserProfile | null): {
         parsed.has_webhook_secret ||
         (typeof parsed.webhook_secret === 'string' &&
           parsed.webhook_secret.trim() !== '')
+    ),
+    hasBarkUrl: Boolean(
+      topLevel?.has_bark_url ||
+        parsed.has_bark_url ||
+        (typeof parsed.bark_url === 'string' && parsed.bark_url.trim() !== '')
     ),
     hasGotifyToken: Boolean(
       topLevel?.has_gotify_token ||
@@ -124,6 +132,7 @@ export function NotificationTab({
   const [settings, setSettings] = useState(() => normalizeUserSettings())
   const [thresholdInput, setThresholdInput] = useState('')
   const [hasWebhookSecret, setHasWebhookSecret] = useState(false)
+  const [hasBarkUrl, setHasBarkUrl] = useState(false)
   const [hasGotifyToken, setHasGotifyToken] = useState(false)
   const [clearWebhookSecret, setClearWebhookSecret] = useState(false)
 
@@ -141,6 +150,7 @@ export function NotificationTab({
   useEffect(() => {
     const flags = readSecretConfiguredFlags(profile)
     setHasWebhookSecret(flags.hasWebhookSecret)
+    setHasBarkUrl(flags.hasBarkUrl)
     setHasGotifyToken(flags.hasGotifyToken)
     setClearWebhookSecret(false)
     if (profile?.setting) {
@@ -148,6 +158,7 @@ export function NotificationTab({
       setSettings({
         ...next,
         webhook_secret: '',
+        bark_url: '',
         gotify_token: '',
       })
       // 0 means the site default and shows as an empty input.
@@ -329,17 +340,32 @@ export function NotificationTab({
           {/* Bark Settings */}
           {notifyType === 'bark' && (
             <div className='space-y-1.5'>
-              <Label htmlFor='barkUrl'>{t('Bark Push URL')}</Label>
+              <div className='flex items-center gap-2'>
+                <Label htmlFor='barkUrl'>{t('Bark Push URL')}</Label>
+                {hasBarkUrl && (
+                  <Badge variant='secondary'>{t('Configured')}</Badge>
+                )}
+              </div>
               <Input
                 id='barkUrl'
                 type='url'
+                autoComplete='off'
                 className='h-9'
                 value={settings.bark_url}
                 onChange={(e) => updateField('bark_url', e.target.value)}
-                placeholder={t(
-                  'https://api.day.app/yourkey/{{title}}/{{content}}'
-                )}
+                placeholder={
+                  hasBarkUrl
+                    ? t('Leave empty to keep unchanged')
+                    : t('https://api.day.app/yourkey/{{title}}/{{content}}', {
+                        skipInterpolation: true,
+                      })
+                }
               />
+              {hasBarkUrl && (
+                <p className='text-muted-foreground text-xs'>
+                  {t('Leave blank to keep the existing credential')}
+                </p>
+              )}
               <p className='text-muted-foreground text-xs'>
                 {t('Template variables:')} {'{{title}}'}, {'{{content}}'}
               </p>

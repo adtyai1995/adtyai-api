@@ -259,31 +259,9 @@ export function getDynamicPricingTiers(
     model.billing_expr || ''
   )
   if (isTaskUsagePricingModel(model)) {
-    return scaleDynamicPricingTiers(getTaskPricingDisplayTiers(billingExpr, model.billing_usage_schema), model.billing_display_multiplier)
+    return getTaskPricingDisplayTiers(billingExpr, model.billing_usage_schema)
   }
-  return scaleDynamicPricingTiers(parseTiersFromExpr(billingExpr), model.billing_display_multiplier)
-}
-
-export function getBillingDisplayMultiplier(model: PricingModel): number {
-  const value = Number(model.billing_display_multiplier ?? 1)
-  return Number.isFinite(value) && value > 0 ? value : 1
-}
-
-/** Scale monetary fields after parsing, keeping conditions, units and raw expressions intact. */
-export function scaleDynamicPricingTiers(tiers: DynamicPricingTier[], rawFactor?: string): DynamicPricingTier[] {
-  const factor = getBillingDisplayMultiplier({ billing_display_multiplier: rawFactor } as PricingModel)
-  if (factor === 1) return tiers
-  return tiers.map((tier) => {
-    if (isTaskPricingTier(tier)) {
-      return { ...tier, constant: tier.constant * factor, unitPrices: Object.fromEntries(Object.entries(tier.unitPrices).map(([field, value]) => [field, value * factor])) }
-    }
-    const result: ParsedTier = { ...tier }
-    for (const field of ['fixedPrice', ...BILLING_PRICING_VARS.flatMap((variable) => variable.field ? [variable.field] : [])]) {
-      const value = result[field]
-      if (typeof value === 'number') result[field] = value * factor
-    }
-    return result
-  })
+  return parseTiersFromExpr(billingExpr)
 }
 
 export function hasDynamicRequestRules(model: PricingModel): boolean {
@@ -528,7 +506,7 @@ export function getDynamicPricingSummary(
   const timeTiers = isTaskUsage
     ? null
     : getCurrentTimePricingTiers(baseExpression, options.now ?? new Date())
-  const summaryTiers = timeTiers ? scaleDynamicPricingTiers(timeTiers, model.billing_display_multiplier) : tiers
+  const summaryTiers = timeTiers ?? tiers
   const tier = isTaskUsage
     ? (summaryTiers.at(-1) ?? null)
     : (summaryTiers[0] ?? null)
@@ -643,7 +621,7 @@ export function getCardExamplePrice(
 
   const result = evaluateTaskVisualConfig(config, firstExample.facts, schema)
   if (!result) return null
-  const total = result.total * getBillingDisplayMultiplier(model)
+  const total = result.total
 
   return {
     label: firstExample.label,

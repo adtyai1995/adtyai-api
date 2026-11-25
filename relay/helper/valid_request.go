@@ -74,8 +74,23 @@ func GetAndValidateRequest(c *gin.Context, format types.RelayFormat) (request dt
 	return request, err
 }
 
+func requireJSONMediaType(c *gin.Context) error {
+	if !common.IsJSONMediaType(common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))) {
+		return errors.New("Content-Type must be application/json")
+	}
+	return nil
+}
+
 func GetAndValidAudioRequest(c *gin.Context, relayMode int) (*dto.AudioRequest, error) {
-	if common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type")) == gin.MIMEMultipartPOSTForm {
+	mediaType := common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))
+	if relayMode == relayconstant.RelayModeAudioSpeech {
+		if !common.IsJSONMediaType(mediaType) {
+			return nil, errors.New("Content-Type must be application/json")
+		}
+	} else {
+		if mediaType != gin.MIMEMultipartPOSTForm {
+			return nil, errors.New("Content-Type must be multipart/form-data")
+		}
 		form, err := common.ParseMultipartFormReusable(c)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse audio form request: %w", err)
@@ -114,6 +129,9 @@ func GetAndValidAudioRequest(c *gin.Context, relayMode int) (*dto.AudioRequest, 
 }
 
 func GetAndValidateRerankRequest(c *gin.Context) (*dto.RerankRequest, error) {
+	if err := requireJSONMediaType(c); err != nil {
+		return nil, types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+	}
 	rerankRequest := &dto.RerankRequest{}
 	err := common.UnmarshalBodyReusable(c, rerankRequest)
 	if err != nil {
@@ -131,6 +149,9 @@ func GetAndValidateRerankRequest(c *gin.Context) (*dto.RerankRequest, error) {
 }
 
 func GetAndValidateEmbeddingRequest(c *gin.Context, relayMode int) (*dto.EmbeddingRequest, error) {
+	if err := requireJSONMediaType(c); err != nil {
+		return nil, types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+	}
 	embeddingRequest := &dto.EmbeddingRequest{}
 	err := common.UnmarshalBodyReusable(c, embeddingRequest)
 	if err != nil {
@@ -166,6 +187,9 @@ func ExceedsMaxTokensLimit(values ...*uint) bool {
 }
 
 func GetAndValidateResponsesRequest(c *gin.Context) (*dto.OpenAIResponsesRequest, error) {
+	if err := requireJSONMediaType(c); err != nil {
+		return nil, err
+	}
 	request := &dto.OpenAIResponsesRequest{}
 	err := common.UnmarshalBodyReusable(c, request)
 	if err != nil {
@@ -184,6 +208,9 @@ func GetAndValidateResponsesRequest(c *gin.Context) (*dto.OpenAIResponsesRequest
 }
 
 func GetAndValidateAlphaSearchRequest(c *gin.Context) (*dto.AlphaSearchRequest, error) {
+	if err := requireJSONMediaType(c); err != nil {
+		return nil, err
+	}
 	request := &dto.AlphaSearchRequest{}
 	if err := common.UnmarshalBodyReusable(c, request); err != nil {
 		return nil, err
@@ -206,8 +233,8 @@ func GetAndValidateAlphaSearchRequest(c *gin.Context) (*dto.AlphaSearchRequest, 
 // GetAndValidateDeepSeekToolsRequest keeps the raw body for forwarding. The
 // upstream validates query/url itself, and no field changes the per-call price.
 func GetAndValidateDeepSeekToolsRequest(c *gin.Context) (*dto.DeepSeekToolsRequest, error) {
-	if !common.IsJSONMediaType(common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))) {
-		return nil, errors.New("Content-Type must be application/json")
+	if err := requireJSONMediaType(c); err != nil {
+		return nil, err
 	}
 	request := &dto.DeepSeekToolsRequest{}
 	if err := common.UnmarshalBodyReusable(c, request); err != nil {
@@ -233,6 +260,9 @@ func GetAndValidateDeepSeekToolsRequest(c *gin.Context) (*dto.DeepSeekToolsReque
 }
 
 func GetAndValidateResponsesCompactionRequest(c *gin.Context) (*dto.OpenAIResponsesCompactionRequest, error) {
+	if err := requireJSONMediaType(c); err != nil {
+		return nil, err
+	}
 	request := &dto.OpenAIResponsesCompactionRequest{}
 	if err := common.UnmarshalBodyReusable(c, request); err != nil {
 		return nil, err
@@ -310,10 +340,36 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 				watermark := formData.Get("watermark") == "true"
 				imageRequest.Watermark = &watermark
 			}
+			// Preserve additional scalar multipart fields (e.g. resolution,
+			// aspect_ratio, input_fidelity, background, output_format) in Extra
+			// so ResolveImageBillingRequestInput freezes the same parameters
+			// forwarded upstream by multipart adaptors.
+			for key, values := range form.Value {
+				if key == "" || len(values) != 1 || strings.HasSuffix(key, "[]") || strings.HasPrefix(key, "image[") {
+					continue
+				}
+				switch key {
+				case "prompt", "model", "n", "quality", "size", "parameters", "stream", "image", "mask", "watermark":
+					continue
+				}
+				val := values[0]
+				if len(val) > 4096 {
+					continue
+				}
+				if encoded, mErr := common.Marshal(val); mErr == nil {
+					if imageRequest.Extra == nil {
+						imageRequest.Extra = make(map[string]json.RawMessage)
+					}
+					imageRequest.Extra[key] = json.RawMessage(encoded)
+				}
+			}
 			break
 		}
 		fallthrough
 	default:
+		if err := requireJSONMediaType(c); err != nil {
+			return nil, err
+		}
 		err := common.UnmarshalBodyReusable(c, imageRequest)
 		if err != nil {
 			return nil, err
@@ -366,6 +422,9 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 }
 
 func GetAndValidateClaudeRequest(c *gin.Context) (textRequest *dto.ClaudeRequest, err error) {
+	if err := requireJSONMediaType(c); err != nil {
+		return nil, err
+	}
 	textRequest = &dto.ClaudeRequest{}
 	err = common.UnmarshalBodyReusable(c, textRequest)
 	if err != nil {
@@ -389,6 +448,9 @@ func GetAndValidateClaudeRequest(c *gin.Context) (textRequest *dto.ClaudeRequest
 }
 
 func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenAIRequest, error) {
+	if err := requireJSONMediaType(c); err != nil {
+		return nil, err
+	}
 	textRequest := &dto.GeneralOpenAIRequest{}
 	err := common.UnmarshalBodyReusable(c, textRequest)
 	if err != nil {
@@ -450,6 +512,9 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 }
 
 func GetAndValidateGeminiRequest(c *gin.Context) (*dto.GeminiChatRequest, error) {
+	if err := requireJSONMediaType(c); err != nil {
+		return nil, err
+	}
 	request := &dto.GeminiChatRequest{}
 	err := common.UnmarshalBodyReusable(c, request)
 	if err != nil {
@@ -470,8 +535,8 @@ func GetAndValidateGeminiRequest(c *gin.Context) (*dto.GeminiChatRequest, error)
 }
 
 func GetAndValidateGeminiEmbeddingRequest(c *gin.Context) (*dto.GeminiEmbeddingRequest, error) {
-	if !common.IsJSONMediaType(common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))) {
-		return nil, errors.New("Content-Type must be application/json")
+	if err := requireJSONMediaType(c); err != nil {
+		return nil, err
 	}
 	request := &dto.GeminiEmbeddingRequest{}
 	err := common.UnmarshalBodyReusable(c, request)
@@ -482,8 +547,8 @@ func GetAndValidateGeminiEmbeddingRequest(c *gin.Context) (*dto.GeminiEmbeddingR
 }
 
 func GetAndValidateGeminiBatchEmbeddingRequest(c *gin.Context) (*dto.GeminiBatchEmbeddingRequest, error) {
-	if !common.IsJSONMediaType(common.NormalizedContentMediaType(c.Request.Header.Get("Content-Type"))) {
-		return nil, errors.New("Content-Type must be application/json")
+	if err := requireJSONMediaType(c); err != nil {
+		return nil, err
 	}
 	request := &dto.GeminiBatchEmbeddingRequest{}
 	err := common.UnmarshalBodyReusable(c, request)

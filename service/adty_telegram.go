@@ -230,7 +230,14 @@ func adtyTelegramAdminAccess(tx *gorm.DB, user *model.User) (bool, error) {
 					return false, res.Error
 				}
 				if res.RowsAffected == 1 && AdtySiteAgreementAccepted(staffSite.AgreementVer) {
-					return true, nil
+					var owner model.User
+					ownerRes := tx.Select("id", "status", "staff_site_id").Where("id = ?", staffSite.OwnerUserId).Limit(1).Find(&owner)
+					if ownerRes.Error != nil {
+						return false, ownerRes.Error
+					}
+					if ownerRes.RowsAffected == 1 && owner.Status == common.UserStatusEnabled && owner.StaffSiteId == 0 {
+						return true, nil
+					}
 				}
 			}
 		}
@@ -243,6 +250,39 @@ func SaveAdtyTelegramBot(purpose, token string, enabled bool, audits ...model.Au
 		return nil, ErrAdtyTelegramInvalid
 	}
 	token = strings.TrimSpace(token)
+	var (
+		botId        int64
+		username     string
+		verified     bool
+		cipher       string
+		secret       string
+		webhookHash  string
+		identityHash string
+	)
+	if token != "" {
+		match := adtyTelegramTokenPattern.FindStringSubmatch(token)
+		if match == nil {
+			return nil, ErrAdtyTelegramInvalid
+		}
+		botId, _ = strconv.ParseInt(match[1], 10, 64)
+		if id, name, err := AdtyTelegramGetMe(token); err == nil && id > 0 {
+			botId, username, verified = id, name, true
+		}
+		var err error
+		cipher, err = model.SealAdtyPurposeSecret("telegram:"+purpose, token)
+		if err != nil {
+			return nil, err
+		}
+		raw := make([]byte, 16)
+		if _, err := rand.Read(raw); err != nil {
+			return nil, err
+		}
+		secret = hex.EncodeToString(raw)
+		sum := sha256.Sum256([]byte(secret))
+		identity := sha256.Sum256([]byte(strconv.FormatInt(botId, 10)))
+		webhookHash = hex.EncodeToString(sum[:])
+		identityHash = hex.EncodeToString(identity[:])
+	}
 	var saved *AdtyTelegramSaved
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var row model.AdtyTelegramBot
@@ -251,36 +291,14 @@ func SaveAdtyTelegramBot(purpose, token string, enabled bool, audits ...model.Au
 			return lookup.Error
 		}
 		before := map[string]any{"enabled": row.Enabled, "bot_id": row.BotId, "configured": row.TokenCipher != ""}
-		secret := ""
 		if token != "" {
-			match := adtyTelegramTokenPattern.FindStringSubmatch(token)
-			if match == nil {
-				return ErrAdtyTelegramInvalid
-			}
-			botId, _ := strconv.ParseInt(match[1], 10, 64)
-			username := ""
-			verified := false
-			if id, name, err := AdtyTelegramGetMe(token); err == nil && id > 0 {
-				botId, username, verified = id, name, true
-			}
-			cipher, err := model.SealAdtyPurposeSecret("telegram:"+purpose, token)
-			if err != nil {
-				return err
-			}
-			raw := make([]byte, 16)
-			if _, err := rand.Read(raw); err != nil {
-				return err
-			}
-			secret = hex.EncodeToString(raw)
-			sum := sha256.Sum256([]byte(secret))
-			identity := sha256.Sum256([]byte(strconv.FormatInt(botId, 10)))
 			row.Purpose = purpose
 			row.BotId = botId
 			row.Username = username
 			row.TokenCipher = cipher
 			row.TokenMask = adtyMaskTail(token)
-			row.WebhookHash = hex.EncodeToString(sum[:])
-			row.IdentityHash = hex.EncodeToString(identity[:])
+			row.WebhookHash = webhookHash
+			row.IdentityHash = identityHash
 			row.IdentityVerified = verified
 			row.Enabled = enabled
 			row.SavedAt = time.Now().Unix()

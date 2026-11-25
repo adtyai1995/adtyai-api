@@ -29,6 +29,7 @@ type AdtySiteWithdrawal struct {
 	PayoutCurrency string          `json:"payout_currency" gorm:"type:varchar(8)"`
 	Status         string          `json:"status" gorm:"type:varchar(16);index"`
 	IdempotencyKey string          `json:"-" gorm:"uniqueIndex;type:varchar(128)"`
+	ReceiptKey     *string         `json:"-" gorm:"uniqueIndex:idx_adty_site_withdraw_receipt;type:varchar(64)"`
 	TxID           string          `json:"tx_id" gorm:"type:varchar(128)"`
 	ProofNote      string          `json:"proof_note" gorm:"type:varchar(255)"`
 	AttemptOpen    bool            `json:"attempt_open" gorm:"not null;default:false"`

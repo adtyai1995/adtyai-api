@@ -57,7 +57,6 @@ import { formatBillingCondition } from '../lib/billing-expression/condition-disp
 import {
   formatTaskUsageUnitPrice,
   getDynamicPriceEntries,
-  getBillingDisplayMultiplier,
   getDynamicPriceUnitLabelKey,
   getDynamicPricingSummary,
   getDynamicPricingTiers,
@@ -999,17 +998,13 @@ function ProviderGroupPricingSection(
                           className: `${thClass} text-right`,
                           cellClassName: 'py-2.5 text-right font-mono',
                           cell: (row) =>
-                            `≈ ${formatTaskUsageUnitPrice(
-                              row.total *
-                                getBillingDisplayMultiplier(props.model),
-                              {
-                                tokenUnit: props.tokenUnit,
-                                showRechargePrice,
-                                priceRate: props.priceRate,
-                                usdExchangeRate: props.usdExchangeRate,
-                                groupRatioMultiplier: ratio,
-                              }
-                            )}`,
+                            `≈ ${formatTaskUsageUnitPrice(row.total, {
+                              tokenUnit: props.tokenUnit,
+                              showRechargePrice,
+                              priceRate: props.priceRate,
+                              usdExchangeRate: props.usdExchangeRate,
+                              groupRatioMultiplier: ratio,
+                            })}`,
                         },
                       ]}
                     />
@@ -1217,12 +1212,6 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
         <TabsContent value='overview' className='space-y-6 outline-none'>
           <section className='bg-card space-y-6 rounded-[14px] border p-5'>
             <SectionTitle>{t('Pricing')}</SectionTitle>
-            {!isSubsite && props.model.billing_display_multiplier && (
-              <p className='text-muted-foreground text-sm'>
-                {t('Model price multiplier')}:{' '}
-                {props.model.billing_display_multiplier}x
-              </p>
-            )}
             {!isSubsite && showBasePrices && (
               <PriceSection
                 model={props.model}
@@ -1235,7 +1224,6 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
             {!isSubsite && isDynamic && !simpleTaskPricing && (
               <DynamicPricingBreakdown
                 billingExpr={props.model.billing_expr}
-                displayMultiplier={props.model.billing_display_multiplier}
                 usageSchema={props.model.billing_usage_schema}
                 taskPriceOptions={{
                   showRechargePrice,

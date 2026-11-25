@@ -37,6 +37,7 @@ import { SettingsSection } from '@/features/system-settings/components/settings-
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { formatQuotaWithCurrency } from '@/lib/currency'
+import { formatDomainLastError } from '@/lib/domain-error'
 import { formatTimestampToDate } from '@/lib/format'
 import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -424,7 +425,7 @@ export function SiteDomainsCard(props: {
                   )}
                   {domain.last_error && (
                     <p className='text-destructive mt-0.5 text-xs'>
-                      {domain.last_error}
+                      {formatDomainLastError(domain.last_error, t)}
                     </p>
                   )}
                 </div>

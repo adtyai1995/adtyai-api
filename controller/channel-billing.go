@@ -164,7 +164,11 @@ func GetResponseBody(method, url string, channel *model.Channel, headers http.He
 	if err != nil {
 		return nil, common.SanitizeOutboundError(err, channel.Key)
 	}
-	res, err := client.Do(req)
+	noRedirectClient := *client
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	res, err := noRedirectClient.Do(req)
 	if err != nil {
 		return nil, common.SanitizeOutboundError(err, channel.Key)
 	}
@@ -572,7 +576,11 @@ func fetchAdvancedCustomBalance(channel *model.Channel) (channelBalanceResult, e
 	if err != nil {
 		return channelBalanceResult{}, sanitizeFetchModelsError(err, key)
 	}
-	response, err := client.Do(request)
+	noRedirectClient := *client
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	response, err := noRedirectClient.Do(request)
 	if err != nil {
 		return channelBalanceResult{}, sanitizeAdvancedCustomRequestError(err, key, requestURL)
 	}
@@ -630,14 +638,11 @@ func updateChannelBalance(channel *model.Channel) (channelBalanceResult, error) 
 
 func updateStandardChannelBalance(channel *model.Channel) (float64, error) {
 	baseURL := constant.GetChannelBaseURL(channel.Type)
-	if channel.GetBaseURL() == "" {
-		channel.BaseURL = &baseURL
+	if customBaseURL := channel.GetBaseURL(); customBaseURL != "" {
+		baseURL = customBaseURL
 	}
 	switch channel.Type {
 	case constant.ChannelTypeOpenAI:
-		if channel.GetBaseURL() != "" {
-			baseURL = channel.GetBaseURL()
-		}
 	case constant.ChannelTypeAzure:
 		return 0, common.NewMessage("Not implemented yet")
 	case constant.ChannelTypeCustom:
@@ -714,11 +719,12 @@ func UpdateChannelBalance(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid channel ID")
 		return
 	}
-	channel, err := model.CacheGetChannel(id)
+	cached, err := model.CacheGetChannel(id)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	channel := *cached
 	if channel.Type == constant.ChannelTypeTaskPlugin {
 		common.ApiErrorT(c, "Task Plugin channels do not support balance queries")
 		return
@@ -727,7 +733,7 @@ func UpdateChannelBalance(c *gin.Context) {
 		common.ApiErrorT(c, "Multi-key channels do not support balance queries")
 		return
 	}
-	result, err := updateChannelBalance(channel)
+	result, err := updateChannelBalance(&channel)
 	if err != nil {
 		common.ApiError(c, err)
 		return

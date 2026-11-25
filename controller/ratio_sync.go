@@ -422,7 +422,8 @@ func FetchUpstreamRatios(c *gin.Context) {
 					var chErr error
 					dbCh, chErr = model.GetChannelById(chItem.ID, true)
 					if chErr != nil {
-						ch <- upstreamResult{Name: uniqueName, Err: "failed to get channel: " + chErr.Error()}
+						common.SysError(common.LogText("ratio sync failed to load channel %d: %s", chItem.ID, chErr.Error()))
+						ch <- upstreamResult{Name: uniqueName, Err: "failed to load channel"}
 						return
 					}
 				}
@@ -499,7 +500,8 @@ func FetchUpstreamRatios(c *gin.Context) {
 				}
 				key, _, apiErr := dbCh.GetNextEnabledKey()
 				if apiErr != nil {
-					ch <- upstreamResult{Name: uniqueName, Err: "failed to get enabled channel key: " + apiErr.Error()}
+					common.SysError(common.LogText("ratio sync failed to get enabled key for channel %d: %s", chItem.ID, apiErr.Error()))
+					ch <- upstreamResult{Name: uniqueName, Err: "failed to get enabled channel key"}
 					return
 				}
 				if strings.TrimSpace(key) == "" {

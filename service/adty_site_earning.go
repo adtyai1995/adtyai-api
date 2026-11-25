@@ -621,14 +621,7 @@ func SaveAdtySiteBonusRates(siteId int, rates map[int]float64) error {
 }
 
 func adtyUniqueViolation(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, gorm.ErrDuplicatedKey) {
-		return true
-	}
-	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "23505") || strings.Contains(text, "duplicate key")
+	return model.IsAdtyUniqueViolation(err)
 }
 
 // ReviewAdtySiteCustomer 管理员复核风控客户（分站·审核）：认可后之后的消费正常计收益；

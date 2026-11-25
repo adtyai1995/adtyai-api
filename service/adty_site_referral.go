@@ -792,7 +792,7 @@ func BuildAdtySiteInviteCookie(siteID int, code string, issuedAt time.Time) (str
 	code = strings.ToUpper(strings.TrimSpace(code))
 	secret := referralSecret()
 	if siteID <= 0 || code == "" || len(code) > 24 || secret == "" {
-		return "", errors.New("cannot sign site invite cookie")
+		return "", common.NewMessage("Unable to issue the site invite cookie right now")
 	}
 	payload := fmt.Sprintf("v1.%d.%s.%d", siteID, code, issuedAt.Unix())
 	return base64.StdEncoding.EncodeToString([]byte(payload + "." + common.HmacSha256(payload, secret))), nil

@@ -399,7 +399,7 @@ func adtyEpaySceneChannelMethods(scene model.AdtyPaymentScene, method AdtyMethod
 	out := []AdtyMethodInfo{}
 	for i := range channels {
 		channel := &channels[i]
-		if channel.Status != model.AdtyEpayStatusEnabled || (len(scene.ChannelIDs) > 0 && !slices.Contains(scene.ChannelIDs, channel.Id)) {
+		if channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || (len(scene.ChannelIDs) > 0 && !slices.Contains(scene.ChannelIDs, channel.Id)) {
 			continue
 		}
 		channelMethod := channel.MethodFor(method.Id)
@@ -545,7 +545,7 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 			if err := model.AdtyLockForUpdate(tx).Preload("Methods").First(&channel, ext.ChannelId).Error; err != nil {
 				return err
 			}
-			if channel.Status != model.AdtyEpayStatusEnabled || len(selected) != 1 || !channel.SamePaymentIdentity(selected[0]) {
+			if channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || len(selected) != 1 || !channel.SamePaymentIdentity(selected[0]) {
 				return common.NewMessage("This payment method is not available")
 			}
 		}

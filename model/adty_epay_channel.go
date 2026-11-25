@@ -210,13 +210,12 @@ func GetAdtyEpayChannel(id int) (*AdtyEpayChannel, error) {
 	return &channels[0], nil
 }
 
-// SamePaymentIdentity compares the credentials and method mapping used for
-// checkout, callbacks and queries. Operational limits and labels may change.
-func (channel *AdtyEpayChannel) SamePaymentIdentity(other *AdtyEpayChannel) bool {
+// SameNonSecretPaymentIdentity compares non-secret payment routing and
+// verification fields (used when existing secret decryption failed so Root
+// can re-key broken secrets without mutating channel identity on channels with orders).
+func (channel *AdtyEpayChannel) SameNonSecretPaymentIdentity(other *AdtyEpayChannel) bool {
 	if other == nil || channel.Id != other.Id || channel.MerchantId != other.MerchantId ||
 		channel.EffectiveSignType() != other.EffectiveSignType() ||
-		channel.MerchantKey != other.MerchantKey ||
-		channel.MerchantPrivateKey != other.MerchantPrivateKey ||
 		channel.PlatformPublicKey != other.PlatformPublicKey ||
 		channel.GatewayURL != other.GatewayURL ||
 		channel.OrderMode != other.OrderMode || len(channel.Methods) != len(other.Methods) {
@@ -241,6 +240,14 @@ func (channel *AdtyEpayChannel) SamePaymentIdentity(other *AdtyEpayChannel) bool
 		delete(codes, method.Method)
 	}
 	return true
+}
+
+// SamePaymentIdentity compares the credentials and method mapping used for
+// checkout, callbacks and queries. Operational limits and labels may change.
+func (channel *AdtyEpayChannel) SamePaymentIdentity(other *AdtyEpayChannel) bool {
+	return channel.SameNonSecretPaymentIdentity(other) &&
+		channel.MerchantKey == other.MerchantKey &&
+		channel.MerchantPrivateKey == other.MerchantPrivateKey
 }
 
 // SaveAdtyEpayChannel 新建或改一个通道，方式整组替换。keepKey 为真时不改商户密钥；编辑时留空的 RSA 密钥也会保留原值。
@@ -279,7 +286,17 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 				keepPublicKey = true
 				channel.PlatformPublicKey = existing.PlatformPublicKey
 			}
-			if !existing.CredentialDecryptErr && !existing.SamePaymentIdentity(channel) {
+			identityChanged := !existing.SamePaymentIdentity(channel)
+			if identityChanged && existing.CredentialDecryptErr {
+				// Only exempt the undecryptable secret field(s) so Root can re-key
+				// them while non-secret routing/verification identity stays locked.
+				merchantKeyOK := existing.MerchantKey == "" || existing.MerchantKey == channel.MerchantKey
+				privateKeyOK := existing.MerchantPrivateKey == "" || existing.MerchantPrivateKey == channel.MerchantPrivateKey
+				if existing.SameNonSecretPaymentIdentity(channel) && merchantKeyOK && privateKeyOK {
+					identityChanged = false
+				}
+			}
+			if identityChanged {
 				var count int64
 				if err := tx.Model(&AdtyTopupOrder{}).Where("channel_id = ?", channel.Id).Count(&count).Error; err != nil {
 					return err

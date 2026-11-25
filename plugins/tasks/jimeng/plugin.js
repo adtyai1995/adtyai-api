@@ -298,6 +298,14 @@ function filePlaceholder(image) {
   return placeholder;
 }
 
+function hasFilePlaceholder(images) {
+  if (!Array.isArray(images)) return false;
+  for (const image of images) {
+    if (image && typeof image === "object" && !Array.isArray(image) && image.__fileRef) return true;
+  }
+  return false;
+}
+
 function queryReqKey(ctx) {
   const state = (ctx && ctx.state) || {};
   if (typeof state.req_key === "string" && state.req_key.trim()) return state.req_key.trim();
@@ -364,6 +372,18 @@ export function buildSubmitRequest(ctx) {
   if (body.aspect_ratio) ordered.aspect_ratio = body.aspect_ratio;
   if (body.frames) ordered.frames = body.frames;
   const url = endpoint(ctx, "CVSync2AsyncSubmitTask");
+  if (viaGateway(ctx)) {
+    return {
+      url: url,
+      method: "POST",
+      headers: requestHeaders(ctx, "POST", url, ""),
+      body: ordered,
+      action: actionForImageCount(imageCount),
+    };
+  }
+  if (hasFilePlaceholder(ordered.binary_data_base64) || hasFilePlaceholder(ordered.image_urls)) {
+    throw new Error("Jimeng direct Volcengine channels do not support multipart input_reference uploads; pass an image URL or base64 string instead");
+  }
   const bodyText = JSON.stringify(ordered);
   return {
     url: url,

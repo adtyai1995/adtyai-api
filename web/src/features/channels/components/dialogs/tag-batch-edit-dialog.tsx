@@ -64,6 +64,8 @@ export function TagBatchEditDialog({
   // Form fields
   const [newTag, setNewTag] = useState('')
   const [models, setModels] = useState('')
+  const [initialModels, setInitialModels] = useState('')
+  const [modelsDirty, setModelsDirty] = useState(false)
   const [modelMapping, setModelMapping] = useState('')
   const [groups, setGroups] = useState<string[]>([])
 
@@ -98,9 +100,13 @@ export function TagBatchEditDialog({
       // Fetch current tag models
       const tagModelsResponse = await getTagModels(currentTag)
       requireServerSuccess(tagModelsResponse)
-      if (tagModelsResponse.success && tagModelsResponse.data) {
-        setModels(tagModelsResponse.data)
-      }
+      const fetchedModels =
+        tagModelsResponse.success && tagModelsResponse.data
+          ? tagModelsResponse.data
+          : ''
+      setModels(fetchedModels)
+      setInitialModels(fetchedModels)
+      setModelsDirty(false)
 
       // Fetch all available models (for future use if needed)
       const allModelsResponse = requireServerSuccess(await getAllModels())
@@ -132,16 +138,22 @@ export function TagBatchEditDialog({
 
     setIsSaving(true)
     try {
-      const params: Record<string, string | undefined> = {
+      const params: TagOperationParams = {
         tag: currentTag,
       }
 
-      if (newTag !== currentTag) {
-        params.new_tag = newTag || undefined
+      const trimmedNewTag = newTag.trim()
+      if (trimmedNewTag !== currentTag) {
+        params.new_tag = trimmedNewTag
       }
 
-      if (models.trim()) {
-        params.models = models
+      const trimmedModels = models.trim()
+      if (
+        modelsDirty &&
+        trimmedModels &&
+        trimmedModels !== initialModels.trim()
+      ) {
+        params.models = trimmedModels
       }
 
       if (modelMapping.trim()) {
@@ -158,9 +170,7 @@ export function TagBatchEditDialog({
         return
       }
 
-      const response = await editTagChannels(
-        params as unknown as TagOperationParams
-      )
+      const response = await editTagChannels(params)
       if (response.success) {
         toast.success(t('Tag updated successfully'))
         queryClient.invalidateQueries({ queryKey: channelsQueryKeys.lists() })
@@ -178,6 +188,8 @@ export function TagBatchEditDialog({
   const handleClose = () => {
     setNewTag('')
     setModels('')
+    setInitialModels('')
+    setModelsDirty(false)
     setModelMapping('')
     setGroups([])
     onOpenChange(false)
@@ -254,14 +266,15 @@ export function TagBatchEditDialog({
                 'Comma-separated model names (leave empty to keep current)'
               )}
               value={models}
-              onChange={(e) => setModels(e.target.value)}
+              onChange={(e) => {
+                setModels(e.target.value)
+                setModelsDirty(true)
+              }}
               disabled={isSaving}
               rows={3}
             />
             <p className='text-dim text-[12.5px]'>
-              {t(
-                'Current models for the longest channel in this tag. May not include all models from all channels.'
-              )}
+              {t("(Override all channels' models)")}
             </p>
           </div>
 

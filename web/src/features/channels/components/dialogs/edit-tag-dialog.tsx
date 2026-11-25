@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -58,6 +58,9 @@ export function EditTagDialog({ open, onOpenChange }: EditTagDialogProps) {
   // Form state
   const [newTag, setNewTag] = useState('')
   const [selectedModels, setSelectedModels] = useState<string[]>([])
+  const [initialModels, setInitialModels] = useState<string[]>([])
+  const [modelsDirty, setModelsDirty] = useState(false)
+  const modelsDirtyRef = useRef(false)
   const [customModel, setCustomModel] = useState('')
   const [modelMapping, setModelMapping] = useState('')
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
@@ -91,23 +94,38 @@ export function EditTagDialog({ open, onOpenChange }: EditTagDialogProps) {
     allModelsData?.data?.map((m) => m.id).filter(Boolean) || []
   const availableGroups = groupsData?.data || []
 
-  // Initialize form when tag changes
+  // Reset form when dialog opens or tag changes
   useEffect(() => {
     if (open && currentTag) {
       setNewTag(currentTag)
       setModelMapping('')
       setSelectedGroups([])
       setCustomModel('')
-
-      // Load tag models
-      if (tagModelsData?.data) {
-        const models = tagModelsData.data.split(',').filter(Boolean)
-        setSelectedModels(models)
-      } else {
-        setSelectedModels([])
-      }
+      setSelectedModels([])
+      setInitialModels([])
+      setModelsDirty(false)
+      modelsDirtyRef.current = false
     }
+  }, [open, currentTag])
+
+  // Load tag models once fetched unless already edited by user
+  useEffect(() => {
+    if (!open || !currentTag || !tagModelsData || modelsDirtyRef.current) return
+    const models = tagModelsData.data
+      ? tagModelsData.data
+          .split(',')
+          .map((m) => m.trim())
+          .filter(Boolean)
+      : []
+    setInitialModels(models)
+    setSelectedModels(models)
   }, [open, currentTag, tagModelsData])
+
+  const updateSelectedModels = (next: string[]) => {
+    setSelectedModels(next)
+    setModelsDirty(true)
+    modelsDirtyRef.current = true
+  }
 
   const handleAddCustomModel = () => {
     if (!customModel.trim()) return
@@ -119,7 +137,7 @@ export function EditTagDialog({ open, onOpenChange }: EditTagDialogProps) {
       .filter((m) => !selectedModels.includes(m))
 
     if (modelsToAdd.length > 0) {
-      setSelectedModels([...selectedModels, ...modelsToAdd])
+      updateSelectedModels([...selectedModels, ...modelsToAdd])
       toast.success(
         t('Added {{count}} model(s)', { count: modelsToAdd.length })
       )
@@ -130,7 +148,7 @@ export function EditTagDialog({ open, onOpenChange }: EditTagDialogProps) {
   }
 
   const handleRemoveModel = (model: string) => {
-    setSelectedModels(selectedModels.filter((m) => m !== model))
+    updateSelectedModels(selectedModels.filter((m) => m !== model))
   }
 
   const handleToggleGroup = (group: string) => {
@@ -156,11 +174,18 @@ export function EditTagDialog({ open, onOpenChange }: EditTagDialogProps) {
     if (!currentTag) return
     if (!validateForm()) return
 
+    const trimmedNewTag = newTag.trim()
+    const hasTagChange = trimmedNewTag !== currentTag
+    const hasModelChanges =
+      modelsDirty &&
+      selectedModels.length > 0 &&
+      selectedModels.join(',') !== initialModels.join(',')
+
     // Check if anything changed
     const hasChanges =
-      newTag !== currentTag ||
-      modelMapping.trim() ||
-      selectedModels.length > 0 ||
+      hasTagChange ||
+      Boolean(modelMapping.trim()) ||
+      hasModelChanges ||
       selectedGroups.length > 0
 
     if (!hasChanges) {
@@ -170,17 +195,17 @@ export function EditTagDialog({ open, onOpenChange }: EditTagDialogProps) {
 
     setIsSubmitting(true)
     try {
-      const params: Record<string, string | null> = { tag: currentTag }
+      const params: TagOperationParams = { tag: currentTag }
 
-      if (newTag && newTag !== currentTag) {
-        params.new_tag = newTag || null
+      if (hasTagChange) {
+        params.new_tag = trimmedNewTag
       }
 
       if (modelMapping.trim()) {
         params.model_mapping = modelMapping
       }
 
-      if (selectedModels.length > 0) {
+      if (hasModelChanges) {
         params.models = selectedModels.join(',')
       }
 
@@ -188,9 +213,7 @@ export function EditTagDialog({ open, onOpenChange }: EditTagDialogProps) {
         params.groups = selectedGroups.join(',')
       }
 
-      const response = await editTagChannels(
-        params as unknown as TagOperationParams
-      )
+      const response = await editTagChannels(params)
 
       if (response.success) {
         toast.success(t('Tag updated successfully'))
@@ -310,7 +333,7 @@ export function EditTagDialog({ open, onOpenChange }: EditTagDialogProps) {
                     }))}
                     onValueChange={(value: string | null) => {
                       if (value !== null && !selectedModels.includes(value)) {
-                        setSelectedModels([...selectedModels, value])
+                        updateSelectedModels([...selectedModels, value])
                       }
                     }}
                     className='flex-1'

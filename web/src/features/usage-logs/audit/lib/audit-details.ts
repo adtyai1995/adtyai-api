@@ -39,8 +39,13 @@ const AUDIT_ROLE_NAMES: Record<number, string> = {
 const USER_AUDIT_OBJECT_TYPES = new Set([
   'user',
   'admin.user',
+  'adty.user',
+  'adty.admin_permissions',
   'customer',
   'site_customer',
+])
+
+const STAFF_AUDIT_OBJECT_TYPES = new Set([
   'staff',
   'site_staff',
   'site.staff',
@@ -48,20 +53,42 @@ const USER_AUDIT_OBJECT_TYPES = new Set([
 
 const POSITIVE_INTEGER_RE = /^[1-9]\d*$/
 
+function readAuditId(value: unknown): number | string | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value !== 0) {
+    return value
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (trimmed !== '' && Number(trimmed) !== 0) {
+      return trimmed
+    }
+  }
+  return undefined
+}
+
 export function formatAuditObjectUserIdentity(entry: AuditLog): string {
   const objectType = entry.object_type?.trim().toLowerCase() ?? ''
-  if (!objectType || !USER_AUDIT_OBJECT_TYPES.has(objectType)) {
+  const isUserObject = USER_AUDIT_OBJECT_TYPES.has(objectType)
+  const isStaffObject = STAFF_AUDIT_OBJECT_TYPES.has(objectType)
+  if (!objectType || (!isUserObject && !isStaffObject)) {
     return ''
   }
-  const objectId = entry.object_id?.trim() ?? ''
-  const resolvedUserId =
-    entry.object_user_id && entry.object_user_id > 0
-      ? entry.object_user_id
-      : objectId
   const objectUsername = entry.object_username?.trim() ?? ''
+  const hasObjectUserId =
+    entry.object_user_id !== undefined && entry.object_user_id > 0
+  if (isStaffObject) {
+    if (!hasObjectUserId && !objectUsername) {
+      return ''
+    }
+    return formatUserIdentity(
+      hasObjectUserId ? entry.object_user_id : undefined,
+      objectUsername
+    )
+  }
+  const objectId = entry.object_id?.trim() ?? ''
+  const resolvedUserId = hasObjectUserId ? entry.object_user_id : objectId
   const hasPositiveUserId =
-    (entry.object_user_id !== undefined && entry.object_user_id > 0) ||
-    POSITIVE_INTEGER_RE.test(objectId)
+    hasObjectUserId || POSITIVE_INTEGER_RE.test(objectId)
   if (!hasPositiveUserId && !objectUsername) {
     return ''
   }
@@ -527,23 +554,50 @@ export function buildAuditDetails(
   else if (authMethod === 'access_token') authentication = t('Access Token')
   else if (authMethod) authentication = loginMethodLabel(authMethod, t)
 
+  const objectType = entry.object_type?.trim().toLowerCase() ?? ''
+  const isPureUserObject = USER_AUDIT_OBJECT_TYPES.has(objectType)
+  const isUserObject =
+    isPureUserObject || STAFF_AUDIT_OBJECT_TYPES.has(objectType)
+
   let targetName = ''
-  if (typeof params.name === 'string') targetName = params.name
-  else if (typeof params.username === 'string') targetName = params.username
-  const targetId =
-    typeof params.id === 'number' || typeof params.id === 'string'
-      ? params.id
-      : undefined
-  const hasTargetId =
-    targetId !== undefined &&
-    String(targetId).trim() !== '' &&
-    Number(targetId) !== 0
+  if (typeof params.name === 'string' && params.name.trim()) {
+    targetName = params.name
+  } else if (typeof params.username === 'string' && params.username.trim()) {
+    targetName = params.username
+  } else if (isUserObject && entry.object_username?.trim()) {
+    targetName = entry.object_username.trim()
+  }
+
+  const paramId = readAuditId(params.id)
+  const paramTargetUserId = readAuditId(params.target_user_id)
+  let targetId: number | string | undefined = paramId ?? paramTargetUserId
+  if (
+    targetId === undefined &&
+    isUserObject &&
+    entry.object_user_id !== undefined &&
+    entry.object_user_id > 0
+  ) {
+    targetId = entry.object_user_id
+  }
+  if (targetId === undefined && isPureUserObject) {
+    const objectId = entry.object_id?.trim() ?? ''
+    if (POSITIVE_INTEGER_RE.test(objectId)) {
+      targetId = objectId
+    }
+  }
+
   let target =
-    hasTargetId || targetName.trim()
+    targetId !== undefined || targetName.trim()
       ? formatUserIdentity(targetId, targetName)
       : ''
   if (target) {
     delete params.id
+    if (
+      paramTargetUserId !== undefined &&
+      (paramId === undefined || String(paramTargetUserId) === String(paramId))
+    ) {
+      delete params.target_user_id
+    }
     delete params.name
     delete params.username
   } else {

@@ -1123,11 +1123,9 @@ func DisableChannelByTag(tag string) error {
 func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *string, group *string, priority *int64, weight *uint, paramOverride *string, headerOverride *string) error {
 	updateData := Channel{}
 	shouldReCreateAbilities := false
-	updatedTag := tag
 	// 如果 newTag 不为空且不等于 tag，则更新 tag
 	if newTag != nil && *newTag != tag {
 		updateData.Tag = newTag
-		updatedTag = *newTag
 	}
 	if modelMapping != nil {
 		updateData.ModelMapping = modelMapping
@@ -1168,14 +1166,23 @@ func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *
 				return err
 			}
 		}
-		if err := tx.Model(&Channel{}).Where("tag = ?", tag).Updates(&updateData).Error; err != nil {
+		var channelIDs []int
+		if err := tx.Model(&Channel{}).Where("tag = ?", tag).Pluck("id", &channelIDs).Error; err != nil {
 			return err
+		}
+		if len(channelIDs) > 0 {
+			if err := tx.Model(&Channel{}).Where("id IN ?", channelIDs).Updates(&updateData).Error; err != nil {
+				return err
+			}
 		}
 		if !shouldReCreateAbilities {
 			return updateAbilityByTag(tx, tag, newTag, priority, weight)
 		}
+		if len(channelIDs) == 0 {
+			return nil
+		}
 		var channels []*Channel
-		if err := tx.Where("tag = ?", updatedTag).Find(&channels).Error; err != nil {
+		if err := tx.Where("id IN ?", channelIDs).Find(&channels).Error; err != nil {
 			return err
 		}
 		for _, channel := range channels {

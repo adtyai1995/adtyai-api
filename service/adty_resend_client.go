@@ -119,7 +119,12 @@ func (c *AdtyResendClient) do(ctx context.Context, method, path string, body any
 			Message string `json:"message"`
 		}
 		if common.DecodeJson(limited, &failure) == nil {
-			apiErr.Name, apiErr.Message = failure.Name, failure.Message
+			if failure.Name != "" {
+				apiErr.Name = common.SanitizeOutboundError(errors.New(failure.Name), apiKey).Error()
+			}
+			if failure.Message != "" {
+				apiErr.Message = common.SanitizeOutboundError(errors.New(failure.Message), apiKey).Error()
+			}
 		}
 		if seconds, err := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After"))); err == nil && seconds > 0 {
 			apiErr.RetryAfter = time.Duration(seconds) * time.Second

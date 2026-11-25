@@ -56,20 +56,25 @@ type RateChangedError struct{ Change ReferralRateChange }
 func (e *RateChangedError) Error() string { return ErrReferralRateChanged.Error() }
 func (e *RateChangedError) Unwrap() error { return ErrReferralRateChanged }
 
-// CurrentWithdrawCNYRate 直接查库读提现汇率：行不存在、解析不了或不大于 0 都算未设置。
+// CurrentWithdrawCNYRate 直接查库读提现汇率（只读无锁）：行不存在、解析不了或不大于 0 都算未设置。
 func CurrentWithdrawCNYRate() (rate decimal.Decimal, updatedAt int64, err error) {
-	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		var readErr error
-		rate, updatedAt, readErr = currentWithdrawCNYRateTx(tx)
-		return readErr
-	})
-	return rate, updatedAt, err
+	return currentWithdrawCNYRateTx(model.DB, false)
 }
 
-// currentWithdrawCNYRateTx holds the rate row until the withdrawal or settings
-// transaction commits, so an accepted application has one durable rate snapshot.
-func currentWithdrawCNYRateTx(tx *gorm.DB) (decimal.Decimal, int64, error) {
-	raw, ok, err := model.ReadOptionForUpdate(tx, adty_setting.ReferralKeyWithdrawCNYRate)
+// currentWithdrawCNYRateTx reads the withdrawal CNY rate, optionally locking
+// the option rows inside a write transaction so an accepted application has
+// one durable rate snapshot without acquiring FOR UPDATE locks on GET paths.
+func currentWithdrawCNYRateTx(tx *gorm.DB, lock bool) (decimal.Decimal, int64, error) {
+	var (
+		raw string
+		ok  bool
+		err error
+	)
+	if lock {
+		raw, ok, err = model.ReadOptionForUpdate(tx, adty_setting.ReferralKeyWithdrawCNYRate)
+	} else {
+		raw, ok, err = model.ReadOptionInTx(tx, adty_setting.ReferralKeyWithdrawCNYRate)
+	}
 	if err != nil {
 		return decimal.Zero, 0, err
 	}
@@ -80,7 +85,12 @@ func currentWithdrawCNYRateTx(tx *gorm.DB) (decimal.Decimal, int64, error) {
 	if err != nil || !rate.IsPositive() {
 		return decimal.Zero, 0, ErrReferralRateUnset
 	}
-	updatedRaw, _, err := model.ReadOptionForUpdate(tx, adty_setting.ReferralKeyWithdrawCNYRateUpdatedAt)
+	var updatedRaw string
+	if lock {
+		updatedRaw, _, err = model.ReadOptionForUpdate(tx, adty_setting.ReferralKeyWithdrawCNYRateUpdatedAt)
+	} else {
+		updatedRaw, _, err = model.ReadOptionInTx(tx, adty_setting.ReferralKeyWithdrawCNYRateUpdatedAt)
+	}
 	if err != nil {
 		return decimal.Zero, 0, err
 	}
@@ -259,7 +269,7 @@ func (s *ReferralService) CreateWithdrawal(input ReferralWithdrawalCreateInput) 
 			}
 		}
 		if input.AccountType == model.ReferralWithdrawToAlipay {
-			rate, updatedAt, err := currentWithdrawCNYRateTx(tx)
+			rate, updatedAt, err := currentWithdrawCNYRateTx(tx, true)
 			if err != nil {
 				return err
 			}
@@ -819,6 +829,9 @@ func (s *ReferralService) releaseWithdrawalTx(tx *gorm.DB, withdrawal *model.Ref
 					}
 					nextBook := decimal.Max(moneyDec(comm.CommissionAmount).Sub(share), decimal.Zero)
 					if err := tx.Model(&model.ReferralCommission{}).Where("id = ?", comm.Id).Update("commission_amount", moneyF(nextBook)).Error; err != nil {
+						return err
+					}
+					if err := syncCommissionStatusTx(tx, comm.Id); err != nil {
 						return err
 					}
 				}

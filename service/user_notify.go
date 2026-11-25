@@ -865,7 +865,11 @@ func NotifyUser(userId int, userEmail string, userSetting dto.UserSetting, data 
 		}
 		return SendWebhookNotify(webhookURLStr, webhookSecret, data)
 	case dto.NotifyTypeBark:
-		barkURL := userSetting.BarkUrl
+		barkURL, secErr := openUserNotifySecret(userId, "bark_url", userSetting.BarkUrl)
+		if secErr != nil {
+			common.SysError(common.LogText("failed to decrypt bark url for user %d: %s", userId, secErr.Error()))
+			return secErr
+		}
 		if barkURL == "" {
 			common.SysLog(common.LogText("user %d has no bark url, skip sending bark", userId))
 			return nil

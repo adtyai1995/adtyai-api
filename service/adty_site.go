@@ -1117,6 +1117,12 @@ func RequestAdtySiteClose(ownerUserId int, reason string) (*model.AdtySite, erro
 		if err := model.AdtyLockForUpdate(tx).Where("owner_user_id = ? AND status IN ?", ownerUserId,
 			[]string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusPending}).First(&site).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
+				var closingSite model.AdtySite
+				if closingErr := model.AdtyLockForUpdate(tx).Select("id").Where("owner_user_id = ? AND status = ?", ownerUserId, model.AdtySiteStatusClosing).First(&closingSite).Error; closingErr == nil {
+					return ErrAdtySiteClosing
+				} else if !errors.Is(closingErr, gorm.ErrRecordNotFound) {
+					return closingErr
+				}
 				return ErrAdtySiteNotFound
 			}
 			return err

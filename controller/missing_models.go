@@ -3,6 +3,7 @@ package controller
 import (
 	"net/http"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 
 	"github.com/gin-gonic/gin"
@@ -14,10 +15,8 @@ import (
 func GetMissingModels(c *gin.Context) {
 	missing, err := model.GetMissingModels()
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.SysError(common.LogText("failed to get missing models: %s", err.Error()))
+		common.ApiErrorT(c, "Operation failed")
 		return
 	}
 

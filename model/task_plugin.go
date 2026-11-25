@@ -110,7 +110,7 @@ func lockTaskPluginKey(tx *gorm.DB, key string) error {
 		}
 	}
 	var rows []TaskPlugin
-	return lockForUpdate(tx).Select("id").Where("key = ?", key).Find(&rows).Error
+	return lockForUpdate(tx).Select("id").Where(&TaskPlugin{Key: key}).Find(&rows).Error
 }
 
 // EnsureTaskPluginOneActiveIndex keeps one active override per plugin key.

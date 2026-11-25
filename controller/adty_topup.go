@@ -347,7 +347,7 @@ func matchAdtyTopUpSelfFilter(userID int, item model.AdtyTopUpView, filter adtyT
 		effectiveBusiness := ""
 		if item.Ext != nil {
 			effectiveBusiness = item.Ext.Business
-			if effectiveBusiness == "" && item.Ext.Provider == model.AdtyVoucherProvider && item.Ext.Method == model.AdtyVoucherPurposeSiteMargin {
+			if item.Ext.Provider == model.AdtyVoucherProvider && item.Ext.Method == model.AdtyVoucherPurposeSiteMargin {
 				effectiveBusiness = model.AdtyBusinessOwnerMarginTopup
 			}
 		}

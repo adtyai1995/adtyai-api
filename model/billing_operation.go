@@ -288,7 +288,7 @@ func AdtyBusinessLocation(tx *gorm.DB) *time.Location {
 	name := "Asia/Shanghai"
 	if tx != nil && tx.Migrator().HasTable(&Option{}) {
 		var opt Option
-		if err := tx.Where("key = ?", key).Limit(1).Find(&opt).Error; err == nil {
+		if err := tx.Where(&Option{Key: key}).Limit(1).Find(&opt).Error; err == nil {
 			if trimmed := strings.TrimSpace(opt.Value); trimmed != "" {
 				name = trimmed
 			}

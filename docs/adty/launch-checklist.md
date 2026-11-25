@@ -32,7 +32,7 @@
 - [ ] ServerAddress 设成已经决定的主站 HTTPS Origin。不要用仓库里的示例域名。
 - [ ] API 地址：核对站点设置里的 API 地址（`adty_site_setting.api_base_url`）已填好（原内容设置里的 API 信息面板 `console_setting.api_info*` 已退役）。
 - [ ] 站点设置里填客服邮箱、Telegram、tawk.to 的 property id 和 widget id。
-- [ ] tawk.to 后台把挂件语言设好：网页不会按用户语言切换挂件语言，用的是 tawk.to 后台给这个 widget 设的语言。填好 id 后用国内网络打开首页，看挂件的加载速度；打开支付窗时挂件应该隐藏，关掉后重新出现。
+- [ ] tawk.to 挂件核对：前端 `web/src/features/adty-support/tawk-widget.tsx` 会按当前正式界面语言自动切换挂件语言（`en` / `zh_cn`，切换语言时重新挂载挂件），tawk.to 后台仅需保留默认配置即可。填好 id 后用国内网络打开首页，看挂件的加载速度与中英文切换；打开支付窗时挂件应该隐藏，关掉后重新出现。
 - [ ] 顶栏导航关掉 Console、Rankings、About。
 - [ ] docs_link 保持为空（8.9 已把默认值改成空，顶栏的「文档」指向 /docs）。
 

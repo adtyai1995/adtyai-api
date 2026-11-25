@@ -45,7 +45,7 @@ type adtySiteCommissionOrderSnapshot struct {
 
 func loadLegacySiteCommissionPolicyTx(tx *gorm.DB) (adtySiteCommissionPolicy, error) {
 	var rows []model.Option
-	if err := tx.Where("key IN ?", []string{adtySiteCommissionCapKey, adtySiteCommissionDaysKey}).Find(&rows).Error; err != nil {
+	if err := tx.Where(map[string]any{"key": []string{adtySiteCommissionCapKey, adtySiteCommissionDaysKey}}).Find(&rows).Error; err != nil {
 		return adtySiteCommissionPolicy{}, err
 	}
 	values := make(map[string]string, len(rows))
@@ -570,7 +570,7 @@ func freezeSiteCommissionMarginTx(tx *gorm.DB, siteID int, need decimal.Decimal,
 		return decimal.Zero, err
 	}
 	var authorization model.Option
-	lookup := tx.Where("key = ?", commissionMarginOptionKey(siteID)).Limit(1).Find(&authorization)
+	lookup := tx.Where(&model.Option{Key: commissionMarginOptionKey(siteID)}).Limit(1).Find(&authorization)
 	if lookup.Error != nil || strings.TrimSpace(authorization.Value) != "1" {
 		return decimal.Zero, lookup.Error
 	}

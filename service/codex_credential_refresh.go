@@ -55,7 +55,7 @@ func saveCodexChannelKeyWithDB(ctx context.Context, db *gorm.DB, channelID int, 
 		db = model.DB
 	}
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&model.Channel{}).Where("id = ? AND key = ?", channelID, oldKey).Update("key", newKey)
+		result := tx.Model(&model.Channel{}).Where(map[string]any{"id": channelID, "key": oldKey}).Update("key", newKey)
 		if result.Error != nil {
 			return result.Error
 		}

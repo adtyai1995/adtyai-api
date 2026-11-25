@@ -324,11 +324,12 @@ func CountClaudeTokens(c *gin.Context) {
 	info := relaycommon.GenRelayInfoClaude(c, request)
 	inputTokens, err := service.CountRequestToken(c, request.GetTokenCountMeta(), info)
 	if err != nil {
+		common.SysError(common.LogText("CountClaudeTokens failed: %s", err.Error()))
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"type": "error",
 			"error": gin.H{
 				"type":    "api_error",
-				"message": common.MessageWithRequestId(err.Error(), c.GetString(common.RequestIdKey)),
+				"message": common.MessageWithRequestId("Failed to count input tokens", c.GetString(common.RequestIdKey)),
 			},
 		})
 		return
@@ -506,9 +507,10 @@ func RelayTaskPluginEndpoint(c *gin.Context, fallback gin.HandlerFunc) {
 func RelayTaskFetch(c *gin.Context) {
 	relayInfo, err := relaycommon.GenRelayInfo(c, types.RelayFormatTask, nil, nil)
 	if err != nil {
+		common.SysError(common.LogText("RelayTaskFetch GenRelayInfo failed: %s", err.Error()))
 		c.JSON(http.StatusInternalServerError, &taskdto.TaskError{
 			Code:       "gen_relay_info_failed",
-			Message:    err.Error(),
+			Message:    "Failed to initialize task request",
 			StatusCode: http.StatusInternalServerError,
 		})
 		return
@@ -527,9 +529,10 @@ type taskSubmissionOutcome struct {
 func RelayTask(c *gin.Context) {
 	relayInfo, err := relaycommon.GenRelayInfo(c, types.RelayFormatTask, nil, nil)
 	if err != nil {
+		common.SysError(common.LogText("RelayTask GenRelayInfo failed: %s", err.Error()))
 		respondTaskSubmissionError(c, &taskdto.TaskError{
 			Code:       "gen_relay_info_failed",
-			Message:    err.Error(),
+			Message:    "Failed to initialize task request",
 			StatusCode: http.StatusInternalServerError,
 		})
 		return

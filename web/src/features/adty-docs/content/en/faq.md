@@ -22,7 +22,7 @@ See the [Refund Policy](/refund-policy).
 
 ## Which models can I use?
 
-Every model on the [Pricing](/pricing) page. Use the model name exactly as shown there. One key works for all of them.
+An API key can call the models enabled in its bound group on the [Pricing](/pricing) page. Use the model name exactly as shown there. Each API key is bound to an explicit group, so create separate keys in the corresponding groups on the [API Keys](/keys) page if you need to call models across different groups.
 
 ## Can I use one key in several tools?
 

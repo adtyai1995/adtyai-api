@@ -1707,38 +1707,46 @@ func resolveAdtyNotificationDisplayContent(row model.AdtyNotificationPublication
 }
 
 func resolveAdtyNotificationDisplayContentWithDB(db *gorm.DB, row model.AdtyNotificationPublication) string {
-	content := strings.TrimSpace(row.Content)
-	isHTML := strings.EqualFold(strings.TrimSpace(row.ContentFormat), "html")
-	if row.Id > 0 && db != nil && adtyContainsChinese(content) && db.Migrator().HasTable(&model.AdtyTranslationHead{}) {
+	var headPtr *model.AdtyTranslationHead
+	if row.Id > 0 && db != nil && adtyContainsChinese(strings.TrimSpace(row.Content)) && db.Migrator().HasTable(&model.AdtyTranslationHead{}) {
 		var head model.AdtyTranslationHead
 		if db.Where("object_key = ?", adtyNotificationTranslationKey(row.Id)).Limit(1).Find(&head).RowsAffected > 0 {
-			currentSrc := normalizeAdtyNotificationSourceContentWithDB(db, row.Id, content)
-			if head.Status == model.AdtyTranslationReady && strings.TrimSpace(head.English) != "" && adtyTranslationHeadMatchesSource(head, currentSrc) {
-				eng := strings.TrimSpace(head.English)
+			headPtr = &head
+		}
+	}
+	return resolveAdtyNotificationDisplayContentWithHead(row, headPtr)
+}
+
+func resolveAdtyNotificationDisplayContentWithHead(row model.AdtyNotificationPublication, head *model.AdtyTranslationHead) string {
+	content := strings.TrimSpace(row.Content)
+	isHTML := strings.EqualFold(strings.TrimSpace(row.ContentFormat), "html")
+	if row.Id > 0 && head != nil && adtyContainsChinese(content) {
+		currentSrc := stripAdtyNotificationTranslationSuffix(content, head.English)
+		if head.Status == model.AdtyTranslationReady && strings.TrimSpace(head.English) != "" && adtyTranslationHeadMatchesSource(*head, currentSrc) {
+			eng := strings.TrimSpace(head.English)
+			if isHTML {
+				eng = SanitizeAdtyNotificationHTML(eng)
+			}
+			src := strings.TrimSpace(head.Source)
+			// Guard against legacy rows where title was stored in notification:<id>
+			// while the body itself was pure English.
+			if src != "" && src == strings.TrimSpace(row.Title) && !adtyContainsChinese(currentSrc) {
 				if isHTML {
-					eng = SanitizeAdtyNotificationHTML(eng)
+					return SanitizeAdtyNotificationHTML(content)
 				}
-				src := strings.TrimSpace(head.Source)
-				// Guard against legacy rows where title was stored in notification:<id>
-				// while the body itself was pure English.
-				if src != "" && src == strings.TrimSpace(row.Title) && !adtyContainsChinese(currentSrc) {
-					if isHTML {
-						return SanitizeAdtyNotificationHTML(content)
-					}
-					return content
-				}
-				if src == "" {
-					src = currentSrc
-				}
-				if isHTML {
-					src = SanitizeAdtyNotificationHTML(src)
-				}
-				if eng != "" && !strings.Contains(src, eng) {
-					return src + "\n\n" + eng
-				}
-				if src != "" {
-					return src
-				}
+				return content
+			}
+			if src == "" {
+				src = currentSrc
+			}
+			if isHTML {
+				src = SanitizeAdtyNotificationHTML(src)
+			}
+			if eng != "" && !strings.Contains(src, eng) {
+				return src + "\n\n" + eng
+			}
+			if src != "" {
+				return src
 			}
 		}
 	}
@@ -1958,6 +1966,111 @@ func adtyUserCanReadPublication(user *model.User, pub *model.AdtyNotificationPub
 	}
 }
 
+type adtyNotificationViewerContext struct {
+	UserID         int
+	UserSiteID     int
+	IsStaff        bool
+	IsSiteOwner    bool
+	InMainTeam     bool
+	ViewerSite     *model.AdtySite
+	OwnsViewerSite bool
+}
+
+type adtyNotificationPreload struct {
+	HasTranslationTable bool
+	TranslationHeads    map[string]model.AdtyTranslationHead
+	HasSiteTable        bool
+	IssuerSites         map[int]model.AdtySite
+	HasDispositionTable bool
+	OpenAnomalyRefs     map[string]bool
+	Viewer              *adtyNotificationViewerContext
+}
+
+func adtyQuoteColumn(db *gorm.DB, name string) string {
+	if db != nil && db.Dialector != nil {
+		var sb strings.Builder
+		db.Dialector.QuoteTo(&sb, name)
+		return sb.String()
+	}
+	if db != nil && db.Statement != nil {
+		return db.Statement.Quote(name)
+	}
+	return name
+}
+
+func adtyPublicationNotHiddenSQL(db *gorm.DB) string {
+	keyCol := adtyQuoteColumn(db, "key")
+	pubIDExpr := "'publication:' || CAST(adty_notification_publications.id AS TEXT)"
+	if db != nil && db.Dialector != nil && db.Dialector.Name() == "mysql" {
+		pubIDExpr = "CONCAT('publication:', adty_notification_publications.id)"
+	}
+	return "NOT EXISTS (SELECT 1 FROM adty_notification_hides h WHERE h.user_id = ? AND (h." + keyCol + " = adty_notification_publications.read_key OR h." + keyCol + " = " + pubIDExpr + "))"
+}
+
+func adtyTicketNoticeNotHiddenSQL(db *gorm.DB) string {
+	keyCol := adtyQuoteColumn(db, "key")
+	return "NOT EXISTS (SELECT 1 FROM adty_notification_hides h WHERE h.user_id = ? AND h." + keyCol + " = adty_ticket_notices.read_key)"
+}
+
+func preloadAdtyNotificationBatch(db *gorm.DB, rows []model.AdtyNotificationPublication, viewer *adtyNotificationViewerContext) *adtyNotificationPreload {
+	preloaded := &adtyNotificationPreload{
+		TranslationHeads: map[string]model.AdtyTranslationHead{},
+		IssuerSites:      map[int]model.AdtySite{},
+		OpenAnomalyRefs:  map[string]bool{},
+		Viewer:           viewer,
+	}
+	if db == nil || len(rows) == 0 {
+		return preloaded
+	}
+	transKeys := make([]string, 0, len(rows)*2)
+	transSeen := make(map[int]struct{}, len(rows))
+	issuerSiteIDs := make([]int, 0)
+	issuerSeen := make(map[int]struct{})
+	pubPtrs := make([]*model.AdtyNotificationPublication, 0, len(rows))
+	for i := range rows {
+		pubPtrs = append(pubPtrs, &rows[i])
+		if rows[i].Id > 0 {
+			if _, ok := transSeen[rows[i].Id]; !ok {
+				transSeen[rows[i].Id] = struct{}{}
+				transKeys = append(transKeys,
+					adtyNotificationTranslationKey(rows[i].Id),
+					adtyNotificationTitleTranslationKey(rows[i].Id),
+				)
+			}
+		}
+		if rows[i].IssuerSiteId > 0 {
+			if _, ok := issuerSeen[rows[i].IssuerSiteId]; !ok {
+				issuerSeen[rows[i].IssuerSiteId] = struct{}{}
+				issuerSiteIDs = append(issuerSiteIDs, rows[i].IssuerSiteId)
+			}
+		}
+	}
+	if len(transKeys) > 0 && db.Migrator().HasTable(&model.AdtyTranslationHead{}) {
+		preloaded.HasTranslationTable = true
+		var heads []model.AdtyTranslationHead
+		if err := db.Where("object_key IN ?", transKeys).Find(&heads).Error; err == nil {
+			for _, head := range heads {
+				preloaded.TranslationHeads[head.ObjectKey] = head
+			}
+		}
+	}
+	if len(issuerSiteIDs) > 0 && db.Migrator().HasTable(&model.AdtySite{}) {
+		preloaded.HasSiteTable = true
+		var sites []model.AdtySite
+		if err := db.Select("id", "subdomain", "root_domain", "brand").Where("id IN ?", issuerSiteIDs).Find(&sites).Error; err == nil {
+			for _, site := range sites {
+				preloaded.IssuerSites[site.Id] = site
+			}
+		}
+	}
+	openRefs, hasDisp := adtyBatchOpenAnomalyRefs(db, pubPtrs)
+	preloaded.HasDispositionTable = hasDisp
+	if openRefs != nil {
+		preloaded.OpenAnomalyRefs = openRefs
+	}
+	return preloaded
+}
+
 // A matching Host alone does not entitle an unrelated account to site content.
 // Account membership is read from SQL rather than client parameters or caches.
 func adtyVisibleNotificationPublications(userID int, site *model.AdtySite) (*gorm.DB, error) {
@@ -1965,12 +2078,18 @@ func adtyVisibleNotificationPublications(userID int, site *model.AdtySite) (*gor
 }
 
 func adtyVisibleNotificationPublicationsWithDB(db *gorm.DB, userID int, site *model.AdtySite) (*gorm.DB, error) {
+	query, _, err := adtyVisibleNotificationPublicationsWithViewer(db, userID, site)
+	return query, err
+}
+
+func adtyVisibleNotificationPublicationsWithViewer(db *gorm.DB, userID int, site *model.AdtySite) (*gorm.DB, adtyNotificationViewerContext, error) {
+	var viewer adtyNotificationViewerContext
 	if db == nil {
 		db = model.DB
 	}
 	var user model.User
 	if err := db.First(&user, userID).Error; err != nil {
-		return nil, err
+		return nil, viewer, err
 	}
 	query := db.Model(&model.AdtyNotificationPublication{}).Where("status = ?", "published")
 	userTarget := fmt.Sprintf("user:%d", userID)
@@ -1991,21 +2110,27 @@ func adtyVisibleNotificationPublicationsWithDB(db *gorm.DB, userID int, site *mo
 
 	isStaff, err := adtyUserIsStaffWithDB(db, &user)
 	if err != nil {
-		return nil, err
+		return nil, viewer, err
 	}
 	var ownedOpenSiteIDs []int
 	if user.SiteId == 0 && user.StaffSiteId == 0 {
 		ownedOpenSiteIDs, err = adtyUserOwnedOpenSiteIDsWithDB(db, userID)
 		if err != nil {
-			return nil, err
+			return nil, viewer, err
 		}
 	}
 	isSiteOwner := len(ownedOpenSiteIDs) > 0
 	if !isSiteOwner && (user.SiteId != 0 || user.StaffSiteId != 0) {
 		isSiteOwner, err = adtyUserOwnsOpenSiteWithDB(db, userID)
 		if err != nil {
-			return nil, err
+			return nil, viewer, err
 		}
+	}
+	viewer = adtyNotificationViewerContext{
+		UserID:      user.Id,
+		UserSiteID:  user.SiteId,
+		IsStaff:     isStaff,
+		IsSiteOwner: isSiteOwner,
 	}
 
 	clauses := make([]string, 0, 8)
@@ -2033,7 +2158,7 @@ func adtyVisibleNotificationPublicationsWithDB(db *gorm.DB, userID int, site *mo
 			}
 			teamTargets, err := adtyUserActiveTeamTargetsWithDB(db, userID, 0)
 			if err != nil {
-				return nil, err
+				return nil, viewer, err
 			}
 			if len(teamTargets) > 0 {
 				addClause("audience = ? AND target_site_id = 0 AND target_site_name IN ?", "team", teamTargets)
@@ -2046,9 +2171,10 @@ func adtyVisibleNotificationPublicationsWithDB(db *gorm.DB, userID int, site *mo
 				if !inMainTeam {
 					inMainTeam, err = adtyUserInActiveTeamOnSiteWithDB(db, userID, 0)
 					if err != nil {
-						return nil, err
+						return nil, viewer, err
 					}
 				}
+				viewer.InMainTeam = inMainTeam
 				if inMainTeam {
 					addClause("target_audiences LIKE ?", `%"main_teams"%`)
 				}
@@ -2057,16 +2183,18 @@ func adtyVisibleNotificationPublicationsWithDB(db *gorm.DB, userID int, site *mo
 		if hasTargetAudiences && isSiteOwner {
 			addClause("target_audiences LIKE ?", `%"all_site_owners"%`)
 		}
-		return query.Where(strings.Join(clauses, " OR "), args...), nil
+		return query.Where(strings.Join(clauses, " OR "), args...), viewer, nil
 	}
 
 	var current model.AdtySite
 	if err := db.First(&current, site.Id).Error; err != nil {
-		return nil, err
+		return nil, viewer, err
 	}
+	viewer.ViewerSite = &current
+	viewer.OwnsViewerSite = isSiteOwner && current.OwnerUserId == userID
 	if user.SiteId != site.Id && current.OwnerUserId != userID {
 		// 只是访问了这个域名、并不属于这个站：平台级公告照常，站内定向内容不给。
-		return query.Where(strings.Join(clauses, " OR "), args...), nil
+		return query.Where(strings.Join(clauses, " OR "), args...), viewer, nil
 	}
 
 	if hasTargetAudiences {
@@ -2082,7 +2210,7 @@ func adtyVisibleNotificationPublicationsWithDB(db *gorm.DB, userID int, site *mo
 		addClause("audience = ? AND target_site_id = ? AND target_site_name = ?", "user", site.Id, userTarget)
 		teamTargets, err := adtyUserActiveTeamTargetsWithDB(db, userID, site.Id)
 		if err != nil {
-			return nil, err
+			return nil, viewer, err
 		}
 		if len(teamTargets) > 0 {
 			addClause("audience = ? AND target_site_id = ? AND target_site_name IN ?", "team", site.Id, teamTargets)
@@ -2098,7 +2226,7 @@ func adtyVisibleNotificationPublicationsWithDB(db *gorm.DB, userID int, site *mo
 			if !inSiteTeam {
 				inSiteTeam, err = adtyUserInActiveTeamOnSiteWithDB(db, userID, site.Id)
 				if err != nil {
-					return nil, err
+					return nil, viewer, err
 				}
 			}
 			if inSiteTeam {
@@ -2117,7 +2245,7 @@ func adtyVisibleNotificationPublicationsWithDB(db *gorm.DB, userID int, site *mo
 		}
 	}
 
-	return query.Where(strings.Join(clauses, " OR "), args...), nil
+	return query.Where(strings.Join(clauses, " OR "), args...), viewer, nil
 }
 
 func adtyTodoSiteID(userID int, site *model.AdtySite) int {
@@ -2157,7 +2285,40 @@ func adtyCurrentNotificationInbox(site *model.AdtySite) (AdtyNotificationInbox, 
 }
 
 func formatAdtyNotificationItem(row model.AdtyNotificationPublication) map[string]any {
-	content := resolveAdtyNotificationDisplayContent(row)
+	return formatAdtyNotificationItemForViewer(row, nil, nil)
+}
+
+func formatAdtyNotificationItemForViewer(row model.AdtyNotificationPublication, viewerSite *model.AdtySite, preloaded *adtyNotificationPreload) map[string]any {
+	var bodyHead *model.AdtyTranslationHead
+	var titleHead *model.AdtyTranslationHead
+	if preloaded != nil {
+		if row.Id > 0 && preloaded.HasTranslationTable {
+			if head, ok := preloaded.TranslationHeads[adtyNotificationTranslationKey(row.Id)]; ok {
+				h := head
+				bodyHead = &h
+			}
+			if head, ok := preloaded.TranslationHeads[adtyNotificationTitleTranslationKey(row.Id)]; ok {
+				h := head
+				titleHead = &h
+			}
+		}
+	} else if row.Id > 0 && model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyTranslationHead{}) {
+		var heads []model.AdtyTranslationHead
+		keys := []string{adtyNotificationTranslationKey(row.Id), adtyNotificationTitleTranslationKey(row.Id)}
+		if err := model.DB.Where("object_key IN ?", keys).Find(&heads).Error; err == nil {
+			for i := range heads {
+				switch heads[i].ObjectKey {
+				case keys[0]:
+					h := heads[i]
+					bodyHead = &h
+				case keys[1]:
+					h := heads[i]
+					titleHead = &h
+				}
+			}
+		}
+	}
+	content := resolveAdtyNotificationDisplayContentWithHead(row, bodyHead)
 	var targetTeamID int64
 	var targetUserID int
 	if row.Audience == "team" {
@@ -2172,7 +2333,11 @@ func formatAdtyNotificationItem(row model.AdtyNotificationPublication) map[strin
 	publisherLabel := strings.TrimSpace(common.GetSystemName())
 	if row.IssuerSiteId > 0 {
 		publisherLabel = ""
-		if model.DB != nil && model.DB.Migrator().HasTable(&model.AdtySite{}) {
+		if preloaded != nil {
+			if issuerSite, ok := preloaded.IssuerSites[row.IssuerSiteId]; ok {
+				publisherLabel = strings.TrimSpace(AdtyBrandFor(&issuerSite).Name)
+			}
+		} else if model.DB != nil && model.DB.Migrator().HasTable(&model.AdtySite{}) {
 			var issuerSite model.AdtySite
 			if model.DB.Select("id", "subdomain", "root_domain", "brand").Where("id = ?", row.IssuerSiteId).Limit(1).Find(&issuerSite).RowsAffected > 0 {
 				publisherLabel = strings.TrimSpace(AdtyBrandFor(&issuerSite).Name)
@@ -2183,14 +2348,76 @@ func formatAdtyNotificationItem(row model.AdtyNotificationPublication) map[strin
 	if contentFormat == "" {
 		contentFormat = "markdown"
 	}
-	targetAudiences := row.ParsedTargetAudiences()
-	if targetAudiences == nil {
-		targetAudiences = []string{}
+	rawTargetAudiences := row.ParsedTargetAudiences()
+	targetAudiences := []string{}
+	targetSiteIDs := []int{}
+	targetSiteID := row.TargetSiteId
+	targetSiteName := row.TargetSiteName
+
+	var viewer *adtyNotificationViewerContext
+	if preloaded != nil {
+		viewer = preloaded.Viewer
 	}
-	targetSiteIDs := row.ParsedTargetSiteIDs()
-	if targetSiteIDs == nil {
+	isLegacyDirect := len(rawTargetAudiences) == 0 && (row.Audience == "team" || row.Audience == "user")
+	if viewerSite != nil {
+		resolvedSite := viewerSite
+		if viewer != nil && viewer.ViewerSite != nil && viewer.ViewerSite.Id == viewerSite.Id {
+			resolvedSite = viewer.ViewerSite
+		}
+		ownsViewerSite := viewer != nil && viewer.OwnsViewerSite
+		if isLegacyDirect {
+			if row.TargetSiteId != viewerSite.Id {
+				targetSiteID = 0
+				targetSiteName = ""
+			}
+		} else {
+			targeted := viewerSite.Id > 0 && slices.Contains(row.EffectiveTargetSiteIDs(), viewerSite.Id)
+			if targeted {
+				targetSiteIDs = []int{viewerSite.Id}
+				targetSiteID = viewerSite.Id
+				targetSiteName = AdtySiteDisplayHost(resolvedSite)
+			} else {
+				targetSiteIDs = []int{}
+				targetSiteID = 0
+				targetSiteName = ""
+			}
+			for _, aud := range rawTargetAudiences {
+				switch aud {
+				case "site_users", "site_teams":
+					if targeted {
+						targetAudiences = append(targetAudiences, aud)
+					}
+				case "all_site_owners":
+					if ownsViewerSite {
+						targetAudiences = append(targetAudiences, aud)
+					}
+				}
+			}
+		}
+	} else if !isLegacyDirect {
+		// On main site, omit subsite target IDs/hostnames so main-site users and
+		// unrelated site owners never receive other subsites' hostnames or IDs.
 		targetSiteIDs = []int{}
+		targetSiteID = 0
+		targetSiteName = ""
+		for _, aud := range rawTargetAudiences {
+			switch aud {
+			case "main_users":
+				if viewer == nil || (viewer.UserSiteID == 0 && !viewer.IsStaff && !viewer.IsSiteOwner) {
+					targetAudiences = append(targetAudiences, aud)
+				}
+			case "main_teams":
+				if viewer == nil || (viewer.UserSiteID == 0 && !viewer.IsStaff && viewer.InMainTeam) {
+					targetAudiences = append(targetAudiences, aud)
+				}
+			case "all_site_owners":
+				if viewer == nil || viewer.IsSiteOwner {
+					targetAudiences = append(targetAudiences, aud)
+				}
+			}
+		}
 	}
+
 	item := map[string]any{
 		"id":               fmt.Sprintf("publication:%d", row.Id),
 		"read_key":         row.ReadKey,
@@ -2204,36 +2431,32 @@ func formatAdtyNotificationItem(row model.AdtyNotificationPublication) map[strin
 		"audience":         row.Audience,
 		"target_audiences": targetAudiences,
 		"target_site_ids":  targetSiteIDs,
-		"target_site_id":   row.TargetSiteId,
-		"target_site_name": row.TargetSiteName,
+		"target_site_id":   targetSiteID,
+		"target_site_name": targetSiteName,
 		"target_team_id":   targetTeamID,
 		"target_user_id":   targetUserID,
 		"kind":             row.Kind,
 		"business":         row.Business,
 	}
-	if row.Id > 0 && model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyTranslationHead{}) {
-		currentSrc := normalizeAdtyNotificationSourceContentWithDB(model.DB, row.Id, row.Content)
-		var head model.AdtyTranslationHead
-		if model.DB.Where("object_key = ?", adtyNotificationTranslationKey(row.Id)).Limit(1).Find(&head).RowsAffected > 0 &&
-			adtyTranslationHeadMatchesSource(head, currentSrc) {
-			eng := head.English
+	if bodyHead != nil {
+		currentSrc := stripAdtyNotificationTranslationSuffix(row.Content, bodyHead.English)
+		if adtyTranslationHeadMatchesSource(*bodyHead, currentSrc) {
+			eng := bodyHead.English
 			if contentFormat == "html" {
 				eng = SanitizeAdtyNotificationHTML(eng)
 			}
 			item["english"] = eng
 			item["content_en"] = eng
-			item["source"] = head.Source
-			item["translation_status"] = head.Status
-			item["translation_notice"] = head.Notice
-			item["translation_version"] = head.Version
-			item["object_key"] = head.ObjectKey
+			item["source"] = bodyHead.Source
+			item["translation_status"] = bodyHead.Status
+			item["translation_notice"] = bodyHead.Notice
+			item["translation_version"] = bodyHead.Version
+			item["object_key"] = bodyHead.ObjectKey
 		}
-		var titleHead model.AdtyTranslationHead
-		if model.DB.Where("object_key = ?", adtyNotificationTitleTranslationKey(row.Id)).Limit(1).Find(&titleHead).RowsAffected > 0 &&
-			adtyTranslationHeadMatchesSource(titleHead, row.Title) {
-			if titleHead.Status == model.AdtyTranslationReady && strings.TrimSpace(titleHead.English) != "" {
-				item["title_en"] = strings.TrimSpace(titleHead.English)
-			}
+	}
+	if titleHead != nil && adtyTranslationHeadMatchesSource(*titleHead, row.Title) {
+		if titleHead.Status == model.AdtyTranslationReady && strings.TrimSpace(titleHead.English) != "" {
+			item["title_en"] = strings.TrimSpace(titleHead.English)
 		}
 	}
 	return item
@@ -2263,7 +2486,7 @@ func GetAdtyNotificationDetail(userID int, site *model.AdtySite, key string, tok
 			"type":     "notice",
 		}, true, nil
 	}
-	query, err := adtyVisibleNotificationPublications(userID, site)
+	query, viewer, err := adtyVisibleNotificationPublicationsWithViewer(model.DB, userID, site)
 	if err != nil {
 		return nil, false, err
 	}
@@ -2304,11 +2527,14 @@ func GetAdtyNotificationDetail(userID int, site *model.AdtySite, key string, tok
 	if adtyIsNotificationKeyHidden(userID, row.ReadKey) || adtyIsNotificationKeyHidden(userID, fmt.Sprintf("publication:%d", row.Id)) {
 		return nil, false, nil
 	}
-	if _, err := EnsureAdtySevereTodoForVisiblePublication(userID, adtyTodoSiteID(userID, site), &row); err != nil {
-		common.SysLog(common.LogText("severe todo was not created for visible notice %s: %s", row.ReadKey, err.Error()))
+	preloaded := preloadAdtyNotificationBatch(model.DB, []model.AdtyNotificationPublication{row}, &viewer)
+	if adtyPublicationIsSevereWithRefs(&row, preloaded.OpenAnomalyRefs) && userID > 0 && strings.TrimSpace(row.ReadKey) != "" {
+		if _, err := UpsertAdtySevereTodo(userID, viewer.UserSiteID, row.ReadKey, row.Title, row.Content, row.Business, row.Id); err != nil {
+			common.SysLog(common.LogText("severe todo was not created for visible notice %s: %s", row.ReadKey, err.Error()))
+		}
 	}
-	item := formatAdtyNotificationItem(row)
-	RenderAdtyTodoInboxItems(userID, []map[string]any{item})
+	item := formatAdtyNotificationItemForViewer(row, site, preloaded)
+	renderAdtyTodoInboxItemsWithPreload(userID, []map[string]any{item}, map[int]model.AdtyNotificationPublication{row.Id: row}, preloaded.OpenAnomalyRefs)
 	return item, true, nil
 }
 
@@ -2380,10 +2606,66 @@ func adtyIsNotificationKeyHidden(userID int, key string) bool {
 		return false
 	}
 	var count int64
-	if err := model.DB.Model(&model.AdtyNotificationHide{}).Where("user_id = ? AND key = ?", userID, key).Count(&count).Error; err != nil {
+	if err := model.DB.Model(&model.AdtyNotificationHide{}).Where("user_id = ? AND "+adtyQuoteColumn(model.DB, "key")+" = ?", userID, key).Count(&count).Error; err != nil {
 		return false
 	}
 	return count > 0
+}
+
+// CountAdtyNotificationUnread returns the total unread notification count
+// (publications + ticket notices + watcher notices) without fetching or
+// formatting inbox rows, resolving translations, or upserting todos.
+func CountAdtyNotificationUnread(userID int, site *model.AdtySite, tokenScopes ...string) (int, error) {
+	var scoped [][]string
+	if len(tokenScopes) > 0 {
+		scoped = [][]string{tokenScopes}
+	}
+	n, err := countAdtyNotificationUnreadWithScopes(userID, site, scoped...)
+	return int(n), err
+}
+
+func countAdtyNotificationUnreadWithScopes(userID int, site *model.AdtySite, tokenScopes ...[]string) (int64, error) {
+	if model.DB == nil {
+		return 0, nil
+	}
+	query, err := adtyVisibleNotificationPublications(userID, site)
+	if err != nil {
+		return 0, err
+	}
+	siteID := 0
+	if site != nil {
+		siteID = site.Id
+	}
+	hasHideTable := model.DB.Migrator().HasTable(&model.AdtyNotificationHide{})
+	if hasHideTable {
+		query = query.Where(adtyPublicationNotHiddenSQL(model.DB), userID)
+	}
+	var unread int64
+	if err := query.Where(
+		"NOT EXISTS (SELECT 1 FROM adty_notification_reads r WHERE r.user_id = ? AND r.site_id = ? AND r.read_key = adty_notification_publications.read_key)",
+		userID, siteID,
+	).Count(&unread).Error; err != nil {
+		return 0, err
+	}
+	if adtyTicketInboxTablesReady() {
+		ticketQuery, _, err := adtyTicketInboxQuery(userID, site, tokenScopes...)
+		if err != nil {
+			return 0, err
+		}
+		if hasHideTable {
+			ticketQuery = ticketQuery.Where(adtyTicketNoticeNotHiddenSQL(model.DB), userID)
+		}
+		var unreadTickets int64
+		if err := ticketQuery.Where(
+			"NOT EXISTS (SELECT 1 FROM adty_notification_reads r WHERE r.user_id = ? AND r.read_key = adty_ticket_notices.read_key)",
+			userID,
+		).Count(&unreadTickets).Error; err != nil {
+			return 0, err
+		}
+		unread += unreadTickets
+	}
+	unread += adtyUnreadWatcherNoticeCount(userID, site, tokenScopes...)
+	return unread, nil
 }
 
 func GetAdtyNotificationInbox(userID int, site *model.AdtySite, before int, ticketCursors ...int64) (AdtyNotificationInbox, error) {
@@ -2401,7 +2683,7 @@ func GetAdtyNotificationInboxWithScopes(userID int, site *model.AdtySite, before
 	if err != nil {
 		return inbox, err
 	}
-	query, err := adtyVisibleNotificationPublications(userID, site)
+	query, viewer, err := adtyVisibleNotificationPublicationsWithViewer(model.DB, userID, site)
 	if err != nil {
 		return inbox, err
 	}
@@ -2412,10 +2694,7 @@ func GetAdtyNotificationInboxWithScopes(userID int, site *model.AdtySite, before
 	hasHideTable := model.DB.Migrator().HasTable(&model.AdtyNotificationHide{})
 	if hasHideTable {
 		// R2-052: Apply hide exclusion BEFORE Limit(21) so hidden items never cause short/empty pages.
-		query = query.Where(
-			"NOT EXISTS (SELECT 1 FROM adty_notification_hides h WHERE h.user_id = ? AND (h.key = adty_notification_publications.read_key OR h.key = 'publication:' || CAST(adty_notification_publications.id AS TEXT)))",
-			userID,
-		)
+		query = query.Where(adtyPublicationNotHiddenSQL(model.DB), userID)
 	}
 	unreadPubQuery := query.Session(&gorm.Session{}).Where(
 		"NOT EXISTS (SELECT 1 FROM adty_notification_reads r WHERE r.user_id = ? AND r.site_id = ? AND r.read_key = adty_notification_publications.read_key)",
@@ -2440,14 +2719,19 @@ func GetAdtyNotificationInboxWithScopes(userID int, site *model.AdtySite, before
 		rows = rows[:20]
 		inbox.NextBeforeId = rows[19].Id
 	}
-	todoSiteID := adtyTodoSiteID(userID, site)
+	preloaded := preloadAdtyNotificationBatch(model.DB, rows, &viewer)
+	preloadedPubs := make(map[int]model.AdtyNotificationPublication, len(rows))
+	todoSiteID := viewer.UserSiteID
 	for i := range rows {
 		row := rows[i]
-		if _, err := EnsureAdtySevereTodoForVisiblePublication(userID, todoSiteID, &row); err != nil {
-			common.SysLog(common.LogText("severe todo was not created for visible notice %s: %s", row.ReadKey, err.Error()))
+		preloadedPubs[row.Id] = row
+		if adtyPublicationIsSevereWithRefs(&row, preloaded.OpenAnomalyRefs) && userID > 0 && strings.TrimSpace(row.ReadKey) != "" {
+			if _, err := UpsertAdtySevereTodo(userID, todoSiteID, row.ReadKey, row.Title, row.Content, row.Business, row.Id); err != nil {
+				common.SysLog(common.LogText("severe todo was not created for visible notice %s: %s", row.ReadKey, err.Error()))
+			}
 		}
 		key := row.ReadKey
-		inbox.Announcements = append(inbox.Announcements, formatAdtyNotificationItem(row))
+		inbox.Announcements = append(inbox.Announcements, formatAdtyNotificationItemForViewer(row, site, preloaded))
 		keys = append(keys, key)
 	}
 	var visibleTicketKeys []string
@@ -2458,11 +2742,8 @@ func GetAdtyNotificationInboxWithScopes(userID int, site *model.AdtySite, before
 			return inbox, err
 		}
 		var unreadTickets int64
-		if model.DB.Migrator().HasTable(&model.AdtyNotificationHide{}) {
-			ticketQuery = ticketQuery.Where(
-				"NOT EXISTS (SELECT 1 FROM adty_notification_hides h WHERE h.user_id = ? AND h.key = adty_ticket_notices.read_key)",
-				userID,
-			)
+		if hasHideTable {
+			ticketQuery = ticketQuery.Where(adtyTicketNoticeNotHiddenSQL(model.DB), userID)
 		}
 		if err := ticketQuery.Session(&gorm.Session{}).Where(
 			"NOT EXISTS (SELECT 1 FROM adty_notification_reads r WHERE r.user_id = ? AND r.read_key = adty_ticket_notices.read_key)",
@@ -2510,7 +2791,7 @@ func GetAdtyNotificationInboxWithScopes(userID int, site *model.AdtySite, before
 		}
 		inbox.ReadKeys = append(inbox.ReadKeys, ticketRead...)
 	}
-	inbox.Announcements = RenderAdtyTodoInboxItems(userID, inbox.Announcements)
+	inbox.Announcements = renderAdtyTodoInboxItemsWithPreload(userID, inbox.Announcements, preloadedPubs, preloaded.OpenAnomalyRefs)
 	return hideAdtyNotifications(userID, inbox)
 }
 
@@ -2534,7 +2815,7 @@ func hideAdtyNotifications(userID int, inbox AdtyNotificationInbox) (AdtyNotific
 		return inbox, nil
 	}
 	var hidden []string
-	if err := model.DB.Model(&model.AdtyNotificationHide{}).Where("user_id = ? AND key IN ?", userID, keys).Pluck("key", &hidden).Error; err != nil {
+	if err := model.DB.Model(&model.AdtyNotificationHide{}).Where("user_id = ? AND "+adtyQuoteColumn(model.DB, "key")+" IN ?", userID, keys).Pluck("key", &hidden).Error; err != nil {
 		return inbox, err
 	}
 	if len(hidden) == 0 {

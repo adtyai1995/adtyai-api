@@ -42,7 +42,10 @@ func ChangeUserPassword(identity AuthSessionIdentity, update *User, firstPasswor
 				return ErrPasswordVerificationLocked
 			}
 			if !common.ValidatePasswordAndHash(update.OriginalPassword, current.Password) {
-				_ = common.RecordLoginFailureUser(current.Id)
+				if recErr := common.RecordLoginFailureUser(current.Id); recErr != nil {
+					common.SysError(common.LogText("password change login failure lock unavailable: %s", recErr.Error()))
+					return ErrPasswordVerificationLocked
+				}
 				return ErrCurrentPasswordInvalid
 			}
 			common.ClearLoginFailuresUser(current.Id)

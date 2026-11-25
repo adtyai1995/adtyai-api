@@ -281,7 +281,7 @@ func (adtyEpayProvider) Methods() []AdtyMethodInfo {
 	available := map[string]bool{}
 	if err == nil {
 		for i := range channels {
-			if channels[i].Status != model.AdtyEpayStatusEnabled {
+			if channels[i].Status != model.AdtyEpayStatusEnabled || !channels[i].HasCredentials() {
 				continue
 			}
 			for _, m := range channels[i].Methods {

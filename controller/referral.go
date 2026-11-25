@@ -179,7 +179,7 @@ func GetReferralCommissions(c *gin.Context) {
 	}
 	affiliate, err := service.Referral.EnsureAffiliate(c.GetInt("id"))
 	if err != nil {
-		common.ApiError(c, err)
+		writeReferralError(c, err)
 		return
 	}
 	pageInfo := common.GetPageQuery(c)

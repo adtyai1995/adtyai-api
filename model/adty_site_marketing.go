@@ -31,7 +31,7 @@ func backfillAdtySiteMarketingPolicies(db *gorm.DB) error {
 		updates := map[string]any{"marketing_policy_initialized": true}
 		var options []Option
 		if tx.Migrator().HasTable(&Option{}) {
-			if err := tx.Where("key IN ?", keys).Find(&options).Error; err != nil {
+			if err := tx.Where(map[string]any{"key": keys}).Find(&options).Error; err != nil {
 				return err
 			}
 		}

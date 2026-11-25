@@ -295,14 +295,18 @@ func fetchMetadataCatalog(c *gin.Context, locale string) (metadataSyncSource, ma
 		if errors.As(modelsErr, &msg) {
 			return source, nil, nil, modelsErr
 		}
-		return source, nil, nil, common.NewMessage("Failed to fetch upstream models: {{error}}", map[string]any{"error": modelsErr.Error()})
+		safeErr := common.SanitizeOutboundError(modelsErr)
+		common.SysError(common.LogText("failed to fetch upstream models: %s", safeErr.Error()))
+		return source, nil, nil, common.NewMessage("Failed to fetch upstream models: {{error}}", map[string]any{"error": safeErr.Error()})
 	}
 	if vendorsErr != nil {
 		var msg *common.Message
 		if errors.As(vendorsErr, &msg) {
 			return source, nil, nil, vendorsErr
 		}
-		return source, nil, nil, common.NewMessage("Failed to fetch upstream vendors: {{error}}", map[string]any{"error": vendorsErr.Error()})
+		safeErr := common.SanitizeOutboundError(vendorsErr)
+		common.SysError(common.LogText("failed to fetch upstream vendors: %s", safeErr.Error()))
+		return source, nil, nil, common.NewMessage("Failed to fetch upstream vendors: {{error}}", map[string]any{"error": safeErr.Error()})
 	}
 	if !modelsEnv.Success || !vendorsEnv.Success {
 		return source, nil, nil, common.NewMessage("Upstream metadata source reported failure")
@@ -351,12 +355,14 @@ func SyncUpstreamPreview(c *gin.Context) {
 	}
 	locals, vendors, err := model.GetMetadataSyncState(model.DB)
 	if err != nil {
-		common.ApiError(c, err)
+		common.SysError(common.LogText("failed to load metadata sync state: %s", err.Error()))
+		common.ApiErrorT(c, "Operation failed")
 		return
 	}
 	missing, err := model.GetMissingModels()
 	if err != nil {
-		common.ApiError(c, err)
+		common.SysError(common.LogText("failed to load missing models: %s", err.Error()))
+		common.ApiErrorT(c, "Operation failed")
 		return
 	}
 	siteNames := make(map[string]bool)

@@ -517,12 +517,18 @@ func adtyLockSiteRow(tx *gorm.DB, id int, current *model.AdtySite) error {
 	return model.AdtyLockForUpdate(tx).First(current, id).Error
 }
 
-// adtyOwnerSite 是这个用户名下能绑定域名的站：active 或 paused。
+// adtyOwnerSite 是这个用户名下能绑定域名的站：active 或 paused；closing 时返回 ErrAdtySiteClosing。
 func adtyOwnerSite(ownerUserId int) (*model.AdtySite, error) {
 	var site model.AdtySite
 	err := model.DB.Where("owner_user_id = ? AND status IN ?", ownerUserId,
 		[]string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused}).First(&site).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
+		var closingSite model.AdtySite
+		if closingErr := model.DB.Select("id").Where("owner_user_id = ? AND status = ?", ownerUserId, model.AdtySiteStatusClosing).First(&closingSite).Error; closingErr == nil {
+			return nil, ErrAdtySiteClosing
+		} else if !errors.Is(closingErr, gorm.ErrRecordNotFound) {
+			return nil, closingErr
+		}
 		return nil, ErrAdtySiteNotFound
 	}
 	return &site, err
@@ -581,7 +587,13 @@ func AddAdtySiteDomainWithRole(ctx context.Context, ownerUserId int, rawHost, ro
 			}
 			return err
 		}
-		if lockedSite.OwnerUserId != ownerUserId || (lockedSite.Status != model.AdtySiteStatusActive && lockedSite.Status != model.AdtySiteStatusPaused) {
+		if lockedSite.OwnerUserId != ownerUserId {
+			return ErrAdtySiteNotFound
+		}
+		if lockedSite.Status == model.AdtySiteStatusClosing {
+			return ErrAdtySiteClosing
+		}
+		if lockedSite.Status != model.AdtySiteStatusActive && lockedSite.Status != model.AdtySiteStatusPaused {
 			return ErrAdtySiteNotFound
 		}
 		var existing model.AdtySiteDomain
@@ -684,7 +696,13 @@ func AddAdtySiteDomainPair(ctx context.Context, ownerUserId int, rawSiteHost, ra
 			}
 			return err
 		}
-		if lockedSite.OwnerUserId != ownerUserId || (lockedSite.Status != model.AdtySiteStatusActive && lockedSite.Status != model.AdtySiteStatusPaused) {
+		if lockedSite.OwnerUserId != ownerUserId {
+			return ErrAdtySiteNotFound
+		}
+		if lockedSite.Status == model.AdtySiteStatusClosing {
+			return ErrAdtySiteClosing
+		}
+		if lockedSite.Status != model.AdtySiteStatusActive && lockedSite.Status != model.AdtySiteStatusPaused {
 			return ErrAdtySiteNotFound
 		}
 
@@ -901,7 +919,8 @@ func adtyAttachCustomHostnameLocked(ctx context.Context, tx *gorm.DB, domain *mo
 	}
 	matched, err := adtyOwnershipTXTMatches(ctx, domain.Hostname, domain.OwnershipToken)
 	if err != nil {
-		_ = adtyDomainSnapshotQuery(tx, domain).Update("last_error", "ownership lookup failed").Error
+		common.SysError(common.LogText("ownership lookup failed for domain %d: %s", domain.Id, err.Error()))
+		_ = adtyDomainSnapshotQuery(tx, domain).Update("last_error", common.NewMessage("Domain ownership lookup failed").Error()).Error
 		return nil
 	}
 	if !matched {
@@ -1163,7 +1182,7 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 		candidate, err := AdtyCloudflare.findCustomHostname(ctx, zone, domain.Hostname)
 		if err != nil {
 			common.SysError(common.LogText("lookup timed out custom hostname for domain %d failed", domain.Id))
-			updates["last_error"] = "cloudflare lookup failed"
+			updates["last_error"] = adtyDomainAutomationUserError(err).Error()
 			return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
 		}
 		if candidate != nil {
@@ -1171,7 +1190,7 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 				candidate.Metadata["adty_domain_id"] == strconv.Itoa(domain.Id) && candidate.Metadata["adty_generation"] == adtyCustomHostnameGeneration(domain) {
 				hostnameID = candidate.Id
 			} else {
-				updates["last_error"] = "unrecorded cloudflare creation requires reconciliation"
+				updates["last_error"] = common.NewMessage("Unrecorded Cloudflare creation requires reconciliation before cleanup").Error()
 				return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
 			}
 		}
@@ -1180,7 +1199,7 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 	if domain.TurnstileWidget != "" || (hostnameID != "" && resellerSetting().TurnstileConfigured()) {
 		if err := adtyTurnstileRemoveDomain(ctx, tx, domain.TurnstileWidget, domain.Hostname); err != nil {
 			common.SysError(common.LogText("remove timed out turnstile domain %d failed", domain.Id))
-			updates["last_error"] = "turnstile cleanup failed"
+			updates["last_error"] = adtyDomainAutomationUserError(err).Error()
 			return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
 		}
 		updates["turnstile_widget"] = ""
@@ -1190,7 +1209,7 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 	if hostnameID != "" {
 		if err := AdtyCloudflare.deleteCustomHostname(ctx, zone, hostnameID); err != nil {
 			common.SysError(common.LogText("delete timed out custom hostname for domain %d failed", domain.Id))
-			updates["last_error"] = "cloudflare delete failed"
+			updates["last_error"] = adtyDomainAutomationUserError(err).Error()
 			return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
 		}
 		updates["cf_hostname_id"] = ""
@@ -1295,7 +1314,7 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 			}
 			if err := adtyProbeDomainHTTPS(ctx, domain); err != nil {
 				changed = true
-				return adtyDomainSnapshotQuery(tx, domain).Updates(map[string]any{"status": model.AdtySiteDomainPending, "last_error": err.Error(), "created_at": now.Unix()}).Error
+				return adtyDomainSnapshotQuery(tx, domain).Updates(map[string]any{"status": model.AdtySiteDomainPending, "last_error": adtyDomainAutomationUserError(err).Error(), "created_at": now.Unix()}).Error
 			}
 			return adtyAssignCheckedDomainTurnstile(ctx, tx, domain)
 		}
@@ -1313,7 +1332,7 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 				if !errors.Is(err, ErrAdtyCloudflareFailed) && !errors.Is(err, ErrAdtyCloudflareRejected) {
 					return err
 				}
-				updates := map[string]any{"last_checked_at": now.Unix(), "last_error": err.Error()}
+				updates := map[string]any{"last_checked_at": now.Unix(), "last_error": adtyDomainAutomationUserError(err).Error()}
 				if now.Sub(time.Unix(domain.CreatedAt, 0)) > adtyCustomDomainTimeout {
 					return adtyMarkCustomDomainFailed(ctx, tx, zone, domain, updates)
 				}
@@ -1332,13 +1351,10 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 		switch {
 		case err != nil:
 			// 网络或 Cloudflare 出错：保持 pending，下次再查。
-			var apiErr *AdtyCloudflareError
-			if errors.As(err, &apiErr) {
-				updates["last_error"] = fmt.Sprintf("cloudflare %d", apiErr.Code)
-			}
+			updates["last_error"] = adtyDomainAutomationUserError(err).Error()
 		case detail.Status == "active" && detail.SSL.Status == "active":
 			if err := adtyProbeDomainHTTPS(ctx, domain); err != nil {
-				updates["last_error"] = err.Error()
+				updates["last_error"] = adtyDomainAutomationUserError(err).Error()
 			} else {
 				updates["status"], updates["ssl_status"], updates["last_error"] = model.AdtySiteDomainActive, detail.SSL.Status, ""
 			}

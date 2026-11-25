@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -14,7 +15,7 @@ import (
 type TwoFA struct {
 	Id             int            `json:"id" gorm:"primaryKey"`
 	UserId         int            `json:"user_id" gorm:"unique;not null;index"`
-	Secret         string         `json:"-" gorm:"type:varchar(255);not null"` // TOTP密钥，不返回给前端
+	Secret         string         `json:"-" gorm:"type:text;not null"` // TOTP密钥（静态加密存储，不返回给前端）
 	IsEnabled      bool           `json:"is_enabled"`
 	FailedAttempts int            `json:"failed_attempts" gorm:"default:0"`
 	LockedUntil    *time.Time     `json:"locked_until,omitempty"`
@@ -412,6 +413,43 @@ func ReleaseTOTPStepWithTx(tx *gorm.DB, userId int, step int64) error {
 	).Error
 }
 
+func twoFASecretPurpose(userID int) string {
+	return fmt.Sprintf("twofa:%d:secret", userID)
+}
+
+// OpenSecret decrypts a sealed TOTP seed (or transparently upgrades a legacy
+// plaintext row under row lock when CRYPTO_SECRET is configured).
+func (t *TwoFA) OpenSecret(tx *gorm.DB) (string, error) {
+	if t == nil || strings.TrimSpace(t.Secret) == "" {
+		return "", errors.New("2FA secret is empty")
+	}
+	purpose := twoFASecretPurpose(t.UserId)
+	if strings.HasPrefix(t.Secret, "adty:secret:") {
+		return OpenAdtyPurposeSecret(purpose, t.Secret)
+	}
+	plain := t.Secret
+	if sealed, err := SealAdtyPurposeSecret(purpose, plain); err == nil && sealed != "" {
+		db := tx
+		if db == nil {
+			db = DB
+		}
+		if db != nil && t.Id > 0 {
+			_ = db.Transaction(func(upgradeTx *gorm.DB) error {
+				var cur TwoFA
+				if err := lockForUpdate(upgradeTx).Where("id = ?", t.Id).First(&cur).Error; err != nil {
+					return err
+				}
+				if cur.Secret == plain {
+					return upgradeTx.Model(&cur).Update("secret", sealed).Error
+				}
+				return nil
+			})
+			t.Secret = sealed
+		}
+	}
+	return plain, nil
+}
+
 // ValidateTOTPAndUpdateUsage 验证TOTP并更新使用记录。同一时间步只能成功一次。
 func (t *TwoFA) ValidateTOTPAndUpdateUsage(code string) (bool, error) {
 	// 检查是否被锁定
@@ -419,7 +457,11 @@ func (t *TwoFA) ValidateTOTPAndUpdateUsage(code string) (bool, error) {
 		return false, fmt.Errorf("the account is locked, retry after %v", t.LockedUntil.Format("2006-01-02 15:04:05"))
 	}
 
-	step, ok := common.MatchTOTPStep(t.Secret, code, time.Now())
+	plainSecret, err := t.OpenSecret(nil)
+	if err != nil {
+		return false, err
+	}
+	step, ok := common.MatchTOTPStep(plainSecret, code, time.Now())
 	if !ok {
 		if err := t.IncrementFailedAttempts(); err != nil {
 			return false, err
@@ -427,7 +469,7 @@ func (t *TwoFA) ValidateTOTPAndUpdateUsage(code string) (bool, error) {
 		return false, nil
 	}
 
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err = DB.Transaction(func(tx *gorm.DB) error {
 		return ClaimTOTPStepWithTx(tx, t.UserId, step)
 	})
 	if errors.Is(err, ErrTOTPReplay) {

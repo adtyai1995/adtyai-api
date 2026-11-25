@@ -599,11 +599,11 @@ func AdtyOverrideStatus(c *gin.Context, data map[string]any) {
 	}
 	data["server_address"] = AdtySiteAPIBaseURL(site)
 	data["adty_site"] = map[string]any{"id": site.Id, "status": site.Status, "subdomain": site.Subdomain}
-	for _, key := range []string{"github_oauth", "discord_oauth", "linuxdo_oauth", "telegram_oauth", "wechat_login", "oidc_enabled", "passkey_login"} {
+	for _, key := range []string{"github_oauth", "discord_oauth", "linuxdo_oauth", "telegram_oauth", "wechat_login", "oidc_enabled", "passkey_login", "faq_enabled"} {
 		data[key] = false
 	}
 	delete(data, "custom_oauth_providers")
-	for _, key := range []string{"footer_html", "wechat_qrcode", "docs_link", "passkey_rp_id"} {
+	for _, key := range []string{"footer_html", "wechat_qrcode", "docs_link", "passkey_rp_id", "telegram_bot_name", "passkey_display_name"} {
 		data[key] = ""
 	}
 	for _, key := range []string{"chats", "api_info", "faq", "passkey_rp_ids"} {

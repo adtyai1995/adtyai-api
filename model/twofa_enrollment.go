@@ -42,7 +42,11 @@ func CreateTwoFAEnrollment(identity AuthSessionIdentity, authorization *AuthFlow
 				return err
 			}
 		}
-		pending := &TwoFA{UserId: identity.UserID, Secret: secret}
+		sealedSecret, err := SealAdtyPurposeSecret(twoFASecretPurpose(identity.UserID), secret)
+		if err != nil {
+			return err
+		}
+		pending := &TwoFA{UserId: identity.UserID, Secret: sealedSecret}
 		if err := tx.Create(pending).Error; err != nil {
 			return err
 		}
@@ -92,11 +96,15 @@ func EnableTwoFAEnrollment(identity AuthSessionIdentity, token, code string) err
 			}
 			return err
 		}
-		secretHash := common.GenerateHMACWithKey([]byte("twofa-enrollment:"+common.SessionSecret), pending.Secret)
+		plainSecret, err := pending.OpenSecret(tx)
+		if err != nil {
+			return err
+		}
+		secretHash := common.GenerateHMACWithKey([]byte("twofa-enrollment:"+common.SessionSecret), plainSecret)
 		if !hmac.Equal([]byte(payload.SecretHash), []byte(secretHash)) {
 			return ErrTwoFASetupInvalid
 		}
-		if !common.ValidateTOTPCode(pending.Secret, cleanCode) {
+		if !common.ValidateTOTPCode(plainSecret, cleanCode) {
 			return ErrTwoFACodeInvalid
 		}
 		if _, err := IncrementUserAuthVersionWithTx(tx, identity.UserID); err != nil {

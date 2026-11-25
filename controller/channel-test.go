@@ -604,12 +604,12 @@ func coerceTestUsage(usageAny any, isStream bool, estimatePromptTokens int) (*dt
 
 func readTestResponseBody(body io.ReadCloser, isStream bool) ([]byte, error) {
 	defer func() { _ = body.Close() }()
+	// 渠道测试要看完整的流：前 8KB 里的正常事件不能盖掉后面的报错，第一条超过 8KB 的事件也不能被截断后判失败。
+	const maxStreamTestBytes = 8 << 20
 	if isStream {
-		// 渠道测试要看完整的流：前 8KB 里的正常事件不能盖掉后面的报错，第一条超过 8KB 的事件也不能被截断后判失败。
-		const maxStreamTestBytes = 8 << 20
 		return io.ReadAll(io.LimitReader(body, maxStreamTestBytes))
 	}
-	return io.ReadAll(body)
+	return io.ReadAll(io.LimitReader(body, maxStreamTestBytes))
 }
 
 func detectErrorFromTestResponseBody(respBody []byte) error {

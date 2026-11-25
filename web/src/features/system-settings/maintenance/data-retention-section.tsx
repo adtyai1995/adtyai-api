@@ -29,7 +29,10 @@ import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { api } from '@/lib/api'
 import { formatTimestamp } from '@/lib/format'
 import { ROLE } from '@/lib/roles'
-import { getServerErrorMessage } from '@/lib/server-error-message'
+import {
+  createServerError,
+  getServerErrorMessage,
+} from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { SettingsSection } from '../components/settings-section'
@@ -120,7 +123,7 @@ export function DataRetentionSection() {
         message?: string
       }
       if (!body.success || !body.data) {
-        throw new Error(body.message || 'Failed to load data')
+        throw createServerError(body, t('Failed to load data'))
       }
       return body.data
     },
@@ -137,7 +140,7 @@ export function DataRetentionSection() {
         data?: { runs?: RetentionRun[] }
         message?: string
       }
-      if (!body.success) throw new Error(body.message || 'Failed to load data')
+      if (!body.success) throw createServerError(body, t('Failed to load data'))
       return Array.isArray(body.data?.runs) ? body.data.runs : []
     },
     enabled: isRoot,
@@ -196,7 +199,7 @@ export function DataRetentionSection() {
       })
       const body = response.data as { success?: boolean; message?: string }
       if (!body.success) {
-        throw new Error(body.message || 'Failed to save')
+        throw createServerError(body, t('Failed to save'))
       }
     },
     onSuccess: async (_, policies) => {

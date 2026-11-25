@@ -185,9 +185,7 @@ export function NotificationEditor(props: {
             ? preservedLegacyIds.target_user_id
             : Math.max(0, props.row.target_user_id ?? 0),
           business: props.row.business ?? '',
-          sync_telegram:
-            (props.row.telegram_at ?? 0) > 0 ||
-            Boolean(props.row.telegram_channel),
+          sync_telegram: Boolean(props.row.telegram_channel?.trim()),
           telegram_channel:
             props.mode === 'owner' ||
             isLegacyPrivateTarget ||
