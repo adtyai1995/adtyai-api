@@ -260,6 +260,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	upstreamFailed := false
 	var failedUsage *dto.Usage
 	wroteToClient := false
+	clientGone := false
 	receivedEvent := false
 	countedItemTools := false
 	imageCounter := &relaycommon.ImageGenerationCallCounter{}
@@ -269,15 +270,29 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		info.ClaudeConvertInfo = &relaycommon.ClaudeConvertInfo{LastMessagesType: relaycommon.LastMessageTypeNone}
 	}
 
-	// writeFailed stops the stream after a failed client write. When the client
-	// went away the upstream already produced output, so the request settles
-	// normally instead of failing; any other write error stays a server error.
-	writeFailed := func(err error) bool {
-		if c.Request.Context().Err() != nil {
-			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
-			return false
+	hasWritten := func() bool {
+		return wroteToClient || (info != nil && info.SendResponseCount > 0) || helper.HasWrittenStreamPayload(c)
+	}
+
+	clientCancelError := func() error {
+		if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
+			return info.StreamStatus.EndError
 		}
-		streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+		if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+			return c.Request.Context().Err()
+		}
+		return errors.New("client closed request")
+	}
+
+	// writeFailed stops the stream after any failed client write (including
+	// non-context errors such as i/o timeout). Downstream write errors must not
+	// become streamErr so already-delivered output settles normally.
+	writeFailed := func(err error) bool {
+		clientGone = true
+		if info != nil && info.StreamStatus != nil {
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+		}
+		logger.LogWarn(c, common.LogText("responses-to-chat client disconnected during stream: %v", err))
 		return false
 	}
 
@@ -443,8 +458,22 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 
 	info.StreamStatus.RequireTerminal()
 
+	isClientGone := clientGone || (info != nil && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone)
+
 	if streamErr != nil {
-		if !wroteToClient || !upstreamFailed || state.UsageText() == "" {
+		if !hasWritten() || !upstreamFailed || state.UsageText() == "" {
+			if isClientGone && hasWritten() {
+				if !imageCommitted {
+					imageCounter.Commit(info)
+					imageCommitted = true
+				}
+				usage := state.Usage()
+				if usage == nil || usage.TotalTokens == 0 {
+					usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+					state.SetUsage(usage)
+				}
+				return usage, nil
+			}
 			return nil, streamErr
 		}
 		if !imageCommitted {
@@ -495,11 +524,13 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		return usage, nil
 	}
 
-	if !receivedEvent && !wroteToClient {
-		if info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone && helper.ClientRequestCanceled(c) {
-			return nil, types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+	if !hasWritten() {
+		if isClientGone || helper.ClientRequestCanceled(c) {
+			return nil, types.NewError(clientCancelError(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
 		}
-		return nil, types.NewOpenAIError(errors.New("empty upstream responses stream"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+		if !receivedEvent {
+			return nil, types.NewOpenAIError(errors.New("empty upstream responses stream"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+		}
 	}
 
 	if !imageCommitted {
@@ -512,7 +543,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		state.SetUsage(usage)
 	}
-	if info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
+	if isClientGone {
 		return usage, nil
 	}
 
@@ -525,6 +556,12 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	}
 	for _, result := range finalResults {
 		if !sendStreamResult(result) {
+			if hasWritten() {
+				return usage, nil
+			}
+			if clientGone {
+				return nil, types.NewError(clientCancelError(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+			}
 			if streamErr != nil {
 				return nil, streamErr
 			}
@@ -534,10 +571,10 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	if info.RelayFormat == types.RelayFormatOpenAI && info.ShouldIncludeUsage && usage != nil {
 		if err := helper.ObjectData(c, helper.GenerateFinalUsageResponse(responseId, createAt, info.UpstreamModelName, *usage)); err != nil {
 			writeFailed(err)
-			if streamErr != nil {
-				return nil, streamErr
+			if hasWritten() {
+				return usage, nil
 			}
-			return usage, nil
+			return nil, types.NewError(clientCancelError(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
 		}
 	}
 

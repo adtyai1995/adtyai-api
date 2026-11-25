@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -149,12 +150,29 @@ func RecoverBillingOperations(ctx context.Context, limit int) error {
 			if dead {
 				common.SysError(common.LogText("billing recovery: operation %s moved to the dead letter after %d attempts and needs manual settlement, last error: %s",
 					op.OperationKey, model.BillingOperationMaxAttempts, err.Error()))
+				// R6-11: Settle pending task/MJ flags when their billing op enters dead letter
+				// so dead tasks do not permanently fill LIMIT 100 and starve healthy tasks.
+				if op.Kind == "task" && op.ReferenceId > 0 {
+					var deadTask model.Task
+					if findErr := model.DB.WithContext(ctx).First(&deadTask, op.ReferenceId).Error; findErr == nil {
+						if strings.TrimSpace(deadTask.PrivateData.BillingReviewReason) == "" {
+							deadTask.PrivateData.BillingReviewReason = "billing operation moved to dead letter: " + op.OperationKey
+						}
+						_ = model.DB.WithContext(ctx).Model(&model.Task{}).Where("id = ?", deadTask.ID).
+							Updates(map[string]any{"billing_pending": false, "private_data": deadTask.PrivateData}).Error
+					}
+				} else if (op.Kind == "mj_charge" || op.Kind == "mj_refund") && op.ReferenceId > 0 {
+					_ = model.DB.WithContext(ctx).Model(&model.Midjourney{}).Where("id = ?", op.ReferenceId).
+						Updates(map[string]any{"billing_pending": false, "billing_charge_pending": false}).Error
+				}
 			}
 		}
 	}
 	var tasks []model.Task
 	if err := model.DB.WithContext(ctx).Where("billing_pending = ? AND billing_initial_pending = ?", true, false).
-		Where("status IN ?", []string{model.TaskStatusSuccess, model.TaskStatusFailure}).Order("id").Limit(limit).Find(&tasks).Error; err != nil {
+		Where("status IN ?", []string{model.TaskStatusSuccess, model.TaskStatusFailure}).
+		Where("NOT EXISTS (SELECT 1 FROM billing_operations bo WHERE bo.state = ? AND bo.kind = ? AND bo.reference_id = tasks.id)", model.BillingDead, "task").
+		Order("id").Limit(limit).Find(&tasks).Error; err != nil {
 		return err
 	}
 	for i := range tasks {
@@ -199,7 +217,8 @@ func RecoverBillingOperations(ctx context.Context, limit int) error {
 		finalizeTerminalTask(ctx, adaptor, task, result)
 	}
 	var mjs []model.Midjourney
-	if err := model.DB.WithContext(ctx).Where("billing_pending = ? OR billing_charge_pending = ?", true, true).
+	if err := model.DB.WithContext(ctx).Where("(billing_pending = ? OR billing_charge_pending = ?)", true, true).
+		Where("NOT EXISTS (SELECT 1 FROM billing_operations bo WHERE bo.state = ? AND bo.kind IN (?, ?) AND bo.reference_id = midjourneys.id)", model.BillingDead, "mj_charge", "mj_refund").
 		Order("id").Limit(limit).Find(&mjs).Error; err != nil {
 		return err
 	}

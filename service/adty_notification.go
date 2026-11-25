@@ -404,10 +404,35 @@ func SaveAdtyNotificationPublicationWithAudit(actorID int, issuer *model.AdtySit
 		}
 	}
 	row.UpdatedAt, row.UpdatedBy = time.Now().Unix(), actorID
+	verifyIssuerSiteTx := func(tx *gorm.DB) error {
+		if issuer == nil {
+			return nil
+		}
+		var current model.AdtySite
+		if err := model.AdtyLockForUpdate(tx).Select("id", "owner_user_id", "status").Where("id = ?", issuerID).First(&current).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAdtySiteNotFound
+			}
+			return err
+		}
+		if current.OwnerUserId != actorID {
+			return ErrAdtySiteNotOwner
+		}
+		if current.Status == model.AdtySiteStatusClosing {
+			return ErrAdtySiteClosing
+		}
+		if current.Status != model.AdtySiteStatusActive && current.Status != model.AdtySiteStatusPaused {
+			return ErrAdtySiteStatus
+		}
+		return nil
+	}
 	if withdraw {
 		row.Status = "withdrawn"
 		var auditEntry *model.AuditLog
 		err := model.DB.Transaction(func(tx *gorm.DB) error {
+			if err := verifyIssuerSiteTx(tx); err != nil {
+				return err
+			}
 			if err := model.UpdateAdtyNotificationPublicationTx(tx, &row, input.Revision); err != nil {
 				return err
 			}
@@ -503,6 +528,9 @@ func SaveAdtyNotificationPublicationWithAudit(actorID int, issuer *model.AdtySit
 	}
 	var auditEntry *model.AuditLog
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := verifyIssuerSiteTx(tx); err != nil {
+			return err
+		}
 		if id > 0 {
 			if err := model.UpdateAdtyNotificationPublicationTx(tx, &row, input.Revision); err != nil {
 				return err

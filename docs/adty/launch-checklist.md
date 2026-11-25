@@ -40,7 +40,7 @@
 
 - [ ] 打开邮箱验证。
 - [ ] 打开注册。
-- [ ] 确认登录方式只剩账号密码、邮箱验证、Passkey 和 TOTP；第三方登录已全部退役，不要再去开 GitHub、Discord、LinuxDO、微信、OIDC 或 Telegram 登录。
+- [ ] 确认对外登录方式只剩账号密码、邮箱验证和 TOTP；前端 Passkey 登录/注册/设置 UI 已退役（后端兼容路由默认保持关闭，不列入上线必验登录方式），第三方登录已全部退役，不要再去开 GitHub、Discord、LinuxDO、微信、OIDC 或 Telegram 登录。
 - [ ] 关 Turnstile。
 
 ### 额度和运营

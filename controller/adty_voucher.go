@@ -10,7 +10,6 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
-	"github.com/shopspring/decimal"
 )
 
 func PostAdtyVoucherRedeem(c *gin.Context) {
@@ -48,7 +47,7 @@ func PostAdtySiteVoucher(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	amount, err := decimal.NewFromString(body.AmountUSD)
+	amount, err := common.ParseBoundedDecimalString(body.AmountUSD, 12, 8)
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
@@ -98,7 +97,7 @@ func PostAdtyAdminVoucher(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	amount, err := decimal.NewFromString(body.AmountUSD)
+	amount, err := common.ParseBoundedDecimalString(body.AmountUSD, 12, 8)
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
@@ -263,7 +262,7 @@ func PutAdtyVoucherIssuanceLimit(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	limit, err := decimal.NewFromString(body.LimitUSD)
+	limit, err := common.ParseBoundedDecimalString(body.LimitUSD, 12, 8)
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return

@@ -364,12 +364,26 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 			}
 		}
 	}
+	var backfillRequired *decimal.Decimal
 	if kind == model.AdtySiteWalletMargin && delta.IsPositive() && change.OpenMarginCycle {
 		// RequiredBalance is updated by tier assignment/configuration under
 		// this same wallet lock. Never use a controller's earlier tier read.
+		// For legacy sites whose wallet row was just created with required_balance=0,
+		// backfill from the site's current tier deposit floor so the new cycle tier
+		// is never silently opened at $0 (R6-18).
 		cycleTier = wallet.RequiredBalance
 		if change.CycleTier.IsPositive() {
 			cycleTier = change.CycleTier
+		}
+		if !cycleTier.IsPositive() {
+			floor, err := adtyMarginRequiredFloorTx(tx, siteID, &wallet)
+			if err != nil {
+				return nil, err
+			}
+			if floor.IsPositive() {
+				cycleTier = floor
+				backfillRequired = &floor
+			}
 		}
 		cycleUsed = decimal.Zero
 	}
@@ -381,6 +395,9 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 	}
 	updates := map[string]any{
 		"balance": after, "frozen_usd": frozenAfter, "excess_frozen_usd": excessFrozenAfter, "cycle_tier_usd": cycleTier, "cycle_used_usd": cycleUsed,
+	}
+	if backfillRequired != nil {
+		updates["required_balance"] = *backfillRequired
 	}
 	var cycleBefore, cycleAfter *string
 	if kind == model.AdtySiteWalletMargin {
@@ -1220,6 +1237,9 @@ func applyAdtySiteTierAssignmentTx(tx *gorm.DB, siteID int, selected *model.Adty
 		required = selected.DepositUSD
 	} else {
 		updates["tier_cost_factor"] = nil
+	}
+	if err := ensureAdtySiteWalletsTx(tx, siteID); err != nil {
+		return err
 	}
 	if err := tx.Model(&model.AdtySiteWallet{}).Where("site_id = ? AND kind = ?", siteID, model.AdtySiteWalletMargin).
 		Update("required_balance", required).Error; err != nil {

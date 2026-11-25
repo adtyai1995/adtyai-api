@@ -1106,7 +1106,7 @@ func classifyWithdrawCNYRate(raw string) (rate decimal.Decimal, write bool, err 
 	if raw == "" {
 		return decimal.Zero, false, nil
 	}
-	rate, err = decimal.NewFromString(raw)
+	rate, err = common.ParseBoundedDecimalString(raw, 6, 6)
 	if err != nil {
 		return decimal.Zero, false, common.NewMessage("The exchange rate must be a number")
 	}
@@ -1326,7 +1326,7 @@ func validateReferralWithdrawSettingsTx(tx *gorm.DB, values map[string]string, w
 		if !ok || trimmed == "" || strings.EqualFold(trimmed, "null") {
 			return false, nil
 		}
-		val, err := decimal.NewFromString(trimmed)
+		val, err := common.ParseBoundedDecimalString(trimmed, 12, 8)
 		if err != nil || val.IsNegative() {
 			return false, common.NewMessage("Invalid parameters")
 		}

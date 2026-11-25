@@ -115,11 +115,7 @@ export function getSidebarBadgeKeysForPath(
   if (normalized === '/site-staff' || normalized.startsWith('/site-staff/')) {
     return STAFF_WORKSPACE_BADGE_KINDS
   }
-  if (
-    normalized === '/support' ||
-    normalized.startsWith('/support/') ||
-    normalized === '/profile#tickets'
-  ) {
+  if (normalized === '/support' || normalized.startsWith('/support/')) {
     return PERSONAL_TICKET_BADGE_KINDS
   }
   if (

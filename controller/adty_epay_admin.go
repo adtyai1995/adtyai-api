@@ -71,14 +71,14 @@ type adtyEpayChannelRequest struct {
 	ProbeMode          string `json:"probe_mode"`
 	UnpaidThreshold    int    `json:"unpaid_threshold"`
 	Methods            []struct {
-		Method        string          `json:"method"`
-		DisplayName   string          `json:"display_name"`
-		TypeCode      string          `json:"type_code"`
-		MinCNY        decimal.Decimal `json:"min_cny"`
-		MaxCNY        decimal.Decimal `json:"max_cny"`
-		DailyLimitCNY decimal.Decimal `json:"daily_limit_cny"`
-		Enabled       bool            `json:"enabled"`
-		ReturnType    string          `json:"return_type"`
+		Method        string                `json:"method"`
+		DisplayName   string                `json:"display_name"`
+		TypeCode      string                `json:"type_code"`
+		MinCNY        common.BoundedDecimal `json:"min_cny"`
+		MaxCNY        common.BoundedDecimal `json:"max_cny"`
+		DailyLimitCNY common.BoundedDecimal `json:"daily_limit_cny"`
+		Enabled       bool                  `json:"enabled"`
+		ReturnType    string                `json:"return_type"`
 	} `json:"methods"`
 }
 

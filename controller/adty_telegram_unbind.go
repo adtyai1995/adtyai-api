@@ -61,7 +61,7 @@ func DeleteAdtyTelegramBinding(c *gin.Context) {
 		}
 	}
 
-	audit := prepareManageAudit(c, userID, "telegram.unbind", map[string]any{"purpose": purpose})
+	audit := prepareManageAudit(c, userID, "adty.telegram.unbind", map[string]any{"purpose": purpose})
 	if err := service.RevokeAdtyTelegramBind(userID, purpose, &audit); err != nil {
 		common.ApiError(c, err)
 		return

@@ -189,7 +189,7 @@ func decodeJSONObject(jsonStr string) (map[string]any, error) {
 func decimalFromJSONValue(value any) (decimal.Decimal, error) {
 	switch typed := value.(type) {
 	case json.Number:
-		parsed, err := decimal.NewFromString(string(typed))
+		parsed, err := common.ParseBoundedDecimalString(string(typed), 18, 12)
 		if err != nil {
 			return decimal.Zero, err
 		}

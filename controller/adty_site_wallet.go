@@ -10,7 +10,6 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
-	"github.com/shopspring/decimal"
 )
 
 func PostAdtyEarningToMargin(c *gin.Context) {
@@ -25,7 +24,7 @@ func PostAdtyEarningToMargin(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
+	amount, err := common.ParseBoundedDecimalString(body.AmountUSD, 12, 8)
 	if err != nil || !amount.IsPositive() {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
@@ -60,7 +59,7 @@ func PostAdtyAdminSiteMargin(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
+	amount, err := common.ParseBoundedDecimalString(body.AmountUSD, 12, 8)
 	if err != nil || !amount.IsPositive() {
 		common.ApiErrorT(c, "Invalid parameters")
 		return

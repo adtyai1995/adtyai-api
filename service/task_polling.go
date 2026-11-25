@@ -491,7 +491,7 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 	if err != nil {
 		return recordPollFailureForTasks(ctx, adaptor, tasks, pollClassHookError, resp.StatusCode, err.Error())
 	}
-	if pollCtx.Err() != nil {
+	if errors.Is(pollCtx.Err(), context.Canceled) {
 		return pollCtx.Err()
 	}
 	// Validate the complete batch before publishing any result.
@@ -504,7 +504,7 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if pollCtx.Err() != nil {
+		if errors.Is(pollCtx.Err(), context.Canceled) {
 			return pollCtx.Err()
 		}
 		task := channelTasks[upstreamID]
@@ -575,7 +575,7 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if pollCtx.Err() != nil {
+		if errors.Is(pollCtx.Err(), context.Canceled) {
 			return pollCtx.Err()
 		}
 		won, updateErr := task.UpdateWithStatus(snap.Status)
@@ -784,7 +784,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if pollCtx.Err() != nil {
+	if errors.Is(pollCtx.Err(), context.Canceled) {
 		return pollCtx.Err()
 	}
 	if taskResult == nil {
@@ -869,7 +869,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if pollCtx.Err() != nil {
+	if errors.Is(pollCtx.Err(), context.Canceled) {
 		return pollCtx.Err()
 	}
 	if isDone && snap.Status != task.Status {

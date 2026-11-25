@@ -19,7 +19,7 @@ func GetAdtySiteWithdrawRules(c *gin.Context) {
 		return
 	}
 	if raw, ok := c.GetQuery("amount_usd"); ok {
-		amount, err := decimal.NewFromString(strings.TrimSpace(raw))
+		amount, err := common.ParseBoundedDecimalString(raw, 12, 8)
 		if err != nil {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
@@ -110,8 +110,12 @@ func GetAdtySiteWithdrawals(c *gin.Context) {
 // purpose=payment_proof for active site owners uploading customer
 // invite-commission payout proof screenshots.
 func PostAdtySiteWithdrawalQR(c *gin.Context) {
-	site, ok := adtyOwnerAccountingSite(c)
+	site, ok := adtyOwnerSiteOr403(c)
 	if !ok {
+		return
+	}
+	if site.OwnerUserId != c.GetInt("id") || site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusDeleting {
+		common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtySiteNotOwner)
 		return
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 5<<20+64<<10)
@@ -197,8 +201,8 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		AccountNo      string           `json:"account_no"`
 		AccountName    string           `json:"account_name"`
 		QRImageURL     string           `json:"qr_image_url"`
-		ExpectedRate   string           `json:"expected_rate"`
-		ExpectedPayout *decimal.Decimal `json:"expected_payout"`
+		ExpectedRate   string                 `json:"expected_rate"`
+		ExpectedPayout *common.BoundedDecimal `json:"expected_payout"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -216,15 +220,20 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Only USDT withdrawal is supported"))
 		return
 	}
-	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
+	amount, err := common.ParseBoundedDecimalString(body.AmountUSD, 12, 8)
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	expected, err := decimal.NewFromString(strings.TrimSpace(body.ExpectedRate))
+	expected, err := common.ParseBoundedDecimalString(body.ExpectedRate, 6, 6)
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
+	}
+	var expectedPayout *decimal.Decimal
+	if body.ExpectedPayout != nil {
+		d := body.ExpectedPayout.Decimal
+		expectedPayout = &d
 	}
 	network := strings.ToUpper(strings.TrimSpace(body.Network))
 	accountNo := strings.TrimSpace(body.AccountNo)
@@ -243,7 +252,7 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 	}
 	row, err := service.CreateAdtySiteWithdrawal(service.AdtySiteWithdrawInput{
 		SiteID: site.Id, OwnerID: c.GetInt("id"), AmountUSD: amount, Method: method, Network: network,
-		AccountNo: accountNo, AccountName: "", QRImageURL: "", ExpectedRate: expected, ExpectedPayout: body.ExpectedPayout,
+		AccountNo: accountNo, AccountName: "", QRImageURL: "", ExpectedRate: expected, ExpectedPayout: expectedPayout,
 		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {

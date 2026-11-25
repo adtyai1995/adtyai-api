@@ -364,9 +364,12 @@ func validateOptionValue(key string, value string) error {
 				return common.NewMessage("{{key}} must be a positive number", map[string]any{"key": key})
 			}
 		}
+	case "GroupRatio":
+		if err := ratio_setting.CheckGroupRatio(value); err != nil {
+			return common.NewMessage("{{key}} must be a JSON object", map[string]any{"key": key})
+		}
 	case "GroupGroupRatio":
-		parsed := map[string]map[string]float64{}
-		if err := common.UnmarshalJsonStr(value, &parsed); err != nil || parsed == nil {
+		if err := ratio_setting.CheckGroupGroupRatio(value); err != nil {
 			return common.NewMessage("{{key}} must be a JSON object", map[string]any{"key": key})
 		}
 	case "UserUsableGroups":

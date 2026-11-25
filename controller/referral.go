@@ -255,14 +255,14 @@ func resignWithdrawalAssets(items []model.ReferralWithdrawal) {
 }
 
 type referralWithdrawRequest struct {
-	Amount          decimal.Decimal `json:"amount"`
-	AccountType     string          `json:"account_type"`
-	AccountNetwork  string          `json:"account_network"`
-	AccountNo       string          `json:"account_no"`
-	AccountName     string          `json:"account_name"`
-	QRImageURL      string          `json:"qr_image_url"`
-	ExpectedCNYRate decimal.Decimal `json:"expected_cny_rate"`
-	IdempotencyKey  string          `json:"idempotency_key"`
+	Amount          common.BoundedDecimal `json:"amount"`
+	AccountType     string                `json:"account_type"`
+	AccountNetwork  string                `json:"account_network"`
+	AccountNo       string                `json:"account_no"`
+	AccountName     string                `json:"account_name"`
+	QRImageURL      string                `json:"qr_image_url"`
+	ExpectedCNYRate common.BoundedDecimal `json:"expected_cny_rate"`
+	IdempotencyKey  string                `json:"idempotency_key"`
 }
 
 // CreateReferralWithdrawal 提交提现。人民币汇率变了时返回 rate_changed 和新的汇率、人民币金额。
@@ -276,9 +276,9 @@ func CreateReferralWithdrawal(c *gin.Context) {
 		return
 	}
 	withdrawal, err := service.Referral.CreateWithdrawal(service.ReferralWithdrawalCreateInput{
-		UserId: c.GetInt("id"), Amount: req.Amount, AccountType: req.AccountType, AccountNetwork: req.AccountNetwork,
+		UserId: c.GetInt("id"), Amount: req.Amount.Decimal, AccountType: req.AccountType, AccountNetwork: req.AccountNetwork,
 		AccountNo: req.AccountNo, AccountName: req.AccountName, QRImageURL: req.QRImageURL,
-		ExpectedCNYRate: req.ExpectedCNYRate, IdempotencyKey: req.IdempotencyKey,
+		ExpectedCNYRate: req.ExpectedCNYRate.Decimal, IdempotencyKey: req.IdempotencyKey,
 	})
 	if err != nil {
 		var changed *service.RateChangedError

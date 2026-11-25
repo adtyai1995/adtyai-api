@@ -569,7 +569,7 @@ func DisableAdtySiteSenderDomain(ctx context.Context, siteId, operatorId int) er
 }
 
 func DisableAdtySiteSenderDomainForActor(ctx context.Context, siteId, operatorId, actorRole int, denyAdminTarget bool) error {
-	if (operatorId > 0 || actorRole > 0 || denyAdminTarget) && siteId > 0 {
+	if siteId > 0 {
 		if err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			var site model.AdtySite
 			if err := model.AdtyLockForUpdate(tx).Select("id", "owner_user_id", "status").Where("id = ?", siteId).First(&site).Error; err != nil {
@@ -604,23 +604,40 @@ func DisableAdtySiteSenderDomainForActor(ctx context.Context, siteId, operatorId
 	if disabledBy == 0 && row.DisabledBy > 0 {
 		disabledBy = row.DisabledBy
 	}
+	writeSenderDomainUpdate := func(updates map[string]any) error {
+		return model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if siteId > 0 {
+				var site model.AdtySite
+				if err := model.AdtyLockForUpdate(tx).Select("id", "status").Where("id = ?", siteId).First(&site).Error; err != nil {
+					if errors.Is(err, gorm.ErrRecordNotFound) {
+						return ErrAdtySiteNotFound
+					}
+					return err
+				}
+				if site.Status == model.AdtySiteStatusDeleting {
+					return ErrAdtySiteStatus
+				}
+			}
+			return tx.Model(&model.AdtySiteSenderDomain{}).Where("site_id = ? AND resend_domain_id = ?", siteId, row.ResendDomainId).Updates(updates).Error
+		})
+	}
 	if row.ResendDomainId != "" {
 		if err := AdtyResend.DeleteDomain(ctx, row.ResendDomainId); err != nil {
 			var apiErr *AdtyResendError
 			if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 				failure := adtyResendUserError(err)
-				if storeErr := model.DB.Model(&model.AdtySiteSenderDomain{}).Where("site_id = ? AND resend_domain_id = ?", siteId, row.ResendDomainId).Updates(map[string]any{
+				if storeErr := writeSenderDomainUpdate(map[string]any{
 					"status": model.AdtySenderDomainRemoving, "disabled_by": disabledBy, "cleanup_error": failure.Error(), "retry_at": time.Now().Add(10 * time.Minute).Unix(),
-				}).Error; storeErr != nil {
+				}); storeErr != nil {
 					return storeErr
 				}
 				return failure
 			}
 		}
 	}
-	return model.DB.Model(&model.AdtySiteSenderDomain{}).Where("site_id = ? AND resend_domain_id = ?", siteId, row.ResendDomainId).Updates(map[string]any{
+	return writeSenderDomainUpdate(map[string]any{
 		"status": model.AdtySenderDomainDisabled, "disabled_by": disabledBy, "cleanup_error": "", "retry_at": 0, "last_checked_at": time.Now().Unix(),
-	}).Error
+	})
 }
 
 func cleanReplacedSenderDomains(ctx context.Context, now int64, siteID int) error {
@@ -642,6 +659,9 @@ func cleanReplacedSenderDomains(ctx context.Context, now int64, siteID int) erro
 				} else {
 					return err
 				}
+			}
+			if !siteMissing && site.Status == model.AdtySiteStatusDeleting {
+				return nil
 			}
 			var job model.AdtySenderDomainCleanup
 			lookup := model.AdtyLockForUpdate(tx).Where("remote_id = ? AND retry_at <= ?", row.RemoteID, now).Limit(1).Find(&job)
@@ -674,8 +694,11 @@ func RunAdtySenderDomainCheckOnce(ctx context.Context, now time.Time) error {
 		common.SysError(common.LogText("clean replaced sender domains: %s", err.Error()))
 	}
 	var cleanup []model.AdtySiteSenderDomain
-	inactiveSites := model.DB.Model(&model.AdtySite{}).Select("id").Where("status IN ?", []string{model.AdtySiteStatusClosed, model.AdtySiteStatusDeleting})
-	if err := model.DB.Where("status <> ? AND retry_at <= ? AND (status = ? OR site_id IN (?))", model.AdtySenderDomainDisabled, now.Unix(), model.AdtySenderDomainRemoving, inactiveSites).Find(&cleanup).Error; err != nil {
+	closedSites := model.DB.Model(&model.AdtySite{}).Select("id").Where("status = ?", model.AdtySiteStatusClosed)
+	deletingSites := model.DB.Model(&model.AdtySite{}).Select("id").Where("status = ?", model.AdtySiteStatusDeleting)
+	if err := model.DB.Where("status <> ? AND retry_at <= ? AND site_id NOT IN (?) AND (status = ? OR site_id IN (?))",
+		model.AdtySenderDomainDisabled, now.Unix(), deletingSites, model.AdtySenderDomainRemoving, closedSites).
+		Find(&cleanup).Error; err != nil {
 		return err
 	}
 	for _, row := range cleanup {

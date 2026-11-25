@@ -291,9 +291,13 @@ func getAdtyUnifiedOrders(c *gin.Context, ownerSiteID *int, selfUserID *int) {
 					switch order.Status {
 					case common.TopUpStatusSuccess:
 						order.Actions.Refund = capability.Refund && order.Business != model.AdtyBusinessOwnerMarginTopup && (ownerSiteID == nil || order.Business != model.AdtyBusinessOwnerSelfUseTopup)
-					case common.TopUpStatusPending, common.TopUpStatusExpired, common.TopUpStatusFailed, model.TopUpStatusCanceled, model.TopUpStatusReplaced:
+					case common.TopUpStatusPending, common.TopUpStatusExpired, common.TopUpStatusFailed, model.TopUpStatusCanceled:
 						if ownerSiteID == nil {
 							order.Actions.Complete, order.Actions.Query = capability.Complete, capability.Query
+						}
+					case model.TopUpStatusReplaced:
+						if ownerSiteID == nil {
+							order.Actions.Complete = capability.Complete
 						}
 					}
 				}
@@ -503,9 +507,11 @@ func enrichTopupAuditOrders(orders []rechargeAuditOrder, ownerSiteID *int, siteN
 			continue
 		}
 		switch orders[i].Status {
-		case common.TopUpStatusPending, common.TopUpStatusExpired, common.TopUpStatusFailed, model.TopUpStatusCanceled, model.TopUpStatusReplaced:
+		case common.TopUpStatusPending, common.TopUpStatusExpired, common.TopUpStatusFailed, model.TopUpStatusCanceled:
 			orders[i].Actions.Complete = capability.Complete
 			orders[i].Actions.Query = capability.Query
+		case model.TopUpStatusReplaced:
+			orders[i].Actions.Complete = capability.Complete
 		case common.TopUpStatusSuccess:
 			orders[i].Actions.Refund = capability.Refund && orders[i].Business != model.AdtyBusinessOwnerMarginTopup
 		}
@@ -1138,7 +1144,7 @@ func PreviewAdtyOwnerOrderRefund(c *gin.Context) {
 		return
 	}
 	if raw := strings.TrimSpace(c.Query("refund_usd")); raw != "" {
-		amount, parseErr := decimal.NewFromString(raw)
+		amount, parseErr := common.ParseBoundedDecimalString(raw, 12, 8)
 		if parseErr != nil || !amount.IsPositive() {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
@@ -1308,7 +1314,7 @@ func RefundAdtyOwnerOrder(c *gin.Context) {
 	refundUSD := strings.TrimSpace(body.RefundUSD)
 	var refundQuota *int64
 	if refundUSD != "" {
-		if _, parseErr := decimal.NewFromString(refundUSD); parseErr != nil {
+		if _, parseErr := common.ParseBoundedDecimalString(refundUSD, 12, 8); parseErr != nil {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
 		}
@@ -1325,7 +1331,7 @@ func RefundAdtyOwnerOrder(c *gin.Context) {
 	var amount decimal.Decimal
 	var parseErr error
 	if refundUSD != "" {
-		amount, parseErr = decimal.NewFromString(refundUSD)
+		amount, parseErr = common.ParseBoundedDecimalString(refundUSD, 12, 8)
 		if parseErr != nil {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
@@ -1389,7 +1395,7 @@ func writeOwnerManualRefundStep(c *gin.Context, step string, run func(tradeNo, r
 		payout.Voucher = strings.TrimSpace(body.Proof)
 	}
 	if strings.TrimSpace(body.Amount) != "" {
-		amount, err := decimal.NewFromString(strings.TrimSpace(body.Amount))
+		amount, err := common.ParseBoundedDecimalString(body.Amount, 12, 8)
 		if err != nil {
 			common.ApiErrorT(c, "Invalid parameters")
 			return

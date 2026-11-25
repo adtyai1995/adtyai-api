@@ -998,8 +998,8 @@ func UpdateUser(c *gin.Context) {
 	auditEvents := make([]model.AuditLog, 0, 2)
 	previousAuthVersion := originUser.AuthVersion
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
-		// Maintain canonical lock order adty_groups -> users before EditWithTx locks updatedUser.Group.
-		if updatedUser.Group != "" {
+		// Maintain canonical lock order adty_groups -> users only when group is explicitly updated (R6-05).
+		if groupProvided && updatedUser.Group != "" {
 			if err := model.PreLockAdtyGroupsTx(tx, updatedUser.Group); err != nil {
 				return err
 			}
@@ -1020,7 +1020,7 @@ func UpdateUser(c *gin.Context) {
 		if isAccessTokenRequest(c) && (current.Role >= common.RoleAdminUser || updatedUser.AdminPermissions != nil) {
 			return errAdtyAdminActionDenied
 		}
-		if current.Group != updatedUser.Group {
+		if groupProvided && current.Group != updatedUser.Group {
 			if err := adtyAuthorizeAdminActions(c, authz.AdtyUserGroup); err != nil {
 				return err
 			}
@@ -1028,7 +1028,7 @@ func UpdateUser(c *gin.Context) {
 		previousAuthVersion = current.AuthVersion
 		auditParams["username"], auditParams["target_role"] = current.Username, current.Role
 		auditEvents = append(auditEvents, prepareManageAudit(c, updatedUser.Id, "user.update", auditParams))
-		if err := updatedUser.EditWithTx(tx, updatePassword); err != nil {
+		if err := updatedUser.EditWithOptionsTx(tx, updatePassword, groupProvided); err != nil {
 			return err
 		}
 		var before authz.PermissionsMap

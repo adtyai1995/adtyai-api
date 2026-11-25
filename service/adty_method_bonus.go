@@ -40,7 +40,7 @@ func AdtyPaymentMethodBonus(site *model.AdtySite, method string, faceUSD decimal
 	if !ok || !rule.Enabled {
 		return decimal.Zero, decimal.Zero, nil
 	}
-	rate, err := decimal.NewFromString(strings.TrimSpace(rule.Rate))
+	rate, err := common.ParseBoundedDecimalString(rule.Rate, 4, 8)
 	if err != nil || rate.IsNegative() || rate.GreaterThan(decimal.NewFromInt(1)) {
 		return decimal.Zero, decimal.Zero, err
 	}

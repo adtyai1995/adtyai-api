@@ -169,7 +169,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		stopKeepAlives = nil
 		helper.StopStreamKeepAlive(c)
 	}
-	keepAliveEnabled := relayFormat != types.RelayFormatOpenAIRealtime && relayInfo.IsStream && generalSettings.PingIntervalEnabled
+	// Binary audio/TTS channels (such as volcengine RelayModeAudioSpeech) emit raw
+	// audio bytes rather than text/event-stream SSE; never start SSE ": PING\n\n"
+	// keepalive for them or the audio headers/payload will be corrupted.
+	keepAliveEnabled := relayFormat != types.RelayFormatOpenAIRealtime &&
+		relayInfo.RelayMode != relayconstant.RelayModeAudioSpeech &&
+		relayInfo.IsStream &&
+		generalSettings.PingIntervalEnabled
 	keepAliveInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
 	if relayFormat != types.RelayFormatOpenAIRealtime && relayInfo.IsStream {
 		defer stopAllKeepAlive()

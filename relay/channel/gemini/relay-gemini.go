@@ -490,7 +490,7 @@ func geminiStreamHandlerWithOutcome(c *gin.Context, info *relaycommon.RelayInfo,
 		patchGeminiZeroCompletionUsage(c, info, usage, responseText.String(), inlineOutput)
 	}
 
-	wroteToClient := info != nil && info.SendResponseCount > 0
+	wroteToClient := (info != nil && info.SendResponseCount > 0) || helper.HasWrittenStreamPayload(c)
 	if streamErr != nil {
 		if wroteToClient {
 			logger.LogWarn(c, common.LogText("Gemini stream error after output written, billing delivered usage: %v", streamErr))
@@ -498,8 +498,18 @@ func geminiStreamHandlerWithOutcome(c *gin.Context, info *relaycommon.RelayInfo,
 		}
 		return nil, outcome, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	if !isGeminiDownstreamStop(c, info) && !receivedEvent && !wroteToClient {
-		return nil, outcome, types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+	if !wroteToClient {
+		if isGeminiDownstreamStop(c, info) {
+			return nil, outcome, types.NewError(
+				errors.New("client disconnected before first response frame"),
+				types.ErrorCodeRequestCancelled,
+				types.ErrOptionWithStatusCode(499),
+				types.ErrOptionWithSkipRetry(),
+			)
+		}
+		if !receivedEvent {
+			return nil, outcome, types.NewOpenAIError(errors.New("empty upstream stream response"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+		}
 	}
 	if info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
 		logger.LogWarn(c, common.LogText("Gemini stream ended unexpectedly: %s", info.StreamStatus.Summary()))
@@ -683,40 +693,38 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	}
 	info.ObserveResponseModel(gjson.GetBytes(responseBody, "modelVersion").Str)
 	if len(geminiResponse.Candidates) == 0 {
-		usage := buildUsageFromGeminiResponse(c, info, &geminiResponse)
-
-		var newAPIError *types.NewAPIError
 		if geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
+			usage := buildUsageFromGeminiResponse(c, info, &geminiResponse)
 			info.PerformanceBusinessRejection = true
 			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
-			newAPIError = types.NewOpenAIError(
+			newAPIError := types.NewOpenAIError(
 				errors.New("request blocked by Gemini API: "+*geminiResponse.PromptFeedback.BlockReason),
 				types.ErrorCodePromptBlocked,
 				http.StatusBadRequest,
 			)
-		} else {
-			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "gemini_empty_candidates")
-			newAPIError = types.NewOpenAIError(
-				errors.New("empty response from Gemini API"),
-				types.ErrorCodeEmptyResponse,
-				http.StatusInternalServerError,
-			)
+			service.ResetStatusCode(newAPIError, c.GetString("status_code_mapping"))
+
+			switch info.RelayFormat {
+			case types.RelayFormatClaude:
+				c.JSON(newAPIError.StatusCode, gin.H{
+					"type":  "error",
+					"error": newAPIError.ToClaudeError(common.UpstreamAddresses(c)...),
+				})
+			default:
+				c.JSON(newAPIError.StatusCode, gin.H{
+					"error": newAPIError.ToOpenAIError(common.UpstreamAddresses(c)...),
+				})
+			}
+			return &usage, nil
 		}
 
-		service.ResetStatusCode(newAPIError, c.GetString("status_code_mapping"))
-
-		switch info.RelayFormat {
-		case types.RelayFormatClaude:
-			c.JSON(newAPIError.StatusCode, gin.H{
-				"type":  "error",
-				"error": newAPIError.ToClaudeError(common.UpstreamAddresses(c)...),
-			})
-		default:
-			c.JSON(newAPIError.StatusCode, gin.H{
-				"error": newAPIError.ToOpenAIError(common.UpstreamAddresses(c)...),
-			})
-		}
-		return &usage, nil
+		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "gemini_empty_candidates")
+		newAPIError := types.NewOpenAIError(
+			errors.New("empty response from Gemini API"),
+			types.ErrorCodeEmptyResponse,
+			http.StatusInternalServerError,
+		)
+		return nil, newAPIError
 	}
 	if reason := geminiAbnormalFinishReason(&geminiResponse); reason != "" && !geminiHasVisibleOutput(&geminiResponse) {
 		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_abnormal_finish=%s", reason))
@@ -832,13 +840,28 @@ func GeminiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		Data:    make([]dto.ImageData, 0, len(geminiResponse.Predictions)),
 	}
 
+	var filteredReasons []string
 	for _, prediction := range geminiResponse.Predictions {
-		if prediction.RaiFilteredReason != "" || strings.TrimSpace(prediction.BytesBase64Encoded) == "" {
-			continue // skip filtered or empty image
+		if reason := strings.TrimSpace(prediction.RaiFilteredReason); reason != "" {
+			if !slices.Contains(filteredReasons, reason) {
+				filteredReasons = append(filteredReasons, reason)
+			}
+			continue // skip filtered image
+		}
+		if strings.TrimSpace(prediction.BytesBase64Encoded) == "" {
+			continue // skip empty image
 		}
 		openAIResponse.Data = append(openAIResponse.Data, dto.ImageData{
 			B64Json: prediction.BytesBase64Encoded,
 		})
+	}
+
+	if len(openAIResponse.Data) == 0 {
+		errMsg := "no images generated"
+		if len(filteredReasons) > 0 {
+			errMsg = fmt.Sprintf("no images generated: %s", strings.Join(filteredReasons, "; "))
+		}
+		return nil, types.NewOpenAIError(errors.New(errMsg), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 
 	jsonResponse, jsonErr := common.Marshal(openAIResponse)

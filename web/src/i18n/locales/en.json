@@ -11264,6 +11264,17 @@
     "Value must be at most 100,000,000": "Value must be at most 100,000,000",
     "Value must be at most 99": "Value must be at most 99",
     "AliDNS root domain is not configured; cannot clean up DNS resources before hard delete": "AliDNS root domain is not configured; cannot clean up DNS resources before hard delete",
-    "Too many unused uploaded images; please submit a request before uploading more": "Too many unused uploaded images; please submit a request before uploading more"
+    "Too many unused uploaded images; please submit a request before uploading more": "Too many unused uploaded images; please submit a request before uploading more",
+    "Finish unredeemed or frozen vouchers before deleting this account": "Finish unredeemed or frozen vouchers before deleting this account",
+    "Finish unsettled site earnings before deleting this account": "Finish unsettled site earnings before deleting this account",
+    "Failed to query task": "Failed to query task",
+    "Failed to build artifact content URL": "Failed to build artifact content URL",
+    "Artifact preview plugin is unavailable": "Artifact preview plugin is unavailable",
+    "Updated reseller settings": "Updated reseller settings",
+    "Updated Telegram bot ({{purpose}})": "Updated Telegram bot ({{purpose}})",
+    "Unbound Telegram notification ({{purpose}})": "Unbound Telegram notification ({{purpose}})",
+    "Updated translation settings ({{mode}})": "Updated translation settings ({{mode}})",
+    "Updated payment scenes": "Updated payment scenes",
+    "Updated ticket image policy": "Updated ticket image policy"
   }
 }

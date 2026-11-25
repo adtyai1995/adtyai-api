@@ -65,10 +65,6 @@ export function SidebarModulesSection({
   const updateOption = useUpdateOption()
 
   const sectionMeta: Record<string, { title: string; description: string }> = {
-    chat: {
-      title: t('Chat area'),
-      description: t('Access previous conversations and start new ones.'),
-    },
     console: {
       title: t('Console area'),
       description: t('Dashboards, tokens, and usage analytics.'),
@@ -87,12 +83,6 @@ export function SidebarModulesSection({
     string,
     Record<string, { title: string; description: string }>
   > = {
-    chat: {
-      chat: {
-        title: t('Chat'),
-        description: t('Access previous conversations and start new ones.'),
-      },
-    },
     console: {
       detail: {
         title: t('Dashboard'),
@@ -109,10 +99,6 @@ export function SidebarModulesSection({
       audit: {
         title: t('Audit Logs'),
         description: t('Login, security and access records'),
-      },
-      midjourney: {
-        title: t('Drawing logs'),
-        description: t('History of MjProxy-style image tasks.'),
       },
       task: {
         title: t('Task logs'),

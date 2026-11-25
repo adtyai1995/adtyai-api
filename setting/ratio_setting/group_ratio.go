@@ -104,14 +104,28 @@ func UpdateGroupGroupRatioByJSONString(jsonStr string) error {
 }
 
 func CheckGroupRatio(jsonStr string) error {
-	checkGroupRatio := make(map[string]float64)
-	err := common.Unmarshal([]byte(jsonStr), &checkGroupRatio)
+	checkGroupRatio, err := parseDecimalObject(jsonStr)
 	if err != nil {
 		return err
 	}
 	for name, ratio := range checkGroupRatio {
-		if ratio < 0 {
+		if ratio.IsNegative() {
 			return errors.New("group ratio must be not less than 0: " + name)
+		}
+	}
+	return nil
+}
+
+func CheckGroupGroupRatio(jsonStr string) error {
+	nested, err := parseNestedDecimalObject(jsonStr)
+	if err != nil {
+		return err
+	}
+	for outer, inner := range nested {
+		for key, ratio := range inner {
+			if ratio.IsNegative() {
+				return errors.New("group ratio must be not less than 0: " + outer + "." + key)
+			}
 		}
 	}
 	return nil

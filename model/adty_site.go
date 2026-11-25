@@ -456,12 +456,20 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 		}
 	}
 	if tx.Migrator().HasTable(&AdtyTeamMember{}) {
-		siteCustomerIDs := tx.Model(&User{}).Select("id").Where("site_id = ? AND staff_site_id = 0", fromSite)
-		var preLockedMembers []AdtyTeamMember
-		if err := lockForUpdate(tx).Select("id").
-			Where("independent_employee = ? AND status = ? AND user_id IN (?)", true, AdtyTeamMemberDisabled, siteCustomerIDs).
-			Order("id ASC").Find(&preLockedMembers).Error; err != nil {
+		// R6-07: Pluck customer IDs without locking users first, and lock all
+		// independent_employee rows regardless of status so MySQL InnoDB never
+		// takes an implicit users S-lock or misses active rows scanned by user_id.
+		var siteCustomerIDs []int
+		if err := tx.Model(&User{}).Where("site_id = ? AND staff_site_id = 0", fromSite).Pluck("id", &siteCustomerIDs).Error; err != nil {
 			return nil, 0, err
+		}
+		if len(siteCustomerIDs) > 0 {
+			var preLockedMembers []AdtyTeamMember
+			if err := lockForUpdate(tx).Select("id").
+				Where("independent_employee = ? AND user_id IN ?", true, siteCustomerIDs).
+				Order("id ASC").Find(&preLockedMembers).Error; err != nil {
+				return nil, 0, err
+			}
 		}
 	}
 	// InsertWithLimit locks the owner too: a token created before this lock is

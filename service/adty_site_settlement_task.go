@@ -489,7 +489,7 @@ func adtyOwnerAccountTx(tx *gorm.DB, ownerUserId int) (*model.ReferralCommission
 		}
 		affiliate := model.ReferralAffiliate{
 			UserId: ownerUserId, InviteCode: code, Status: model.ReferralAffiliateStatusApproved, SourceType: "site",
-			SettlementEnabled: true, WithdrawalEnabled: true, ApprovedAt: time.Now().Unix(), SiteOwnerSince: time.Now().Unix(),
+			AcquisitionEnabled: true, SettlementEnabled: true, WithdrawalEnabled: true, ApprovedAt: time.Now().Unix(), SiteOwnerSince: time.Now().Unix(),
 		}
 		if err := tx.Create(&affiliate).Error; err != nil {
 			return nil, err

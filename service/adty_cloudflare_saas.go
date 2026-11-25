@@ -895,7 +895,7 @@ func adtyAttachCustomHostnameLocked(ctx context.Context, tx *gorm.DB, domain *mo
 		return nil
 	}
 	cfg := resellerSetting()
-	zone := strings.TrimSpace(cfg.CloudflareZoneId)
+	zone := adtyDomainEffectiveZone(domain, cfg)
 	if domain.CFCreateStartedAt == 0 {
 		startedAt := time.Now().Unix()
 		if err := adtyDomainSnapshotQuery(tx, domain).Update("cf_create_started_at", startedAt).Error; err != nil {
@@ -1049,11 +1049,23 @@ func removeAdtySiteDomainForActor(ctx context.Context, domain *model.AdtySiteDom
 	return err
 }
 
+func adtyDomainEffectiveZone(domain *model.AdtySiteDomain, cfg *adty_setting.ResellerSetting) string {
+	if domain != nil {
+		if z := strings.TrimSpace(domain.ProviderZone); z != "" {
+			return z
+		}
+	}
+	if cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.CloudflareZoneId)
+}
+
 func removeAdtySiteDomainLocked(ctx context.Context, tx *gorm.DB, domain *model.AdtySiteDomain) error {
 	if domain.Status == model.AdtySiteDomainRemoved {
 		return nil
 	}
-	zone := strings.TrimSpace(resellerSetting().CloudflareZoneId)
+	zone := adtyDomainEffectiveZone(domain, resellerSetting())
 	hostnameID := domain.CFHostnameId
 	createAttempted := domain.CFCreateStartedAt > 0
 	if hostnameID == "" {
@@ -1169,8 +1181,18 @@ func adtyMarkCustomDomainFailed(ctx context.Context, tx *gorm.DB, zone string, d
 		updates["cf_hostname_id"] = ""
 		domain.CFHostnameId = ""
 	}
+	updates["cf_create_started_at"] = 0
 	updates["status"] = model.AdtySiteDomainFailed
-	return adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error
+	if err := adtyDomainSnapshotQuery(tx, domain).Updates(updates).Error; err != nil {
+		return err
+	}
+	domain.CFCreateStartedAt = 0
+	if tx.Migrator().HasTable(&model.AdtyDomainCloudResource{}) {
+		if err := tx.Where("domain_id = ?", domain.Id).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func adtyAssignCheckedDomainTurnstile(ctx context.Context, tx *gorm.DB, domain *model.AdtySiteDomain) error {
@@ -1232,7 +1254,7 @@ func RunAdtySiteDomainCheckOnce(ctx context.Context, now time.Time) error {
 func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain, now time.Time) (changed bool, err error) {
 	err = adtyWithDomainLifecycle(ctx, snapshot, func(tx *gorm.DB, domain *model.AdtySiteDomain) error {
 		cfg := resellerSetting()
-		zone := strings.TrimSpace(cfg.CloudflareZoneId)
+		zone := adtyDomainEffectiveZone(domain, cfg)
 		if domain.Status == model.AdtySiteDomainActive {
 			detail, err := AdtyCloudflare.getCustomHostname(ctx, zone, domain.CFHostnameId)
 			if err != nil {

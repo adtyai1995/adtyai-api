@@ -818,7 +818,7 @@ func (user *User) UpdateWithTx(tx *gorm.DB, updatePassword bool) error {
 	newUser.Username = strings.TrimSpace(newUser.Username)
 	user.Username = newUser.Username
 	current := User{}
-	if err = tx.First(&current, user.Id).Error; err != nil {
+	if err = lockForUpdate(tx).First(&current, user.Id).Error; err != nil {
 		return err
 	}
 	if newUser.Username != "" {
@@ -1162,6 +1162,10 @@ func (user *User) Edit(updatePassword bool) error {
 }
 
 func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
+	return user.EditWithOptionsTx(tx, updatePassword, true)
+}
+
+func (user *User) EditWithOptionsTx(tx *gorm.DB, updatePassword bool, updateGroup bool) error {
 	var err error
 	if updatePassword {
 		user.Password, err = common.HashAccountPassword(user.Password)
@@ -1179,17 +1183,20 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 	updates := map[string]any{
 		"username":     newUser.Username,
 		"display_name": newUser.DisplayName,
-		"group":        newUser.Group,
 		"remark":       newUser.Remark,
+	}
+	if updateGroup {
+		updates["group"] = newUser.Group
 	}
 	if updatePassword {
 		updates["password"] = newUser.Password
 	}
 
-	// R5-18: Acquire adty_groups FOR UPDATE lock BEFORE users to match
-	// DeleteAdtyGroup / MigrateAdtyGroup canonical lock order (adty_groups -> users).
+	// R5-18 / R6-05: Only pre-lock adty_groups when the caller intends to update
+	// group (preserving canonical adty_groups -> users lock order and allowing
+	// non-group edits on users with legacy soft-deleted groups).
 	var targetGroupDeleted bool
-	if newUser.Group != "" {
+	if updateGroup && newUser.Group != "" {
 		targetGroupDeleted, err = preLockAdtyGroupRowAllowDeletedTx(tx, newUser.Group)
 		if err != nil {
 			return err
@@ -1205,11 +1212,12 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 	if err = EnsureUsernameAvailableWithTx(tx, newUser.Username, user.Id); err != nil {
 		return err
 	}
-	if newUser.Group != current.Group && targetGroupDeleted {
+	if updateGroup && newUser.Group != current.Group && targetGroupDeleted {
 		return ErrAdtyGroupNotFound
 	}
 	passwordChanged := updatePassword && current.Password != newUser.Password
-	authChanged := passwordChanged || current.Group != newUser.Group
+	groupChanged := updateGroup && current.Group != newUser.Group
+	authChanged := passwordChanged || groupChanged
 	if authChanged {
 		newUser.AuthVersion, err = IncrementUserAuthVersionWithTx(tx, user.Id)
 		if err != nil {

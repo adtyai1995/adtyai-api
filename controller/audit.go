@@ -109,6 +109,8 @@ var auditContentTemplates = map[string]string{
 	"adty.group_health.config":        "Updated group health settings (${success_min})",
 	"adty.team.discount.update":       "Updated team ${team_id} discount from ${before} to ${after}",
 	"adty.gift.fulfillment.review":    "Reviewed gift fulfillment for order ${trade_no} (${action})",
+	"adty.payment_scenes.update":      "Updated payment scenes",
+	"adty.ticket.image_policy.update": "Updated ticket image policy",
 }
 
 const (

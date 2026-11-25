@@ -234,3 +234,31 @@ func ParseBoundedDecimalString(raw string, maxIntDigits, maxFracDigits int) (dec
 	}
 	return decimal.NewFromString(s)
 }
+
+// BoundedDecimal wraps decimal.Decimal for HTTP JSON request DTOs so scientific
+// notation or giant-exponent literals are rejected at unmarshal time before any
+// arithmetic, rounding, or String() call can allocate huge big.Ints (R6-03).
+type BoundedDecimal struct {
+	decimal.Decimal
+}
+
+func (b *BoundedDecimal) UnmarshalJSON(data []byte) error {
+	s := strings.TrimSpace(string(data))
+	if s == "" || s == "null" {
+		b.Decimal = decimal.Zero
+		return nil
+	}
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		s = strings.TrimSpace(s[1 : len(s)-1])
+		if s == "" {
+			b.Decimal = decimal.Zero
+			return nil
+		}
+	}
+	parsed, err := ParseBoundedDecimalString(s, 18, 12)
+	if err != nil {
+		return err
+	}
+	b.Decimal = parsed
+	return nil
+}

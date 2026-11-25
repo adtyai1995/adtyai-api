@@ -426,10 +426,20 @@ func (channel *Channel) SaveMultiKeyManagement() error {
 		updates["key"] = channel.Key
 	}
 	return DB.Transaction(func(tx *gorm.DB) error {
+		var locked Channel
+		if err := lockForUpdate(tx).First(&locked, "id = ?", channel.Id).Error; err != nil {
+			return err
+		}
+		if channel.Status == common.ChannelStatusEnabled && len(locked.GetGroups()) == 0 {
+			return ErrChannelNoGroup
+		}
 		if err := tx.Model(&Channel{}).Where("id = ?", channel.Id).Updates(updates).Error; err != nil {
 			return err
 		}
-		return channel.UpdateAbilities(tx)
+		if err := tx.First(&locked, "id = ?", channel.Id).Error; err != nil {
+			return err
+		}
+		return locked.UpdateAbilities(tx)
 	})
 }
 

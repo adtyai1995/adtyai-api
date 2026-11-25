@@ -6,7 +6,6 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/service/authz"
-	"github.com/shopspring/decimal"
 )
 
 // Verification scopes for admin top-up fund writes. These always require
@@ -138,7 +137,7 @@ func adtyBindTopUpOperation(scope string, fields map[string]json.RawMessage, raw
 		if len(context.AmountUSD) > 64 {
 			return nil, false
 		}
-		amount, err := decimal.NewFromString(context.AmountUSD)
+		amount, err := common.ParseBoundedDecimalString(context.AmountUSD, 12, 8)
 		if err != nil || !amount.IsPositive() {
 			return nil, false
 		}
@@ -186,7 +185,7 @@ func adtyBindTopUpOperation(scope string, fields map[string]json.RawMessage, raw
 			return nil, false
 		}
 		if hasUSD {
-			amount, err := decimal.NewFromString(strings.TrimSpace(context.RefundUSD))
+			amount, err := common.ParseBoundedDecimalString(context.RefundUSD, 12, 8)
 			if err != nil || !amount.IsPositive() {
 				return nil, false
 			}
@@ -246,7 +245,7 @@ func adtyBindTopUpOperation(scope string, fields map[string]json.RawMessage, raw
 			return nil, false
 		}
 		if context.PayoutAmount != "" {
-			amount, err := decimal.NewFromString(strings.TrimSpace(context.PayoutAmount))
+			amount, err := common.ParseBoundedDecimalString(context.PayoutAmount, 12, 8)
 			if err != nil {
 				return nil, false
 			}
@@ -299,7 +298,7 @@ func adtyBindTopUpOperation(scope string, fields map[string]json.RawMessage, raw
 			return nil, false
 		}
 		if context.ExternalAmount != "" {
-			amount, err := decimal.NewFromString(context.ExternalAmount)
+			amount, err := common.ParseBoundedDecimalString(context.ExternalAmount, 12, 8)
 			if err != nil {
 				return nil, false
 			}

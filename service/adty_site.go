@@ -580,7 +580,7 @@ func markAffiliateSiteOwnerTx(tx *gorm.DB, userId int, now int64) error {
 	}
 	affiliate := model.ReferralAffiliate{
 		UserId: userId, InviteCode: code, Status: model.ReferralAffiliateStatusApproved, SourceType: "site",
-		SettlementEnabled: true, WithdrawalEnabled: true, ApprovedAt: now, SiteOwnerSince: now,
+		AcquisitionEnabled: true, SettlementEnabled: true, WithdrawalEnabled: true, ApprovedAt: now, SiteOwnerSince: now,
 	}
 	if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_id"}}, DoNothing: true}).Create(&affiliate).Error; err != nil {
 		return err

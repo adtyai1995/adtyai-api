@@ -61,18 +61,6 @@ export function SidebarModulesCard() {
 
   const sectionDefs: SectionDef[] = [
     {
-      key: 'chat',
-      title: t('Chat Area'),
-      description: t('Access previous conversations and start new ones.'),
-      modules: [
-        {
-          key: 'chat',
-          title: t('Chat'),
-          description: t('Chat session management'),
-        },
-      ],
-    },
-    {
       key: 'console',
       title: t('Console Area'),
       description: t('Data management and log viewing'),
@@ -96,11 +84,6 @@ export function SidebarModulesCard() {
           key: 'audit',
           title: t('Audit Logs'),
           description: t('Login, security and access records'),
-        },
-        {
-          key: 'midjourney',
-          title: t('Drawing Logs'),
-          description: t('Drawing task records'),
         },
         {
           key: 'task',
@@ -154,7 +137,40 @@ export function SidebarModulesCard() {
       if (res.data.success && res.data.data?.sidebar_modules) {
         const raw = res.data.data.sidebar_modules
         const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
-        setConfig(parsed)
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const cleaned: SidebarModulesConfig = {}
+          for (const [sectionKey, sectionValue] of Object.entries(
+            parsed as Record<string, unknown>
+          )) {
+            if (sectionKey === 'chat') continue
+            if (
+              !sectionValue ||
+              typeof sectionValue !== 'object' ||
+              Array.isArray(sectionValue)
+            ) {
+              continue
+            }
+            const nextSection: SidebarModuleConfig = {
+              enabled:
+                (sectionValue as Record<string, unknown>).enabled !== false,
+            }
+            for (const [moduleKey, moduleValue] of Object.entries(
+              sectionValue as Record<string, unknown>
+            )) {
+              if (moduleKey === 'enabled') continue
+              if (sectionKey === 'console' && moduleKey === 'midjourney') {
+                continue
+              }
+              if (typeof moduleValue === 'boolean') {
+                nextSection[moduleKey] = moduleValue
+              }
+            }
+            cleaned[sectionKey] = nextSection
+          }
+          setConfig(cleaned)
+        } else {
+          setConfig({})
+        }
       } else {
         setConfig({})
       }

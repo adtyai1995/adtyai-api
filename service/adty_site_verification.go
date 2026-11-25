@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/shopspring/decimal"
 )
 
 // 站长中心的敏感操作要重新验证身份（任务 11.6，按 AGENTS.md 的 OWASP 要求做敏感操作的再认证）：
@@ -135,7 +134,7 @@ func normalizeAdtyStaffInputForDigest(input AdtyStaffInput) AdtyStaffInput {
 
 func normalizeAdtyOwnerBalanceCreditDigestInput(in AdtyOwnerBalanceCreditDigestInput) AdtyOwnerBalanceCreditDigestInput {
 	amt := strings.TrimSpace(in.AmountUSD)
-	if d, err := decimal.NewFromString(amt); err == nil {
+	if d, err := common.ParseBoundedDecimalString(amt, 12, 8); err == nil {
 		amt = d.String()
 	}
 	return AdtyOwnerBalanceCreditDigestInput{
@@ -154,11 +153,11 @@ func normalizeAdtyOwnerBalanceReviewDigestInput(in AdtyOwnerBalanceReviewDigestI
 
 func normalizeAdtyOwnerWithdrawalDigestInput(in AdtyOwnerWithdrawalDigestInput) AdtyOwnerWithdrawalDigestInput {
 	amt := strings.TrimSpace(in.AmountUSD)
-	if d, err := decimal.NewFromString(amt); err == nil {
+	if d, err := common.ParseBoundedDecimalString(amt, 12, 8); err == nil {
 		amt = d.String()
 	}
 	rate := strings.TrimSpace(in.ExpectedRate)
-	if d, err := decimal.NewFromString(rate); err == nil {
+	if d, err := common.ParseBoundedDecimalString(rate, 6, 6); err == nil {
 		rate = d.String()
 	}
 	method := strings.ToLower(strings.TrimSpace(in.Method))

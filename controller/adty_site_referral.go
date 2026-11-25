@@ -212,7 +212,7 @@ func PostAdtySiteCommissionConvert(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
+	amount, err := common.ParseBoundedDecimalString(body.AmountUSD, 12, 8)
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
@@ -240,7 +240,7 @@ func GetAdtySiteInviteWithdrawRules(c *gin.Context) {
 
 func GetAdtySiteInviteWithdrawalQuote(c *gin.Context) {
 	source, err := strconv.Atoi(c.DefaultQuery("site_id", "0"))
-	amount, parseErr := decimal.NewFromString(c.Query("amount_usd"))
+	amount, parseErr := common.ParseBoundedDecimalString(c.Query("amount_usd"), 12, 8)
 	if err != nil || source < 0 || parseErr != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
@@ -269,14 +269,14 @@ func PostAdtySiteInviteWithdrawal(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
+	amount, err := common.ParseBoundedDecimalString(body.AmountUSD, 12, 8)
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	expected := decimal.Zero
 	if strings.TrimSpace(body.ExpectedCNYRate) != "" {
-		expected, err = decimal.NewFromString(strings.TrimSpace(body.ExpectedCNYRate))
+		expected, err = common.ParseBoundedDecimalString(body.ExpectedCNYRate, 6, 6)
 		if err != nil {
 			common.ApiErrorT(c, "Invalid parameters")
 			return

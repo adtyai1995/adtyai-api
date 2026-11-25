@@ -956,6 +956,9 @@ func buildResponsesWSErrorPayload(eventID, streamID string, apiErr *types.NewAPI
 // pinned to a channel: the check is stricter there on purpose, because a
 // persistent connection keeps serving the model after the pin was resolved.
 func checkResponsesWSModelAccess(c *gin.Context, modelName string) *types.NewAPIError {
+	if !appmodel.CatalogModelCallable(modelName) {
+		return types.NewErrorWithStatusCode(errors.New(i18n.T(c, i18n.MsgDistributorModelShelved)), types.ErrorCodeAccessDenied, http.StatusForbidden, types.ErrOptionWithSkipRetry())
+	}
 	if !common.GetContextKeyBool(c, appconstant.ContextKeyTokenModelLimitEnabled) {
 		return nil
 	}

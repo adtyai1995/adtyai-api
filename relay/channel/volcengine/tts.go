@@ -271,21 +271,36 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 		)
 	}
 
-	helper.StopStreamKeepAlive(c)
 	contentType := getContentTypeByEncoding(encoding)
-	c.Header("Content-Type", contentType)
-	c.Header("Transfer-Encoding", "chunked")
 
 	readTimeout := 2 * time.Minute
 	if common.RelayTimeout > 0 {
 		readTimeout = time.Duration(common.RelayTimeout) * time.Second
 	}
+	clientCanceledError := func(fallback error) *types.NewAPIError {
+		cancelErr := reqCtx.Err()
+		if cancelErr == nil {
+			cancelErr = fallback
+		}
+		if cancelErr == nil {
+			cancelErr = errors.New("client closed request")
+		}
+		return types.NewError(cancelErr, types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+	}
+
+	headersWritten := false
 	wroteAudio := false
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 		msg, recvErr := ReceiveMessage(conn)
 		if recvErr != nil {
-			if websocket.IsCloseError(recvErr, websocket.CloseNormalClosure, websocket.CloseGoingAway) || wroteAudio {
+			if wroteAudio {
+				break
+			}
+			if helper.ClientRequestCanceled(c) {
+				return nil, clientCanceledError(recvErr)
+			}
+			if websocket.IsCloseError(recvErr, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				break
 			}
 			return nil, types.NewErrorWithStatusCode(
@@ -304,6 +319,9 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 					TotalTokens:      info.GetEstimatePromptTokens(),
 				}, nil
 			}
+			if helper.ClientRequestCanceled(c) {
+				return nil, clientCanceledError(nil)
+			}
 			return nil, types.NewErrorWithStatusCode(
 				fmt.Errorf("received error from server: code=%d, %s", msg.ErrorCode, string(msg.Payload)),
 				types.ErrorCodeBadResponse,
@@ -313,6 +331,16 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 			continue
 		case MsgTypeAudioOnlyServer:
 			if len(msg.Payload) > 0 {
+				if !wroteAudio && helper.ClientRequestCanceled(c) {
+					return nil, clientCanceledError(nil)
+				}
+				if !headersWritten {
+					helper.StopStreamKeepAlive(c)
+					c.Header("Content-Type", contentType)
+					c.Header("Transfer-Encoding", "chunked")
+					c.Status(http.StatusOK)
+					headersWritten = true
+				}
 				if _, writeErr := c.Writer.Write(msg.Payload); writeErr != nil {
 					if wroteAudio {
 						return &dto.Usage{
@@ -321,6 +349,9 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 							TotalTokens:      info.GetEstimatePromptTokens(),
 						}, nil
 					}
+					if helper.ClientRequestCanceled(c) {
+						return nil, clientCanceledError(writeErr)
+					}
 					return nil, types.NewErrorWithStatusCode(
 						fmt.Errorf("failed to write audio data: %w", writeErr),
 						types.ErrorCodeBadResponse,
@@ -328,11 +359,17 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 					)
 				}
 				wroteAudio = true
+				helper.MarkStreamPayloadWritten(c)
+				if info != nil {
+					info.SendResponseCount++
+				}
 				c.Writer.Flush()
 			}
 
 			if msg.Sequence < 0 {
-				c.Status(http.StatusOK)
+				if !wroteAudio {
+					break
+				}
 				usage = &dto.Usage{
 					PromptTokens:     info.GetEstimatePromptTokens(),
 					CompletionTokens: 0,
@@ -345,7 +382,17 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 		}
 	}
 
-	c.Status(http.StatusOK)
+	if !wroteAudio {
+		if helper.ClientRequestCanceled(c) {
+			return nil, clientCanceledError(nil)
+		}
+		return nil, types.NewErrorWithStatusCode(
+			errors.New("empty audio response from volcengine"),
+			types.ErrorCodeEmptyResponse,
+			http.StatusInternalServerError,
+		)
+	}
+
 	usage = &dto.Usage{
 		PromptTokens:     info.GetEstimatePromptTokens(),
 		CompletionTokens: 0,

@@ -365,7 +365,7 @@ func AdtyPaymentScenesForUser(userID int, scope ...AdtyPaymentScope) ([]AdtyPaym
 					continue
 				}
 				if method.FaceUSD != "" {
-					face, err := decimal.NewFromString(method.FaceUSD)
+					face, err := common.ParseBoundedDecimalString(method.FaceUSD, 12, 8)
 					if err != nil || face.LessThan(scene.MinUSD) || (scene.MaxUSD.IsPositive() && face.GreaterThan(scene.MaxUSD)) {
 						continue
 					}
@@ -600,7 +600,7 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 		}
 		ext.BonusMethod, ext.BonusRate, ext.BonusUSD = bonusMethod, decimal.Zero, decimal.Zero
 		if authorized && rule.Enabled {
-			rate, err := decimal.NewFromString(rule.Rate)
+			rate, err := common.ParseBoundedDecimalString(rule.Rate, 4, 8)
 			if err != nil || rate.IsNegative() || rate.GreaterThan(decimal.NewFromInt(1)) {
 				return common.NewMessage("Invalid parameters")
 			}

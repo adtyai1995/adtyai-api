@@ -230,7 +230,7 @@ func adtyFactsFromOrphan(orphan *model.PaymentOrphanEvent, method string) (model
 	}
 	get := func(key string) string { return model.PaymentOrphanPayloadString(payload, key) }
 	parse := func(key string) (decimal.Decimal, error) {
-		value, err := decimal.NewFromString(get(key))
+		value, err := common.ParseBoundedDecimalString(get(key), 12, 8)
 		if err != nil {
 			return decimal.Zero, model.ErrPaymentOrphanPayloadInvalid
 		}
@@ -473,7 +473,7 @@ func PreviewAdtyTopUpRefund(c *gin.Context) {
 	var request decimal.Decimal
 	hasRequest := false
 	if raw := strings.TrimSpace(c.Query("refund_usd")); raw != "" {
-		parsed, parseErr := decimal.NewFromString(raw)
+		parsed, parseErr := common.ParseBoundedDecimalString(raw, 12, 8)
 		if parseErr != nil || !parsed.IsPositive() {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
@@ -529,7 +529,7 @@ func RefundAdtyTopUp(c *gin.Context) {
 	refundUSD := strings.TrimSpace(body.RefundUSD)
 	var refundQuota *int64
 	if refundUSD != "" {
-		if _, parseErr := decimal.NewFromString(refundUSD); parseErr != nil {
+		if _, parseErr := common.ParseBoundedDecimalString(refundUSD, 12, 8); parseErr != nil {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
 		}
@@ -549,7 +549,7 @@ func RefundAdtyTopUp(c *gin.Context) {
 	var amount decimal.Decimal
 	var parseErr error
 	if refundUSD != "" {
-		amount, parseErr = decimal.NewFromString(refundUSD)
+		amount, parseErr = common.ParseBoundedDecimalString(refundUSD, 12, 8)
 		if parseErr != nil {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
@@ -632,7 +632,7 @@ func writeManualRefundStep(c *gin.Context, step string, run func(tradeNo, refund
 		payout.Voucher = strings.TrimSpace(body.Proof)
 	}
 	if strings.TrimSpace(body.Amount) != "" {
-		amount, err := decimal.NewFromString(strings.TrimSpace(body.Amount))
+		amount, err := common.ParseBoundedDecimalString(body.Amount, 12, 8)
 		if err != nil {
 			common.ApiErrorT(c, "Invalid parameters")
 			return

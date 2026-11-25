@@ -29,7 +29,9 @@
 
 ## 浏览器接口
 
-登录成功后，密码登录、2FA 和 Passkey 登录均返回统一数据：
+> **Passkey 退役说明**：前端 Passkey 登录、注册与设置 UI 均已退役，产品当前不对外提供 Passkey 登录（正式对外登录方式为账号密码、邮箱验证与 TOTP）。下文涉及的 Passkey 后端接口、AuthFlow 与 Security Proof 仅为默认关闭（`passkey.enabled=false`）的上游后端兼容路径说明。
+
+登录成功后，密码登录与 2FA 登录（以及默认关闭的上游 Passkey 兼容路由）均返回统一数据：
 
 ```json
 {
@@ -150,22 +152,22 @@ Redis 限流使用原子 Lua 固定窗口，替代旧的近似滑动窗口 List 
 - scope 形如 `resource:action`。个人权限（资料、API 令牌、用量、钱包、账户安全）和部分后台权限由令牌目录定义；受 Casbin 保护的后台权限直接复用管理员权限矩阵的 resource 与 action。只能授予自己当前拥有的权限，并且每个请求都会重新读取角色和权限：撤回某项管理员权限后，携带该 scope 的令牌立即失去对应能力。
 - 每条面板路由都必须声明所需 scope。未声明的路由一律拒绝（403 `ACCESS_TOKEN_ROUTE_UNDECLARED`），scope 不足返回 403 `ACCESS_TOKEN_SCOPE_DENIED`，令牌过期返回 401 `ACCESS_TOKEN_EXPIRED`。
 - PAT 不能创建、改名或撤销 PAT，也不能管理登录会话；这些接口只接受浏览器登录会话。
-- PAT 可以完成二次验证，Proof 绑定到该令牌，并且令牌必须持有该操作对应的 scope：`channel.key.read` 需要 `channel:secret_view`，对普通用户的 `admin.user.*` 按具体操作分别需要 `adty_user:delete`、`adty_user:quota` 或 `adty_user:write`，本人的密码、2FA、Passkey、账号绑定和注销需要 `account_security:write`。创建管理员账号（`admin.user.create`）、`promote`/`demote`、修改 `admin_permissions` 以及所有针对管理员及以上目标用户（`role >= RoleAdminUser`）的变更操作（编辑、禁用/启用、删除、重置 Passkey、关闭 2FA、清除绑定等）仅接受浏览器登录会话，PAT 一律拒绝。
-- 通过 PAT 完成的安全变更（如修改密码、2FA、Passkey）会让该用户的所有浏览器登录会话下线，令牌本身保持可用。
+- PAT 可以完成二次验证，Proof 绑定到该令牌，并且令牌必须持有该操作对应的 scope：`channel.key.read` 需要 `channel:secret_view`，对普通用户的 `admin.user.*` 按具体操作分别需要 `adty_user:delete`、`adty_user:quota` 或 `adty_user:write`，本人的密码、2FA、账号绑定和注销（含默认关闭的 Passkey 兼容路由）需要 `account_security:write`。创建管理员账号（`admin.user.create`）、`promote`/`demote`、修改 `admin_permissions` 以及所有针对管理员及以上目标用户（`role >= RoleAdminUser`）的变更操作（编辑、禁用/启用、删除、关闭 2FA、清除绑定及历史重置 Passkey 兼容路由等）仅接受浏览器登录会话，PAT 一律拒绝。
+- 通过 PAT 完成的安全变更（如修改密码、2FA 等，含默认关闭的 Passkey 兼容路由）会让该用户的所有浏览器登录会话下线，令牌本身保持可用。
 - 用户被禁用期间，其令牌全部不可用，重新启用后恢复；注销或删除用户时，其令牌被删除。
 - 最后使用时间和 IP 每个令牌每分钟最多更新一次；更新失败不影响请求。
 
 ## 临时鉴权流程与二次验证
 
-邮箱绑定、2FA pending、Passkey ceremony 等临时状态存放在 `auth_flows`。客户端只持有随机 `flow_token`，数据库仅保存 HMAC 摘要；流程具有用途、intent、用户和登录会话绑定，并且只能原子消费一次。
+邮箱绑定、2FA pending（以及默认关闭的 Passkey 兼容 ceremony）等临时状态存放在 `auth_flows`。客户端只持有随机 `flow_token`，数据库仅保存 HMAC 摘要；流程具有用途、intent、用户和登录会话绑定，并且只能原子消费一次。
 
 Telegram 绑定不走 `auth_flows`：已登录前端调用 `POST /api/adty/telegram/bind/start` 创建一次性绑定码并保存在 `adty_telegram_challenges` 表；用户向通知机器人发送 `/start <code>` 经由 Telegram webhook 暂存认领信息后，再回到网站调用 `POST /api/adty/telegram/bind/confirm` 校验凭据并完成绑定。一次性凭据只能消费一次，重复回放会被拒绝。
 
 敏感操作使用有效期 1 分钟的 `X-Security-Proof`：
 
 - `channel.key.read`：查看渠道密钥；
-- `passkey.register`：注册 Passkey；
-- `passkey.delete`：删除 Passkey。
+- `passkey.register`：注册 Passkey（仅默认关闭的上游后端兼容路由保留，前端 UI 已退役）；
+- `passkey.delete`：删除 Passkey（仅默认关闭的上游后端兼容路由保留，前端 UI 已退役）。
 
 管理员对其他用户执行的高风险操作同样要求 Proof，且 scope 的 context 绑定被操作用户，签发给某个用户的 Proof 不能改用于另一个用户或另一种动作：
 
@@ -173,15 +175,15 @@ Telegram 绑定不走 `auth_flows`：已登录前端调用 `POST /api/adty/teleg
 - `admin.user.manage`（`{"user_id","action"}`，action 为 `disable` / `enable` / `promote` / `demote`）：`POST /api/user/manage`；额度调整 `add_quota` 要求 `admin.user.quota`（`{"user_id"}`）Proof；
 - `admin.user.update`（`{"user_id"}`）：`PUT /api/user/` 在请求包含新密码或 `admin_permissions` 时要求；仅修改显示名、分组、备注不要求；
 - `admin.user.create`（`{"role"}`）：`POST /api/user/` 创建管理员角色时要求（仅浏览器登录会话，不支持 PAT）；创建普通用户不要求；
-- `admin.user.passkey.reset`（`{"user_id"}`）：`DELETE /api/user/:id/reset_passkey`；
+- `admin.user.passkey.reset`（`{"user_id"}`）：`DELETE /api/user/:id/reset_passkey`（兼容路由，前端 Passkey UI 已退役）；
 - `admin.user.2fa.disable`（`{"user_id"}`）：`DELETE /api/user/:id/2fa`；
 - `admin.user.binding.clear`（`{"user_id","binding_type"}`，`binding_type ∈ {email, telegram}`）：`DELETE /api/user/:id/bindings/:binding_type`。
 
-这些 `admin.user.*` scope 只对管理员及以上角色签发；重要操作支持从账户已启用的验证方式（`password`、`email_code`、`2fa`、`passkey`）中任选其一完成二次验证（密码登录被关闭时不接受密码验证；Root 账号在后台重要操作中按 `root_exempt` 规则免于重复二次验证）。通过 PAT 调用上述接口时，仅允许操作普通用户（`role < RoleAdminUser`），令牌需持有对应的 `adty_user:{delete,quota,write}` scope 并按要求完成二次验证；创建管理员（`admin.user.create`）、角色升降级（`promote`/`demote`）、修改 `admin_permissions` 以及任何针对管理员及以上目标用户的敏感操作均仅支持浏览器登录会话，拒绝 PAT 与旧版令牌。
+这些 `admin.user.*` scope 只对管理员及以上角色签发；产品前端的重要操作支持从账户已启用的验证方式（`password`、`email_code`、`2fa`）中任选其一完成二次验证（前端 Passkey 已退役，后端 `passkey` 仅保留默认关闭的兼容支持；密码登录被关闭时不接受密码验证；Root 账号在后台重要操作中按 `root_exempt` 规则免于重复二次验证）。通过 PAT 调用上述接口时，仅允许操作普通用户（`role < RoleAdminUser`），令牌需持有对应的 `adty_user:{delete,quota,write}` scope 并按要求完成二次验证；创建管理员（`admin.user.create`）、角色升降级（`promote`/`demote`）、修改 `admin_permissions` 以及任何针对管理员及以上目标用户的敏感操作均仅支持浏览器登录会话，拒绝 PAT 与旧版令牌。
 
 Proof 同时绑定用户、登录会话、用户鉴权版本、会话版本和 scope，不能跨用户、跨会话或跨用途复用。对 PAT 而言，Proof 绑定的“登录会话”就是令牌本身。
 
-所有用户注册 Passkey 时，`register/begin` 均必须携带有效的 `passkey.register` Proof 并签发一次性 `AuthFlow`；`register/finish` 校验并原子消费该 `AuthFlow` 完成注册，不再重复要求 `X-Security-Proof`。
+若部署显式开启了上游 Passkey 后端兼容配置，注册 Passkey 时 `register/begin` 仍必须携带有效的 `passkey.register` Proof 并签发一次性 `AuthFlow`；`register/finish` 校验并原子消费该 `AuthFlow` 完成注册，不再重复要求 `X-Security-Proof`（产品前端已不提供 Passkey 注册或设置入口）。
 
 ## 升级注意事项
 

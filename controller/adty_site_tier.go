@@ -10,7 +10,6 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
-	"github.com/shopspring/decimal"
 )
 
 type adtySiteTierBatchRequest struct {
@@ -172,7 +171,7 @@ func PostAdtyAdminSiteTierPrincipal(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	amount, err := decimal.NewFromString(strings.TrimSpace(body.AmountUSD))
+	amount, err := common.ParseBoundedDecimalString(body.AmountUSD, 12, 8)
 	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return

@@ -11264,6 +11264,17 @@
     "Value must be at most 100,000,000": "值不能超过 100,000,000",
     "Value must be at most 99": "值不能超过 99",
     "AliDNS root domain is not configured; cannot clean up DNS resources before hard delete": "未配置阿里云 DNS 根域名，无法在硬删除前清理 DNS 资源",
-    "Too many unused uploaded images; please submit a request before uploading more": "未使用的上传图片过多，请先提交申请后再继续上传"
+    "Too many unused uploaded images; please submit a request before uploading more": "未使用的上传图片过多，请先提交申请后再继续上传",
+    "Finish unredeemed or frozen vouchers before deleting this account": "注销此账号前请先结清未兑换或已冻结的代金券",
+    "Finish unsettled site earnings before deleting this account": "注销此账号前请先结清未结算的分站收益",
+    "Failed to query task": "查询任务失败",
+    "Failed to build artifact content URL": "构建产物内容链接失败",
+    "Artifact preview plugin is unavailable": "产物预览插件不可用",
+    "Updated reseller settings": "更新了分站设置",
+    "Updated Telegram bot ({{purpose}})": "更新了 Telegram 机器人（{{purpose}}）",
+    "Unbound Telegram notification ({{purpose}})": "解绑了 Telegram 通知（{{purpose}}）",
+    "Updated translation settings ({{mode}})": "更新了系统翻译设置（{{mode}}）",
+    "Updated payment scenes": "更新了支付场景配置",
+    "Updated ticket image policy": "更新了工单图片策略"
   }
 }

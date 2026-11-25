@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -336,17 +337,23 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 	normalizeOpenAIUsage(&usageResp.Usage)
 	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
 
-	info.UpdateImageCount(openaiImageResponseCount(responseBody))
-
-	helper.SetEventStreamHeaders(c)
-	c.Status(http.StatusOK)
-
-	created := gjson.GetBytes(responseBody, "created").Int()
-	if created == 0 {
-		created = time.Now().Unix()
+	imageCount := openaiImageResponseCount(responseBody)
+	// gjson.Result.Array returns the element list for an array and a single
+	// element for an object-shaped data, keeping document-relative indexes so
+	// the zero-copy field forwarding below stays valid for both shapes.
+	// Entries without url or b64_json carry no image and are not forwarded.
+	imagesResult := gjson.GetBytes(responseBody, "data")
+	if !imagesResult.Exists() {
+		imagesResult = gjson.GetBytes(responseBody, "images")
 	}
-	if info != nil {
-		info.SetFirstResponseTime()
+	var emittableImages []gjson.Result
+	for _, image := range imagesResult.Array() {
+		if openaiImageDataHasField(image, "url") || openaiImageDataHasField(image, "b64_json") {
+			emittableImages = append(emittableImages, image)
+		}
+	}
+	if imageCount == 0 || len(emittableImages) == 0 {
+		return nil, types.NewError(errors.New("empty image response"), types.ErrorCodeEmptyResponse)
 	}
 
 	validUsage := service.ValidUsage(&usageResp.Usage)
@@ -359,19 +366,21 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 		}
 	}
 
-	// gjson.Result.Array returns the element list for an array and a single
-	// element for an object-shaped data, keeping document-relative indexes so
-	// the zero-copy field forwarding below stays valid for both shapes.
-	// Entries without url or b64_json carry no image and are not forwarded.
-	emitted := 0
-	imagesResult := gjson.GetBytes(responseBody, "data")
-	if !imagesResult.Exists() {
-		imagesResult = gjson.GetBytes(responseBody, "images")
+	info.UpdateImageCount(imageCount)
+
+	helper.SetEventStreamHeaders(c)
+	c.Status(http.StatusOK)
+
+	created := gjson.GetBytes(responseBody, "created").Int()
+	if created == 0 {
+		created = time.Now().Unix()
 	}
-	for _, image := range imagesResult.Array() {
-		if !openaiImageDataHasField(image, "url") && !openaiImageDataHasField(image, "b64_json") {
-			continue
-		}
+	if info != nil {
+		info.SetFirstResponseTime()
+	}
+
+	emitted := 0
+	for _, image := range emittableImages {
 		payload := []byte(`{"type":"image_generation.completed"}`)
 		payload, err = sjson.SetBytes(payload, "created_at", created)
 		if err != nil {

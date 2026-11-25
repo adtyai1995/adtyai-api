@@ -347,11 +347,11 @@ func UpdateReferralAffiliate(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Action         string          `json:"action"` // rate | disable | restore | freeze_settlement | restore_settlement | freeze_withdrawal | restore_withdrawal | restore_referral | adjust
-		Rate           *float64        `json:"rate"`
-		Amount         decimal.Decimal `json:"amount"`
-		Reason         string          `json:"reason"`
-		IdempotencyKey string          `json:"idempotency_key"`
+		Action         string                `json:"action"` // rate | disable | restore | freeze_settlement | restore_settlement | freeze_withdrawal | restore_withdrawal | restore_referral | adjust
+		Rate           *float64              `json:"rate"`
+		Amount         common.BoundedDecimal `json:"amount"`
+		Reason         string                `json:"reason"`
+		IdempotencyKey string                `json:"idempotency_key"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -413,6 +413,7 @@ func UpdateReferralAffiliate(c *gin.Context) {
 				return common.NewMessage("Close the site before restoring referral commissions")
 			}
 			updates["site_owner_since"] = 0
+			updates["acquisition_enabled"] = true
 		case "adjust":
 			key := strings.TrimSpace(body.IdempotencyKey)
 			if body.Amount.IsZero() || !body.Amount.Equal(body.Amount.Truncate(2)) || strings.TrimSpace(body.Reason) == "" || key == "" || len(key) > 80 || strings.ContainsAny(key, " \t\r\n") {

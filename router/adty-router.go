@@ -329,11 +329,11 @@ func registerAdtyTopUpRoutes(apiRouter *gin.RouterGroup) {
 	apiRouter.GET("/adty/site-commissions/withdrawals/rules", middleware.UserAuth(), controller.GetAdtySiteInviteWithdrawRules)
 	apiRouter.GET("/adty/site-commissions/withdrawals/quote", middleware.UserAuth(), controller.GetAdtySiteInviteWithdrawalQuote)
 	apiRouter.GET("/adty/site-commissions/withdrawals", middleware.UserAuth(), controller.GetAdtySiteInviteWithdrawals)
-	apiRouter.POST("/adty/site-commissions/withdrawals", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), controller.PostAdtySiteInviteWithdrawal)
+	apiRouter.POST("/adty/site-commissions/withdrawals", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), middleware.UserCriticalRateLimit("CT:site-comm-withdraw"), controller.PostAdtySiteInviteWithdrawal)
 	apiRouter.POST("/adty/site-commissions/withdrawals/:id/cancel", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), controller.PostAdtySiteInviteWithdrawalCancel)
 	apiRouter.GET("/adty/site-commissions/withdrawals/by-key", middleware.UserAuth(), controller.GetAdtySiteInviteWithdrawalByKey)
 	apiRouter.GET("/adty/site-commissions/:id/convert/by-key", middleware.UserAuth(), controller.GetAdtySiteCommissionConversionByKey)
-	apiRouter.POST("/adty/site-commissions/:id/convert", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), controller.PostAdtySiteCommissionConvert)
+	apiRouter.POST("/adty/site-commissions/:id/convert", middleware.UserAuth(), middleware.AdtyRequireCurrentSiteTerms(), middleware.UserCriticalRateLimit("CT:site-comm-convert"), controller.PostAdtySiteCommissionConvert)
 	apiRouter.GET("/adty/teams/mine", middleware.UserAuth(), controller.GetAdtyTeamMine)
 	apiRouter.POST("/adty/teams", middleware.UserAuth(), controller.PostAdtyTeam)
 	apiRouter.POST("/adty/teams/:id/invites", middleware.UserAuth(), controller.PostAdtyTeamInvite)
@@ -422,7 +422,7 @@ func registerAdtyReferralRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/apply", "wallet:write", []gin.HandlerFunc{controller.ApplyReferralPartner}},
 		{http.MethodGet, "/commissions", "wallet:read", []gin.HandlerFunc{controller.GetReferralCommissions}},
 		{http.MethodGet, "/withdrawals", "wallet:read", []gin.HandlerFunc{controller.GetReferralWithdrawals}},
-		{http.MethodPost, "/withdrawals", "wallet:write", []gin.HandlerFunc{controller.CreateReferralWithdrawal}},
+		{http.MethodPost, "/withdrawals", "wallet:write", []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:referral-withdraw"), controller.CreateReferralWithdrawal}},
 		{http.MethodPost, "/withdrawals/:id/cancel", "wallet:write", []gin.HandlerFunc{controller.CancelReferralWithdrawal}},
 		{http.MethodPost, "/upload", "wallet:write", []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:referral-upload"), controller.UploadReferralAsset}},
 	} {

@@ -20,18 +20,35 @@ interval (ISS-R1-0050 leftover) and does not fold later leftovers
 (ISS-R1-0034 G.13.6 freeze path, ISS-R1-0059 hidden-notice audit,
 retired self-apply site flows, official payment-route rewrites).
 
-Refresh mechanism that applies to every confirmed kind below, unless
-a row says otherwise:
+Refresh & clear-on-view mechanism that applies to every confirmed kind below,
+unless a row says otherwise (aligned with `controller/adty_sidebar_badges.go`,
+`service/adty_sidebar_badges.go`, `model/adty_badge_seen.go`, and
+`web/src/hooks/use-sidebar-badges.ts`):
 
-- Recomputed from live backend data on each successful badge request
-  (normal load / refetch).
-- After an official state change (approval, payout, cover, mark-read,
-  ticket status, disposition review, and similar existing mutations)
-  the official client invalidates the badge query so the next read
+- Recomputed from live backend data on each successful `GET /api/adty/badges`
+  request (normal load / refetch). Calling `GET /api/adty/badges` is read-only
+  and does not clear any badge.
+- **R-32 `clear-on-view` clearing**: Clicking a mapped sidebar menu item or
+  landing directly on its route triggers `clearSidebarBadgesForPath` →
+  `getSidebarBadgeKeysForPath(pathname)`, which optimistically zeros the
+  mapped keys in the React Query cache and sends
+  `POST /api/adty/badges/seen` (`{ "keys": [...] }`). The backend filters keys
+  against the confirmed set and upserts `(user_id, menu_key, seen_at)` into
+  `adty_badge_seens` (monotonically advancing `seen_at`). Subsequent
+  `GET /api/adty/badges` queries apply `badgeAfterSeen` (`<time_col> > seen_at`)
+  so the badge stays cleared immediately upon viewing until newer items or
+  updates arrive after `seen_at`.
+- **Business mutation refresh**: After an official state change (approval,
+  payout, cover, mark-read, ticket status, disposition review, and similar
+  mutations) the client calls `invalidateSidebarBadges` so the next read
   matches list/detail/stats (LIST-012, UI-009).
-- Opening a menu or fetching badges does not clear a business todo.
-- A query or authorization failure must not be presented as a
-  successful zero or as a stale number (LIST-012).
+- **Exception**: `notification_unread` (A.1, top-bar inbox) does NOT use
+  `adty_badge_seens`; it is cleared only through the official notification
+  read/hide APIs.
+- **Failure fallback (R-33 #3)**: Individual backend counter subquery failures
+  are logged and degraded to `0` so one failing subquery never breaks the whole
+  badge payload; if the badge request fails on the client, the sidebar silently
+  hides badges rather than rendering stale numbers or error text pills.
 - Poll interval is not a newly signed official rule.
 
 ## Permission matrix (including team_id)
@@ -78,28 +95,36 @@ that number in.
 ### A.3 推广提现待审核 (`referral_withdrawals_pending`)
 
 - 待办定义: Platform referral withdrawals in official
-  `ReferralWithdrawalStatusPending`.
-- 数据来源: `referral_withdrawals.status`, scoped through
-  `users.id = referral_withdrawals.user_id` and `users.site_id`.
-- 角色范围: Root = global. Non-root admin with referral read = main
+  `ReferralWithdrawalStatusPending` plus closed-site invite withdrawals
+  handed over to platform referral admins in `pending` status.
+- 数据来源: `referral_withdrawals.status` (`updated_at > seen_at`, scoped
+  through `users.id = referral_withdrawals.user_id` and `users.site_id`) plus
+  closed-site `adty_site_invite_withdrawals` (`created_at > seen_at OR
+  reviewed_at > seen_at`).
+- 角色范围: Root = global. Non-root admin with referral read + review = main
   site only. Site owners, staff, and users do not receive this kind
   (platform referral admin is not their reviewer role). Not merged with
-  site earning withdrawals or site-invite commission withdrawals.
-- 计数规则: Number of pending rows in scope.
-- 清零条件: Review moves the row out of pending (approved, rejected,
-  or canceled). Opening the menu does not clear it.
-- 刷新机制: Common rule.
+  site earning withdrawals or active-site invite commission withdrawals.
+- 计数规则: Number of pending rows in scope newer than `seen_at` in
+  `adty_badge_seens`.
+- 清零条件: Clicking/visiting `/admin-referral` posts
+  `POST /api/adty/badges/seen` (R-32 `clear-on-view`, recording `seen_at` in
+  `adty_badge_seens` until newer pending rows arrive), or review moves the
+  row out of pending (approved, rejected, or canceled).
+- 刷新机制: Common rule above.
 
 ### A.4 推广提现待打款 (`referral_withdrawals_approved`)
 
-- 待办定义: Platform referral withdrawals already approved and waiting
-  for official payout (`ReferralWithdrawalStatusApproved`). This is
-  the existing referral-admin badge slice, not a new policy.
-- 数据来源 / 角色范围 / 计数规则: Same scoping as A.3, counting
-  approved rows.
-- 清零条件: Paid, or otherwise leaving approved. Opening the menu
-  does not clear it.
-- 刷新机制: Common rule. The referral admin sidebar badge may show
+- 待办定义: Platform referral withdrawals (and closed-site handover
+  withdrawals) already approved and waiting for official payout
+  (`ReferralWithdrawalStatusApproved`). This is the existing referral-admin
+  badge slice, not a new policy.
+- 数据来源 / 角色范围 / 计数规则: Same scoping and `seen_at` watermark
+  filtering as A.3 (requires referral read + payout), counting approved rows.
+- 清零条件: Clicking/visiting `/admin-referral` posts
+  `POST /api/adty/badges/seen` (R-32 `clear-on-view`), or payout moves the
+  row out of approved.
+- 刷新机制: Common rule above. The referral admin sidebar badge may show
   A.3+A.4 together because they are one referral-admin module,
   as the existing badge already did.
 
@@ -108,61 +133,71 @@ that number in.
 - 待办定义: Site-owner earning withdrawals in official
   `AdtySiteWithdrawPending`. Root is the official reviewer
   (`/api/adty/admin/site-withdrawals/...`).
-- 数据来源: `adty_site_withdrawals.status`.
-- 角色范围: Root = global. Site owners are applicants, not reviewers,
-  so they do not receive a 待审核 count for their own submissions.
+- 数据来源: `adty_site_withdrawals.status` (`created_at > seen_at`).
+- 角色范围: Root = global (main site, PAT `option:read`). Site owners are
+  applicants, not reviewers, so they do not receive a 待审核 count for their
+  own submissions.
 - 处理入口: Reseller sites → Withdrawals (`/site-admin/withdrawals`,
   Root only), listed by `GET /api/adty/admin/site-withdrawals`.
   Staff and ordinary users are omitted. Mid-payout `paying` is an
   official state but is not confirmed as part of 待审核; see B.6.
-- 计数规则: Number of pending rows in scope.
-- 清零条件: The official review path moves the row out of pending
-  (paying, rejected, or cancelled). Opening the menu does not clear it.
-- 刷新机制: Common rule. Not merged with A.3 or A.6.
+- 计数规则: Number of pending rows in scope with `created_at > seen_at`.
+- 清零条件: Clicking/visiting `/site-admin` (or any `/site-admin/*` route)
+  posts `POST /api/adty/badges/seen` (R-32 `clear-on-view`), or the official
+  review path moves the row out of pending (paying, rejected, or cancelled).
+- 刷新机制: Common rule above. Not merged with A.3 or A.6.
 
 ### A.6 分站邀请佣金提现待审核 (`invite_withdrawals_pending`)
 
 - 待办定义: Site-customer invite commission cash withdrawals in
   official `AdtySiteInviteWithdrawPending`. The site owner is the
   official reviewer (`ReviewAdtySiteInviteWithdrawal`).
-- 数据来源: `adty_site_invite_withdrawals.status` and `site_id`.
-- 角色范围: Site owner = this site. Root who is not that owner is not
-  the official reviewer and does not receive this kind. Staff and
-  users are omitted.
-- 计数规则: Number of pending rows for the owner site.
-- 清零条件: Official review or a later terminal path leaves pending.
-  Opening the menu does not clear it.
-- 刷新机制: Common rule. Not merged with A.3 or A.5.
+- 数据来源: `adty_site_invite_withdrawals.status` and `site_id`
+  (`created_at > seen_at`).
+- 角色范围: Site owner = this site (PAT `site_owner_order:read`). Root who is
+  not that owner is not the official reviewer and does not receive this kind.
+  Staff and users are omitted.
+- 计数规则: Number of pending rows for the owner site with
+  `created_at > seen_at`.
+- 清零条件: Clicking/visiting `/site-owner/commissions` (not
+  `/site-owner/earnings`) posts `POST /api/adty/badges/seen` (R-32
+  `clear-on-view`), or official review / a later terminal path leaves pending.
+- 刷新机制: Common rule above. Not merged with A.3 or A.5.
 
 ### A.7 返佣待覆盖 (`site_invite_commissions_pending_coverage`)
 
 - 待办定义: Site invite commissions in the official recorded DEC-025
   status `pending_coverage` (`AdtySiteCommissionPendingCoverage`).
   This does not invent a new commission policy.
-- 数据来源: `adty_site_invite_commissions.status` and `site_id`.
+- 数据来源: `adty_site_invite_commissions.status` and `site_id`
+  (`created_at > seen_at`).
 - 角色范围: Site owner = this site (owner cover path
-  `/api/adty/site/referral/cover-pending`). Root who is not the
-  owner is not the official cover actor and does not receive this
-  kind. Users, staff, and platform-referral-only admins are omitted.
-- 计数规则: Number of rows in `pending_coverage` for the owner site
-  (row count, not an invented amount total).
-- 清零条件: Official cover (or a later official status) leaves
-  `pending_coverage`. Opening the menu does not clear it.
-- 刷新机制: Common rule. Derived display states and frozen amounts
+  `/api/adty/site/referral/cover-pending`, PAT `site_owner_order:read`). Root
+  who is not the owner is not the official cover actor and does not receive
+  this kind. Users, staff, and platform-referral-only admins are omitted.
+- 计数规则: Number of rows in `pending_coverage` for the owner site with
+  `created_at > seen_at` (row count, not an invented amount total).
+- 清零条件: Clicking/visiting `/site-owner/commissions` posts
+  `POST /api/adty/badges/seen` (R-32 `clear-on-view`), or official cover (or a
+  later official status) leaves `pending_coverage`.
+- 刷新机制: Common rule above. Derived display states and frozen amounts
   are not mixed into this count; see B.5.
 
 ### A.8 冻结中佣金 — 平台推广 (`referral_commissions_frozen`)
 
 - 待办定义: Platform referral commissions in official
   `ReferralCommissionStatusFrozen`.
-- 数据来源: `referral_commissions.status`, scoped through
-  `users.id = referral_commissions.user_id` and `users.site_id`.
-- 角色范围: Same as A.3 (Root global; non-root referral admin = main
-  site). Not merged with site-invite frozen / on-hold amounts (B.5).
-- 计数规则: Number of frozen commission rows in scope.
-- 清零条件: Official commission state leaves `frozen`. Opening the
-  menu does not clear it.
-- 刷新机制: Common rule. This kind is shown on the referral admin
+- 数据来源: `referral_commissions.status` (`updated_at > seen_at`), scoped
+  through `users.id = referral_commissions.affiliate_user_id` and
+  `users.site_id`.
+- 角色范围: Same as A.3 (Root global; non-root referral admin with referral
+  read = main site). Not merged with site-invite frozen / on-hold amounts (B.5).
+- 计数规则: Number of frozen commission rows in scope with
+  `updated_at > seen_at`.
+- 清零条件: Clicking/visiting `/admin-referral` posts
+  `POST /api/adty/badges/seen` (R-32 `clear-on-view`), or official commission
+  state leaves `frozen`.
+- 刷新机制: Common rule above. This kind is shown on the referral admin
   item together with A.3–A.4 only when it is the sole positive
   referral kind, or as part of that same referral-admin module;
   it is never added into finance/order or ticket badges.
@@ -174,71 +209,119 @@ that number in.
   `CollectAdtyFundAnomalies` / `AdtyAnomalyDisposition`). The G.13.6
   write-restriction / freeze path is a leftover and is not a badge
   source.
-- 数据来源: `adty_anomaly_dispositions.status` (and `site_id`).
-- 角色范围: Root only (the workbench routes are RootAuth). Site
-  owners, staff, and users must not learn that an anomaly exists
-  (EMP-017).
-- 计数规则: Number of dispositions whose status is `open` or
-  `reviewing`.
-- 清零条件: Official review sets the disposition to `closed`. Opening
-  the menu does not clear it.
-- 刷新机制: Common rule. Detection may create new open rows; the
-  badge counts existing open/reviewing rows and does not invent
-  tolerances or repair money.
+- 数据来源: `adty_anomaly_dispositions.status` (`created_at > seen_at`).
+- 角色范围: Root only (main site, PAT `option:read`). Site owners, staff, and
+  users must not learn that an anomaly exists (EMP-017).
+- 计数规则: Number of dispositions whose status is `open` or `reviewing` with
+  `created_at > seen_at`.
+- 清零条件: Clicking/visiting `/site-admin` (or any `/site-admin/*` route)
+  posts `POST /api/adty/badges/seen` (R-32 `clear-on-view`), or official
+  review sets the disposition to `closed`.
+- 刷新机制: Common rule above. Detection may create new open rows; the
+  badge counts existing open/reviewing rows newer than `seen_at` and does not
+  invent tolerances or repair money.
 
-### A.11 客服工单待处理 (`tickets_pending`)
+### A.11 客服工单待处理 — 员工工作台与兼容汇总 (`tickets_pending`)
 
 - 待办定义: Official G.12.12 待处理 queue already landed in
   ISS-R1-0044: `new` + `pending_assignment` (including leftover
-  unassigned `open` mapped as `new`). This does not rewrite the
-  ticket state machine.
-- 数据来源: `countAdtyTicketBadges` / `adty_tickets`, using the
-  existing actor scope (Root global; non-root admin main site;
-  owner this site; enabled staff authorized site).
-- 角色范围: Only actors who can manage tickets in that scope (Root,
-  platform admin, site owner, enabled staff). Ordinary users and
-  team members are not ticket handlers; they do not receive this
-  kind (their action cue is A.12). Team leaders who are not
-  handlers do not receive `tickets_pending`.
+  unassigned `open` mapped as `new`). Used directly by the site-staff
+  workspace (`/site-staff`) and retained alongside the split platform/owner
+  keys (`platform_tickets_pending`, `owner_tickets_pending`) for backward
+  compatibility.
+- 数据来源: `countAdtyTicketBadges` / `adty_tickets` (`updated_at > seen_at`),
+  using the caller's handler scope (`staff` for enabled site staff; also
+  populated from `platform` or `owner` when applicable).
+- 角色范围: Only actors who can manage tickets in that scope (enabled staff
+  on their authorized site; also populated for Root/platform admin and site
+  owner alongside A.11a/A.11b). Ordinary users and non-handler team leaders /
+  members do not receive this kind (their action cue is A.12).
 - 计数规则: Existing `AdtyTicketBadges.Pending` (`new` +
-  `pending_assignment`) in scope.
-- 清零条件: Official status changes leave the 待处理 queue. Opening
-  the ticket menu does not clear it.
-- 刷新机制: Common rule. Not mixed with notification unread.
+  `pending_assignment`) in scope with `updated_at > seen_at`.
+- 清零条件: Clicking/visiting `/site-staff` posts `POST /api/adty/badges/seen`
+  for `tickets_pending` (R-32 `clear-on-view`), or official status changes
+  leave the 待处理 queue.
+- 刷新机制: Common rule above. Not mixed with notification unread.
+
+### A.11a 平台工单待处理 (`platform_tickets_pending`)
+
+- 待办定义: Main-site platform handler 待处理 ticket queue (`new` +
+  `pending_assignment`, scope `platform`), split out from `tickets_pending` so
+  platform admins who are also site owners have independent menu badges and
+  independent `clear-on-view` watermarks.
+- 数据来源: `countAdtyTicketBadges` / `adty_tickets` under scope `platform`,
+  filtered by `updated_at > max(seen_at[platform_tickets_pending],
+  seen_at[tickets_pending])`.
+- 角色范围: Main-site requests (`requestSite == nil`) for actors with platform
+  ticket handling standing (`actor.PlatformMain`, i.e. Root or admins granted
+  `adty_ticket:manage` / `adty_ticket:manage_all`; PAT requires matching
+  ticket scope). Site owners without platform ticket standing, staff, and
+  ordinary users are omitted.
+- 计数规则: `AdtyTicketBadges.Pending` in `platform` scope newer than the
+  effective `seen_at` watermark.
+- 清零条件: Clicking/visiting `/admin-tickets` (or `/admin-tickets/*`) posts
+  `POST /api/adty/badges/seen` with `["platform_tickets_pending"]` (R-32
+  `clear-on-view`), or official status changes leave the 待处理 queue.
+- 刷新机制: Common rule above. Mounted on the platform Ticket management
+  sidebar item (`/admin-tickets`).
+
+### A.11b 分站站长工单待处理 (`owner_tickets_pending`)
+
+- 待办定义: Reseller site-owner 待处理 ticket queue for the owner's site
+  (`new` + `pending_assignment`, scope `owner`), split out from
+  `tickets_pending` for independent sidebar badge and `clear-on-view` tracking.
+- 数据来源: `countAdtyTicketBadges` / `adty_tickets` under scope `owner`,
+  filtered by `updated_at > max(seen_at[owner_tickets_pending],
+  seen_at[tickets_pending])`.
+- 角色范围: Site owners with owner ticket permission (`actor.OwnerTickets`,
+  scoped strictly to their own site; PAT requires matching ticket scope).
+  Platform-only admins, staff, and ordinary users are omitted.
+- 计数规则: `AdtyTicketBadges.Pending` in `owner` scope newer than the
+  effective `seen_at` watermark.
+- 清零条件: Clicking/visiting `/site-owner/tickets` (or
+  `/site-owner/tickets/*`) posts `POST /api/adty/badges/seen` with
+  `["owner_tickets_pending"]` (R-32 `clear-on-view`), or official status
+  changes leave the 待处理 queue.
+- 刷新机制: Common rule above. Mounted on the Site Management → Ticket
+  management sidebar item (`/site-owner/tickets`).
 
 ### A.12 客服工单等待用户 (`tickets_waiting_user`)
 
 - 待办定义: Official `waiting_user` tickets in the caller's existing
-  ticket scope (user: own tickets; team leader: `user_id = self OR
-  team_id = this team`; team member: own tickets only; handlers:
-  the same scoped set as A.11).
-- 数据来源: `countAdtyTicketBadges.WaitingUser`.
+  ticket scope (customer: own tickets; team leader: `user_id = self OR
+  team_id = this team`; team member: own tickets only; enabled staff:
+  authorized site `staff` scope).
+- 数据来源: `countAdtyTicketBadges.WaitingUser` (`adty_tickets`,
+  `updated_at > seen_at`).
 - 角色范围: Any signed-in actor who may read those tickets under the
-  existing ticket permission matrix, including team_id as above.
-- 计数规则: Number of `waiting_user` rows in that scope.
-- 清零条件: Official status leaves `waiting_user`. Opening the menu
-  does not clear it.
-- 刷新机制: Common rule. On the Tickets menu, A.11 and A.12 are
-  different queues: if only one is positive the sidebar shows that
-  number; if both are positive the sidebar shows a non-numeric
-  pending cue rather than summing unlike duties.
+  existing ticket permission matrix, including `team_id` as above.
+- 计数规则: Number of `waiting_user` rows in that scope with
+  `updated_at > seen_at`.
+- 清零条件: Clicking/visiting Support Center (`/support` or `/support/*`;
+  legacy `/profile#tickets` is retired and removed from badge path mapping)
+  posts `POST /api/adty/badges/seen` with `["tickets_waiting_user"]` (R-32
+  `clear-on-view`), or official status leaves `waiting_user`.
+- 刷新机制: Common rule above. Mounted on the Support Center item (`/support`).
 
 ### A.13 支付异常 — 待审核孤儿事件 (`payment_orphans_pending_review`)
 
 - 待办定义: Official payment-orphan records in
   `PaymentOrphanStatusPendingReview`. These are already the admin
   review queue on order management.
-- 数据来源: `adty_payment_orphan_events.status`. Site scope joins
+- 数据来源: `adty_payment_orphan_events.status` (`create_time > seen_at`,
+  note the column is `create_time`, not `created_at`). Site scope joins
   `reference_id` to `adty_topup_orders.trade_no` and
   `adty_topup_orders.site_id`. Events that cannot be joined to an
   order have no confirmed site and are visible only to Root.
-- 角色范围: Root = all pending-review events. Non-root admin with
+- 角色范围: Root = all pending-review events (main site). Non-root admin with
   finance read = main-site orders only (`site_id = 0`). Site owners,
   staff, and users are omitted (EMP-017).
-- 计数规则: Number of `pending_review` rows in that scope.
-- 清零条件: Official resolve/credit/dismiss leaves `pending_review`.
-  Opening the menu does not clear it.
-- 刷新机制: Common rule. Other payment-exception candidates are in
+- 计数规则: Number of `pending_review` rows in that scope with
+  `create_time > seen_at`.
+- 清零条件: Clicking/visiting `/recharge-audit` posts
+  `POST /api/adty/badges/seen` (R-32 `clear-on-view`), or official
+  resolve/credit/dismiss leaves `pending_review`.
+- 刷新机制: Common rule above. Other payment-exception candidates are in
   part B and are not counted.
 
 ---
@@ -338,17 +421,21 @@ and the affected acceptance items. This is not a single vague
 
 ---
 
-## Sidebar placement notes
+## Sidebar placement & `clear-on-view` route map
 
-- Notification unread: top bar, not mixed into finance/order/ticket
-  items.
-- Referral admin item: A.3–A.4 and A.8 (one official referral-admin
-  module; A.2 `referral_partners` is retired).
-- Order management item: A.13 only (B.1 and B.2 are not implemented).
-- Reseller sites item: A.5 and A.9 (A.10 `staff_balance_pending` is
-  retired). These are different duties, so the parent shows a single
-  kind's number when only one is positive, and a non-numeric pending
-  cue when more than one is positive — it does not sum them.
-- Site owner center item: A.6 and A.7, with the same non-mixing rule.
-- Tickets item: A.11 and/or A.12, with the same non-mixing rule.
-- Staff workspace item: A.11 (handler queue).
+| Sidebar item / route | Badge kinds | Clear-on-view (`POST /api/adty/badges/seen`) |
+| --- | --- | --- |
+| Top bar Notifications | `notification_unread` (A.1) | Not cleared via `adty_badge_seens`; uses official notification read/hide APIs |
+| Support Center (`/support`, `/support/*`) | `tickets_waiting_user` (A.12) | Clears `tickets_waiting_user` (legacy `/profile#tickets` is retired) |
+| Platform Ticket Management (`/admin-tickets`, `/admin-tickets/*`) | `platform_tickets_pending` (A.11a) | Clears `platform_tickets_pending` |
+| Site Owner Ticket Management (`/site-owner/tickets`, `/site-owner/tickets/*`) | `owner_tickets_pending` (A.11b) | Clears `owner_tickets_pending` |
+| Site Owner Promotion Management (`/site-owner/commissions`, `/site-owner/commissions/*`) | `invite_withdrawals_pending` (A.6), `site_invite_commissions_pending_coverage` (A.7) | Clears both kinds (mapped to `/site-owner/commissions` only, not `/site-owner/earnings`) |
+| Staff Workspace (`/site-staff`, `/site-staff/*`) | `tickets_pending` (A.11) | Clears `tickets_pending` |
+| Referral Admin (`/admin-referral`, `/admin-referral/*`) | `referral_withdrawals_pending` (A.3), `referral_withdrawals_approved` (A.4), `referral_commissions_frozen` (A.8) | Clears all three referral-admin kinds (A.2 `referral_partners` retired) |
+| Order Management (`/recharge-audit`, `/recharge-audit/*`) | `payment_orphans_pending_review` (A.13) | Clears `payment_orphans_pending_review` (B.1 and B.2 not implemented) |
+| Reseller Sites (`/site-admin`, `/site-admin/*`) | `site_withdrawals_pending` (A.5), `fund_anomalies_open` (A.9) | Clears both kinds (A.10 `staff_balance_pending` retired) |
+
+Multi-duty items (Referral Admin, Reseller Sites, Site Owner Promotion
+Management) never sum unlike duties: when only one kind is positive the sidebar
+shows that number; when more than one kind is positive it shows a non-numeric
+pending cue (`mixedLabel`).

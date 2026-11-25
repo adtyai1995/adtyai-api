@@ -188,7 +188,7 @@ func siteWithdrawalAuditSnapshot(row *model.AdtySiteWithdrawal) map[string]any {
 
 func requiredPositiveDecimal(raw string) (decimal.Decimal, string, error) {
 	trimmed := strings.TrimSpace(raw)
-	value, err := decimal.NewFromString(trimmed)
+	value, err := common.ParseBoundedDecimalString(trimmed, 12, 8)
 	if err != nil || !value.IsPositive() {
 		return decimal.Zero, "", ErrAdtySiteWithdrawUnset
 	}

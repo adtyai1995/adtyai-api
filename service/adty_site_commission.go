@@ -904,26 +904,29 @@ func refundClawedSiteCommissionToFundingWalletsTx(tx *gorm.DB, row *model.AdtySi
 	if tx == nil || row == nil || row.SiteId <= 0 || !amount.IsPositive() {
 		return nil
 	}
-	var deductRows []struct {
-		WalletKind string
-		Spent      decimal.Decimal
-	}
-	if err := tx.Model(&model.AdtySiteWalletLedger{}).
-		Select("wallet_kind, COALESCE(SUM(-delta), 0) AS spent").
+	var deductLedgers []model.AdtySiteWalletLedger
+	if err := tx.Select("wallet_kind", "delta", "margin_cycle_after").
 		Where("site_id = ? AND type = ? AND ref_type = ? AND ref_id = ? AND delta < 0",
 			row.SiteId, "commission_deduct", "site_invite", row.TradeNo).
-		Group("wallet_kind").
-		Scan(&deductRows).Error; err != nil {
+		Find(&deductLedgers).Error; err != nil {
 		return err
 	}
 	earningsSpent := decimal.Zero
 	marginSpent := decimal.Zero
-	for _, r := range deductRows {
+	marginSpentByCycle := map[int64]decimal.Decimal{}
+	for _, r := range deductLedgers {
+		spent := r.Delta.Neg()
 		switch r.WalletKind {
 		case model.AdtySiteWalletEarnings:
-			earningsSpent = earningsSpent.Add(r.Spent)
+			earningsSpent = earningsSpent.Add(spent)
 		case model.AdtySiteWalletMargin:
-			marginSpent = marginSpent.Add(r.Spent)
+			marginSpent = marginSpent.Add(spent)
+			if r.MarginCycleAfter != nil && strings.TrimSpace(*r.MarginCycleAfter) != "" {
+				var snap adtyMarginCycleSnapshot
+				if err := common.Unmarshal([]byte(*r.MarginCycleAfter), &snap); err == nil && snap.CycleNumber > 0 {
+					marginSpentByCycle[snap.CycleNumber] = marginSpentByCycle[snap.CycleNumber].Add(spent)
+				}
+			}
 		}
 	}
 	weights := []decimal.Decimal{earningsSpent, marginSpent}
@@ -946,13 +949,31 @@ func refundClawedSiteCommissionToFundingWalletsTx(tx *gorm.DB, row *model.AdtySi
 		if len(idemKey) > 128 {
 			idemKey = fmt.Sprintf("ccr:%d:%s:%s", row.Id, codes[i], common.Sha1([]byte(clawedAfter.String())))
 		}
-		if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, kinds[i], part, AdtySiteWalletChange{
+		change := AdtySiteWalletChange{
 			Type:           "commission_clawback_return",
 			RefType:        "site_invite",
 			RefID:          row.TradeNo,
 			Reason:         "site invite commission clawback return",
 			IdempotencyKey: idemKey,
-		}); err != nil {
+		}
+		// R6-17: Release margin cycle_used_usd for funds deducted within the active
+		// margin cycle so refunded converted commissions do not permanently consume
+		// the 90% margin cycle allowance.
+		if kinds[i] == model.AdtySiteWalletMargin && len(marginSpentByCycle) > 0 {
+			var marginWallet model.AdtySiteWallet
+			lookup := model.AdtyLockForUpdate(tx).Select("id", "cycle_number").
+				Where("site_id = ? AND kind = ?", row.SiteId, model.AdtySiteWalletMargin).
+				Limit(1).Find(&marginWallet)
+			if lookup.Error != nil {
+				return lookup.Error
+			}
+			if lookup.RowsAffected > 0 && marginWallet.CycleNumber > 0 {
+				if sameCycleSpent := marginSpentByCycle[marginWallet.CycleNumber]; sameCycleSpent.IsPositive() {
+					change.ReleaseCycleUsed = decimal.Min(part, sameCycleSpent)
+				}
+			}
+		}
+		if _, err := applyAdtySiteWalletChangeTx(tx, row.SiteId, kinds[i], part, change); err != nil {
 			return err
 		}
 	}

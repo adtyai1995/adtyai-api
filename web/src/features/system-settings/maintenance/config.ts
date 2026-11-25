@@ -54,17 +54,12 @@ export const HEADER_NAV_DEFAULT: HeaderNavModulesConfig = {
 }
 
 export const SIDEBAR_MODULES_DEFAULT: SidebarModulesAdminConfig = {
-  chat: {
-    enabled: true,
-    chat: true,
-  },
   console: {
     enabled: true,
     detail: true,
     token: true,
     log: true,
     audit: true,
-    midjourney: true,
     task: true,
   },
   personal: {
@@ -194,6 +189,7 @@ export function parseSidebarModulesAdmin(
 
     Object.entries(parsed).forEach(([sectionKey, raw]) => {
       if (!raw || typeof raw !== 'object') return
+      if (sectionKey === 'chat') return
 
       const defaultSection = defaults[sectionKey] ?? { enabled: true }
       const sectionConfig: SidebarSectionConfig = {
@@ -206,7 +202,7 @@ export function parseSidebarModulesAdmin(
       Object.entries(raw as Record<string, unknown>).forEach(
         ([moduleKey, moduleValue]) => {
           if (moduleKey === 'enabled') return
-          if (sectionKey === 'chat' && moduleKey === 'playground') return
+          if (sectionKey === 'console' && moduleKey === 'midjourney') return
           if (sectionKey === 'admin' && moduleKey === 'marketing') return
           sectionConfig[moduleKey] = toBoolean(
             moduleValue,

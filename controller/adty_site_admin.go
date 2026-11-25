@@ -226,7 +226,7 @@ func GetAdtyAdminSites(c *gin.Context) {
 		}
 		return compare(b, a)
 	})
-	start := min(pageInfo.GetStartIdx(), len(views))
+	start := max(0, min(pageInfo.GetStartIdx(), len(views)))
 	end := min(start+pageInfo.GetPageSize(), len(views))
 	pageInfo.SetTotal(len(views))
 	pageInfo.SetItems(views[start:end])

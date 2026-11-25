@@ -72,12 +72,25 @@ func countUnboundReferralAssets(ownerUserId int) (int, error) {
 		}
 	}
 	if model.DB.Migrator().HasTable(&model.AdtySiteInviteWithdrawal{}) {
+		var ownedSiteIDs []int
+		if model.DB.Migrator().HasTable(&model.AdtySite{}) {
+			if err := model.DB.Model(&model.AdtySite{}).Where("owner_user_id = ?", ownerUserId).Pluck("id", &ownedSiteIDs).Error; err != nil {
+				return 0, err
+			}
+		}
 		var rows []model.AdtySiteInviteWithdrawal
-		if err := model.DB.Select("qr_image_url").Where("user_id = ?", ownerUserId).Find(&rows).Error; err != nil {
+		q := model.DB.Select("qr_image_url", "proof_note")
+		if len(ownedSiteIDs) > 0 {
+			q = q.Where("user_id = ? OR paid_by = ? OR legacy_decision_by = ? OR site_id IN ?", ownerUserId, ownerUserId, ownerUserId, ownedSiteIDs)
+		} else {
+			q = q.Where("user_id = ? OR paid_by = ? OR legacy_decision_by = ?", ownerUserId, ownerUserId, ownerUserId)
+		}
+		if err := q.Find(&rows).Error; err != nil {
 			return 0, err
 		}
 		for _, r := range rows {
 			markUsed(r.QRImageURL)
+			markUsed(r.ProofNote)
 		}
 	}
 	unbound := 0

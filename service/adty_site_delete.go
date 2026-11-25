@@ -214,11 +214,18 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			&model.AdtyTelegramChallenge{},
 			&model.AdtyTelegramDelivery{},
 			&model.AdtySiteLookup{},
+			&model.AdtyNotificationRead{},
+			&model.AdtyTranslationHead{},
 		} {
 			if tx.Migrator().HasTable(tableModel) {
 				if err := tx.Where("site_id = ?", siteID).Delete(tableModel).Error; err != nil {
 					return err
 				}
+			}
+		}
+		if tx.Migrator().HasTable(&model.AdtyNotificationPublication{}) {
+			if err := tx.Where("issuer_site_id = ?", siteID).Delete(&model.AdtyNotificationPublication{}).Error; err != nil {
+				return err
 			}
 		}
 		// Clean up per-site options so recycled or removed site IDs carry no stale policy.
