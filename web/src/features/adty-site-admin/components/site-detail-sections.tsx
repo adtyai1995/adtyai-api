@@ -185,6 +185,14 @@ function adminEdgeCertLabel(
   }
 }
 
+function platformWildcardCertName(hostname: string): string {
+  const normalized = hostname.trim().toLowerCase()
+  const dot = normalized.indexOf('.')
+  return dot > 0 && dot + 1 < normalized.length
+    ? `*.${normalized.slice(dot + 1)}`
+    : ''
+}
+
 function adminDomainAutomationLabel(
   state: string,
   t: (key: string) => string
@@ -484,7 +492,7 @@ export function SiteDomainsCard(props: {
                         onClick={() =>
                           retryEdgeCert.mutate(
                             domain.managed_by === 'platform'
-                              ? ''
+                              ? platformWildcardCertName(domain.hostname)
                               : domain.hostname
                           )
                         }

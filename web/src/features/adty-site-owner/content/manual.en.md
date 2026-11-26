@@ -181,7 +181,7 @@ For closed or transferred subsites previously owned by your account: inspect his
 
 ### 3.19 Security & Access
 
-Manage password, email binding, active sessions, 2FA, and scoped Personal Access Tokens (select matching `site_owner_*` scopes for site management endpoints, and `profile:read` / `profile:write` when accessing ticket endpoints `/api/adty/tickets*`; staff management endpoints reject PATs).
+Manage password, email binding, active sessions, 2FA, and scoped Personal Access Tokens (select matching `site_owner_*` scopes for site management endpoints; for site-owner ticket endpoints `/api/adty/tickets*`, select **both** `profile:read` + `site_owner_customer:read` for read requests or **both** `profile:write` + `site_owner_customer:write` for write actions; staff management endpoints reject PATs).
 
 ---
 
@@ -200,7 +200,7 @@ Manage password, email binding, active sessions, 2FA, and scoped Personal Access
 | Initiate / advance customer manual refund | Yes | **Yes** | Yes (`site_owner_order:write`) |
 | Create / edit / reset / delete staff account | Yes | **Yes** | **No (live browser session only)** |
 | Brand, homepage, legal, SEO, referral settings, team multiplier, earnings-to-margin, notices, closure request | **No** | — | Yes (matching `site_owner_*` scope) |
-| Ticket management (`/api/adty/tickets*`) | **No** | — | Yes (`profile:read` / `profile:write`) |
+| Ticket management (`/api/adty/tickets*`) | **No** | — | Yes (both `profile:read` + `site_owner_customer:read` for reads, or both `profile:write` + `site_owner_customer:write` for writes) |
 
 ---
 

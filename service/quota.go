@@ -24,6 +24,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 )
 
 type TokenDetails struct {
@@ -295,7 +296,11 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	teamSiteID := 0
 	var op *model.BillingOperation
 	if session, ok := relayInfo.Billing.(*BillingSession); ok && session.operationKey != "" {
-		if loadedOp, opErr := model.GetBillingOperation(session.operationKey); opErr == nil && loadedOp != nil {
+		loadedOp, opErr := model.GetBillingOperation(session.operationKey)
+		if opErr != nil && !errors.Is(opErr, gorm.ErrRecordNotFound) {
+			return opErr
+		}
+		if opErr == nil && loadedOp != nil {
 			op = loadedOp
 			if op.PayerKind == model.BillingPayerTeam && op.PayerTeamId > 0 {
 				var team model.AdtyTeam
@@ -324,11 +329,12 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 			if err := model.DB.Table("adty_team_keys").
 				Select("adty_teams.site_id, adty_teams.leader_user_id").
 				Joins("JOIN adty_teams ON adty_teams.id = adty_team_keys.team_id").
-				Where("adty_team_keys.token_id = ? AND adty_team_keys.revoked_at = 0", relayInfo.TokenId).
-				Limit(1).Scan(&teamRow).Error; err == nil {
-				teamSiteID = teamRow.SiteId
-				teamLeaderID = teamRow.LeaderUserId
+				Where("adty_team_keys.token_id = ? AND adty_team_keys.status = ?", relayInfo.TokenId, model.AdtyTeamMemberActive).
+				Limit(1).Scan(&teamRow).Error; err != nil {
+				return err
 			}
+			teamSiteID = teamRow.SiteId
+			teamLeaderID = teamRow.LeaderUserId
 		}
 	}
 	if relayInfo.Billing != nil && quota > 0 && relayInfo.UserId > 0 {

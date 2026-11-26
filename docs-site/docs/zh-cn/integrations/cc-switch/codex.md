@@ -23,7 +23,7 @@
 | **协议类型**（`wire_api`） | `responses` | 新版 Codex CLI 必须使用 Responses 协议 |
 | **默认模型**（`model`） | `gpt-5.4` | 或 [https://www.adtyai.com/pricing](https://www.adtyai.com/pricing) 中展示的其他可用 Codex 模型 |
 
-::: important 务必保留 `/v1` 与 `wire_api = "responses"`
+::: warning 务必保留 `/v1` 与 `wire_api = "responses"`
 与 Claude Code 不同，Codex CLI 的 `base_url` 必须以 `/v1` 结尾（`https://api.adtyai.com/v1`），且协议类型需要设为 `wire_api = "responses"`。缺少 `/v1` 或误设为 `chat` 都会导致接口路径或协议不匹配报错。
 :::
 

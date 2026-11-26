@@ -911,11 +911,29 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 			if err != nil {
 				return err
 			}
+			// R6-P2-06: Lock target assignee User rows after AdtySiteStaff and before AdtyTicket
+			// (canonical order AdtySiteStaff -> User -> AdtyTicket) so concurrent disable/demote/revoke
+			// of a platform admin or site owner cannot race into an assigned or reopened active ticket.
+			assigneeLockUserIDs := make([]int, 0, 2)
+			if assigneeId > 0 && actor.isHandling() {
+				assigneeLockUserIDs = append(assigneeLockUserIDs, assigneeId)
+			}
+			if preReadAssigneeID > 0 {
+				assigneeLockUserIDs = append(assigneeLockUserIDs, preReadAssigneeID)
+			}
+			if len(assigneeLockUserIDs) > 0 {
+				slices.Sort(assigneeLockUserIDs)
+				assigneeLockUserIDs = slices.Compact(assigneeLockUserIDs)
+				var lockedUsers []model.User
+				if err := model.AdtyLockForUpdate(tx).Select("id").Where("id IN ?", assigneeLockUserIDs).Order("id ASC").Find(&lockedUsers).Error; err != nil {
+					return err
+				}
+			}
 			var ticket model.AdtyTicket
 			if err := scopedAdtyTickets(model.AdtyLockForUpdate(tx), actor).First(&ticket, ticketId).Error; err != nil {
 				return err
 			}
-			if status == "reopen" && assigneeId == 0 && ticket.AssigneeId > 0 && !slices.Contains(staffUserIDs, ticket.AssigneeId) {
+			if status == "reopen" && assigneeId == 0 && ticket.AssigneeId > 0 && (!slices.Contains(staffUserIDs, ticket.AssigneeId) || !slices.Contains(assigneeLockUserIDs, ticket.AssigneeId)) {
 				reopenAssigneeHint = ticket.AssigneeId
 				return errRetryAssigneeLock
 			}

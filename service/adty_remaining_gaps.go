@@ -1571,12 +1571,22 @@ func bindSiteInviteFromIPTx(tx *gorm.DB, siteID, inviterID, inviteeID int, ipHas
 		}
 		ancestorID = parent.InviterId
 	}
+	callerIP := strings.TrimSpace(ipHash)
+	trimmedIP := callerIP
+	if trimmedIP == "" && tx.Migrator().HasTable(&model.AdtyUserFingerprint{}) {
+		var latestFP model.AdtyUserFingerprint
+		if err := tx.Select("ip_hash").
+			Where("user_id = ? AND ip_hash <> ''", inviteeID).
+			Order("id DESC").Limit(1).Find(&latestFP).Error; err != nil {
+			return err
+		}
+		trimmedIP = strings.TrimSpace(latestFP.IpHash)
+	}
 	if site.MarketingPolicy.BatchRegisterThreshold == nil {
-		if err := refuseSiteInviteBatchTx(tx, siteID, inviterID, ipHash); err != nil {
+		if err := refuseSiteInviteBatchTx(tx, siteID, inviterID, trimmedIP); err != nil {
 			return err
 		}
 	}
-	trimmedIP := strings.TrimSpace(ipHash)
 	riskFlag := ""
 	selfInviteDays := int64(30)
 	if site.MarketingPolicy.SelfInviteWindowDays != nil {
@@ -1586,8 +1596,8 @@ func bindSiteInviteFromIPTx(tx *gorm.DB, siteID, inviterID, inviteeID int, ipHas
 		since := time.Now().Unix() - selfInviteDays*86400
 		ipSet := map[string]struct{}{}
 		deviceSet := map[string]struct{}{}
-		if trimmedIP != "" {
-			ipSet[trimmedIP] = struct{}{}
+		if callerIP != "" {
+			ipSet[callerIP] = struct{}{}
 		}
 		var inviteeFPs []model.AdtyUserFingerprint
 		if err := tx.Where("user_id = ? AND created_at >= ?", inviteeID, since).Order("id DESC").Find(&inviteeFPs).Error; err == nil {

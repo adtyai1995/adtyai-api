@@ -59,22 +59,67 @@ type OfficialAuditWrite struct {
 const (
 	auditSecretPEMExpr = `-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:(?:\r?\n|\\r?\\n)[A-Za-z0-9+/=]{16,})*`
 
-	auditSecretEnKeyNamesExpr = `password|passwd|passphrase|passcode|secret|token|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|bot[_-]?token|telegram[_-]?bot[_-]?token|telegram[_-]?token|authorization|private[_-]?key|client[_-]?secret|verification[_ -]?code|verify[_ -]?code|otp|one[_ -]?time[_ -]?(?:code|password|passcode)|security[_ -]?code|auth[_ -]?code|login[_ -]?code|reset[_ -]?code|session[_-]?token|session[_-]?secret|crypto[_-]?secret|postgres[_-]?password|redis[_-]?password|db[_-]?password|payment[_-]?secret|payment[_-]?key|epay[_-]?key|bepusdt[_-]?token|bepusdt[_-]?api[_-]?token|merchant[_-]?key|merchant[_-]?private[_-]?key|webhook[_-]?secret|refresh[_-]?token|bearer|backup[_ -]?codes?|smtp[_-]?token|smtp[_-]?password|mail[_-]?password|resend[_-]?api[_-]?key|gotify[_-]?token|generated[_-]?password|new[_-]?password|old[_-]?password|original[_-]?password|totp[_-]?secret|recovery[_ -]?codes?|reset[_-]?token|email[_ -]?code|cf[_-]?api[_-]?token|cloudflare[_-]?api[_-]?token|alidns[_-]?access[_-]?key[_-]?secret|aliyun[_-]?access[_-]?key[_-]?secret|aliyun[_-]?access[_-]?key[_-]?id|access[_-]?key[_-]?secret|epay[_-]?private[_-]?key|signing[_-]?secret|secret[_-]?key|key[_-]?secret|voucher[_-]?code|redemption[_-]?code|bark[_-]?url|turnstile[_-]?secret[_-]?key|turnstile[_-]?widget[_-]?secret|worker[_-]?valid[_-]?key|adty[_-]?flush[_-]?token|flush[_-]?token|adty[_-]?edge[_-]?token|edge[_-]?token|key[_-]?pem|acme[_-]?key|acme[_-]?account[_-]?key`
-	auditSecretZhKeyNamesExpr = `验证码|恢复码|备份码|访问令牌|刷新令牌|密码|口令|支付密钥|商户私钥|私钥|发信密钥|接口密钥|密钥|令牌|兑换码|充值码`
+	auditSecretEnKeyNamesExpr     = `password|passwd|passphrase|passcode|secret|token|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|bot[_-]?token|telegram[_-]?bot[_-]?token|telegram[_-]?token|authorization|private[_-]?key|client[_-]?secret|verification[_ -]?code|verify[_ -]?code|otp|one[_ -]?time[_ -]?(?:code|password|passcode)|security[_ -]?code|auth[_ -]?code|login[_ -]?code|reset[_ -]?code|session[_-]?token|session[_-]?secret|crypto[_-]?secret|postgres[_-]?password|redis[_-]?password|db[_-]?password|log[_-]?sql[_-]?dsn|sql[_-]?dsn|redis[_-]?conn[_-]?string|payment[_-]?secret|payment[_-]?key|epay[_-]?key|bepusdt[_-]?token|bepusdt[_-]?api[_-]?token|merchant[_-]?key|merchant[_-]?private[_-]?key|webhook[_-]?secret|refresh[_-]?token|bearer|backup[_ -]?codes?|smtp[_-]?token|smtp[_-]?password|mail[_-]?password|resend[_-]?api[_-]?key|gotify[_-]?token|generated[_-]?password|new[_-]?password|old[_-]?password|original[_-]?password|totp[_-]?secret|recovery[_ -]?codes?|reset[_-]?token|email[_ -]?code|cf[_-]?api[_-]?token|cloudflare[_-]?api[_-]?token|alidns[_-]?access[_-]?key[_-]?secret|aliyun[_-]?access[_-]?key[_-]?secret|aliyun[_-]?access[_-]?key[_-]?id|access[_-]?key[_-]?secret|epay[_-]?private[_-]?key|signing[_-]?secret|secret[_-]?key|key[_-]?secret|voucher[_-]?code|redemption[_-]?code|bark[_-]?url|turnstile[_-]?secret[_-]?key|turnstile[_-]?widget[_-]?secret|worker[_-]?valid[_-]?key|adty[_-]?flush[_-]?token|flush[_-]?token|adty[_-]?edge[_-]?token|edge[_-]?token|key[_-]?pem|acme[_-]?key|acme[_-]?account[_-]?key`
+	auditSecretZhKeyNamesExpr     = `验证码|恢复码|备份码|访问令牌|刷新令牌|密码|口令|支付密钥|商户私钥|私钥|发信密钥|接口密钥|兑换码|充值码`
+	auditSecretZhBareKeyNamesExpr = `密钥|令牌`
 
-	auditSecretTokenExpr = `sk-[A-Za-z0-9_\-]{8,}|nap_[A-Za-z0-9_\-]{12,}|pat-[A-Za-z0-9_\-]{10,}|re_[A-Za-z0-9_]{16,}|bot\d{6,}:[A-Za-z0-9_\-]{10,}|\d{6,12}:[A-Za-z0-9_\-]{20,}|Bearer\s+[A-Za-z0-9._\-]{16,}|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{8,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9\-]{10,}`
-	auditSecretKVValExpr = `(?:\\"(?:[^"\\]|\\\\\\"|\\[^"\\]|\\\\)*\\"|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\[[^\]\r\n]*\]|\\"(?:[^"\\\r\n]|\\.)*|"(?:[^"\\\r\n]|\\.)*|'(?:[^'\\\r\n]|\\.)*|\[[^\]\r\n]*|(?:(?:Bearer|Basic)\s+)?[^\s,}\]'"]+)`
-	auditSecretEnKVExpr  = `(?:` + auditSecretEnKeyNamesExpr + `)(?:\\"|["'])?\s*[:：=＝]\s*(` + auditSecretKVValExpr + `)`
-	auditSecretZhKVExpr  = `(?:` + auditSecretZhKeyNamesExpr + `)(?:\\"|["'])?\s*[:：=＝]\s*(` + auditSecretKVValExpr + `)`
+	auditSecretTokenExpr = `sk-[A-Za-z0-9_\-]{8,}|nap_[A-Za-z0-9_\-]{12,}|pat-[A-Za-z0-9_\-]{10,}|re_[A-Za-z0-9_]{16,}|bot\d{6,}:[A-Za-z0-9_\-]{10,}|\d{6,12}:[A-Za-z0-9_\-]{20,}|Bearer\s+[A-Za-z0-9._\-]{16,}|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{8,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9\-]{10,}|(?:postgres(?:ql)?|rediss?|mysql|mongodb(?:\+srv)?|amqps?)://[^\s:/@'"?#]*:[^\s/@'"?#]+@`
+
+	auditSecretEscapedQuotedValExpr = `\\"(?:[^"\\]|\\\\\\\\|\\\\\\"|\\\\[^"\\]|\\[^"\\])*\\"`
+	auditSecretDoubleQuotedValExpr  = `"(?:[^"\\]|\\[\s\S])*"`
+	auditSecretSingleQuotedValExpr  = `'(?:[^'\\]|\\[\s\S])*'`
+	auditSecretArrayItemExpr        = `(?:` + auditSecretEscapedQuotedValExpr + `|` + auditSecretDoubleQuotedValExpr + `|` + auditSecretSingleQuotedValExpr + `|[A-Za-z0-9._+\-/]+)`
+	auditSecretLineArrayItemExpr    = `(?:\\"(?:[^"\\\r\n]|\\\\\\\\|\\\\\\"|\\\\[^"\\\r\n]|\\[^"\\\r\n])*\\"|"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*'|[A-Za-z0-9._+\-/]+)`
+	auditSecretLineFinalItemExpr    = `(?:\\"(?:[^"\\\r\n]|\\\\\\\\|\\\\\\"|\\\\[^"\\\r\n]|\\[^"\\\r\n])*\\"|"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*'|\\"(?:[^"\\\r\n]|\\.)*\\?|"(?:[^"\\\r\n]|\\.)*\\?|'(?:[^'\\\r\n]|\\.)*\\?|[A-Za-z0-9._+\-/]+)`
+	auditSecretClosedArrayExpr      = `\[(?:\s*` + auditSecretArrayItemExpr + `\s*,?)*\s*\]`
+	auditSecretTruncArrayExpr       = `\[(?:\s*` + auditSecretLineArrayItemExpr + `\s*,)*\s*\r?\n[ \t]*(?:` + auditSecretLineArrayItemExpr + `[ \t]*,[ \t]*)*(?:` + auditSecretLineFinalItemExpr + `)?`
+
+	auditSecretKVValExpr = `(?:` +
+		auditSecretEscapedQuotedValExpr + `|` +
+		auditSecretDoubleQuotedValExpr + `|` +
+		auditSecretSingleQuotedValExpr + `|` +
+		auditSecretClosedArrayExpr + `|` +
+		`\[[^\]\r\n]*\]|` +
+		`\\"(?:[^"\\\r\n]|\\.)*\\?|` +
+		`"(?:[^"\\\r\n]|\\.)*\\?|` +
+		`'(?:[^'\\\r\n]|\\.)*\\?|` +
+		auditSecretTruncArrayExpr + `|` +
+		`\[[^\]\r\n]*|` +
+		`(?:(?:Bearer|Basic)\s+)?[^\s,}\]'"]+)`
+
+	auditSecretZhBareEscQuotedExpr     = `\\"(?:[\x20\x21\x23-\x5b\x5d-\x7e\t\r\n]|\\\\\\\\|\\\\\\"|\\\\[\x20\x21\x23-\x5b\x5d-\x7e\t\r\n]|\\[\x20\x21\x23-\x5b\x5d-\x7e\t\r\n])*[A-Za-z0-9](?:[\x20\x21\x23-\x5b\x5d-\x7e\t\r\n]|\\\\\\\\|\\\\\\"|\\\\[\x20\x21\x23-\x5b\x5d-\x7e\t\r\n]|\\[\x20\x21\x23-\x5b\x5d-\x7e\t\r\n])*\\"`
+	auditSecretZhBareDoubleQuotedExpr  = `"(?:[\x20\x21\x23-\x5b\x5d-\x7e\t\r\n]|\\[\x20-\x7e\t\r\n])*[A-Za-z0-9](?:[\x20\x21\x23-\x5b\x5d-\x7e\t\r\n]|\\[\x20-\x7e\t\r\n])*"`
+	auditSecretZhBareSingleQuotedExpr  = `'(?:[\x20-\x26\x28-\x5b\x5d-\x7e\t\r\n]|\\[\x20-\x7e\t\r\n])*[A-Za-z0-9](?:[\x20-\x26\x28-\x5b\x5d-\x7e\t\r\n]|\\[\x20-\x7e\t\r\n])*'`
+	auditSecretZhBareLineItemExpr      = `(?:\\"(?:[\x20\x21\x23-\x5b\x5d-\x7e\t]|\\\\\\\\|\\\\\\"|\\\\[\x20\x21\x23-\x5b\x5d-\x7e\t]|\\[\x20\x21\x23-\x5b\x5d-\x7e\t])*[A-Za-z0-9](?:[\x20\x21\x23-\x5b\x5d-\x7e\t]|\\\\\\\\|\\\\\\"|\\\\[\x20\x21\x23-\x5b\x5d-\x7e\t]|\\[\x20\x21\x23-\x5b\x5d-\x7e\t])*\\"|"(?:[\x20\x21\x23-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*[A-Za-z0-9](?:[\x20\x21\x23-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*"|'(?:[\x20-\x26\x28-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*[A-Za-z0-9](?:[\x20-\x26\x28-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*'|[A-Za-z0-9._+\-/]*[A-Za-z0-9][A-Za-z0-9._+\-/]*)`
+	auditSecretZhBareLineFinalItemExpr = `(?:` + auditSecretZhBareLineItemExpr + `|\\"(?:[\x20\x21\x23-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*[A-Za-z0-9](?:[\x20\x21\x23-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*\\?(?m:"?\r?$)|"(?:[\x20\x21\x23-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*[A-Za-z0-9](?:[\x20\x21\x23-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*\\?(?m:\r?$)|'(?:[\x20-\x26\x28-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*[A-Za-z0-9](?:[\x20-\x26\x28-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*\\?(?m:\r?$))`
+	auditSecretZhBareClosedArrayExpr   = `\[(?:\s*(?:` + auditSecretZhBareEscQuotedExpr + `|` + auditSecretZhBareDoubleQuotedExpr + `|` + auditSecretZhBareSingleQuotedExpr + `|[A-Za-z0-9._+\-/]*[A-Za-z0-9][A-Za-z0-9._+\-/]*)\s*,?)+\s*\]`
+	auditSecretZhBareTruncArrayExpr    = `\[(?:\s*` + auditSecretZhBareLineItemExpr + `\s*,)*\s*\r?\n[ \t]*(?:` + auditSecretZhBareLineItemExpr + `[ \t]*,[ \t]*)*` + auditSecretZhBareLineFinalItemExpr + `|\[(?:\s*` + auditSecretZhBareLineItemExpr + `\s*,)+\s*\r?\n[ \t]*`
+
+	auditSecretZhBareKVValExpr = `(?:` +
+		auditSecretZhBareEscQuotedExpr + `|` +
+		auditSecretZhBareDoubleQuotedExpr + `|` +
+		auditSecretZhBareSingleQuotedExpr + `|` +
+		auditSecretZhBareClosedArrayExpr + `|` +
+		`\[[\x20-\x5c\x5e-\x7e\t]*[A-Za-z0-9][\x20-\x5c\x5e-\x7e\t]*\]|` +
+		`\\"(?:[\x20\x21\x23-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*[A-Za-z0-9](?:[\x20\x21\x23-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*\\?(?m:"?\r?$)|` +
+		`"(?:[\x20\x21\x23-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*[A-Za-z0-9](?:[\x20\x21\x23-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*\\?(?m:\r?$)|` +
+		`'(?:[\x20-\x26\x28-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*[A-Za-z0-9](?:[\x20-\x26\x28-\x5b\x5d-\x7e\t]|\\[\x20-\x7e])*\\?(?m:\r?$)|` +
+		auditSecretZhBareTruncArrayExpr + `|` +
+		`\[[\x20-\x5c\x5e-\x7e\t]*[A-Za-z0-9][\x20-\x5c\x5e-\x7e\t]*(?m:\r?$)|` +
+		`(?:(?:Bearer|Basic)[ \t]+)?[\x21\x23-\x26\x28-\x2b\x2d-\x5a\x5e-\x7c\x7e]*[A-Za-z0-9][\x21\x23-\x26\x28-\x2b\x2d-\x5a\x5e-\x7c\x7e]*)`
+
+	auditSecretEnKVExpr     = `(^|[^A-Za-z0-9_])(?:` + auditSecretEnKeyNamesExpr + `)(?:\\"|["'])?\s*[:：=＝]\s*(` + auditSecretKVValExpr + `)`
+	auditSecretZhKVExpr     = `(?:` + auditSecretZhKeyNamesExpr + `)(?:\\"|["'])?\s*[:：=＝]\s*(` + auditSecretKVValExpr + `)`
+	auditSecretZhBareKVExpr = `(?:` + auditSecretZhBareKeyNamesExpr + `)(?:\\"|["'])?[ \t]*[:：=＝][ \t]*(` + auditSecretZhBareKVValExpr + `)`
 
 	maxAuditJSONRedactDepth = 16
 )
 
 var (
 	auditSecretPEM    = regexp.MustCompile(`(?is)` + auditSecretPEMExpr)
-	auditSecretJSONKV = regexp.MustCompile(`(?i)("(?:` + auditSecretEnKeyNamesExpr + `|` + auditSecretZhKeyNamesExpr + `)"\s*:\s*)(?:"(?:[^"\\]|\\.)*"|\[[^\]\r\n]*\]|-?\d+(?:\.\d+)?)`)
+	auditSecretJSONKV = regexp.MustCompile(`(?i)("(?:` + auditSecretEnKeyNamesExpr + `|` + auditSecretZhKeyNamesExpr + `|` + auditSecretZhBareKeyNamesExpr + `)"\s*:\s*)(?:` + auditSecretDoubleQuotedValExpr + `|` + auditSecretClosedArrayExpr + `|\[[^\]\r\n]*\]|-?\d+(?:\.\d+)?)`)
 	auditSecretToken  = regexp.MustCompile(`(?i)(?:` + auditSecretTokenExpr + `)`)
-	auditSecretText   = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_])(?:` + auditSecretEnKVExpr + `|` + auditSecretZhKVExpr + `)`)
+	auditSecretText   = regexp.MustCompile(`(?i)(?:` + auditSecretEnKVExpr + `|` + auditSecretZhKVExpr + `|` + auditSecretZhBareKVExpr + `)`)
 )
 
 // auditVoucherCodePattern matches candidate ADTY 26-character unpadded Base32 voucher codes
@@ -114,6 +159,9 @@ var auditSecretKeyNames = map[string]struct{}{
 	"postgres_password":        {},
 	"redis_password":           {},
 	"db_password":              {},
+	"sql_dsn":                  {},
+	"log_sql_dsn":              {},
+	"redis_conn_string":        {},
 	"payment_secret":           {},
 	"payment_key":              {},
 	"epay_key":                 {},
@@ -696,11 +744,16 @@ func redactAuditSecretKVText(text string) string {
 		if valStart < 0 {
 			valStart, valEnd = loc[6], loc[7]
 		}
+		if valStart < 0 {
+			valStart, valEnd = loc[8], loc[9]
+		}
 		val := strings.TrimSpace(text[valStart:valEnd])
 		if isAuditRedactedPlaceholder(val) {
 			b.WriteString(text[loc[0]:loc[1]])
 		} else {
-			b.WriteString(text[loc[2]:loc[3]])
+			if loc[2] >= 0 {
+				b.WriteString(text[loc[2]:loc[3]])
+			}
 			b.WriteString("[redacted]")
 		}
 		last = loc[1]
@@ -793,7 +846,10 @@ func isOfficialAuditSecretKeySegment(normalized string) bool {
 			return false
 		}
 	}
-	for _, suffix := range []string{"_password", "_passwd", "_secret", "_private_key", "_api_key", "_apikey", "_token"} {
+	for _, suffix := range []string{
+		"_password", "_passwd", "_secret", "_private_key", "_api_key", "_apikey", "_token",
+		"密码", "口令", "验证码", "恢复码", "备份码", "密钥", "私钥", "令牌", "兑换码", "充值码",
+	} {
 		if strings.HasSuffix(normalized, suffix) {
 			return true
 		}

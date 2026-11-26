@@ -510,7 +510,12 @@ func uploadFileFromForm(c *gin.Context, info *relaycommon.RelayInfo, fieldCandid
 		opts := []types.NewAPIErrorOptions{
 			types.ErrOptionWithHideErrMsg("replicate file upload failed"),
 		}
-		if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < http.StatusInternalServerError {
+		if resp.StatusCode >= http.StatusBadRequest &&
+			resp.StatusCode < http.StatusInternalServerError &&
+			resp.StatusCode != http.StatusUnauthorized &&
+			resp.StatusCode != http.StatusPaymentRequired &&
+			resp.StatusCode != http.StatusForbidden &&
+			resp.StatusCode != http.StatusTooManyRequests {
 			opts = append(opts, types.ErrOptionWithSkipRetry())
 		}
 		return "", types.NewErrorWithStatusCode(

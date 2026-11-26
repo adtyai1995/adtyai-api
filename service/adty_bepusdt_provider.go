@@ -20,6 +20,42 @@ import (
 // that has not yet reached final confirmation (BEpusdt OrderStatusConfirming = 5).
 var ErrAdtyPaymentConfirming = errors.New("payment is confirming on-chain")
 
+// ErrAdtyBEpusdtGatewayMismatch indicates the currently configured BEpusdt gateway
+// no longer matches the gateway that issued this order.
+var ErrAdtyBEpusdtGatewayMismatch = errors.New("BEpusdt gateway has changed since order creation")
+
+// AdtyBEpusdtGatewayMatchesCurrent reports whether ext belongs to the currently
+// configured BEpusdt gateway. Orders with CheckoutGateway require a normalized
+// scheme+host+path match; legacy orders fall back to comparing PayURL scheme+host.
+func AdtyBEpusdtGatewayMatchesCurrent(ext *model.AdtyTopupOrder) bool {
+	if ext == nil {
+		return false
+	}
+	currentRaw := strings.TrimRight(strings.TrimSpace(setting.GetBEpusdtSetting().BaseURL), "/")
+	currentURL, err := url.Parse(currentRaw)
+	if err != nil || currentURL.Scheme == "" || currentURL.Host == "" || currentURL.User != nil || currentURL.RawQuery != "" || currentURL.Fragment != "" {
+		return false
+	}
+	if storedRaw := strings.TrimRight(strings.TrimSpace(ext.CheckoutGateway), "/"); storedRaw != "" {
+		storedURL, sErr := url.Parse(storedRaw)
+		if sErr != nil || storedURL.Scheme == "" || storedURL.Host == "" || storedURL.User != nil || storedURL.RawQuery != "" || storedURL.Fragment != "" {
+			return false
+		}
+		return strings.EqualFold(storedURL.Scheme, currentURL.Scheme) &&
+			strings.EqualFold(storedURL.Host, currentURL.Host) &&
+			strings.TrimRight(storedURL.Path, "/") == strings.TrimRight(currentURL.Path, "/")
+	}
+	if payRaw := strings.TrimSpace(ext.PayURL); payRaw != "" {
+		checkoutURL, pErr := url.Parse(payRaw)
+		if pErr != nil || checkoutURL.Scheme == "" || checkoutURL.Host == "" || checkoutURL.User != nil {
+			return false
+		}
+		return strings.EqualFold(checkoutURL.Scheme, currentURL.Scheme) &&
+			strings.EqualFold(checkoutURL.Host, currentURL.Host)
+	}
+	return true
+}
+
 // adtyBEpusdtProvider 把 BEpusdt 登记进钱包的支付商（任务 4.2）。
 type adtyBEpusdtProvider struct{}
 
@@ -56,8 +92,11 @@ func (adtyBEpusdtProvider) AvailableFor(method string, quote *AdtyQuote) bool {
 
 // Cancel 调网关取消；还没拿到 trade_id 的订单不用取消。
 func (adtyBEpusdtProvider) Cancel(ext *model.AdtyTopupOrder) error {
-	if ext == nil {
+	if ext == nil || strings.TrimSpace(ext.GatewayTradeId) == "" {
 		return nil
+	}
+	if !AdtyBEpusdtGatewayMatchesCurrent(ext) {
+		return ErrAdtyBEpusdtGatewayMismatch
 	}
 	return CancelBEpusdtOrder(ext.GatewayTradeId)
 }
@@ -76,7 +115,7 @@ func (adtyBEpusdtProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder)
 		return nil, errors.New("original HTTPS BEpusdt gateway is unavailable")
 	}
 	checkout, err := url.Parse(ext.PayURL)
-	if err != nil || checkout.Scheme != "https" || checkout.User != nil || !strings.EqualFold(checkout.Host, endpoint.Host) {
+	if err != nil || checkout.Scheme != "https" || checkout.User != nil || !strings.EqualFold(checkout.Host, endpoint.Host) || !AdtyBEpusdtGatewayMatchesCurrent(ext) {
 		return nil, errors.New("original HTTPS BEpusdt gateway is unavailable")
 	}
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/api/v1/pay/info"

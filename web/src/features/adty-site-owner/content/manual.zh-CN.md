@@ -181,7 +181,7 @@
 
 ### 3.19 安全与访问
 
-管理登录密码、绑定邮箱、查看/吊销活跃会话、管理 2FA 以及签发个人访问令牌（PAT）。使用 PAT 调用站长管理接口时，请按最小权限勾选对应的 `site_owner_*` 作用域；访问工单接口（`/api/adty/tickets*`）时需勾选 `profile:read` / `profile:write` 权限（员工管理接口严禁 PAT）。
+管理登录密码、绑定邮箱、查看/吊销活跃会话、管理 2FA 以及签发个人访问令牌（PAT）。使用 PAT 调用站长管理接口时，请按最小权限勾选对应的 `site_owner_*` 作用域；以站长身份访问工单接口（`/api/adty/tickets*`）时，读操作（GET）需**同时**勾选 `profile:read` + `site_owner_customer:read`，写操作需**同时**勾选 `profile:write` + `site_owner_customer:write`（员工管理接口严禁 PAT）。
 
 ---
 
@@ -200,7 +200,7 @@
 | 发起 / 推进客户订单人工退款 | 是 | **是** | 允许（`site_owner_order:write`） |
 | 创建 / 修改 / 改密 / 删除员工账号 | 是 | **是** | **禁止（仅浏览器实时会话）** |
 | 品牌/首页/法律/SEO/推广设置/团队倍率/收益转保证金/公告/申请关站 | **否** | — | 允许（对应 `site_owner_*` 权限） |
-| 工单管理（`/api/adty/tickets*`） | **否** | — | 允许（`profile:read` / `profile:write`） |
+| 工单管理（`/api/adty/tickets*`） | **否** | — | 允许（读操作需同时具备 `profile:read` + `site_owner_customer:read`，写操作需同时具备 `profile:write` + `site_owner_customer:write`） |
 
 ---
 

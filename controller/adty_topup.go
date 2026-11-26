@@ -143,68 +143,86 @@ func GetAdtyTopUpOrder(c *gin.Context) {
 		writeAdtyTopUpError(c, err)
 		return
 	}
-	if view != nil && view.Status == common.TopUpStatusPending && view.Ext != nil &&
-		(view.Ext.ExpireAt == 0 || view.Ext.ExpireAt > time.Now().Unix()) {
-		checkoutBlocked := false
-		if view.Ext.TeamId > 0 {
-			var team model.AdtyTeam
-			if teamErr := model.DB.First(&team, view.Ext.TeamId).Error; teamErr != nil ||
-				team.Status != model.AdtyTeamStatusActive ||
-				team.LeaderUserId != c.GetInt("id") ||
-				team.SiteId != view.Ext.SiteId {
-				view.Ext.PayURL = ""
-				view.Ext.QRCode = ""
-				view.Ext.URLScheme = ""
-				view.Ext.PayAddress = ""
-				checkoutBlocked = true
-			}
-		}
-		if !checkoutBlocked && view.Ext.Provider == model.PaymentProviderAdtyBEpusdt {
-			currentGW := strings.TrimRight(strings.TrimSpace(setting.GetBEpusdtSetting().BaseURL), "/")
-			storedGW := strings.TrimRight(strings.TrimSpace(view.Ext.CheckoutGateway), "/")
-			if !setting.BEpusdtConfigured() || !setting.BEpusdtChainEnabled(view.Ext.Method) || (storedGW != "" && storedGW != currentGW) {
-				view.Ext.PayAddress = ""
-				view.Ext.PayURL = ""
-			}
-		} else if !checkoutBlocked && view.Ext.Provider == model.PaymentProviderAdtyEpay && view.Ext.ChannelId > 0 {
-			channel, chErr := model.GetAdtyEpayChannel(view.Ext.ChannelId)
-			var chMethod *model.AdtyEpayChannelMethod
-			if chErr == nil && channel != nil {
-				chMethod = channel.MethodFor(view.Ext.Method)
-			}
-			methodValid := chMethod != nil && chMethod.Enabled &&
-				(!chMethod.MinCNY.IsPositive() || !view.Ext.PayAmount.LessThan(chMethod.MinCNY)) &&
-				(!chMethod.MaxCNY.IsPositive() || !view.Ext.PayAmount.GreaterThan(chMethod.MaxCNY))
-			if chErr != nil || channel == nil || channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || !methodValid {
-				view.Ext.PayURL = ""
-				view.Ext.QRCode = ""
-				view.Ext.URLScheme = ""
-			} else if channel.IsRSA() && channel.OrderMode == model.AdtyEpayOrderModeSubmit && strings.TrimSpace(view.Ext.PayURL) != "" {
-				device := "pc"
-				if parsed, parseErr := url.Parse(view.Ext.PayURL); parseErr == nil {
-					if d := strings.TrimSpace(parsed.Query().Get("device")); d != "" {
-						device = d
-					}
-				}
-				callback := strings.TrimRight(service.GetCallbackAddress(), "/")
-				newPayURL, refreshed, refreshErr := service.RefreshAdtyEpaySubmitURL(channel, chMethod, service.AdtyEpayCreateRequest{
-					TradeNo:   view.Ext.TradeNo,
-					Name:      "Top-up " + view.Ext.TradeNo,
-					ClientIP:  c.ClientIP(),
-					Device:    device,
-					MoneyCNY:  view.Ext.PayAmount,
-					NotifyURL: callback + "/api/user/epay/notify/" + strconv.Itoa(channel.Id),
-					ReturnURL: service.AdtyPayResultURLForHost(view.Ext.TradeNo, view.Ext.Business == model.AdtyBusinessOwnerMarginTopup && service.AdtyRequestSiteID(c) == 0),
-				}, view.Ext.PayURL)
-				if refreshErr != nil {
-					common.SysLog(common.LogText("refresh epay submit url failed trade_no=%s: %s", view.Ext.TradeNo, refreshErr.Error()))
+	if view != nil && view.Status == common.TopUpStatusPending && view.Ext != nil {
+		if service.AdtyTopupOrderExpired(view.Ext, time.Now().Unix()) {
+			view.Status = common.TopUpStatusExpired
+			view.Ext.PayURL = ""
+			view.Ext.QRCode = ""
+			view.Ext.URLScheme = ""
+			view.Ext.PayAddress = ""
+		} else {
+			checkoutBlocked := false
+			if view.Ext.TeamId > 0 {
+				var team model.AdtyTeam
+				if teamErr := model.DB.First(&team, view.Ext.TeamId).Error; teamErr != nil ||
+					team.Status != model.AdtyTeamStatusActive ||
+					team.LeaderUserId != c.GetInt("id") ||
+					team.SiteId != view.Ext.SiteId {
 					view.Ext.PayURL = ""
-				} else if refreshed && newPayURL != "" {
-					if updateErr := model.UpdateAdtyTopupOrderFields(view.Ext.TradeNo, map[string]any{"pay_url": newPayURL}); updateErr != nil {
-						common.SysLog(common.LogText("persist refreshed epay submit url failed trade_no=%s: %s", view.Ext.TradeNo, updateErr.Error()))
+					view.Ext.QRCode = ""
+					view.Ext.URLScheme = ""
+					view.Ext.PayAddress = ""
+					checkoutBlocked = true
+				}
+			} else if view.Ext.IsOwnerBusiness() {
+				var site model.AdtySite
+				if view.Ext.SiteId <= 0 ||
+					model.DB.First(&site, view.Ext.SiteId).Error != nil ||
+					site.Status != model.AdtySiteStatusActive ||
+					site.OwnerUserId != c.GetInt("id") ||
+					(view.Ext.SiteOwnerUserId > 0 && site.OwnerUserId != view.Ext.SiteOwnerUserId) {
+					view.Ext.PayURL = ""
+					view.Ext.QRCode = ""
+					view.Ext.URLScheme = ""
+					view.Ext.PayAddress = ""
+					checkoutBlocked = true
+				}
+			}
+			if !checkoutBlocked && view.Ext.Provider == model.PaymentProviderAdtyBEpusdt {
+				if !setting.BEpusdtConfigured() || !setting.BEpusdtChainEnabled(view.Ext.Method) || !service.AdtyBEpusdtGatewayMatchesCurrent(view.Ext) {
+					view.Ext.PayAddress = ""
+					view.Ext.PayURL = ""
+				}
+			} else if !checkoutBlocked && view.Ext.Provider == model.PaymentProviderAdtyEpay && view.Ext.ChannelId > 0 {
+				channel, chErr := model.GetAdtyEpayChannel(view.Ext.ChannelId)
+				var chMethod *model.AdtyEpayChannelMethod
+				if chErr == nil && channel != nil {
+					chMethod = channel.MethodFor(view.Ext.Method)
+				}
+				methodValid := chMethod != nil && chMethod.Enabled &&
+					(!chMethod.MinCNY.IsPositive() || !view.Ext.PayAmount.LessThan(chMethod.MinCNY)) &&
+					(!chMethod.MaxCNY.IsPositive() || !view.Ext.PayAmount.GreaterThan(chMethod.MaxCNY))
+				if chErr != nil || channel == nil || channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || !methodValid {
+					view.Ext.PayURL = ""
+					view.Ext.QRCode = ""
+					view.Ext.URLScheme = ""
+				} else if channel.IsRSA() && channel.OrderMode == model.AdtyEpayOrderModeSubmit && strings.TrimSpace(view.Ext.PayURL) != "" {
+					device := "pc"
+					if parsed, parseErr := url.Parse(view.Ext.PayURL); parseErr == nil {
+						if d := strings.TrimSpace(parsed.Query().Get("device")); d != "" {
+							device = d
+						}
+					}
+					callback := strings.TrimRight(service.GetCallbackAddress(), "/")
+					newPayURL, refreshed, refreshErr := service.RefreshAdtyEpaySubmitURL(channel, chMethod, service.AdtyEpayCreateRequest{
+						TradeNo:   view.Ext.TradeNo,
+						Name:      "Top-up " + view.Ext.TradeNo,
+						ClientIP:  c.ClientIP(),
+						Device:    device,
+						MoneyCNY:  view.Ext.PayAmount,
+						NotifyURL: callback + "/api/user/epay/notify/" + strconv.Itoa(channel.Id),
+						ReturnURL: service.AdtyPayResultURLForHost(view.Ext.TradeNo, view.Ext.Business == model.AdtyBusinessOwnerMarginTopup && service.AdtyRequestSiteID(c) == 0),
+					}, view.Ext.PayURL)
+					if refreshErr != nil {
+						common.SysLog(common.LogText("refresh epay submit url failed trade_no=%s: %s", view.Ext.TradeNo, refreshErr.Error()))
 						view.Ext.PayURL = ""
-					} else {
-						view.Ext.PayURL = newPayURL
+					} else if refreshed && newPayURL != "" {
+						if updateErr := model.UpdateAdtyTopupOrderFields(view.Ext.TradeNo, map[string]any{"pay_url": newPayURL}); updateErr != nil {
+							common.SysLog(common.LogText("persist refreshed epay submit url failed trade_no=%s: %s", view.Ext.TradeNo, updateErr.Error()))
+							view.Ext.PayURL = ""
+						} else {
+							view.Ext.PayURL = newPayURL
+						}
 					}
 				}
 			}
@@ -228,10 +246,12 @@ func CancelAdtyTopUpOrder(c *gin.Context) {
 			if errors.Is(cancelErr, service.ErrAdtyPaymentDetected) {
 				return cancelErr
 			}
-			// Epay orders with no reserved site gift hold zero site funds; PAY-06 still
-			// auto-credits late callbacks on canceled orders, so a broken/unqueryable
-			// Epay gateway must not trap users from canceling unpaid orders.
-			if locked.Provider == model.PaymentProviderAdtyEpay &&
+			// Epay orders (or BEpusdt orders whose gateway was switched away) with no
+			// reserved site gift hold zero site funds; late callbacks are still handled
+			// safely, so a switched/broken gateway must not trap users from canceling.
+			// Orders holding site gift guarantees remain fail-closed until expiry (A.8 / R2-019).
+			if (locked.Provider == model.PaymentProviderAdtyEpay ||
+				errors.Is(cancelErr, service.ErrAdtyBEpusdtGatewayMismatch)) &&
 				!locked.GiftReserveEarning.IsPositive() &&
 				!locked.GiftReserveMargin.IsPositive() {
 				return nil
@@ -616,12 +636,7 @@ func adtyPendingOrderReusable(ext *model.AdtyTopupOrder, filter adtyPendingReuse
 	}
 	switch filter.provider {
 	case model.PaymentProviderAdtyBEpusdt:
-		if !setting.BEpusdtConfigured() || !setting.BEpusdtChainEnabled(filter.method) {
-			return false
-		}
-		currentGW := strings.TrimRight(strings.TrimSpace(setting.GetBEpusdtSetting().BaseURL), "/")
-		storedGW := strings.TrimRight(strings.TrimSpace(ext.CheckoutGateway), "/")
-		if storedGW != "" && storedGW != currentGW {
+		if !setting.BEpusdtConfigured() || !setting.BEpusdtChainEnabled(filter.method) || !service.AdtyBEpusdtGatewayMatchesCurrent(ext) {
 			return false
 		}
 		// BEpusdt adjusts PayAmount by small unique decimals (e.g. 10.0001), so

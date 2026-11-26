@@ -46,7 +46,7 @@ func projectAdtySiteEarningEvent(ctx context.Context, key string) error {
 		// Pre-read site_id unlocked and acquire earnings wallet FOR UPDATE before
 		// locking AdtySiteEarningEvent so lock order matches ReviewAdtySiteCustomerWithAuditForActor.
 		var peek []model.AdtySiteEarningEvent
-		if err := tx.Select("id", "site_id", "projected", "review_status").
+		if err := tx.Select("operation_key", "site_id", "projected", "review_status").
 			Where("operation_key = ?", key).Limit(1).Find(&peek).Error; err != nil {
 			return err
 		}

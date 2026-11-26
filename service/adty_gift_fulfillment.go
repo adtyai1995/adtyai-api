@@ -760,7 +760,7 @@ func adtyOrderRequiresRemoteUnpaidConfirmAt(tx *gorm.DB, ext *model.AdtyTopupOrd
 		if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
 			return false, nil
 		}
-		return strings.EqualFold(checkout.Host, endpoint.Host), nil
+		return strings.EqualFold(checkout.Host, endpoint.Host) && AdtyBEpusdtGatewayMatchesCurrent(ext), nil
 	case model.PaymentProviderAdtyEpay:
 		if ext.ChannelId <= 0 {
 			return false, nil

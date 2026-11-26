@@ -22,6 +22,24 @@ const LABELS: Record<string, { zh: string; en: string }> = {
     zh: 'USDT（TRC20 / BEP20 / Polygon / X Layer）',
     en: 'USDT (TRC20 / BEP20 / Polygon / X Layer)',
   },
+  'usdt.trc20': { zh: 'USDT（TRC20）', en: 'USDT (TRC20)' },
+  'usdt.bep20': { zh: 'USDT（BEP20）', en: 'USDT (BEP20)' },
+  'usdt.polygon': { zh: 'USDT（Polygon）', en: 'USDT (Polygon)' },
+  'usdt.xlayer': { zh: 'USDT（X Layer）', en: 'USDT (X Layer)' },
+}
+
+function formatMethodLabel(id: string, zh: boolean): string {
+  const trimmed = id.trim()
+  const key = trimmed.toLowerCase()
+  const mapped = LABELS[key]
+  if (mapped) {
+    return zh ? mapped.zh : mapped.en
+  }
+  if (key.startsWith('usdt.') && key.length > 5) {
+    const chain = trimmed.slice(5).toUpperCase()
+    return zh ? `USDT（${chain}）` : `USDT (${chain})`
+  }
+  return trimmed
 }
 
 const activeMethods = computed(() => {
@@ -29,9 +47,8 @@ const activeMethods = computed(() => {
   const seen = new Set<string>()
   const out: string[] = []
   for (const id of raw) {
-    const key = id.toLowerCase()
-    const mapped = LABELS[key]
-    const label = mapped ? (isZh.value ? mapped.zh : mapped.en) : id
+    const label = formatMethodLabel(id, isZh.value)
+    if (!label) continue
     if (!seen.has(label)) {
       seen.add(label)
       out.push(label)

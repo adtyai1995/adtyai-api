@@ -644,7 +644,7 @@ func loadGiftBatchRemainingByTrade(siteID int, tradeNos []string) (map[string]gi
 		return out, nil
 	}
 	var batches []model.AdtyFundBatch
-	if err := model.DB.Where("source IN ? AND (site_id = ? OR site_id IS NULL) AND kind IN ?", tradeNos, siteID, []string{
+	if err := model.DB.Where("source IN ? AND (site_id = ? OR site_id = 0 OR site_id IS NULL) AND kind IN ?", tradeNos, siteID, []string{
 		model.AdtyFundBatchKindBonus,
 		model.AdtyFundBatchKindExpiringBonus,
 	}).Find(&batches).Error; err != nil {
@@ -723,7 +723,13 @@ func currentRequiredGiftGuaranteeUSD(ext *model.AdtyTopupOrder, status string, b
 		Select("COALESCE(SUM(-delta), 0)").Scan(&spent).Error; err != nil {
 		return decimal.Zero, err
 	}
-	return decimal.Max(decimal.Zero, required.Sub(spent)), nil
+	var adjustReleased decimal.Decimal
+	if err := model.DB.Model(&model.AdtySiteWalletLedger{}).
+		Where("site_id = ? AND ref_type = ? AND ref_id = ? AND type = ? AND idempotency_key LIKE ?", ext.SiteId, "topup", ext.TradeNo, "gift_release", "%:adjust-release:%").
+		Select("COALESCE(SUM(-hold_delta), 0)").Scan(&adjustReleased).Error; err != nil {
+		return decimal.Zero, err
+	}
+	return decimal.Max(decimal.Zero, required.Sub(spent).Sub(adjustReleased)), nil
 }
 
 func giftGuaranteeShouldBeHeld(status string) bool {

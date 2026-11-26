@@ -548,12 +548,7 @@ func validateReadyTeamTopupCheckout(ext *model.AdtyTopupOrder) error {
 	if ext == nil || ext.Provider != model.PaymentProviderAdtyBEpusdt {
 		return nil
 	}
-	if !setting.BEpusdtConfigured() || !setting.BEpusdtChainEnabled(ext.Method) {
-		return model.ErrPaymentMethodMismatch
-	}
-	currentGateway := strings.TrimRight(strings.TrimSpace(setting.GetBEpusdtSetting().BaseURL), "/")
-	storedGateway := strings.TrimRight(strings.TrimSpace(ext.CheckoutGateway), "/")
-	if storedGateway != "" && storedGateway != currentGateway {
+	if !setting.BEpusdtConfigured() || !setting.BEpusdtChainEnabled(ext.Method) || !AdtyBEpusdtGatewayMatchesCurrent(ext) {
 		return model.ErrPaymentMethodMismatch
 	}
 	return nil
@@ -576,7 +571,10 @@ func adtyTeamTopupTerminalStatusError(status string) error {
 	}
 }
 
-func adtyTeamOrderExpired(ext *model.AdtyTopupOrder, now int64) bool {
+// AdtyTopupOrderExpired reports whether an ADTY top-up order has passed its
+// payment deadline as of now, falling back to provider timeout from CreatedAt
+// for legacy rows whose ExpireAt was stored as 0.
+func AdtyTopupOrderExpired(ext *model.AdtyTopupOrder, now int64) bool {
 	if ext == nil {
 		return false
 	}
@@ -594,6 +592,10 @@ func adtyTeamOrderExpired(ext *model.AdtyTopupOrder, now int64) bool {
 		}
 	}
 	return deadline > 0 && deadline <= now
+}
+
+func adtyTeamOrderExpired(ext *model.AdtyTopupOrder, now int64) bool {
+	return AdtyTopupOrderExpired(ext, now)
 }
 
 func refreshTeamEpaySubmitURLIfNeeded(ext *model.AdtyTopupOrder, clientIP, device string) error {

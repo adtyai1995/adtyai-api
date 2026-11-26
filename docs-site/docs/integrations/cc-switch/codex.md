@@ -23,7 +23,7 @@ This guide explains how to configure **OpenAI Codex CLI** to route through **ADT
 | **Wire API** (`wire_api`) | `responses` | Required by modern Codex CLI builds |
 | **Model** (`model`) | `gpt-5.4` | Or another Codex model listed on [https://www.adtyai.com/pricing](https://www.adtyai.com/pricing) |
 
-::: important Keep `/v1` and `wire_api = "responses"`
+::: warning Keep `/v1` and `wire_api = "responses"`
 Unlike Claude Code, Codex CLI expects `/v1` in `base_url` (`https://api.adtyai.com/v1`) and communicates via the OpenAI Responses protocol (`wire_api = "responses"`). Omitting `/v1` or setting `wire_api = "chat"` causes endpoint or schema errors.
 :::
 
