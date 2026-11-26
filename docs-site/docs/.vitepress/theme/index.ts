@@ -23,9 +23,20 @@ import DefaultTheme from 'vitepress/theme'
 import { nextTick, onMounted, watch } from 'vue'
 
 import { applyBrandToDOM, resolveSiteBrand, type SiteBrand } from './brand'
+import MainSiteOnly from './components/MainSiteOnly.vue'
+import PaymentMethodsList from './components/PaymentMethodsList.vue'
+import ReferralSummary from './components/ReferralSummary.vue'
+import SetupWizard from './components/SetupWizard.vue'
+import './style.css'
 
 export default {
   extends: DefaultTheme,
+  enhanceApp({ app }) {
+    app.component('SetupWizard', SetupWizard)
+    app.component('ReferralSummary', ReferralSummary)
+    app.component('PaymentMethodsList', PaymentMethodsList)
+    app.component('MainSiteOnly', MainSiteOnly)
+  },
   setup() {
     const route = useRoute()
     let activeBrand: SiteBrand | null = null
@@ -43,15 +54,13 @@ export default {
 
     onMounted(async () => {
       activeBrand = await resolveSiteBrand()
-      if (activeBrand.isWhiteLabel) {
-        runApply()
-      }
+      runApply()
     })
 
     watch(
       () => route.path,
       () => {
-        if (activeBrand?.isWhiteLabel) {
+        if (activeBrand) {
           runApply()
         }
       }

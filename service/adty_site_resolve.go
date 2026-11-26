@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -571,6 +573,134 @@ func IsAdtyReferralEnabledForSite(siteID int) bool {
 	return slices.ContainsFunc(overrides, func(aff model.AdtySiteReferralAffiliate) bool {
 		return aff.RateOverride != nil && aff.RateOverride.IsPositive()
 	})
+}
+
+// AdtyPublicReferralInfo is the public non-sensitive referral summary exposed in GET /api/status
+// so white-label documentation automatically reflects live main-site and subsite commission rules.
+type AdtyPublicReferralInfo struct {
+	Enabled              bool     `json:"enabled"`
+	DefaultRatePercent   string   `json:"default_rate_percent,omitempty"`
+	ObservationDays      int      `json:"observation_days"`
+	MinWithdrawUSD       string   `json:"min_withdraw_usd,omitempty"`
+	USDTWithdrawFeeUSD   string   `json:"usdt_withdraw_fee_usd,omitempty"`
+	WithdrawMethods      []string `json:"withdraw_methods"`
+	WithdrawUSDTNetworks []string `json:"withdraw_usdt_networks"`
+}
+
+func formatAdtyPublicDecimal(d decimal.Decimal) string {
+	s := d.String()
+	if strings.Contains(s, ".") {
+		s = strings.TrimRight(s, "0")
+		s = strings.TrimRight(s, ".")
+	}
+	return s
+}
+
+func formatAdtyPublicFloat(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+// AdtyPublicReferralInfoForSite returns the public referral summary for siteID.
+// Main site (siteID == 0) stores DefaultRate as percentage (10 = 10%);
+// subsite (siteID > 0) stores AdtySiteReferralRate.Rate as fraction (0.10 = 10%).
+func AdtyPublicReferralInfoForSite(siteID int) AdtyPublicReferralInfo {
+	empty := AdtyPublicReferralInfo{
+		Enabled:              false,
+		WithdrawMethods:      []string{},
+		WithdrawUSDTNetworks: []string{},
+	}
+	if siteID < 0 {
+		return empty
+	}
+	if siteID == 0 {
+		cfg := adty_setting.GetReferralSetting()
+		if cfg == nil || !cfg.Enabled {
+			return empty
+		}
+		info := AdtyPublicReferralInfo{
+			Enabled:              true,
+			ObservationDays:      max(cfg.FreezeDays, 0),
+			WithdrawMethods:      []string{},
+			WithdrawUSDTNetworks: []string{},
+		}
+		if cfg.DefaultRate != nil && *cfg.DefaultRate > 0 {
+			info.DefaultRatePercent = formatAdtyPublicFloat(*cfg.DefaultRate)
+		}
+		hasPositiveCNYRate := false
+		if rawRate := strings.TrimSpace(cfg.WithdrawCNYRate); rawRate != "" {
+			if parsed, err := decimal.NewFromString(rawRate); err == nil && parsed.IsPositive() {
+				hasPositiveCNYRate = true
+			}
+		}
+		methods, networks := cfg.UsableWithdrawConfig(hasPositiveCNYRate)
+		if methods != nil {
+			info.WithdrawMethods = methods
+		}
+		if networks != nil {
+			info.WithdrawUSDTNetworks = networks
+		}
+		if cfg.MinWithdrawUSD != nil && *cfg.MinWithdrawUSD > 0 && len(info.WithdrawMethods) > 0 {
+			info.MinWithdrawUSD = formatAdtyPublicFloat(*cfg.MinWithdrawUSD)
+		}
+		if cfg.USDTWithdrawFee != nil && *cfg.USDTWithdrawFee >= 0 && slices.Contains(info.WithdrawMethods, adty_setting.ReferralWithdrawMethodUSDT) {
+			info.USDTWithdrawFeeUSD = formatAdtyPublicFloat(*cfg.USDTWithdrawFee)
+		}
+		return info
+	}
+	if model.DB == nil {
+		return empty
+	}
+	var site model.AdtySite
+	if err := model.DB.Where("id = ?", siteID).Limit(1).Find(&site).Error; err != nil || site.Id == 0 {
+		return empty
+	}
+	if !AdtySiteServesCustomers(&site) {
+		return empty
+	}
+	var rate model.AdtySiteReferralRate
+	lookup := model.DB.Where("site_id = ?", siteID).Limit(1).Find(&rate)
+	if lookup.Error != nil || lookup.RowsAffected == 0 || !rate.Enabled {
+		return empty
+	}
+	enabled := rate.Rate.IsPositive()
+	if !enabled && model.DB.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
+		var overrides []model.AdtySiteReferralAffiliate
+		if err := model.DB.Select("rate_override").
+			Where("site_id = ? AND status <> ? AND rate_override IS NOT NULL", siteID, model.AdtySiteAffiliateStatusDisabled).
+			Find(&overrides).Error; err == nil {
+			enabled = slices.ContainsFunc(overrides, func(aff model.AdtySiteReferralAffiliate) bool {
+				return aff.RateOverride != nil && aff.RateOverride.IsPositive()
+			})
+		}
+	}
+	if !enabled {
+		return empty
+	}
+	info := AdtyPublicReferralInfo{
+		Enabled:              true,
+		WithdrawMethods:      []string{},
+		WithdrawUSDTNetworks: []string{},
+	}
+	if rate.Rate.IsPositive() {
+		info.DefaultRatePercent = formatAdtyPublicDecimal(rate.Rate.Mul(decimal.NewFromInt(100)))
+	}
+	if site.MarketingPolicy.ObservationDays != nil && *site.MarketingPolicy.ObservationDays > 0 {
+		info.ObservationDays = int(*site.MarketingPolicy.ObservationDays)
+	}
+	methods, networks := usableSiteInviteWithdrawConfig(site.MarketingPolicy)
+	if methods != nil {
+		info.WithdrawMethods = methods
+	}
+	if networks != nil {
+		info.WithdrawUSDTNetworks = networks
+	}
+	if site.MarketingPolicy.MinUSD != nil && site.MarketingPolicy.MinUSD.IsPositive() && len(info.WithdrawMethods) > 0 {
+		info.MinWithdrawUSD = formatAdtyPublicDecimal(*site.MarketingPolicy.MinUSD)
+	}
+	if site.MarketingPolicy.FeeUSD != nil && !site.MarketingPolicy.FeeUSD.IsNegative() && slices.Contains(info.WithdrawMethods, adty_setting.ReferralWithdrawMethodUSDT) {
+		info.USDTWithdrawFeeUSD = formatAdtyPublicDecimal(*site.MarketingPolicy.FeeUSD)
+	}
+	return info
 }
 
 // AdtyOverrideStatus 在 /api/status 末尾调用（controller/misc.go）：当前请求是分站时，换成分站的站名、Logo、

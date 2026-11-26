@@ -24,6 +24,7 @@ import {
   isSiteOwnerSection,
   SITE_OWNER_DEFAULT_SECTION,
 } from '@/features/adty-site-owner/sections'
+import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 // The server checks ownership on every request; this only keeps non-owners
@@ -41,11 +42,14 @@ export const Route = createFileRoute('/_authenticated/site-owner/$section')({
       })
     }
     const user = useAuthStore.getState().auth.user
-    if (
-      !(params.section === 'history'
-        ? user?.adty_archived_site_owner
-        : user?.adty_site_owner)
-    ) {
+    const isSuperAdmin = (user?.role ?? 0) >= ROLE.SUPER_ADMIN
+    let allowed = Boolean(user?.adty_site_owner)
+    if (params.section === 'history') {
+      allowed = Boolean(user?.adty_archived_site_owner)
+    } else if (params.section === 'manual') {
+      allowed = Boolean(user?.adty_site_owner) || isSuperAdmin
+    }
+    if (!allowed) {
       throw redirect({ to: '/403' })
     }
     // Preserve payment return links targeting /site-owner/earnings for margin top-up.

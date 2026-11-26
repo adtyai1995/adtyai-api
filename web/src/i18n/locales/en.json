@@ -11749,6 +11749,8 @@
     "Enter the main site website hostname first (for example www.adtyai.com). Keep the apex domain on Cloudflare 301 redirect and never put an API domain here.": "Enter the main site website hostname first (for example www.adtyai.com). Keep the apex domain on Cloudflare 301 redirect and never put an API domain here.",
     "Issue a dedicated edge certificate for the main site website domain and include it in the edge node manifest (leave origin SNI blank to reuse fallback origin).": "Issue a dedicated edge certificate for the main site website domain and include it in the edge node manifest (leave origin SNI blank to reuse fallback origin).",
     "Main site certificate": "Main site certificate",
-    "Point Mainland China DNS line to:": "Point Mainland China DNS line to:"
+    "Point Mainland China DNS line to:": "Point Mainland China DNS line to:",
+    "Site Owner Manual": "Site Owner Manual",
+    "Internal operations manual visible only to authenticated site owners and platform administrators.": "Internal operations manual visible only to authenticated site owners and platform administrators."
   }
 }

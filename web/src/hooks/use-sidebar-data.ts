@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   Activity,
   Bell,
+  BookOpen,
   Box,
   ClipboardList,
   CreditCard,
@@ -276,6 +277,11 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
         url: '/site-owner/settings',
         icon: Settings,
       },
+      {
+        title: t('Site Owner Manual'),
+        url: '/site-owner/manual',
+        icon: BookOpen,
+      },
     ]
 
     // R-32 #25 & R-33 #1: Site owners (non-admin) get a pure management sidebar only.
@@ -476,6 +482,12 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               icon: Store,
               badge: resellerSitesBadge,
               requiredPermission: ADTY_PERMISSIONS.SITE_READ,
+            },
+            {
+              title: t('Site Owner Manual'),
+              url: '/site-owner/manual',
+              icon: BookOpen,
+              requiredRole: ROLE.SUPER_ADMIN,
             },
             {
               title: t('Order management'),

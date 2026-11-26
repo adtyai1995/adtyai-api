@@ -38,6 +38,7 @@ import { BonusPanel } from './components/bonus-panel'
 import { CustomersPanel } from './components/customers-panel'
 import { EarningsPanel } from './components/earnings-panel'
 import { OverviewPanel } from './components/overview-panel'
+import { OwnerManualPanel } from './components/owner-manual-panel'
 import { OwnerVerificationProvider } from './components/owner-verification'
 import { PricingPanel } from './components/pricing-panel'
 import { SettlementSheetPanel } from './components/settlement-sheet-panel'
@@ -61,7 +62,7 @@ export function SiteOwnerCenter(props: {
   const site = useQuery({
     queryKey: siteOwnerKeys.site,
     queryFn: getOwnerSite,
-    enabled: props.section !== 'history',
+    enabled: props.section !== 'history' && props.section !== 'manual',
   })
   const closing = site.data?.status === 'closing'
   const labels: Record<SiteOwnerSectionId, string> = {
@@ -82,7 +83,19 @@ export function SiteOwnerCenter(props: {
     tickets: t('Ticket management'),
     mail: t('Email configuration'),
     settings: t('Site settings'),
+    manual: t('Site Owner Manual'),
     history: t('Historical site accounts'),
+  }
+
+  if (props.section === 'manual') {
+    return (
+      <SectionPageLayout>
+        <SectionPageLayout.Title>{labels.manual}</SectionPageLayout.Title>
+        <SectionPageLayout.Content>
+          <OwnerManualPanel />
+        </SectionPageLayout.Content>
+      </SectionPageLayout>
+    )
   }
 
   if (props.section === 'history') {

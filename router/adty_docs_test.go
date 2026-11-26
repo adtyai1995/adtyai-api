@@ -11,8 +11,10 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -298,4 +300,91 @@ func TestAdtyStaticDocsBundledFallbackAndDisable(t *testing.T) {
 	buildRouter().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "https://www.adtyai.com/docs", nil))
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "SPA_FALLBACK", rec.Body.String())
+}
+
+func TestAdtyPublicReferralInfoForSite(t *testing.T) {
+	db := setupAdtyDocsBrandDB(t)
+	require.NoError(t, db.AutoMigrate(&model.AdtySiteReferralRate{}, &model.AdtySiteReferralAffiliate{}))
+
+	// Save & restore main referral options.
+	prevOpts := map[string]string{}
+	_ = config.GlobalConfig.SaveToDB(func(key, value string) error {
+		if strings.HasPrefix(key, "adty_referral_setting.") {
+			prevOpts[key] = value
+		}
+		return nil
+	})
+	t.Cleanup(func() {
+		_ = config.GlobalConfig.LoadFromDB(prevOpts)
+	})
+
+	// 1. Main site disabled -> returns empty summary.
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"adty_referral_setting.enabled": "false",
+	}))
+	mainOff := service.AdtyPublicReferralInfoForSite(0)
+	assert.False(t, mainOff.Enabled)
+	assert.Empty(t, mainOff.DefaultRatePercent)
+	assert.Empty(t, mainOff.WithdrawMethods)
+
+	// 2. Main site enabled -> DefaultRate is already percentage (12.5 => "12.5").
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"adty_referral_setting.enabled":                "true",
+		"adty_referral_setting.default_rate":           "12.5",
+		"adty_referral_setting.freeze_days":            "7",
+		"adty_referral_setting.min_withdraw_usd":       "20",
+		"adty_referral_setting.usdt_withdraw_fee":      "1.5",
+		"adty_referral_setting.withdraw_cny_rate":      "7.2",
+		"adty_referral_setting.withdraw_methods":       `["usdt","alipay"]`,
+		"adty_referral_setting.withdraw_usdt_networks": `["TRC20","BEP20"]`,
+	}))
+	mainOn := service.AdtyPublicReferralInfoForSite(0)
+	assert.True(t, mainOn.Enabled)
+	assert.Equal(t, "12.5", mainOn.DefaultRatePercent)
+	assert.Equal(t, 7, mainOn.ObservationDays)
+	assert.Equal(t, "20", mainOn.MinWithdrawUSD)
+	assert.Equal(t, "1.5", mainOn.USDTWithdrawFeeUSD)
+	assert.Equal(t, []string{"usdt", "alipay"}, mainOn.WithdrawMethods)
+	assert.Equal(t, []string{"TRC20", "BEP20"}, mainOn.WithdrawUSDTNetworks)
+
+	// 3. Subsite enabled -> fractional Rate (0.15 => "15") + observation days + usable withdraw methods.
+	obs := int64(5)
+	minUSD := decimal.RequireFromString("10")
+	feeUSD := decimal.RequireFromString("1")
+	methodsStr := `["usdt"]`
+	netsStr := `["TRC20","XLAYER"]`
+	site := model.AdtySite{
+		OwnerUserId: 902,
+		Subdomain:   "ref1",
+		RootDomain:  "adtyai-fz.top",
+		Status:      model.AdtySiteStatusActive,
+		MarketingPolicy: model.AdtySiteMarketingPolicy{
+			ObservationDays:      &obs,
+			MinUSD:               &minUSD,
+			FeeUSD:               &feeUSD,
+			WithdrawMethods:      &methodsStr,
+			WithdrawUSDTNetworks: &netsStr,
+		},
+	}
+	require.NoError(t, db.Create(&site).Error)
+	require.NoError(t, db.Create(&model.AdtySiteReferralRate{
+		SiteId:  site.Id,
+		Rate:    decimal.RequireFromString("0.15"),
+		Enabled: true,
+	}).Error)
+
+	subOn := service.AdtyPublicReferralInfoForSite(site.Id)
+	assert.True(t, subOn.Enabled)
+	assert.Equal(t, "15", subOn.DefaultRatePercent)
+	assert.Equal(t, 5, subOn.ObservationDays)
+	assert.Equal(t, "10", subOn.MinWithdrawUSD)
+	assert.Equal(t, "1", subOn.USDTWithdrawFeeUSD)
+	assert.Equal(t, []string{"usdt"}, subOn.WithdrawMethods)
+	assert.Equal(t, []string{"TRC20", "XLAYER"}, subOn.WithdrawUSDTNetworks)
+
+	// 4. Subsite disabled -> returns disabled summary.
+	require.NoError(t, db.Model(&model.AdtySiteReferralRate{}).Where("site_id = ?", site.Id).Update("enabled", false).Error)
+	subOff := service.AdtyPublicReferralInfoForSite(site.Id)
+	assert.False(t, subOff.Enabled)
+	assert.Empty(t, subOff.DefaultRatePercent)
 }

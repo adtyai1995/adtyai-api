@@ -117,6 +117,7 @@ describe('adty-site-owner/sections (R-33 #1)', () => {
       'tickets',
       'mail',
       'settings',
+      'manual',
       'history',
     ]
     expect([...SITE_OWNER_SECTIONS]).toEqual(expected)

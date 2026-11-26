@@ -17,38 +17,104 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
+import { ref, type Ref } from 'vue'
+
 /**
- * VitePress white-label runtime helper for ADTY AI same-domain /docs/ mounting.
+ * VitePress white-label & live site-status runtime helper for ADTY AI.
  *
- * Behavior:
- * - On the standalone main docs domain (e.g. docs.adtyai.com at "/"), keeps the
- *   configured default brand (ADTY AI / https://api.adtyai.com / https://www.adtyai.com).
- * - When mounted under "/docs/" on any main site or subsite, fetches same-origin
- *   GET /api/status (zero CORS) and replaces brand name, logo, favicon, console
- *   URL, and API Base URL across text, links, and code blocks (including Copy).
+ * When mounted under "/docs/" on the main site or any subsite, fetches same-origin
+ * GET /api/status (zero CORS, fresh per page session) and drives:
+ * 1. Brand replacement (site name, logo, favicon, console URL, API Base URL).
+ * 2. Live referral summary (<ReferralSummary />) and automatic nav hiding when disabled.
+ * 3. Live payment methods (<PaymentMethodsList />).
+ * 4. Main-site-only gating (<MainSiteOnly />) so subsites hide reseller partner docs.
  */
+export interface PublicReferralInfo {
+  enabled: boolean
+  defaultRatePercent: string
+  observationDays: number
+  minWithdrawUSD: string
+  usdtWithdrawFeeUSD: string
+  withdrawMethods: string[]
+  withdrawUSDTNetworks: string[]
+}
+
 export interface SiteBrand {
+  loaded: boolean
   name: string
   apiBase: string
   siteUrl: string
   logo: string
   favicon: string
   isWhiteLabel: boolean
+  isSubsite: boolean
+  paymentMethods: string[]
+  referral: PublicReferralInfo
+}
+
+export const DEFAULT_REFERRAL: PublicReferralInfo = {
+  enabled: true,
+  defaultRatePercent: '',
+  observationDays: 7,
+  minWithdrawUSD: '',
+  usdtWithdrawFeeUSD: '',
+  withdrawMethods: [],
+  withdrawUSDTNetworks: [],
 }
 
 export const DEFAULT_BRAND: SiteBrand = {
+  loaded: false,
   name: 'ADTY AI',
   apiBase: 'https://api.adtyai.com',
   siteUrl: 'https://www.adtyai.com',
   logo: '',
   favicon: '',
   isWhiteLabel: false,
+  isSubsite: false,
+  paymentMethods: [],
+  referral: { ...DEFAULT_REFERRAL },
 }
 
-const CACHE_KEY_PREFIX = 'adty_docs_brand_v1:'
+const brandState = ref<SiteBrand>({
+  ...DEFAULT_BRAND,
+  referral: { ...DEFAULT_REFERRAL },
+})
+
+let inflightPromise: Promise<SiteBrand> | null = null
+
+export function useSiteBrand(): Ref<SiteBrand> {
+  return brandState
+}
 
 function normalizeOrigin(raw: string): string {
   return raw.trim().replace(/\/+$/, '')
+}
+
+function toStringArray(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map((item) => String(item || '').trim())
+    .filter((item) => item.length > 0)
+}
+
+function parseReferralInfo(data: Record<string, unknown>): PublicReferralInfo {
+  const raw = data.adty_referral_public
+  if (raw && typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>
+    return {
+      enabled: Boolean(obj.enabled),
+      defaultRatePercent: String(obj.default_rate_percent ?? '').trim(),
+      observationDays: Math.max(0, Number(obj.observation_days ?? 0) || 0),
+      minWithdrawUSD: String(obj.min_withdraw_usd ?? '').trim(),
+      usdtWithdrawFeeUSD: String(obj.usdt_withdraw_fee_usd ?? '').trim(),
+      withdrawMethods: toStringArray(obj.withdraw_methods),
+      withdrawUSDTNetworks: toStringArray(obj.withdraw_usdt_networks),
+    }
+  }
+  return {
+    ...DEFAULT_REFERRAL,
+    enabled: Boolean(data.adty_referral_enabled),
+  }
 }
 
 function shouldFetchSameOriginBrand(): boolean {
@@ -62,57 +128,84 @@ function shouldFetchSameOriginBrand(): boolean {
 
 export async function resolveSiteBrand(): Promise<SiteBrand> {
   if (typeof window === 'undefined' || !shouldFetchSameOriginBrand()) {
-    return DEFAULT_BRAND
+    const fallback: SiteBrand = {
+      ...DEFAULT_BRAND,
+      loaded: true,
+      referral: { ...DEFAULT_REFERRAL },
+    }
+    brandState.value = fallback
+    return fallback
   }
 
-  const cacheKey = CACHE_KEY_PREFIX + window.location.host
-  try {
-    const cached = sessionStorage.getItem(cacheKey)
-    if (cached) {
-      const parsed = JSON.parse(cached) as SiteBrand
-      if (parsed && parsed.name && parsed.apiBase) {
-        return parsed
-      }
-    }
-  } catch {
-    // Ignore restricted storage environments.
+  if (inflightPromise) {
+    return inflightPromise
   }
 
-  try {
-    const resp = await fetch('/api/status', {
-      method: 'GET',
-      credentials: 'omit',
-      headers: { Accept: 'application/json' },
-    })
-    if (!resp.ok) return DEFAULT_BRAND
-    const json = (await resp.json()) as { data?: Record<string, unknown> }
-    const data = json?.data
-    if (!data || typeof data !== 'object') return DEFAULT_BRAND
-
-    const name = String(data.system_name || '').trim() || DEFAULT_BRAND.name
-    const apiBase =
-      normalizeOrigin(String(data.server_address || '')) || DEFAULT_BRAND.apiBase
-    const siteUrl = normalizeOrigin(window.location.origin) || DEFAULT_BRAND.siteUrl
-    const logo = String(data.logo || '').trim()
-    const favicon = String(data.favicon || '').trim()
-
-    const brand: SiteBrand = {
-      name,
-      apiBase,
-      siteUrl,
-      logo,
-      favicon,
-      isWhiteLabel: true,
-    }
+  inflightPromise = (async () => {
     try {
-      sessionStorage.setItem(cacheKey, JSON.stringify(brand))
+      const resp = await fetch('/api/status', {
+        method: 'GET',
+        credentials: 'omit',
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+      })
+      if (!resp.ok) {
+        const fallback: SiteBrand = {
+          ...DEFAULT_BRAND,
+          loaded: true,
+          referral: { ...DEFAULT_REFERRAL },
+        }
+        brandState.value = fallback
+        return fallback
+      }
+      const json = (await resp.json()) as { data?: Record<string, unknown> }
+      const data = json?.data
+      if (!data || typeof data !== 'object') {
+        const fallback: SiteBrand = {
+          ...DEFAULT_BRAND,
+          loaded: true,
+          referral: { ...DEFAULT_REFERRAL },
+        }
+        brandState.value = fallback
+        return fallback
+      }
+
+      const name = String(data.system_name || '').trim() || DEFAULT_BRAND.name
+      const apiBase =
+        normalizeOrigin(String(data.server_address || '')) || DEFAULT_BRAND.apiBase
+      const siteUrl = normalizeOrigin(window.location.origin) || DEFAULT_BRAND.siteUrl
+      const logo = String(data.logo || '').trim()
+      const favicon = String(data.favicon || '').trim()
+      const isSubsite = Boolean(data.adty_site && typeof data.adty_site === 'object')
+      const paymentMethods = toStringArray(data.payment_methods)
+      const referral = parseReferralInfo(data)
+
+      const brand: SiteBrand = {
+        loaded: true,
+        name,
+        apiBase,
+        siteUrl,
+        logo,
+        favicon,
+        isWhiteLabel: true,
+        isSubsite,
+        paymentMethods,
+        referral,
+      }
+      brandState.value = brand
+      return brand
     } catch {
-      // Ignore storage quota errors.
+      const fallback: SiteBrand = {
+        ...DEFAULT_BRAND,
+        loaded: true,
+        referral: { ...DEFAULT_REFERRAL },
+      }
+      brandState.value = fallback
+      return fallback
     }
-    return brand
-  } catch {
-    return DEFAULT_BRAND
-  }
+  })()
+
+  return inflightPromise
 }
 
 function replaceBrandText(input: string, brand: SiteBrand): string {
@@ -129,8 +222,38 @@ function replaceBrandText(input: string, brand: SiteBrand): string {
   return out
 }
 
+function toggleNavItemVisibility(pathNeedle: string, hidden: boolean): void {
+  const anchors = document.querySelectorAll<HTMLAnchorElement>(
+    `nav a[href*="${pathNeedle}"], aside a[href*="${pathNeedle}"], .VPNav a[href*="${pathNeedle}"], .VPSidebar a[href*="${pathNeedle}"], .VPDocFooter a[href*="${pathNeedle}"]`
+  )
+  anchors.forEach((anchor) => {
+    const container =
+      anchor.closest<HTMLElement>('.VPSidebarItem') ||
+      anchor.closest<HTMLElement>('.VPNavScreenMenuLink') ||
+      anchor.closest<HTMLElement>('.VPNavBarMenuLink') ||
+      anchor.closest<HTMLElement>('.pager') ||
+      anchor
+    container.style.display = hidden ? 'none' : ''
+  })
+}
+
 export function applyBrandToDOM(brand: SiteBrand): void {
-  if (typeof document === 'undefined' || !brand.isWhiteLabel) return
+  if (typeof document === 'undefined') return
+
+  const root = document.documentElement
+  root.classList.toggle('adty-is-subsite', brand.isSubsite)
+  root.classList.toggle(
+    'adty-referral-disabled',
+    brand.loaded && !brand.referral.enabled
+  )
+
+  toggleNavItemVisibility('/guides/partner', brand.isSubsite)
+  toggleNavItemVisibility(
+    '/guides/referral',
+    brand.loaded && !brand.referral.enabled
+  )
+
+  if (!brand.isWhiteLabel) return
 
   if (document.title) {
     document.title = replaceBrandText(document.title, brand)
@@ -175,8 +298,13 @@ export function applyBrandToDOM(brand: SiteBrand): void {
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
   let node: Node | null = walker.nextNode()
   while (node) {
-    const parentTag = node.parentElement?.tagName
-    if (parentTag !== 'SCRIPT' && parentTag !== 'STYLE') {
+    const parentEl = node.parentElement
+    const parentTag = parentEl?.tagName
+    if (
+      parentTag !== 'SCRIPT' &&
+      parentTag !== 'STYLE' &&
+      !parentEl?.closest('[data-adty-keep-raw="true"]')
+    ) {
       const val = node.nodeValue
       if (
         val &&
