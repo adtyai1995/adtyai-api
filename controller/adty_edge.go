@@ -16,23 +16,63 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func isAllowedAdtyEdgeManifestIP(clientIP string) bool {
-	ip := net.ParseIP(strings.TrimSpace(clientIP))
-	if ip == nil {
+func isAllowedAdtyEdgeManifestRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
 		return false
 	}
-	if ip.IsLoopback() {
+	allowEnv := strings.TrimSpace(os.Getenv("ADTY_EDGE_ALLOW_IPS"))
+	configuredNodes := adty_setting.GetResellerSetting().EffectiveEdgeNodeIPs()
+	if allowEnv == "" && len(configuredNodes) == 0 {
 		return true
 	}
-	normalized := ip.String()
-	return slices.Contains(adty_setting.GetResellerSetting().EffectiveEdgeNodeIPs(), normalized)
+	clientIP := net.ParseIP(strings.TrimSpace(c.ClientIP()))
+	if clientIP == nil {
+		return false
+	}
+	normalized := clientIP.String()
+	if slices.Contains(configuredNodes, normalized) {
+		return true
+	}
+	if allowEnv != "" {
+		for _, raw := range strings.Split(allowEnv, ",") {
+			entry := strings.TrimSpace(raw)
+			if entry == "" {
+				continue
+			}
+			if strings.Contains(entry, "/") {
+				if _, cidr, err := net.ParseCIDR(entry); err == nil && cidr.Contains(clientIP) {
+					return true
+				}
+				continue
+			}
+			if allowed := net.ParseIP(entry); allowed != nil && allowed.Equal(clientIP) {
+				return true
+			}
+		}
+	}
+	// Direct loopback or private-bridge diagnostic calls (e.g. origin host / Docker
+	// gateway probes) are allowed only when no reverse-proxy forwarding headers are
+	// present, preventing a Fail-Open bypass behind local Nginx without TRUSTED_PROXIES.
+	hasProxyHeaders := strings.TrimSpace(c.GetHeader("X-Forwarded-For")) != "" ||
+		strings.TrimSpace(c.GetHeader("CF-Connecting-IP")) != "" ||
+		strings.TrimSpace(c.GetHeader("X-Real-IP")) != ""
+	if !hasProxyHeaders {
+		remoteHost := strings.TrimSpace(c.Request.RemoteAddr)
+		if host, _, err := net.SplitHostPort(remoteHost); err == nil {
+			remoteHost = host
+		}
+		if remoteIP := net.ParseIP(remoteHost); remoteIP != nil && (remoteIP.IsLoopback() || remoteIP.IsPrivate()) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetAdtyEdgeManifest serves the signed-token internal manifest for mainland edge nodes.
 // Edge nodes authenticate with X-Adty-Edge-Token matching ADTY_EDGE_TOKEN and use ETag/304.
 func GetAdtyEdgeManifest(c *gin.Context) {
 	c.Header("Cache-Control", "private, no-store")
-	if !isAllowedAdtyEdgeManifestIP(c.ClientIP()) {
+	if !isAllowedAdtyEdgeManifestRequest(c) {
 		c.AbortWithStatus(http.StatusForbidden)
 		return
 	}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -53,6 +54,7 @@ func init() {
 	model.AdtyTeamSettleHook = settleAdtyTeamQuotaHook
 	model.AdtyPreLockUserDeleteHook = preLockAdtyTeamForUserDelete
 	model.AdtyBeforeUserDeleteHook = closeAdtyTeamForDeletedLeader
+	model.AdtyAfterUserDeleteHook = applyAdtyUserDeleteServicePostEffects
 	model.AdtyCreditTeamTopUpTx = creditAdtyTeamTopUpTx
 }
 
@@ -2555,56 +2557,85 @@ func preLockAdtyTeamForUserDelete(tx *gorm.DB, userId int) error {
 
 func closeAdtyTeamForDeletedLeader(tx *gorm.DB, userId int) (model.AdtyUserDeletePostEffects, error) {
 	var effects model.AdtyUserDeletePostEffects
-	if !adtyTeamTableReadyFor(tx, &model.AdtyTeam{}) {
-		return effects, nil
+	if adtyTeamTableReadyFor(tx, &model.AdtyTeam{}) {
+		var team model.AdtyTeam
+		lookup := model.AdtyLockForUpdate(tx).Where("leader_user_id = ? AND status = ?", userId, model.AdtyTeamStatusActive).Limit(1).Find(&team)
+		if lookup.Error != nil {
+			return effects, lookup.Error
+		}
+		if lookup.RowsAffected > 0 {
+			disabledIDs, keyOwnerIDs, err := closeAdtyTeamTx(tx, &team)
+			if err != nil {
+				return effects, err
+			}
+			// R5-15: Keep independent employee full session revocation separate from
+			// ordinary team members whose sessions must remain active (only their
+			// team API key caches need invalidation). Session revocation + Redis
+			// tombstones are executed post-commit via RevokeAllUserSessions.
+			effects.DisabledEmployeeIDs = append(effects.DisabledEmployeeIDs, disabledIDs...)
+			effects.KeyOwnerIDs = append(effects.KeyOwnerIDs, keyOwnerIDs...)
+		}
+		// R3-053: Also deactivate non-leader team memberships and disable team keys
+		// owned by the deleted user so no ghost active rows remain.
+		if adtyTeamTableReadyFor(tx, &model.AdtyTeamMember{}) {
+			var members []model.AdtyTeamMember
+			if err := model.AdtyLockForUpdate(tx).
+				Where("user_id = ? AND status IN ?", userId, []string{model.AdtyTeamMemberActive, model.AdtyTeamMemberDisabled}).
+				Find(&members).Error; err != nil {
+				return effects, err
+			}
+			now := time.Now().Unix()
+			for i := range members {
+				nextStatus := model.AdtyTeamMemberLeft
+				updates := map[string]any{
+					"status":                nextStatus,
+					"disabled_auth_version": 0,
+				}
+				if members[i].IndependentEmployee {
+					updates["status"] = model.AdtyTeamMemberDeleted
+					updates["deleted_at"] = now
+				}
+				if err := tx.Model(&members[i]).Updates(updates).Error; err != nil {
+					return effects, err
+				}
+				if err := disableAdtyTeamMemberKeysTx(tx, members[i].TeamId, userId); err != nil {
+					return effects, err
+				}
+				effects.KeyOwnerIDs = append(effects.KeyOwnerIDs, userId)
+			}
+		}
 	}
-	var team model.AdtyTeam
-	lookup := model.AdtyLockForUpdate(tx).Where("leader_user_id = ? AND status = ?", userId, model.AdtyTeamStatusActive).Limit(1).Find(&team)
-	if lookup.Error != nil {
-		return effects, lookup.Error
+	// R2-P2-17: Clear per-user Casbin authorization rules and release any open
+	// assigned tickets across all user-deletion entry points (ManageUser/DeleteUser/DeleteSelf).
+	if tx.Migrator().HasTable("casbin_rule") {
+		if err := authz.ClearUserAuthorizationInTx(tx, userId); err != nil {
+			return effects, err
+		}
+		effects.AuthzCleared = true
 	}
-	if lookup.RowsAffected > 0 {
-		disabledIDs, keyOwnerIDs, err := closeAdtyTeamTx(tx, &team)
+	if adtyTeamTableReadyFor(tx, &model.AdtyTicket{}) {
+		_, ticketAudits, err := ReleaseAssigneeOpenTicketsWithAuditsTx(tx, userId, 0, "admin_delete")
 		if err != nil {
 			return effects, err
 		}
-		// R5-15: Keep independent employee full session revocation separate from
-		// ordinary team members whose sessions must remain active (only their
-		// team API key caches need invalidation). Session revocation + Redis
-		// tombstones are executed post-commit via RevokeAllUserSessions.
-		effects.DisabledEmployeeIDs = append(effects.DisabledEmployeeIDs, disabledIDs...)
-		effects.KeyOwnerIDs = append(effects.KeyOwnerIDs, keyOwnerIDs...)
-	}
-	// R3-053: Also deactivate non-leader team memberships and disable team keys
-	// owned by the deleted user so no ghost active rows remain.
-	if adtyTeamTableReadyFor(tx, &model.AdtyTeamMember{}) {
-		var members []model.AdtyTeamMember
-		if err := model.AdtyLockForUpdate(tx).
-			Where("user_id = ? AND status IN ?", userId, []string{model.AdtyTeamMemberActive, model.AdtyTeamMemberDisabled}).
-			Find(&members).Error; err != nil {
-			return effects, err
-		}
-		now := time.Now().Unix()
-		for i := range members {
-			nextStatus := model.AdtyTeamMemberLeft
-			updates := map[string]any{
-				"status":                nextStatus,
-				"disabled_auth_version": 0,
-			}
-			if members[i].IndependentEmployee {
-				updates["status"] = model.AdtyTeamMemberDeleted
-				updates["deleted_at"] = now
-			}
-			if err := tx.Model(&members[i]).Updates(updates).Error; err != nil {
-				return effects, err
-			}
-			if err := disableAdtyTeamMemberKeysTx(tx, members[i].TeamId, userId); err != nil {
-				return effects, err
-			}
-			effects.KeyOwnerIDs = append(effects.KeyOwnerIDs, userId)
-		}
+		effects.TicketAudits = append(effects.TicketAudits, ticketAudits...)
 	}
 	return effects, nil
+}
+
+func applyAdtyUserDeleteServicePostEffects(_ int, effects model.AdtyUserDeletePostEffects) {
+	if len(effects.TicketAudits) > 0 {
+		DeliverAdtyCommittedAudits(effects.TicketAudits)
+	}
+	if effects.AuthzCleared {
+		if err := authz.ReloadPolicy(); err != nil {
+			if !strings.Contains(err.Error(), "not initialized") {
+				common.SysError(common.LogText("failed to reload authz policy after user deletion: %s", err.Error()))
+			}
+		} else {
+			authz.NotifyPolicyChanged()
+		}
+	}
 }
 
 func disableAdtyTeamMemberKeysTx(tx *gorm.DB, teamId int64, userId int) error {

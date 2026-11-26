@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
@@ -33,6 +33,7 @@ import { Label } from '@/components/ui/label'
 import {
   issueTeamRegistration,
   listTeamRegistrations,
+  newTeamRegistrationIdempotencyKey,
   revokeTeamRegistration,
   teamRegistrationUrl,
   TEAM_REGISTRATION_MAX_TTL_HOURS,
@@ -91,8 +92,12 @@ export function TeamRegistrationLinksSection(props: {
   })
   const [ttlHours, setTtlHours] = useState('24')
   const [issuedUrl, setIssuedUrl] = useState('')
+  const [replayedNotice, setReplayedNotice] = useState('')
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
+  const issueAttemptRef = useRef<{ signature: string; key: string } | null>(
+    null
+  )
 
   const refresh = () => void queryClient.invalidateQueries({ queryKey })
 
@@ -103,11 +108,34 @@ export function TeamRegistrationLinksSection(props: {
       setError(t('Invalid parameters'))
       return
     }
+    const signature = `${props.actor}:${ttlSeconds}`
+    if (issueAttemptRef.current?.signature !== signature) {
+      issueAttemptRef.current = {
+        signature,
+        key: newTeamRegistrationIdempotencyKey(),
+      }
+    }
+    const idempotencyKey = issueAttemptRef.current.key
     setPending(true)
     setError('')
+    setReplayedNotice('')
     try {
-      const issued = await issueTeamRegistration(props.actor, ttlSeconds)
-      setIssuedUrl(teamRegistrationUrl(issued.code, linkOrigin))
+      const issued = await issueTeamRegistration(
+        props.actor,
+        ttlSeconds,
+        idempotencyKey
+      )
+      issueAttemptRef.current = null
+      if (issued.replayed && !issued.code) {
+        setIssuedUrl('')
+        setReplayedNotice(
+          t(
+            'This registration link was already created. The plaintext link is shown only once; if you did not copy it, revoke it in the list below and issue a new one.'
+          )
+        )
+      } else {
+        setIssuedUrl(teamRegistrationUrl(issued.code, linkOrigin))
+      }
       refresh()
     } catch (cause) {
       setError(t(getServerErrorMessage(cause, t('Failed to save'))))
@@ -221,7 +249,11 @@ export function TeamRegistrationLinksSection(props: {
                 value={ttlHours}
                 inputMode='decimal'
                 autoComplete='off'
-                onChange={(event) => setTtlHours(event.target.value)}
+                onChange={(event) => {
+                  setTtlHours(event.target.value)
+                  issueAttemptRef.current = null
+                  setReplayedNotice('')
+                }}
               />
             </div>
             <Button
@@ -252,6 +284,14 @@ export function TeamRegistrationLinksSection(props: {
                   {t('The registration link is shown once')}
                 </span>
               </div>
+            </div>
+          )}
+          {replayedNotice && (
+            <div
+              role='status'
+              className='bg-muted/40 text-muted-foreground max-w-2xl rounded-[10px] px-4 py-3 text-sm'
+            >
+              {replayedNotice}
             </div>
           )}
           {error && <p className='text-destructive text-sm'>{error}</p>}

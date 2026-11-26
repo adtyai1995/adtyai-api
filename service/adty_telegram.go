@@ -28,15 +28,42 @@ const adtyTelegramReply = "此机器人仅用于通知，请前往网站操作\n
 const adtyTelegramStaged = "已收到绑定请求，请回到网站确认。\n\nBinding request received. Confirm it on the website."
 const adtyTranslationNotReadyEn = "English is not ready"
 
+func adtyContainsASCIILatin(text string) bool {
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+			return true
+		}
+	}
+	return false
+}
+
+func adtyHasStandaloneEnglishParagraph(body string) bool {
+	normalized := strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\r", "\n")
+	for _, para := range strings.Split(normalized, "\n\n") {
+		para = strings.TrimSpace(para)
+		if para == "" {
+			continue
+		}
+		if !adtyContainsChinese(para) && adtyContainsASCIILatin(para) {
+			return true
+		}
+	}
+	return false
+}
+
 func adtyEnsureTelegramBilingualFallback(body string) string {
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return ""
 	}
+	if !adtyContainsChinese(body) && !strings.Contains(body, AdtyTranslationNotReady) {
+		return body
+	}
 	if strings.Contains(strings.ToLower(body), strings.ToLower(adtyTranslationNotReadyEn)) {
 		return body
 	}
-	if !strings.Contains(body, "\n\n") || strings.Contains(body, AdtyTranslationNotReady) {
+	if strings.Contains(body, AdtyTranslationNotReady) || !adtyHasStandaloneEnglishParagraph(body) {
 		return body + "\n\n" + adtyTranslationNotReadyEn
 	}
 	return body
@@ -775,6 +802,10 @@ func QueueAdtyTelegramNotice(userId int, purpose, body, eventKey string) error {
 		if err := tx.Select("id", "site_id", "staff_site_id", "status", "role").Where("id = ?", userId).Limit(1).Find(&user).Error; err != nil {
 			return err
 		}
+		if purpose == model.AdtyTelegramPurposeUser && user.StaffSiteId > 0 {
+			delivery.LastError = "staff cannot use user bot"
+			return tx.Create(&delivery).Error
+		}
 		var binding model.AdtyTelegramBinding
 		found := tx.Where("user_id = ? AND purpose = ? AND status = ?", userId, purpose, model.AdtyTelegramBindActive).Limit(1).Find(&binding)
 		if found.Error != nil {
@@ -1013,7 +1044,13 @@ func authorizeAndResolveAdtyTelegramDelivery(row *model.AdtyTelegramDelivery) (t
 	if user.Id == 0 {
 		return "", "", "user not found", ""
 	}
-	if user.Status != common.UserStatusEnabled || user.SiteId != binding.SiteId || user.SiteId != row.SiteId {
+	if user.Status != common.UserStatusEnabled {
+		return "", "", "user disabled or site changed", ""
+	}
+	if row.Purpose == model.AdtyTelegramPurposeUser && user.StaffSiteId > 0 {
+		return "", "", "staff cannot use user bot", ""
+	}
+	if user.SiteId != binding.SiteId || user.SiteId != row.SiteId {
 		return "", "", "user disabled or site changed", ""
 	}
 	if open, err := adtyTelegramSiteAccess(model.DB, binding.SiteId); err != nil {

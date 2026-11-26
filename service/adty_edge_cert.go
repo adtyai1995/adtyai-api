@@ -595,9 +595,20 @@ func adtyUpsertEdgeCertRow(ctx context.Context, certName, kind string, domainID 
 	}
 	updates := map[string]any{}
 	needsReissue := false
+	existingEnv := strings.TrimSpace(existing.Environment)
+	if existingEnv == "" {
+		existingEnv = model.AdtyEdgeACMEEnvProduction
+	}
 	if existing.AliasFQDN != aliasFQDN {
 		updates["alias_fqdn"] = aliasFQDN
-		needsReissue = true
+		updates["next_run_at"] = 0
+		if existing.Status != model.AdtyEdgeCertStatusReady || strings.TrimSpace(existing.CertPEM) == "" || strings.TrimSpace(existing.KeyEncrypted) == "" {
+			updates["status"] = model.AdtyEdgeCertStatusWaitingDNS
+			updates["last_error"] = ""
+			updates["attempts"] = 0
+			existing.Status = model.AdtyEdgeCertStatusWaitingDNS
+			existing.LastError = ""
+		}
 	}
 	if existing.Kind != kind {
 		updates["kind"] = kind
@@ -608,7 +619,9 @@ func adtyUpsertEdgeCertRow(ctx context.Context, certName, kind string, domainID 
 	}
 	if existing.Environment != env {
 		updates["environment"] = env
-		needsReissue = true
+		if existingEnv != env {
+			needsReissue = true
+		}
 	}
 	if needsReissue {
 		updates["status"] = model.AdtyEdgeCertStatusWaitingDNS
@@ -616,6 +629,9 @@ func adtyUpsertEdgeCertRow(ctx context.Context, certName, kind string, domainID 
 		updates["key_encrypted"] = ""
 		updates["not_before"] = 0
 		updates["not_after"] = 0
+		updates["last_issued_at"] = 0
+		updates["lease_token"] = ""
+		updates["lease_until"] = 0
 		updates["last_error"] = ""
 		updates["attempts"] = 0
 		updates["next_run_at"] = 0
@@ -802,12 +818,15 @@ func RunAdtyEdgeCertOnce(ctx context.Context, now time.Time) error {
 			failures = append(failures, fmt.Errorf("edge cert %s: %w", fresh.CertName, issueErr))
 		}
 
-		if err := model.DB.WithContext(ctx).Model(&model.AdtyEdgeCert{}).
+		res := model.DB.WithContext(ctx).Model(&model.AdtyEdgeCert{}).
 			Where("id = ? AND lease_token = ?", fresh.Id, leaseToken).
-			Updates(updates).Error; err != nil {
-			return err
+			Updates(updates)
+		if res.Error != nil {
+			return res.Error
 		}
-		adtySyncDomainEdgeCertColumns(ctx, fresh.DomainId, syncStatus, syncErr, syncNotAfter)
+		if res.RowsAffected > 0 {
+			adtySyncDomainEdgeCertColumns(ctx, fresh.DomainId, syncStatus, syncErr, syncNotAfter)
+		}
 	}
 	return errors.Join(failures...)
 }

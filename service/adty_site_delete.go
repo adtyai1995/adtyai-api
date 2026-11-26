@@ -208,6 +208,33 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 				return err
 			}
 		}
+		if tx.Migrator().HasTable(&model.AdtyTranslationHead{}) && tx.Migrator().HasTable(&model.AdtyTranslationJob{}) {
+			var objectKeys []string
+			if err := tx.Model(&model.AdtyTranslationHead{}).Where("site_id = ?", siteID).Pluck("object_key", &objectKeys).Error; err != nil {
+				return err
+			}
+			if len(objectKeys) > 0 {
+				if err := tx.Where("object_key IN ?", objectKeys).Delete(&model.AdtyTranslationJob{}).Error; err != nil {
+					return err
+				}
+			}
+		}
+		if tx.Migrator().HasTable(&AdtyTodoItem{}) {
+			if tx.Migrator().HasTable(&AdtyTodoStateHistory{}) {
+				var todoIDs []int64
+				if err := tx.Model(&AdtyTodoItem{}).Where("site_id = ?", siteID).Pluck("id", &todoIDs).Error; err != nil {
+					return err
+				}
+				if len(todoIDs) > 0 {
+					if err := tx.Where("todo_id IN ?", todoIDs).Delete(&AdtyTodoStateHistory{}).Error; err != nil {
+						return err
+					}
+				}
+			}
+			if err := tx.Where("site_id = ?", siteID).Delete(&AdtyTodoItem{}).Error; err != nil {
+				return err
+			}
+		}
 		for _, tableModel := range []any{
 			&model.AdtySiteWallet{},
 			&model.AdtySiteDomain{},
@@ -231,6 +258,9 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			&model.AdtySiteLookup{},
 			&model.AdtyNotificationRead{},
 			&model.AdtyTranslationHead{},
+			&model.AdtyGroupConfig{},
+			&model.AdtyGroupHealthSample{},
+			&model.AdtyGroupHealthAlert{},
 		} {
 			if tx.Migrator().HasTable(tableModel) {
 				if err := tx.Where("site_id = ?", siteID).Delete(tableModel).Error; err != nil {
@@ -324,17 +354,6 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 					return err
 				}
 			}
-			if tx.Migrator().HasTable(&model.UserSession{}) {
-				if err := tx.Model(&model.UserSession{}).
-					Where("user_id = ? AND issued_site_id = ? AND status <> ?", site.OwnerUserId, siteID, model.UserSessionStatusRevoked).
-					Updates(map[string]any{
-						"status":         model.UserSessionStatusRevoked,
-						"revoked_at":     time.Now().Unix(),
-						"revoked_reason": "site_deleted",
-					}).Error; err != nil {
-					return err
-				}
-			}
 		}
 		mode = "hard_deleted"
 		auditEvent, err = recordSiteAuditWithIntentTx(tx, siteID, "delete", adminID, oldSnapshot, map[string]any{"deleted": true}, reason)
@@ -352,6 +371,11 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 		}
 	}
 	if preservedOwnerID > 0 {
+		if model.DB.Migrator().HasTable(&model.UserSession{}) {
+			if _, err := model.RevokeUserSessionsByIssuedSite(preservedOwnerID, siteID, "site_deleted"); err != nil {
+				common.SysError(common.LogText("failed to revoke site sessions after hard-deleting site %d for preserved owner %d: %v", siteID, preservedOwnerID, err))
+			}
+		}
 		model.AdtyInvalidateUserCaches([]int{preservedOwnerID})
 		if err := model.PublishUserAuthCache(preservedOwnerID); err != nil {
 			common.SysError(common.LogText("failed to publish user auth cache after hard-deleting site %d for preserved owner %d: %v", siteID, preservedOwnerID, err))

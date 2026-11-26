@@ -110,4 +110,52 @@ func TestAdtyEdgeManifestEndpointAuthETagAndSiteContextBypass(t *testing.T) {
 	assert.Equal(t, "47.242.10.21", pullAfter.ClientIP)
 	assert.Contains(t, pullAfter.Nodes, "47.242.10.21")
 	assert.GreaterOrEqual(t, len(pullAfter.Nodes), 2)
+
+	// 5. Configured edge node allowlist enforces source IP while allowing direct local/private
+	// probes and rejecting proxied loopback requests without TRUSTED_PROXIES.
+	common.OptionMapRWMutex.Lock()
+	rsPtr.EdgeNodeIPs = []string{"47.242.10.21"}
+	common.OptionMapRWMutex.Unlock()
+
+	recAllowed := httptest.NewRecorder()
+	reqAllowed := httptest.NewRequest(http.MethodGet, "/api/adty/internal/edge/manifest", nil)
+	reqAllowed.Host = "origin.adtyaicf.top"
+	reqAllowed.RemoteAddr = "47.242.10.21:41235"
+	reqAllowed.Header.Set("X-Adty-Edge-Token", "secret-edge-token-123456")
+	engine.ServeHTTP(recAllowed, reqAllowed)
+	assert.Equal(t, http.StatusOK, recAllowed.Code)
+
+	recDenied := httptest.NewRecorder()
+	reqDenied := httptest.NewRequest(http.MethodGet, "/api/adty/internal/edge/manifest", nil)
+	reqDenied.Host = "origin.adtyaicf.top"
+	reqDenied.RemoteAddr = "198.51.100.9:41236"
+	reqDenied.Header.Set("X-Adty-Edge-Token", "secret-edge-token-123456")
+	engine.ServeHTTP(recDenied, reqDenied)
+	assert.Equal(t, http.StatusForbidden, recDenied.Code)
+
+	recProxiedLoopback := httptest.NewRecorder()
+	reqProxiedLoopback := httptest.NewRequest(http.MethodGet, "/api/adty/internal/edge/manifest", nil)
+	reqProxiedLoopback.Host = "origin.adtyaicf.top"
+	reqProxiedLoopback.RemoteAddr = "127.0.0.1:41237"
+	reqProxiedLoopback.Header.Set("X-Forwarded-For", "198.51.100.9")
+	reqProxiedLoopback.Header.Set("X-Adty-Edge-Token", "secret-edge-token-123456")
+	engine.ServeHTTP(recProxiedLoopback, reqProxiedLoopback)
+	assert.Equal(t, http.StatusForbidden, recProxiedLoopback.Code)
+
+	recDirectPrivate := httptest.NewRecorder()
+	reqDirectPrivate := httptest.NewRequest(http.MethodGet, "/api/adty/internal/edge/manifest", nil)
+	reqDirectPrivate.Host = "origin.adtyaicf.top"
+	reqDirectPrivate.RemoteAddr = "172.30.0.1:41238"
+	reqDirectPrivate.Header.Set("X-Adty-Edge-Token", "secret-edge-token-123456")
+	engine.ServeHTTP(recDirectPrivate, reqDirectPrivate)
+	assert.Equal(t, http.StatusOK, recDirectPrivate.Code)
+
+	t.Setenv("ADTY_EDGE_ALLOW_IPS", "203.0.113.0/24")
+	recCIDR := httptest.NewRecorder()
+	reqCIDR := httptest.NewRequest(http.MethodGet, "/api/adty/internal/edge/manifest", nil)
+	reqCIDR.Host = "origin.adtyaicf.top"
+	reqCIDR.RemoteAddr = "203.0.113.42:41239"
+	reqCIDR.Header.Set("X-Adty-Edge-Token", "secret-edge-token-123456")
+	engine.ServeHTTP(recCIDR, reqCIDR)
+	assert.Equal(t, http.StatusOK, recCIDR.Code)
 }

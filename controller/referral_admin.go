@@ -178,6 +178,10 @@ func UpdateReferralSettings(c *gin.Context) {
 		common.ApiErrorT(c, "The rate must be between 0 and 100")
 		return
 	}
+	if body.MinWithdrawUSD != nil && *body.MinWithdrawUSD <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
 	if !putFloat("default_rate", body.DefaultRate, 0) || !putInt("cookie_ttl_days", body.CookieTTLDays, 1) ||
 		!putInt("freeze_days", body.FreezeDays, 0) || !putFloat("min_withdraw_usd", body.MinWithdrawUSD, 0) ||
 		!putFloat("usdt_withdraw_fee", body.USDTWithdrawFee, 0) || !putInt("cancel_window_minutes", body.CancelWindowMinutes, 0) ||

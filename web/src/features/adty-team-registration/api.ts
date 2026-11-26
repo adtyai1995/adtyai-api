@@ -35,6 +35,7 @@ export type TeamRegistrationIssue = {
   created_by: number
   created_at: number
   status: string
+  replayed?: boolean
 }
 
 export type TeamRegistrationView = {
@@ -88,7 +89,7 @@ export async function listTeamRegistrations(
   return requireServerSuccess(res.data).data?.items ?? []
 }
 
-function newTeamRegistrationIdempotencyKey(): string {
+export function newTeamRegistrationIdempotencyKey(): string {
   if (
     typeof crypto !== 'undefined' &&
     typeof crypto.randomUUID === 'function'
@@ -110,7 +111,7 @@ export async function issueTeamRegistration(
     { headers: { 'Idempotency-Key': key } }
   )
   const issued = requireServerSuccess(res.data).data
-  if (!issued?.code) {
+  if (!issued || (!issued.code && !issued.replayed)) {
     throw createServerError(res.data, 'Failed to save')
   }
   return issued

@@ -104,6 +104,7 @@ func RecoverAdtyHostedPaymentForActor(ctx context.Context, ext *model.AdtyTopupO
 			}
 			return ErrAdtyPaymentConfirming
 		}
+		outcome := "failed"
 		if (errors.Is(err, model.ErrPaymentMethodMismatch) || errors.Is(err, model.ErrPaymentAmountMismatch)) && model.DB != nil {
 			if reviewErr := model.RecordPaymentOrphanEvent(&model.PaymentOrphanEvent{
 				Provider:    ext.Provider,
@@ -116,8 +117,9 @@ func RecoverAdtyHostedPaymentForActor(ctx context.Context, ext *model.AdtyTopupO
 			}); reviewErr != nil {
 				return reviewErr
 			}
+			outcome = "rejected"
 		}
-		if recordErr := recordAdtyHostedPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, "failed", operatorID); recordErr != nil {
+		if recordErr := recordAdtyHostedPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, outcome, operatorID); recordErr != nil {
 			return recordErr
 		}
 		return err
@@ -134,17 +136,30 @@ func RecoverAdtyHostedPaymentForActor(ctx context.Context, ext *model.AdtyTopupO
 	var credited int
 	var alreadyDone bool
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		lockedOrphans, _, lockErr := model.LockOrderPaymentOrphansForCreditTx(tx, ext.TradeNo, ext.Provider,
+			[]string{"hosted-query:" + ext.TradeNo, "epay-query:" + ext.TradeNo, "team-query:" + ext.TradeNo})
+		if lockErr != nil {
+			return lockErr
+		}
 		var err error
 		alreadyDone, credited, topUp, frozen, err = model.CompleteAdtyTopUpTx(tx, ext.TradeNo, *facts)
 		if err != nil {
 			return err
 		}
-		return tx.Model(&model.PaymentOrphanEvent{}).Where("event_id IN ? AND status = ?",
-			[]string{"hosted-query:" + ext.TradeNo, "epay-query:" + ext.TradeNo, "team-query:" + ext.TradeNo},
-			model.PaymentOrphanStatusPendingReview).Updates(map[string]any{
-			"status": model.PaymentOrphanStatusCredited, "resolution": model.PaymentOrphanStatusCredited,
-			"resolution_note": "Recovered by authenticated provider query", "resolved_at": common.GetTimestamp(), "update_time": common.GetTimestamp(),
-		}).Error
+		if len(lockedOrphans) == 0 {
+			return nil
+		}
+		orphanIDs := make([]int64, 0, len(lockedOrphans))
+		for _, row := range lockedOrphans {
+			orphanIDs = append(orphanIDs, row.ID)
+		}
+		now := common.GetTimestamp()
+		return tx.Model(&model.PaymentOrphanEvent{}).
+			Where("id IN ? AND status = ?", orphanIDs, model.PaymentOrphanStatusPendingReview).
+			Updates(map[string]any{
+				"status": model.PaymentOrphanStatusCredited, "resolution": model.PaymentOrphanStatusCredited,
+				"resolution_note": "Recovered by authenticated provider query", "resolved_at": now, "update_time": now,
+			}).Error
 	})
 	if err != nil {
 		// R5-23: Only queue a durable PaymentOrphanEvent when payment was actually

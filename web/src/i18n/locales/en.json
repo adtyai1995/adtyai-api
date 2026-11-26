@@ -11809,6 +11809,10 @@
     "Platform administrators and site owners can create teams or issue team registration links.": "Platform administrators and site owners can create teams or issue team registration links.",
     "Customer invite commission withdrawals are reviewed on the Withdrawals tab under Promotion Management.": "Customer invite commission withdrawals are reviewed on the Withdrawals tab under Promotion Management.",
     "Go to Promotion Management": "Go to Promotion Management",
-    "Recorded failed withdrawal": "Recorded failed withdrawal"
+    "Recorded failed withdrawal": "Recorded failed withdrawal",
+    "Issuance limit cannot be lower than already held and redeemed codes": "Issuance limit cannot be lower than already held and redeemed codes",
+    "Site margin recharge code": "Site margin recharge code",
+    "This registration link was already created. The plaintext link is shown only once; if you did not copy it, revoke it in the list below and issue a new one.": "This registration link was already created. The plaintext link is shown only once; if you did not copy it, revoke it in the list below and issue a new one.",
+    "Voucher issuance limit exceeded": "Voucher issuance limit exceeded"
   }
 }

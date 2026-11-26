@@ -1211,6 +1211,15 @@ func releaseStaffTicketsTx(tx *gorm.DB, staff model.AdtySiteStaff, ownerID int) 
 // assignee_id = 0, recording a transfer ticket event and an official audit
 // intent per released ticket.
 func ReleaseAssigneeOpenTicketsTx(tx *gorm.DB, assigneeID int, actorID int, reason string) (int64, error) {
+	released, _, err := releaseAssigneeOpenTicketsByScopeTx(tx, assigneeID, actorID, reason, false)
+	return released, err
+}
+
+// ReleaseAssigneeOpenTicketsWithAuditsTx releases all open (non-resolved,
+// non-closed) tickets currently assigned to assigneeID and returns the
+// recorded official audit logs so callers can deliver them immediately after
+// the enclosing transaction commits.
+func ReleaseAssigneeOpenTicketsWithAuditsTx(tx *gorm.DB, assigneeID int, actorID int, reason string) (int64, []model.AuditLog, error) {
 	return releaseAssigneeOpenTicketsByScopeTx(tx, assigneeID, actorID, reason, false)
 }
 
@@ -1218,12 +1227,31 @@ func ReleaseAssigneeOpenTicketsTx(tx *gorm.DB, assigneeID int, actorID int, reas
 // assigned to assigneeID (for partial revocations such as removing
 // adty_ticket:manage_all while keeping main-site adty_ticket:manage).
 func ReleaseAssigneeSubsiteOpenTicketsTx(tx *gorm.DB, assigneeID int, actorID int, reason string) (int64, error) {
+	released, _, err := releaseAssigneeOpenTicketsByScopeTx(tx, assigneeID, actorID, reason, true)
+	return released, err
+}
+
+// ReleaseAssigneeSubsiteOpenTicketsWithAuditsTx releases open subsite-handled
+// tickets assigned to assigneeID and returns the recorded official audit logs
+// for immediate post-commit delivery.
+func ReleaseAssigneeSubsiteOpenTicketsWithAuditsTx(tx *gorm.DB, assigneeID int, actorID int, reason string) (int64, []model.AuditLog, error) {
 	return releaseAssigneeOpenTicketsByScopeTx(tx, assigneeID, actorID, reason, true)
 }
 
-func releaseAssigneeOpenTicketsByScopeTx(tx *gorm.DB, assigneeID int, actorID int, reason string, subsiteOnly bool) (int64, error) {
+// DeliverAdtyCommittedAudits delivers a batch of committed official audit
+// intents immediately after the enclosing database transaction commits.
+func DeliverAdtyCommittedAudits(events []model.AuditLog) {
+	for _, event := range events {
+		if strings.TrimSpace(event.EventId) == "" {
+			continue
+		}
+		deliverAdtyCommittedAudit(event)
+	}
+}
+
+func releaseAssigneeOpenTicketsByScopeTx(tx *gorm.DB, assigneeID int, actorID int, reason string, subsiteOnly bool) (int64, []model.AuditLog, error) {
 	if tx == nil || assigneeID <= 0 || !tx.Migrator().HasTable(&model.AdtyTicket{}) {
-		return 0, nil
+		return 0, nil, nil
 	}
 	query := model.AdtyLockForUpdate(tx).
 		Where("assignee_id = ? AND status NOT IN ?", assigneeID, []string{model.AdtyTicketClosed, model.AdtyTicketResolved})
@@ -1232,19 +1260,20 @@ func releaseAssigneeOpenTicketsByScopeTx(tx *gorm.DB, assigneeID int, actorID in
 	}
 	var tickets []model.AdtyTicket
 	if err := query.Order("id ASC").Find(&tickets).Error; err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if len(tickets) == 0 {
-		return 0, nil
+		return 0, nil, nil
 	}
 	reason = strings.TrimSpace(reason)
+	audits := make([]model.AuditLog, 0, len(tickets))
 	for i := range tickets {
 		previousStatus := tickets[i].Status
 		previousAssignee := tickets[i].AssigneeId
 		if err := releaseTicketAssigneeTx(tx, &tickets[i], actorID); err != nil {
-			return int64(i), err
+			return int64(i), audits, err
 		}
-		if _, err := appendAdtyOfficialAuditTx(tx, actorID, tickets[i].SiteId, "ticket", strconv.FormatInt(tickets[i].Id, 10), "adty.ticket.status", reason, "",
+		auditEntry, err := appendAdtyOfficialAuditTx(tx, actorID, tickets[i].SiteId, "ticket", strconv.FormatInt(tickets[i].Id, 10), "adty.ticket.status", reason, "",
 			map[string]any{
 				"ticket_id":   tickets[i].Id,
 				"status":      previousStatus,
@@ -1258,11 +1287,15 @@ func releaseAssigneeOpenTicketsByScopeTx(tx *gorm.DB, assigneeID int, actorID in
 				"site_id":     tickets[i].SiteId,
 				"event":       "transfer",
 			},
-			model.AuditResultSuccess); err != nil {
-			return int64(i), err
+			model.AuditResultSuccess)
+		if err != nil {
+			return int64(i), audits, err
+		}
+		if auditEntry != nil {
+			audits = append(audits, *auditEntry)
 		}
 	}
-	return int64(len(tickets)), nil
+	return int64(len(tickets)), audits, nil
 }
 
 // AddAdtyTicketImage stores an attachment under the same visibility as the

@@ -74,7 +74,9 @@ var (
 	ErrAdtyVoucherWrongAccount   = common.NewMessage("This voucher cannot be used on this account")
 	ErrAdtyVoucherDenied         = common.NewMessage("Please redeem margin recharge codes from Site Owner Wallets")
 	ErrAdtyVoucherMarginOnly     = common.NewMessage("Only margin recharge codes can be redeemed from Site Owner Wallets")
-	ErrAdtyVoucherLimit          = common.NewMessage("Issuance limit is not configured")
+	ErrAdtyVoucherLimit               = common.NewMessage("Issuance limit is not configured")
+	ErrAdtyVoucherLimitExceeded       = common.NewMessage("Voucher issuance limit exceeded")
+	ErrAdtyVoucherLimitBelowCommitted = common.NewMessage("Issuance limit cannot be lower than already held and redeemed codes")
 	ErrAdtyVoucherFunds          = common.NewMessage("Insufficient available funds")
 	ErrAdtyVoucherRate           = common.NewMessage("Too many voucher attempts. Try again later")
 	ErrAdtyVoucherIntentConflict = common.NewMessage("Voucher issuance intent parameters do not match")
@@ -1532,7 +1534,7 @@ func SetAdtyVoucherIssuanceLimitWithAudit(actorId int, limit decimal.Decimal) (s
 			return err
 		}
 		if limit.LessThan(row.FrozenUSD.Add(row.SpentUSD)) {
-			return ErrAdtyVoucherLimit
+			return ErrAdtyVoucherLimitBelowCommitted
 		}
 		before := map[string]any{"limit_usd": row.LimitUSD.String()}
 		after := map[string]any{"limit_usd": limit.String()}
@@ -1623,8 +1625,11 @@ func freezeAdtyVoucherLiabilityTx(tx *gorm.DB, amount decimal.Decimal) error {
 	if err != nil {
 		return err
 	}
-	if row.LimitUSD.LessThanOrEqual(decimal.Zero) || row.FrozenUSD.Add(row.SpentUSD).Add(amount).GreaterThan(row.LimitUSD) {
+	if row.LimitUSD.LessThanOrEqual(decimal.Zero) {
 		return ErrAdtyVoucherLimit
+	}
+	if row.FrozenUSD.Add(row.SpentUSD).Add(amount).GreaterThan(row.LimitUSD) {
+		return ErrAdtyVoucherLimitExceeded
 	}
 	return tx.Model(row).Update("frozen_usd", row.FrozenUSD.Add(amount)).Error
 }

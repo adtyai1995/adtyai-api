@@ -830,13 +830,15 @@ func PostAdtyMainTeamRegistration(c *gin.Context) {
 	issued, eventID, err := service.CreateAdtyMainTeamRegistrationWithAudit(c.GetInt("id"), ttl, c.GetHeader("Idempotency-Key"))
 	if err != nil {
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorStatus(c, http.StatusConflict, err)
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
 			return
 		}
 		common.ApiError(c, err)
 		return
 	}
-	if eventID != "" {
+	if issued != nil && issued.Replayed {
+		markIdempotentReplayNoAudit(c)
+	} else if eventID != "" {
 		rememberPreparedAuditEvent(c, eventID)
 		markAuditLogged(c)
 	}
@@ -889,13 +891,15 @@ func PostAdtyOwnerSiteTeamRegistration(c *gin.Context) {
 	issued, eventID, err := service.CreateAdtyOwnerSiteTeamRegistrationWithAudit(c.GetInt("id"), site.Id, ttl, c.GetHeader("Idempotency-Key"))
 	if err != nil {
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorStatus(c, http.StatusConflict, err)
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
 			return
 		}
 		common.ApiError(c, err)
 		return
 	}
-	if eventID != "" {
+	if issued != nil && issued.Replayed {
+		markIdempotentReplayNoAudit(c)
+	} else if eventID != "" {
 		rememberPreparedAuditEvent(c, eventID)
 		markAuditLogged(c)
 	}

@@ -246,18 +246,25 @@ func getAwsModelID(requestModel string) string {
 }
 
 func awsHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types.NewAPIError, *dto.Usage) {
-
-	requestContext := c.Request.Context()
-	ctx, cancel := newAwsInvokeContext(requestContext)
-	defer cancel()
-
 	invokeInput, ok := a.AwsReq.(*bedrockruntime.InvokeModelInput)
 	if !ok || invokeInput == nil {
 		return types.NewError(fmt.Errorf("unexpected AWS invoke request type %T", a.AwsReq), types.ErrorCodeBadRequestBody), nil
 	}
-	awsResp, err := a.AwsClient.InvokeModel(ctx, invokeInput)
+
+	upstreamCtx, cancel, cancelErr := channel.DetachedNonStreamContext(c, info, 0)
+	if cancelErr != nil {
+		return cancelErr, nil
+	}
+	defer cancel()
+	if info == nil || info.IsStream || info.IsChannelTest {
+		var invokeCancel context.CancelFunc
+		upstreamCtx, invokeCancel = newAwsInvokeContext(upstreamCtx)
+		defer invokeCancel()
+	}
+
+	awsResp, err := a.AwsClient.InvokeModel(upstreamCtx, invokeInput)
 	if err != nil {
-		return newAwsInvokeError(requestContext, err, "InvokeModel"), nil
+		return newAwsInvokeError(upstreamCtx, err, "InvokeModel"), nil
 	}
 
 	claudeInfo := &claude.ClaudeResponseInfo{
@@ -378,17 +385,25 @@ streamLoop:
 func handleNovaRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types.NewAPIError, *dto.Usage) {
 	helper.StopStreamKeepAlive(c)
 
-	requestContext := c.Request.Context()
-	ctx, cancel := newAwsInvokeContext(requestContext)
-	defer cancel()
-
 	invokeInput, ok := a.AwsReq.(*bedrockruntime.InvokeModelInput)
 	if !ok || invokeInput == nil {
 		return types.NewError(fmt.Errorf("unexpected AWS invoke request type %T", a.AwsReq), types.ErrorCodeBadRequestBody), nil
 	}
-	awsResp, err := a.AwsClient.InvokeModel(ctx, invokeInput)
+
+	upstreamCtx, cancel, cancelErr := channel.DetachedNonStreamContext(c, info, 0)
+	if cancelErr != nil {
+		return cancelErr, nil
+	}
+	defer cancel()
+	if info == nil || info.IsStream || info.IsChannelTest {
+		var invokeCancel context.CancelFunc
+		upstreamCtx, invokeCancel = newAwsInvokeContext(upstreamCtx)
+		defer invokeCancel()
+	}
+
+	awsResp, err := a.AwsClient.InvokeModel(upstreamCtx, invokeInput)
 	if err != nil {
-		return newAwsInvokeError(requestContext, err, "InvokeModel"), nil
+		return newAwsInvokeError(upstreamCtx, err, "InvokeModel"), nil
 	}
 
 	// 解析Nova响应

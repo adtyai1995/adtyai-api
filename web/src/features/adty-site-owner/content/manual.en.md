@@ -121,10 +121,10 @@ Displays your **Earnings Wallet (`earnings`)** and **Margin Wallet (`margin`)** 
 
 | Pool | Used For | Platform Authorization | Notes |
 |---|---|---|---|
-| **90% Cycle Allowance** (10% reserve floor) | Customer recharge bonus coverage & referral commission coverage | **Required** (independent switches) | Once exhausted, a **new real deposit** (online margin top-up, earnings-to-margin transfer, margin voucher redemption, or admin credit) opens a fresh cycle and clears backlogged items |
+| **90% Cycle Allowance** (10% reserve floor) | Customer recharge bonus coverage & referral commission coverage | **Required** (independent switches) | Once exhausted, a **new real deposit** (online margin top-up, earnings-to-margin transfer, margin recharge code redemption, or admin credit) opens a fresh cycle and clears backlogged items |
 | **Excess Margin** (above 100% tier floor) | Customer quota voucher issuance when earnings are insufficient | **Not required** (automatic) | Does not consume the 90% cycle pool and never breaches your tier's 100% deposit floor; check this page or contact platform support for exact deposit requirements |
 
-- **Funding Margin**: Online margin top-up, instant earnings-to-margin transfer (no step-up needed, starts a new cycle immediately), or redeeming a platform-issued `site_margin` voucher.
+- **Funding Margin**: Online margin top-up, instant earnings-to-margin transfer (no step-up needed, starts a new cycle immediately), or redeeming a platform-issued `site_margin` recharge code.
 - **Site Tiers**: Evaluated automatically based on cumulative net valid customer recharge principal (owner top-ups, margin deposits, and team top-ups do not count). Refer to your Site Owner Center or contact platform support for tier and supply discount details.
 
 ### 3.12 Redemption Codes

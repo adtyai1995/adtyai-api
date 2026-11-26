@@ -802,14 +802,23 @@ func AdvanceUserSessionAuthVersion(userID int, sid string, expectedSessionVersio
 }
 
 func RevokeOtherUserSessions(userID int, currentSID, reason string) (int64, error) {
-	return revokeUserSessions(userID, currentSID, reason)
+	return revokeUserSessions(userID, currentSID, nil, reason)
 }
 
 func RevokeAllUserSessions(userID int, reason string) (int64, error) {
-	return revokeUserSessions(userID, "", reason)
+	return revokeUserSessions(userID, "", nil, reason)
 }
 
-func revokeUserSessions(userID int, excludedSID, reason string) (int64, error) {
+// RevokeUserSessionsByIssuedSite revokes active sessions issued on a specific site
+// using the same Redis deny-fence and tombstone protocol as RevokeAllUserSessions.
+func RevokeUserSessionsByIssuedSite(userID, siteID int, reason string) (int64, error) {
+	if userID <= 0 || siteID < 0 {
+		return 0, ErrUserSessionInvalid
+	}
+	return revokeUserSessions(userID, "", &siteID, reason)
+}
+
+func revokeUserSessions(userID int, excludedSID string, issuedSiteID *int, reason string) (int64, error) {
 	if userID <= 0 {
 		return 0, ErrUserSessionInvalid
 	}
@@ -819,6 +828,9 @@ func revokeUserSessions(userID int, excludedSID, reason string) (int64, error) {
 		query := DB.Where("user_id = ? AND status = ? AND expires_at > ?", userID, UserSessionStatusActive, now)
 		if excludedSID != "" {
 			query = query.Where("sid <> ?", excludedSID)
+		}
+		if issuedSiteID != nil {
+			query = query.Where("issued_site_id = ?", *issuedSiteID)
 		}
 		var candidates []UserSession
 		if err := query.Order("sid").Limit(userSessionRevokeBatchSize).Find(&candidates).Error; err != nil {

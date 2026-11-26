@@ -4,9 +4,9 @@ ADTY AI publishes clear service agreements, privacy commitments, and refund term
 
 ## Published Legal Documents
 
-- **[User Agreement](https://www.adtyai.com/legal/user-agreement)** — Terms of service governing account registration, API access, service availability, and acceptable usage.
-- **[Privacy Policy](https://www.adtyai.com/legal/privacy-policy)** — How account credentials, security logs, billing records, and API request metadata are collected, processed, and protected.
-- **[Refund Policy](https://www.adtyai.com/legal/refund-policy)** — Eligibility criteria, processing procedures, and timelines for top-up disputes and eligible refund requests.
+- **[User Agreement](https://www.adtyai.com/user-agreement)** — Terms of service governing account registration, API access, service availability, and acceptable usage.
+- **[Privacy Policy](https://www.adtyai.com/privacy-policy)** — How account credentials, security logs, billing records, and API request metadata are collected, processed, and protected.
+- **[Refund Policy](https://www.adtyai.com/refund-policy)** — Eligibility criteria, processing procedures, and timelines for top-up disputes and eligible refund requests.
 
 ## Acceptable Use Summary
 

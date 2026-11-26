@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -32,11 +34,15 @@ type adtySiteSnapshot struct {
 	apiOnly      map[string]bool            // 用途是 base_url 的自定义域名：只放行 relay
 	defaultAPI   map[int]string
 	loadedAt     time.Time
+	verCheckedAt time.Time
 	redisVersion string
 	loadErr      error
 }
 
-const adtySiteCacheVersionRedisKey = "adty:site_cache:version"
+const (
+	adtySiteCacheVersionRedisKey      = "adty:site_cache:version"
+	adtySiteCacheVersionCheckInterval = 2 * time.Second
+)
 
 var (
 	adtySiteCacheMu sync.Mutex
@@ -79,7 +85,7 @@ func currentAdtySiteCacheRedisVersion() string {
 	if !common.RedisEnabled || common.RDB == nil {
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	val, err := common.RDB.Get(ctx, adtySiteCacheVersionRedisKey).Result()
 	if err != nil {
@@ -88,14 +94,20 @@ func currentAdtySiteCacheRedisVersion() string {
 	return val
 }
 
+func newAdtySiteCacheVersionToken() string {
+	raw := make([]byte, 8)
+	_, _ = rand.Read(raw)
+	return fmt.Sprintf("%d:%s", time.Now().UnixNano(), hex.EncodeToString(raw))
+}
+
 // InvalidateAdtySiteCache 在站点或自定义域名变更后调用，下次读取时重建并广播版本到其他实例。
 func InvalidateAdtySiteCache() {
 	adtySiteCacheMu.Lock()
 	adtySiteCache = nil
 	adtySiteCacheMu.Unlock()
 	if common.RedisEnabled && common.RDB != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = common.RDB.Incr(ctx, adtySiteCacheVersionRedisKey).Err()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_ = common.RDB.Set(ctx, adtySiteCacheVersionRedisKey, newAdtySiteCacheVersionToken(), 0).Err()
 		cancel()
 	}
 }
@@ -109,17 +121,29 @@ func adtySiteCacheTTL() time.Duration {
 }
 
 func loadAdtySiteSnapshot() *adtySiteSnapshot {
+	ttl := adtySiteCacheTTL()
+	adtySiteCacheMu.Lock()
+	if adtySiteCache != nil && time.Since(adtySiteCache.loadedAt) < ttl &&
+		(!common.RedisEnabled || common.RDB == nil || time.Since(adtySiteCache.verCheckedAt) < adtySiteCacheVersionCheckInterval) {
+		cached := adtySiteCache
+		adtySiteCacheMu.Unlock()
+		return cached
+	}
+	adtySiteCacheMu.Unlock()
+
 	redisVer := currentAdtySiteCacheRedisVersion()
+	now := time.Now()
 	adtySiteCacheMu.Lock()
 	defer adtySiteCacheMu.Unlock()
-	if adtySiteCache != nil && time.Since(adtySiteCache.loadedAt) < adtySiteCacheTTL() &&
+	if adtySiteCache != nil && time.Since(adtySiteCache.loadedAt) < ttl &&
 		(redisVer == "" || adtySiteCache.redisVersion == redisVer) {
+		adtySiteCache.verCheckedAt = now
 		return adtySiteCache
 	}
 	snapshot := &adtySiteSnapshot{
 		byId: map[int]*model.AdtySite{}, byHost: map[string]*model.AdtySite{},
 		byCustom: map[string]*model.AdtySite{}, apiOnly: map[string]bool{}, defaultAPI: map[int]string{},
-		loadedAt: time.Now(), redisVersion: redisVer,
+		loadedAt: now, verCheckedAt: now, redisVersion: redisVer,
 	}
 	var sites []model.AdtySite
 	if err := model.DB.Find(&sites).Error; err != nil {

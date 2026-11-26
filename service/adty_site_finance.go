@@ -554,6 +554,7 @@ func ReviewAdtyAnomalyDispositionWithAudit(id int64, operatorID int, status, not
 		if row.Status == "closed" || (row.Status == "reviewing" && status != "closed") || (row.Status != "open" && row.Status != "reviewing") {
 			return common.NewMessage("Invalid parameters")
 		}
+		beforeStatus, beforeNote := row.Status, row.Note
 		if err := tx.Model(&row).Updates(map[string]any{
 			"status": status, "note": note, "operator_id": operatorID,
 		}).Error; err != nil {
@@ -565,7 +566,7 @@ func ReviewAdtyAnomalyDispositionWithAudit(id int64, operatorID int, status, not
 		var auditErr error
 		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, operatorID, row.SiteId, "anomaly_disposition", strconv.FormatInt(row.Id, 10),
 			"adty.anomaly_disposition.review", note, "",
-			map[string]any{"status": row.Status, "note": row.Note},
+			map[string]any{"status": beforeStatus, "note": beforeNote},
 			map[string]any{"status": status, "note": note, "kind": row.Kind, "order_ref": row.OrderRef},
 			model.AuditResultSuccess)
 		return auditErr

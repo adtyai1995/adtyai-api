@@ -4,9 +4,9 @@ ADTY AI 在平台控制台公开完整的用户协议、隐私政策与退款说
 
 ## 官方条款链接
 
-- **[用户协议](https://www.adtyai.com/legal/user-agreement)** —— 账号注册、API 接口使用规范、服务可用性说明与双方权责条款。
-- **[隐私政策](https://www.adtyai.com/legal/privacy-policy)** —— 账号认证信息、安全日志、账单流水及接口调用元数据的收集、处理与保护原则。
-- **[退款政策](https://www.adtyai.com/legal/refund-policy)** —— 充值争议处理流程、可退款情形认定标准及审核时效说明。
+- **[用户协议](https://www.adtyai.com/user-agreement)** —— 账号注册、API 接口使用规范、服务可用性说明与双方权责条款。
+- **[隐私政策](https://www.adtyai.com/privacy-policy)** —— 账号认证信息、安全日志、账单流水及接口调用元数据的收集、处理与保护原则。
+- **[退款政策](https://www.adtyai.com/refund-policy)** —— 充值争议处理流程、可退款情形认定标准及审核时效说明。
 
 ## 合理使用规范
 

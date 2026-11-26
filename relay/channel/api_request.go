@@ -817,27 +817,30 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	return resp, nil
 }
 
-// newAPIRequestForMode keeps streaming requests bound to the client disconnect
-// context while detaching non-streaming requests after dispatch (R-36 #5) so a
-// mid-response client disconnect cannot abort upstream response reading and
-// trigger a 100% pre-consume refund for an already-billed upstream call.
-func newAPIRequestForMode(c *gin.Context, info *common.RelayInfo, fullRequestURL string, requestBody io.Reader) (*http.Request, context.CancelFunc, error) {
-	if c == nil || c.Request == nil {
-		return nil, nil, errors.New("client request is missing")
+// DetachedNonStreamContext keeps streaming and channel-test requests bound to
+// the client disconnect context while detaching billable non-streaming requests
+// after dispatch (R-36 #5) so a mid-response client disconnect cannot abort
+// upstream response reading and trigger a 100% pre-consume refund.
+func DetachedNonStreamContext(c *gin.Context, info *common.RelayInfo, defaultTimeout time.Duration) (context.Context, context.CancelFunc, *types.NewAPIError) {
+	var baseCtx context.Context
+	if c != nil && c.Request != nil {
+		baseCtx = c.Request.Context()
 	}
-	if info == nil || info.IsStream {
-		req, err := newClientAPIRequest(c, fullRequestURL, requestBody)
-		return req, nil, err
-	}
-	baseCtx := c.Request.Context()
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
-	timeout := 300 * time.Second
+	if info == nil || info.IsStream || info.IsChannelTest {
+		return baseCtx, func() {}, nil
+	}
+	if err := baseCtx.Err(); err != nil {
+		return nil, nil, types.NewError(err, types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry(), types.ErrOptionWithHideErrMsg("client closed request"))
+	}
+	timeout := defaultTimeout
+	if timeout <= 0 {
+		timeout = 300 * time.Second
+	}
 	if common2.RelayTimeout > 0 {
-		if configured := time.Duration(common2.RelayTimeout) * time.Second; configured > timeout {
-			timeout = configured
-		}
+		timeout = time.Duration(common2.RelayTimeout) * time.Second
 	}
 	if deadline, ok := baseCtx.Deadline(); ok {
 		if remaining := time.Until(deadline); remaining > timeout {
@@ -848,6 +851,24 @@ func newAPIRequestForMode(c *gin.Context, info *common.RelayInfo, fullRequestURL
 		detacher.DetachReservationHeartbeat(timeout + 2*time.Minute)
 	}
 	upstreamCtx, cancel := context.WithTimeout(context.WithoutCancel(baseCtx), timeout)
+	return upstreamCtx, cancel, nil
+}
+
+// newAPIRequestForMode keeps streaming and channel-test requests bound to the
+// client disconnect context while detaching billable non-streaming requests
+// after dispatch (R-36 #5).
+func newAPIRequestForMode(c *gin.Context, info *common.RelayInfo, fullRequestURL string, requestBody io.Reader) (*http.Request, context.CancelFunc, error) {
+	if c == nil || c.Request == nil {
+		return nil, nil, errors.New("client request is missing")
+	}
+	if info == nil || info.IsStream || info.IsChannelTest {
+		req, err := newClientAPIRequest(c, fullRequestURL, requestBody)
+		return req, nil, err
+	}
+	upstreamCtx, cancel, apiErr := DetachedNonStreamContext(c, info, 300*time.Second)
+	if apiErr != nil {
+		return nil, nil, apiErr.Err
+	}
 	req, err := http.NewRequestWithContext(upstreamCtx, c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		cancel()

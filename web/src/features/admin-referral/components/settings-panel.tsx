@@ -215,10 +215,39 @@ export function SettingsPanel(props: { canWrite: boolean }) {
     usdtEnabled && withdrawUsdtNetworks.length === 0
       ? t('Choose at least one chain')
       : ''
-  const minMissingError =
-    anyCashEnabled && drafts.min_withdraw_usd.trim() === '' ? t('Not set') : ''
-  const feeMissingError =
-    usdtEnabled && drafts.usdt_withdraw_fee.trim() === '' ? t('Not set') : ''
+  const minRaw = drafts.min_withdraw_usd.trim()
+  const minVal = Number(minRaw)
+  let minMissingError = ''
+  if (anyCashEnabled && minRaw === '') {
+    minMissingError = t('Not set')
+  } else if (
+    (anyCashEnabled || minRaw !== '') &&
+    (!Number.isFinite(minVal) || !(minVal > 0))
+  ) {
+    minMissingError = t('Must be greater than 0')
+  }
+
+  const feeRaw = drafts.usdt_withdraw_fee.trim()
+  const feeVal = Number(feeRaw)
+  let feeMissingError = ''
+  let minFeeError = false
+  if (usdtEnabled) {
+    if (feeRaw === '') {
+      feeMissingError = t('Not set')
+    } else if (!Number.isFinite(feeVal) || feeVal < 0) {
+      feeMissingError = t('Invalid parameters')
+    } else if (
+      minRaw !== '' &&
+      Number.isFinite(minVal) &&
+      minVal > 0 &&
+      minVal <= feeVal
+    ) {
+      feeMissingError = t(
+        'Minimum withdrawal must be greater than the USDT fee'
+      )
+      minFeeError = true
+    }
+  }
   const cnyRateNum = Number(drafts.cny_rate)
   const cnyRateMissingError =
     alipayEnabled &&
@@ -317,7 +346,7 @@ export function SettingsPanel(props: { canWrite: boolean }) {
               step='0.01'
               value={drafts.min_withdraw_usd}
               placeholder={t('Not set')}
-              aria-invalid={Boolean(minMissingError)}
+              aria-invalid={Boolean(minMissingError || minFeeError)}
               onChange={(event) => set('min_withdraw_usd', event.target.value)}
             />
             {minMissingError ? (

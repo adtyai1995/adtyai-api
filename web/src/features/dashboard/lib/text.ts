@@ -26,6 +26,7 @@ const TRANSLATION_NOT_READY_MARKER_SET = new Set(
 )
 
 const NON_TEXT_NOTIFICATION_SOURCES = new Set(['channel_watcher'])
+const HAN_CHAR_REGEX = /\p{Script=Han}/u
 
 const WRAPPER_TAGS = new Set(['p', 'div', 'span', 'small', 'em', 'i'])
 const CONTAINER_TAGS = new Set(['p', 'div'])
@@ -68,6 +69,7 @@ export interface LocalizedAnnouncementFields {
   id?: number | string
   title?: string
   title_en?: string
+  title_translation_status?: string
   content?: string
   content_en?: string
   english?: string
@@ -603,17 +605,22 @@ export function extractChineseAnnouncementContent(
   return stripTranslationNotReadyMarkers(current)
 }
 
+function isNonTextNotification(item: LocalizedAnnouncementFields): boolean {
+  const rawSource = item.source?.trim().toLowerCase() ?? ''
+  if (NON_TEXT_NOTIFICATION_SOURCES.has(rawSource)) {
+    return true
+  }
+  const idStr = item.id !== undefined && item.id !== null ? String(item.id) : ''
+  return idStr.startsWith('watcher:')
+}
+
 function resolveChineseSourceText(
   item: LocalizedAnnouncementFields,
   rawContent: string
 ): string {
   const rawSource = item.source?.trim() ?? ''
   if (!rawSource) return ''
-  if (NON_TEXT_NOTIFICATION_SOURCES.has(rawSource.toLowerCase())) {
-    return ''
-  }
-  const idStr = item.id !== undefined && item.id !== null ? String(item.id) : ''
-  if (idStr.startsWith('watcher:')) {
+  if (isNonTextNotification(item)) {
     return ''
   }
   const hasTranslationMeta =
@@ -685,17 +692,30 @@ export function resolveLocalizedAnnouncement(
   const translationStatus = item.translation_status?.trim().toLowerCase() ?? ''
   const hasUnreadyStatus =
     translationStatus !== '' && translationStatus !== 'ready'
-  const hasNotReadyNotice = isTranslationNotReadyMarker(
-    item.translation_notice
-  )
+  const titleTranslationStatus =
+    item.title_translation_status?.trim().toLowerCase() ?? ''
+  const hasUnreadyTitleStatus =
+    titleTranslationStatus !== '' && titleTranslationStatus !== 'ready'
+  const hasNotReadyNotice =
+    (item.translation_notice?.trim() ?? '') !== '' ||
+    isTranslationNotReadyMarker(item.translation_notice)
+  const titleHasChinese = titleZh !== '' && HAN_CHAR_REGEX.test(titleZh)
+  const titleNotReady =
+    titleEn === '' &&
+    (titleHasNotReadyMarker ||
+      hasUnreadyTitleStatus ||
+      (!isNonTextNotification(item) &&
+        titleHasChinese &&
+        titleTranslationStatus !== 'ready'))
+  const contentNotReady =
+    contentEn === '' &&
+    (contentEnHasNotReadyMarker || contentHadNotReadyMarker)
   const translationNotReady =
     isEnglish &&
-    ((contentEn === '' &&
-      (contentEnHasNotReadyMarker ||
-        contentHadNotReadyMarker ||
-        hasUnreadyStatus ||
-        hasNotReadyNotice)) ||
-      (titleHasNotReadyMarker && titleEn === ''))
+    (titleNotReady ||
+      contentNotReady ||
+      hasUnreadyStatus ||
+      hasNotReadyNotice)
 
   const rawExtra = item.extra?.trim() ?? ''
   const bilingualTitle = titleZh && titleEn ? `${titleZh} / ${titleEn}` : ''

@@ -32,7 +32,7 @@ func SetAdtyRouter(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/internal/flush-batch", "session", "")
 	apiRouter.POST("/adty/internal/flush-batch", controller.FlushAdtyBatchUpdates)
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/internal/edge/manifest", "session", "")
-	apiRouter.GET("/adty/internal/edge/manifest", middleware.GlobalAPIRateLimit(), controller.GetAdtyEdgeManifest)
+	apiRouter.GET("/adty/internal/edge/manifest", controller.GetAdtyEdgeManifest)
 	registerAdtyEpayRoutes(apiRouter)
 	registerAdtyReferralRoutes(apiRouter)
 	registerAdtySiteRoutes(apiRouter)

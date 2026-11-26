@@ -252,6 +252,7 @@ controller/plugin_native_e2e_test.go
 controller/plugin_protocol_limiter_test.go
 controller/plugin_protocol_sdk_test.go
 controller/plugin_protocol_test.go
+controller/rankings.go
 controller/ratio_sync_test.go
 controller/ready_test.go
 controller/redemption.go
@@ -530,6 +531,7 @@ model/topup_quota_scale_test.go
 model/topup_refund_shortfall_test.go
 model/usedata_cache_test.go
 model/usedata_flow_test.go
+model/usedata_rankings.go
 model/user_access_token_scope_version_test.go
 model/user_authentication_test.go
 model/user_cache_auth_version_test.go
@@ -1011,6 +1013,7 @@ service/oauth_verification.go
 service/openrouter_cache_create_tokens_test.go
 service/protected_fetch_client_test.go
 service/quota_saturation_test.go
+service/rankings.go
 service/referral_test.go
 service/relay_error_test.go
 service/responses_usage_test.go
@@ -1543,7 +1546,20 @@ web/src/features/profile/__tests__/retired-checkin.test.tsx
 web/src/features/profile/__tests__/settings.test.tsx
 web/src/features/profile/components/checkin-calendar-card.tsx
 web/src/features/rankings/__tests__/loading-states.test.tsx
+web/src/features/rankings/api.ts
+web/src/features/rankings/components/entity-links.tsx
+web/src/features/rankings/components/growth-text.tsx
+web/src/features/rankings/components/index.ts
+web/src/features/rankings/components/market-share-section.tsx
+web/src/features/rankings/components/model-leaderboard.tsx
+web/src/features/rankings/components/models-section.tsx
+web/src/features/rankings/components/pulse-section.tsx
+web/src/features/rankings/components/rankings-hero.tsx
+web/src/features/rankings/hooks/use-rankings.ts
+web/src/features/rankings/index.tsx
+web/src/features/rankings/lib/format.ts
 web/src/features/rankings/lib/index.ts
+web/src/features/rankings/types.ts
 web/src/features/recharge-audit/__tests__/payment-orphan-review.test.tsx
 web/src/features/recharge-audit/__tests__/provider-actions.test.tsx
 web/src/features/recharge-audit/__tests__/query-errors.test.tsx

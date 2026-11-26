@@ -1724,6 +1724,8 @@ func (user *User) deleteWithOptions(identity *AuthSessionIdentity, actorRole int
 			}
 			postEffects.DisabledEmployeeIDs = append(postEffects.DisabledEmployeeIDs, effects.DisabledEmployeeIDs...)
 			postEffects.KeyOwnerIDs = append(postEffects.KeyOwnerIDs, effects.KeyOwnerIDs...)
+			postEffects.AuthzCleared = postEffects.AuthzCleared || effects.AuthzCleared
+			postEffects.TicketAudits = append(postEffects.TicketAudits, effects.TicketAudits...)
 		}
 		if err := disableDeletedUserAffiliatesTx(tx, user.Id); err != nil {
 			return err
@@ -1791,6 +1793,9 @@ func applyAdtyUserDeletePostEffects(deletedUserID int, effects AdtyUserDeletePos
 		invalidatedKeys[uid] = struct{}{}
 		_ = InvalidateUserTokensCache(uid)
 	}
+	if AdtyAfterUserDeleteHook != nil {
+		AdtyAfterUserDeleteHook(deletedUserID, effects)
+	}
 }
 
 func (user *User) HardDelete() (int64, error) {
@@ -1843,6 +1848,8 @@ func (user *User) hardDelete(actorRole int, denyAdminTarget bool) (int64, error)
 			}
 			postEffects.DisabledEmployeeIDs = append(postEffects.DisabledEmployeeIDs, effects.DisabledEmployeeIDs...)
 			postEffects.KeyOwnerIDs = append(postEffects.KeyOwnerIDs, effects.KeyOwnerIDs...)
+			postEffects.AuthzCleared = postEffects.AuthzCleared || effects.AuthzCleared
+			postEffects.TicketAudits = append(postEffects.TicketAudits, effects.TicketAudits...)
 		}
 		if err := disableDeletedUserAffiliatesTx(tx, user.Id); err != nil {
 			return err

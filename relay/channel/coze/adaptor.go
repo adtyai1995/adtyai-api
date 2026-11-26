@@ -63,11 +63,36 @@ func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dt
 	return nil, errors.New("not implemented")
 }
 
+type cozeCancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cozeCancelBody) Close() error {
+	err := b.ReadCloser.Close()
+	if b.cancel != nil {
+		b.cancel()
+	}
+	return err
+}
+
 // DoRequest implements channel.Adaptor.
 func (a *Adaptor) DoRequest(c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (any, error) {
 	if info.IsStream {
 		return channel.DoApiRequest(a, c, info, requestBody)
 	}
+	// R2-P1-08: 在第 1 步创建对话前先检查客户端取消并获取解耦上下文，避免第 1 步或
+	// 轮询/拉取详情期间客户端断开导致第 2/3 步被中止而触发 100% 退费。
+	upstreamCtx, upstreamCancel, cancelErr := channel.DetachedNonStreamContext(c, info, 0)
+	if cancelErr != nil {
+		return nil, cancelErr
+	}
+	keepCancel := false
+	defer func() {
+		if !keepCancel && upstreamCancel != nil {
+			upstreamCancel()
+		}
+	}()
 	// 首先发送创建消息请求，成功后再发送获取消息请求
 	// 发送创建消息请求
 	resp, err := channel.DoApiRequest(a, c, info, requestBody)
@@ -89,9 +114,9 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *common.RelayInfo, requestBody 
 	}
 	c.Set("coze_conversation_id", cozeResponse.Data.ConversationId)
 	c.Set("coze_chat_id", cozeResponse.Data.Id)
-	// 轮询检查消息是否完成（R6-045 / R7-017 / R10-017: 轮询完成后释放 pollCtx，
-	// 详情请求改用 c.Request.Context() 避免 DoRequest 返回时提前取消响应体读取）
-	pollCtx, pollCancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
+	// 轮询检查消息是否完成（R6-045 / R7-017 / R10-017 / R2-P1-08: 使用解耦上下文，
+	// 轮询完成后释放 pollCtx，详情请求沿用 upstreamCtx 并在响应体关闭时释放 upstreamCancel）
+	pollCtx, pollCancel := context.WithTimeout(upstreamCtx, 2*time.Minute)
 	ticker := time.NewTicker(time.Second)
 	for {
 		err, isComplete := checkIfChatComplete(pollCtx, a, c, info)
@@ -118,7 +143,15 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *common.RelayInfo, requestBody 
 	ticker.Stop()
 	pollCancel()
 	// 发送获取消息请求
-	return getChatDetail(c.Request.Context(), a, c, info)
+	detailResp, err := getChatDetail(upstreamCtx, a, c, info)
+	if err != nil {
+		return nil, err
+	}
+	if detailResp != nil && detailResp.Body != nil && upstreamCancel != nil {
+		detailResp.Body = &cozeCancelBody{ReadCloser: detailResp.Body, cancel: upstreamCancel}
+		keepCancel = true
+	}
+	return detailResp, nil
 }
 
 // DoResponse implements channel.Adaptor.

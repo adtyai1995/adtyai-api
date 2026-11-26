@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -237,6 +239,9 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 		TLSClientConfig:  transport.TLSClientConfig,
 	}
 	reqCtx := c.Request.Context()
+	if reqCtx.Err() != nil {
+		return nil, types.NewError(reqCtx.Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+	}
 	dialCtx, dialCancel := context.WithTimeout(reqCtx, 30*time.Second)
 	defer dialCancel()
 
@@ -245,6 +250,9 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 		_ = resp.Body.Close()
 	}
 	if dialErr != nil {
+		if reqCtx.Err() != nil {
+			return nil, types.NewError(reqCtx.Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
 		if resp != nil {
 			return nil, types.NewErrorWithStatusCode(
 				fmt.Errorf("failed to connect to websocket: %w, status: %d", dialErr, resp.StatusCode),
@@ -259,8 +267,6 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 		)
 	}
 	defer conn.Close()
-	stopCancel := context.AfterFunc(reqCtx, func() { _ = conn.Close() })
-	defer stopCancel()
 
 	payload, marshalErr := common.Marshal(volcRequest)
 	if marshalErr != nil {
@@ -271,7 +277,35 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 		)
 	}
 
+	if reqCtx.Err() != nil {
+		return nil, types.NewError(reqCtx.Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+	}
+
+	// R2-P1-08: Volcengine WS TTS submits the full synthesis text in one
+	// FullClientRequest frame (upstream bills the whole text immediately), even
+	// though ConvertAudioRequest sets info.IsStream=true to select the WS path.
+	// Check client cancellation right before dispatch, then detach non-test
+	// requests from client disconnect so upstream synthesis finishes and settles.
+	detached := info != nil && !info.IsChannelTest
+	detachInfo := info
+	if detached {
+		infoCopy := *info
+		infoCopy.IsStream = false
+		detachInfo = &infoCopy
+	}
+	upstreamCtx, upstreamCancel, cancelErr := channel.DetachedNonStreamContext(c, detachInfo, 0)
+	if cancelErr != nil {
+		return nil, cancelErr
+	}
+	defer upstreamCancel()
+
+	stopCancel := context.AfterFunc(upstreamCtx, func() { _ = conn.Close() })
+	defer stopCancel()
+
 	if sendErr := FullClientRequest(conn, payload); sendErr != nil {
+		if errors.Is(upstreamCtx.Err(), context.Canceled) {
+			return nil, types.NewError(upstreamCtx.Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
 		return nil, types.NewErrorWithStatusCode(
 			fmt.Errorf("failed to send request: %w", sendErr),
 			types.ErrorCodeBadRequestBody,
@@ -286,7 +320,10 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 		readTimeout = time.Duration(common.RelayTimeout) * time.Second
 	}
 	clientCanceledError := func(fallback error) *types.NewAPIError {
-		cancelErr := reqCtx.Err()
+		cancelErr := upstreamCtx.Err()
+		if cancelErr == nil {
+			cancelErr = reqCtx.Err()
+		}
 		if cancelErr == nil {
 			cancelErr = fallback
 		}
@@ -298,14 +335,16 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 
 	headersWritten := false
 	wroteAudio := false
+	receivedAudio := false
+	clientWriteFailed := false
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 		msg, recvErr := ReceiveMessage(conn)
 		if recvErr != nil {
-			if wroteAudio {
+			if receivedAudio {
 				break
 			}
-			if helper.ClientRequestCanceled(c) {
+			if errors.Is(upstreamCtx.Err(), context.Canceled) {
 				return nil, clientCanceledError(recvErr)
 			}
 			if websocket.IsCloseError(recvErr, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
@@ -320,14 +359,14 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 
 		switch msg.MsgType {
 		case MsgTypeError:
-			if wroteAudio {
+			if receivedAudio {
 				return &dto.Usage{
 					PromptTokens:     info.GetEstimatePromptTokens(),
 					CompletionTokens: 0,
 					TotalTokens:      info.GetEstimatePromptTokens(),
 				}, nil
 			}
-			if helper.ClientRequestCanceled(c) {
+			if errors.Is(upstreamCtx.Err(), context.Canceled) {
 				return nil, clientCanceledError(nil)
 			}
 			return nil, types.NewErrorWithStatusCode(
@@ -339,43 +378,55 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 			continue
 		case MsgTypeAudioOnlyServer:
 			if len(msg.Payload) > 0 {
-				if !wroteAudio && helper.ClientRequestCanceled(c) {
-					return nil, clientCanceledError(nil)
-				}
-				if !headersWritten {
-					helper.StopStreamKeepAlive(c)
-					c.Header("Content-Type", contentType)
-					c.Header("Transfer-Encoding", "chunked")
-					c.Status(http.StatusOK)
-					headersWritten = true
-				}
-				if _, writeErr := c.Writer.Write(msg.Payload); writeErr != nil {
-					if wroteAudio {
-						return &dto.Usage{
-							PromptTokens:     info.GetEstimatePromptTokens(),
-							CompletionTokens: 0,
-							TotalTokens:      info.GetEstimatePromptTokens(),
-						}, nil
+				receivedAudio = true
+				if !clientWriteFailed && helper.ClientRequestCanceled(c) {
+					if detached {
+						logger.LogWarn(c, common.LogText("volcengine TTS client disconnected after upstream dispatch, continuing upstream read to settle billing"))
+						clientWriteFailed = true
+					} else if !wroteAudio {
+						return nil, clientCanceledError(nil)
 					}
-					if helper.ClientRequestCanceled(c) {
-						return nil, clientCanceledError(writeErr)
+				}
+				if !clientWriteFailed {
+					if !headersWritten {
+						helper.StopStreamKeepAlive(c)
+						c.Header("Content-Type", contentType)
+						c.Header("Transfer-Encoding", "chunked")
+						c.Status(http.StatusOK)
+						headersWritten = true
 					}
-					return nil, types.NewErrorWithStatusCode(
-						fmt.Errorf("failed to write audio data: %w", writeErr),
-						types.ErrorCodeBadResponse,
-						http.StatusInternalServerError,
-					)
+					if _, writeErr := c.Writer.Write(msg.Payload); writeErr != nil {
+						if detached {
+							logger.LogWarn(c, common.LogText("volcengine TTS client write failed after upstream dispatch, continuing upstream read to settle billing: %v", writeErr))
+							clientWriteFailed = true
+						} else if wroteAudio {
+							return &dto.Usage{
+								PromptTokens:     info.GetEstimatePromptTokens(),
+								CompletionTokens: 0,
+								TotalTokens:      info.GetEstimatePromptTokens(),
+							}, nil
+						} else if helper.ClientRequestCanceled(c) {
+							return nil, clientCanceledError(writeErr)
+						} else {
+							return nil, types.NewErrorWithStatusCode(
+								fmt.Errorf("failed to write audio data: %w", writeErr),
+								types.ErrorCodeBadResponse,
+								http.StatusInternalServerError,
+							)
+						}
+					} else {
+						wroteAudio = true
+						helper.MarkStreamPayloadWritten(c)
+						if info != nil {
+							info.SendResponseCount++
+						}
+						c.Writer.Flush()
+					}
 				}
-				wroteAudio = true
-				helper.MarkStreamPayloadWritten(c)
-				if info != nil {
-					info.SendResponseCount++
-				}
-				c.Writer.Flush()
 			}
 
 			if msg.Sequence < 0 {
-				if !wroteAudio {
+				if !receivedAudio {
 					break
 				}
 				usage = &dto.Usage{
@@ -390,8 +441,8 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 		}
 	}
 
-	if !wroteAudio {
-		if helper.ClientRequestCanceled(c) {
+	if !receivedAudio {
+		if errors.Is(upstreamCtx.Err(), context.Canceled) {
 			return nil, clientCanceledError(nil)
 		}
 		return nil, types.NewErrorWithStatusCode(

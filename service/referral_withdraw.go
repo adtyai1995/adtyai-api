@@ -1460,6 +1460,32 @@ func validateReferralWithdrawSettingsTx(tx *gorm.DB, values map[string]string, w
 			values[adty_setting.ReferralKeyWithdrawUSDTNetworks] = string(encoded)
 		}
 	}
+	readSetDecimal := func(key string, allowZero bool) (decimal.Decimal, bool, error) {
+		raw, ok, err := readOpt(key)
+		if err != nil {
+			return decimal.Zero, false, err
+		}
+		trimmed := strings.TrimSpace(raw)
+		if !ok || trimmed == "" || strings.EqualFold(trimmed, "null") {
+			return decimal.Zero, false, nil
+		}
+		val, err := common.ParseBoundedDecimalString(trimmed, 12, 8)
+		if err != nil || val.IsNegative() || (!allowZero && !val.IsPositive()) {
+			return decimal.Zero, false, common.NewMessage("Invalid parameters")
+		}
+		return val, true, nil
+	}
+	minVal, minSet, err := readSetDecimal(minKey, false)
+	if err != nil {
+		return err
+	}
+	feeVal, feeSet, err := readSetDecimal(feeKey, true)
+	if err != nil {
+		return err
+	}
+	if minSet && feeSet && !minVal.GreaterThan(feeVal) {
+		return common.NewMessage("Minimum withdrawal must be greater than the USDT fee")
+	}
 	rawMethods, hasMethodsOpt, err := readOpt(adty_setting.ReferralKeyWithdrawMethods)
 	if err != nil {
 		return err
@@ -1483,30 +1509,7 @@ func validateReferralWithdrawSettingsTx(tx *gorm.DB, values map[string]string, w
 		}
 		values[adty_setting.ReferralKeyWithdrawMethods] = string(encoded)
 	}
-	readSetDecimal := func(key string, allowZero bool) (decimal.Decimal, bool, error) {
-		raw, ok, err := readOpt(key)
-		if err != nil {
-			return decimal.Zero, false, err
-		}
-		trimmed := strings.TrimSpace(raw)
-		if !ok || trimmed == "" || strings.EqualFold(trimmed, "null") {
-			return decimal.Zero, false, nil
-		}
-		val, err := common.ParseBoundedDecimalString(trimmed, 12, 8)
-		if err != nil || val.IsNegative() || (!allowZero && !val.IsPositive()) {
-			return decimal.Zero, false, common.NewMessage("Invalid parameters")
-		}
-		return val, true, nil
-	}
-	minVal, minSet, err := readSetDecimal(minKey, false)
-	if err != nil {
-		return err
-	}
 	if slices.Contains(methods, adty_setting.ReferralWithdrawMethodUSDT) {
-		feeVal, feeSet, err := readSetDecimal(feeKey, true)
-		if err != nil {
-			return err
-		}
 		if !minSet || !feeSet {
 			return common.NewMessage("Set the minimum withdrawal and USDT fee before enabling USDT withdrawals")
 		}

@@ -902,21 +902,65 @@ func NormalizeAdtyNotificationSourceContents(rows []model.AdtyNotificationPublic
 	return out
 }
 
+func cutAdtySuffixFold(s, suffix string) (string, bool) {
+	if len(s) < len(suffix) {
+		return s, false
+	}
+	if !strings.EqualFold(s[len(s)-len(suffix):], suffix) {
+		return s, false
+	}
+	return s[:len(s)-len(suffix)], true
+}
+
+func isAdtyTranslationNotReadyText(s string) bool {
+	s = strings.TrimSpace(s)
+	return strings.EqualFold(s, AdtyTranslationNotReady) || strings.EqualFold(s, adtyTranslationNotReadyEn)
+}
+
+func adtyNotReadyTranslationStatus(bodyNeedsEn bool, bodyHead *model.AdtyTranslationHead, bodyMatched bool, titleNeedsEn bool, titleHead *model.AdtyTranslationHead, titleMatched bool, fallback string) string {
+	status := ""
+	if bodyNeedsEn && bodyHead != nil && (bodyMatched || (strings.TrimSpace(bodyHead.SourceHash) == "" && strings.TrimSpace(bodyHead.Source) == "")) {
+		if s := strings.TrimSpace(bodyHead.Status); s != "" && s != model.AdtyTranslationReady {
+			status = s
+		}
+	}
+	if titleNeedsEn && titleHead != nil && (titleMatched || (strings.TrimSpace(titleHead.SourceHash) == "" && strings.TrimSpace(titleHead.Source) == "")) {
+		if s := strings.TrimSpace(titleHead.Status); s != "" && s != model.AdtyTranslationReady {
+			if status == "" || (status == model.AdtyTranslationPending && s == model.AdtyTranslationFailed) {
+				status = s
+			}
+		}
+	}
+	if status == "" {
+		return fallback
+	}
+	return status
+}
+
 func stripAdtyNotificationTranslationSuffix(content, english string) string {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return ""
 	}
-	candidates := []string{AdtyTranslationNotReady, adtyTranslationNotReadyEn}
+	notReadyMarkers := []string{AdtyTranslationNotReady, adtyTranslationNotReadyEn}
+	var englishCandidates []string
 	if eng := strings.TrimSpace(english); eng != "" {
-		candidates = append(candidates, eng)
+		englishCandidates = append(englishCandidates, eng)
 		if sanitized := SanitizeAdtyNotificationHTML(eng); sanitized != "" && sanitized != eng {
-			candidates = append(candidates, sanitized)
+			englishCandidates = append(englishCandidates, sanitized)
 		}
 	}
 	for {
 		trimmed := false
-		for _, candidate := range candidates {
+		for _, sep := range []string{"\n\n", "\n"} {
+			for _, marker := range notReadyMarkers {
+				if before, ok := cutAdtySuffixFold(content, sep+marker); ok {
+					content = strings.TrimSpace(before)
+					trimmed = true
+				}
+			}
+		}
+		for _, candidate := range englishCandidates {
 			if before, ok := strings.CutSuffix(content, "\n\n"+candidate); ok {
 				content = strings.TrimSpace(before)
 				trimmed = true
@@ -1417,8 +1461,9 @@ func queueAdtyPrivatePublicationTelegramTx(tx *gorm.DB, row *model.AdtyNotificat
 				return found.Error
 			}
 			eligible := found.RowsAffected > 0 && user.Id > 0 && user.Status == common.UserStatusEnabled && user.SiteId == binding.SiteId
-			if eligible && purpose == model.AdtyTelegramPurposeUser && user.StaffSiteId > 0 {
+			if purpose == model.AdtyTelegramPurposeUser && user.StaffSiteId > 0 {
 				eligible = false
+				delivery.LastError = "staff cannot use user bot"
 			}
 			if eligible && purpose == model.AdtyTelegramPurposeAdmin {
 				adminOK, err := adtyTelegramAdminAccess(tx, &user)
@@ -1673,27 +1718,61 @@ func announceTelegramBody(row model.AdtyNotificationPublication) string {
 	return announceTelegramBodyWithDB(model.DB, row)
 }
 
+func adtyTitleHasBilingualEnglish(title string) bool {
+	_, after, ok := strings.Cut(title, " / ")
+	if !ok {
+		return false
+	}
+	after = strings.TrimSpace(after)
+	return after != "" && !adtyContainsChinese(after) && adtyContainsASCIILatin(after)
+}
+
 func announceTelegramBodyWithDB(db *gorm.DB, row model.AdtyNotificationPublication) string {
-	content := resolveAdtyNotificationDisplayContentWithDB(db, row)
-	if strings.EqualFold(strings.TrimSpace(row.ContentFormat), "html") {
-		content = adtyNotificationHTMLToTelegramText(content)
-	}
-	title := strings.TrimSpace(row.Title)
-	if title == "" {
-		return adtyEnsureTelegramBilingualFallback(content)
-	}
+	var bodyHead *model.AdtyTranslationHead
+	var titleHead *model.AdtyTranslationHead
 	if row.Id > 0 && db != nil && db.Migrator().HasTable(&model.AdtyTranslationHead{}) {
-		var titleHead model.AdtyTranslationHead
-		if db.Where("object_key = ?", adtyNotificationTitleTranslationKey(row.Id)).Limit(1).Find(&titleHead).RowsAffected > 0 {
-			if titleHead.Status == model.AdtyTranslationReady && strings.TrimSpace(titleHead.English) != "" && adtyTranslationHeadMatchesSource(titleHead, title) {
-				titleEn := strings.TrimSpace(titleHead.English)
-				if titleEn != title {
-					title = title + " / " + titleEn
+		keys := []string{adtyNotificationTranslationKey(row.Id), adtyNotificationTitleTranslationKey(row.Id)}
+		var heads []model.AdtyTranslationHead
+		if db.Where("object_key IN ?", keys).Find(&heads).Error == nil {
+			for i := range heads {
+				switch heads[i].ObjectKey {
+				case keys[0]:
+					h := heads[i]
+					bodyHead = &h
+				case keys[1]:
+					h := heads[i]
+					titleHead = &h
 				}
 			}
 		}
 	}
-	return adtyEnsureTelegramBilingualFallback(title + "\n\n" + content)
+	content := resolveAdtyNotificationDisplayContentWithHead(row, bodyHead)
+	if strings.EqualFold(strings.TrimSpace(row.ContentFormat), "html") {
+		content = adtyNotificationHTMLToTelegramText(content)
+	}
+	content = adtyEnsureTelegramBilingualFallback(content)
+	rawTitle := strings.TrimSpace(row.Title)
+	if rawTitle == "" {
+		return content
+	}
+	title := rawTitle
+	titleReady := false
+	if titleHead != nil && titleHead.Status == model.AdtyTranslationReady && strings.TrimSpace(titleHead.English) != "" && adtyTranslationHeadMatchesSource(*titleHead, rawTitle) {
+		titleEn := strings.TrimSpace(titleHead.English)
+		if !isAdtyTranslationNotReadyText(titleEn) {
+			titleReady = true
+			if titleEn != rawTitle {
+				title = rawTitle + " / " + titleEn
+			}
+		}
+	}
+	body := adtyEnsureTelegramBilingualFallback(title + "\n\n" + content)
+	if body != "" && adtyContainsChinese(rawTitle) && !titleReady && !adtyTitleHasBilingualEnglish(rawTitle) {
+		if !strings.Contains(strings.ToLower(body), strings.ToLower(adtyTranslationNotReadyEn)) {
+			body += "\n\n" + adtyTranslationNotReadyEn
+		}
+	}
+	return body
 }
 
 func resolveAdtyNotificationDisplayContent(row model.AdtyNotificationPublication) string {
@@ -1716,7 +1795,7 @@ func resolveAdtyNotificationDisplayContentWithHead(row model.AdtyNotificationPub
 	isHTML := strings.EqualFold(strings.TrimSpace(row.ContentFormat), "html")
 	if row.Id > 0 && head != nil && adtyContainsChinese(content) {
 		currentSrc := stripAdtyNotificationTranslationSuffix(content, head.English)
-		if head.Status == model.AdtyTranslationReady && strings.TrimSpace(head.English) != "" && adtyTranslationHeadMatchesSource(*head, currentSrc) {
+		if head.Status == model.AdtyTranslationReady && strings.TrimSpace(head.English) != "" && !isAdtyTranslationNotReadyText(head.English) && adtyTranslationHeadMatchesSource(*head, currentSrc) {
 			eng := strings.TrimSpace(head.English)
 			if isHTML {
 				eng = SanitizeAdtyNotificationHTML(eng)
@@ -2459,25 +2538,76 @@ func formatAdtyNotificationItemForViewer(row model.AdtyNotificationPublication, 
 		"kind":             row.Kind,
 		"business":         row.Business,
 	}
+	cleanBodySrc := stripAdtyNotificationTranslationSuffix(row.Content, "")
+	bodySrc := cleanBodySrc
+	bodyReady := false
 	if bodyHead != nil {
-		currentSrc := stripAdtyNotificationTranslationSuffix(row.Content, bodyHead.English)
-		if adtyTranslationHeadMatchesSource(*bodyHead, currentSrc) {
-			eng := bodyHead.English
+		candidateSrc := stripAdtyNotificationTranslationSuffix(row.Content, bodyHead.English)
+		if adtyTranslationHeadMatchesSource(*bodyHead, candidateSrc) {
+			bodySrc = candidateSrc
+			eng := strings.TrimSpace(bodyHead.English)
 			if contentFormat == "html" {
 				eng = SanitizeAdtyNotificationHTML(eng)
+			}
+			if isAdtyTranslationNotReadyText(eng) {
+				eng = ""
+			}
+			status := strings.TrimSpace(bodyHead.Status)
+			notice := strings.TrimSpace(bodyHead.Notice)
+			if status == model.AdtyTranslationReady && eng != "" {
+				bodyReady = true
+			} else {
+				if status == "" || status == model.AdtyTranslationReady {
+					status = model.AdtyTranslationPending
+				}
+				if notice == "" {
+					notice = AdtyTranslationNotReady
+				}
 			}
 			item["english"] = eng
 			item["content_en"] = eng
 			item["source"] = bodyHead.Source
-			item["translation_status"] = bodyHead.Status
-			item["translation_notice"] = bodyHead.Notice
+			item["translation_status"] = status
+			item["translation_notice"] = notice
 			item["translation_version"] = bodyHead.Version
 			item["object_key"] = bodyHead.ObjectKey
 		}
 	}
-	if titleHead != nil && adtyTranslationHeadMatchesSource(*titleHead, row.Title) {
-		if titleHead.Status == model.AdtyTranslationReady && strings.TrimSpace(titleHead.English) != "" {
-			item["title_en"] = strings.TrimSpace(titleHead.English)
+	if adtyContainsChinese(bodySrc) && !bodyReady {
+		if curStatus, ok := item["translation_status"].(string); !ok || strings.TrimSpace(curStatus) == "" {
+			fallbackStatus := model.AdtyTranslationPending
+			if bodyHead != nil && strings.TrimSpace(bodyHead.SourceHash) == "" && strings.TrimSpace(bodyHead.Source) == "" {
+				if s := strings.TrimSpace(bodyHead.Status); s != "" && s != model.AdtyTranslationReady {
+					fallbackStatus = s
+				}
+			}
+			item["translation_status"] = fallbackStatus
+		}
+		if curNotice, ok := item["translation_notice"].(string); !ok || strings.TrimSpace(curNotice) == "" {
+			item["translation_notice"] = AdtyTranslationNotReady
+		}
+	}
+	title := strings.TrimSpace(row.Title)
+	titleMatched := titleHead != nil && adtyTranslationHeadMatchesSource(*titleHead, title)
+	titleReady := false
+	if titleMatched && titleHead.Status == model.AdtyTranslationReady && strings.TrimSpace(titleHead.English) != "" {
+		engTitle := strings.TrimSpace(titleHead.English)
+		if !isAdtyTranslationNotReadyText(engTitle) {
+			item["title_en"] = engTitle
+			titleReady = true
+		}
+	}
+	if adtyContainsChinese(title) && !titleReady {
+		titleStatus := model.AdtyTranslationPending
+		if titleHead != nil && (titleMatched || (strings.TrimSpace(titleHead.SourceHash) == "" && strings.TrimSpace(titleHead.Source) == "")) {
+			if s := strings.TrimSpace(titleHead.Status); s != "" && s != model.AdtyTranslationReady {
+				titleStatus = s
+			}
+		}
+		item["title_translation_status"] = titleStatus
+		if curStatus, ok := item["translation_status"].(string); !ok || strings.TrimSpace(curStatus) == "" {
+			item["translation_status"] = titleStatus
+			item["translation_notice"] = AdtyTranslationNotReady
 		}
 	}
 	return item

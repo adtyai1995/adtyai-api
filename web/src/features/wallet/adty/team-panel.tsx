@@ -524,16 +524,10 @@ export function TeamPanel(
 
   const resumeTeamOrder = (order: TeamTopupRow) => {
     if (!team || isOrderExpired(order)) return
-    const hasCheckout = Boolean(
-      order.pay_address || order.pay_url || order.qr_code || order.url_scheme
-    )
-    if (hasCheckout) {
-      setCheckout(order)
-      return
-    }
     void run(async () => {
       const response = await api.post(
-        `/api/adty/teams/${team.team_id}/topups/${encodeURIComponent(order.trade_no)}/resume`
+        `/api/adty/teams/${team.team_id}/topups/${encodeURIComponent(order.trade_no)}/resume`,
+        { device: detectPayDevice() }
       )
       setCheckout(requireServerSuccess(response.data).data as AdtyOrderExt)
     })

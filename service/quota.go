@@ -847,12 +847,15 @@ func postConsumeDirectWithPrefix(prefix string, relayInfo *relaycommon.RelayInfo
 	if len(contexts) > 0 && contexts[0] != nil {
 		contexts[0].Set(usageBillingContextKey, op)
 	}
+	if op.PayerKind != "" {
+		relayInfo.BillingPayerKind = op.PayerKind
+	}
 	result.FundingApplied, result.TokenApplied, result.Shortfall = true, spec.TokenId > 0, op.Shortfall
 	result.TokenCharged = op.TokenAppliedQuota
 	relayInfo.BillingShortfall += op.Shortfall
 	projectBillingEarnings(key)
 
-	if sendEmail && relayInfo.BillingPayerKind != model.BillingPayerTeam {
+	if sendEmail && op.PayerKind != model.BillingPayerTeam && relayInfo.BillingPayerKind != model.BillingPayerTeam {
 		if (quota + preConsumedQuota) != 0 {
 			checkAndSendQuotaNotify(relayInfo, quota, preConsumedQuota)
 		}

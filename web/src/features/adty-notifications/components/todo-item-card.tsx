@@ -36,11 +36,13 @@ export type SevereTodo = {
   key: string
   title: string
   title_en?: string
+  title_translation_status?: string
   content: string
   content_en?: string
   english?: string
   source?: string
   translation_status?: string
+  translation_notice?: string
   content_format?: string
   status: string
   revision: number
@@ -75,9 +77,12 @@ export function TodoItemCard(props: {
   const { t, i18n } = useTranslation()
   const item = props.item
   const currentLanguage = i18n.resolvedLanguage || i18n.language
-  const resolved = resolveLocalizedAnnouncement(item, currentLanguage)
-  const displayTitle = sanitizeTodoPlainText(resolved.title) || item.key
-  const displayContent = sanitizeTodoPlainText(resolved.content)
+  const { title, content, translationNotReady } = resolveLocalizedAnnouncement(
+    item,
+    currentLanguage
+  )
+  const displayTitle = sanitizeTodoPlainText(title) || item.key
+  const displayContent = sanitizeTodoPlainText(content)
   return (
     <article className='space-y-2 rounded-md border p-2'>
       <div className='flex items-start justify-between gap-2'>
@@ -89,6 +94,11 @@ export function TodoItemCard(props: {
       {displayContent ? (
         <p className='text-muted-foreground text-xs whitespace-pre-line break-words'>
           {displayContent}
+        </p>
+      ) : null}
+      {translationNotReady ? (
+        <p className='text-muted-foreground text-xs'>
+          {t('English is not ready')}
         </p>
       ) : null}
       <div className='flex gap-2'>

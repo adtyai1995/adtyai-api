@@ -123,11 +123,6 @@ export function HeaderNavigationSection({
         enabled: values.pricingEnabled,
         requireAuth: values.pricingRequireAuth,
       },
-      rankings: {
-        ...(baseConfig.rankings ?? HEADER_NAV_DEFAULT.rankings),
-        enabled: false,
-        requireAuth: false,
-      },
     }
 
     const serialized = serializeHeaderNavModules(payload)

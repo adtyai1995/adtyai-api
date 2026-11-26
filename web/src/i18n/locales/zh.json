@@ -11809,6 +11809,10 @@
     "Platform administrators and site owners can create teams or issue team registration links.": "主站管理员及分站站长均可创建团队或签发团队注册链接。",
     "Customer invite commission withdrawals are reviewed on the Withdrawals tab under Promotion Management.": "客户邀请佣金提现请在「推广管理」中的「提现审核」页签中审核处理。",
     "Go to Promotion Management": "前往推广管理",
-    "Recorded failed withdrawal": "记录提现打款失败"
+    "Recorded failed withdrawal": "记录提现打款失败",
+    "Issuance limit cannot be lower than already held and redeemed codes": "发行上限不能低于当前已冻结与已核销的总额",
+    "Site margin recharge code": "分站保证金充值码",
+    "This registration link was already created. The plaintext link is shown only once; if you did not copy it, revoke it in the list below and issue a new one.": "该注册链接已创建，明文链接仅展示一次；如未复制，可在下方列表中撤销后重新签发。",
+    "Voucher issuance limit exceeded": "兑换码发行上限不足"
   }
 }

@@ -52,7 +52,7 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 	cc1h := float64(0)
 	cc12h := float64(0)
 
-	if usage.UsageSemantic == "anthropic" {
+	if isClaudeUsageSemantic || usage.ClaudeCacheCreation1hTokens > 0 || usage.ClaudeCacheCreation5mTokens > 0 {
 		// Upstreams may report the cache-write total without a full 5m/1h
 		// split; the unlabelled remainder is billed as 5m writes.
 		split5m, split1h := relayconvert.NormalizeCacheCreationSplit(
@@ -139,14 +139,18 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 			cc += cc12h * hosttypes.OpenAICacheCreation12hMultiplier
 			cc12h = 0
 		}
+		if usedVars["cc1h"] {
+			p -= cc1h
+		} else if cc1h > 0 {
+			ccTokens += cc1h
+			cc += cc1h * hosttypes.ClaudeCacheCreation1hMultiplier
+			cc1h = 0
+		}
 		if usedVars["cc"] {
 			p -= ccTokens
 		} else {
 			p += cc - ccTokens
 			cc = 0
-		}
-		if usedVars["cc1h"] {
-			p -= cc1h
 		}
 		if usedVars["img"] {
 			p -= img

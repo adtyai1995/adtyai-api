@@ -37,6 +37,7 @@ type AdtyTeamRegistrationIssue struct {
 	CreatedBy int    `json:"created_by"`
 	CreatedAt int64  `json:"created_at"`
 	Status    string `json:"status"`
+	Replayed  bool   `json:"replayed,omitempty"`
 }
 
 // AdtyTeamRegistrationView is a secret-free list row for issued create-team links.
@@ -156,6 +157,26 @@ func issueAdtyTeamRegistrationWithAudit(actorId, siteId int, ttl time.Duration, 
 			if site.Status != model.AdtySiteStatusActive {
 				return ErrAdtyTeamForbidden
 			}
+		} else if tx.Dialector.Name() == "postgres" {
+			if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", int64(2026041001)).Error; err != nil {
+				return err
+			}
+		}
+		// Canonical lock order: AdtySite -> User. Locking the actor row also
+		// serializes concurrent idempotent retries from the same actor on both
+		// PostgreSQL and SQLite before checking create_key or the 50-link cap.
+		var lockedActor model.User
+		if err := model.AdtyLockForUpdate(tx).Select("id", "role", "status").First(&lockedActor, actorId).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAdtyTeamForbidden
+			}
+			return err
+		}
+		if lockedActor.Status != common.UserStatusEnabled {
+			return ErrAdtyTeamForbidden
+		}
+		if siteId == 0 && lockedActor.Role != common.RoleRootUser {
+			return ErrAdtyTeamForbidden
 		}
 		if createKey != nil {
 			var existing model.AdtyTeamRegistrationLink
@@ -191,7 +212,20 @@ func issueAdtyTeamRegistrationWithAudit(actorId, siteId int, ttl time.Duration, 
 		return auditErr
 	})
 	if err != nil {
-		return nil, "", err
+		if createKey != nil && isAdtyUniqueConflictError(err) {
+			var existing model.AdtyTeamRegistrationLink
+			if lookupErr := model.DB.Where("create_key = ?", *createKey).Limit(1).Find(&existing).Error; lookupErr == nil && existing.Id > 0 {
+				if existing.CreateFingerprint != fingerprint {
+					return nil, "", model.ErrAdtyIdempotencyConflict
+				}
+				link = existing
+				replayed = true
+				err = nil
+			}
+		}
+		if err != nil {
+			return nil, "", err
+		}
 	}
 	eventID := ""
 	if auditEvent != nil {
@@ -207,7 +241,7 @@ func issueAdtyTeamRegistrationWithAudit(actorId, siteId int, ttl time.Duration, 
 	issued := &AdtyTeamRegistrationIssue{
 		Id: link.Id, Code: issuedCode, SiteId: link.SiteId, ExpiresAt: link.ExpiresAt,
 		CreatedBy: link.CreatedBy, CreatedAt: link.CreatedAt,
-		Status: status,
+		Status: status, Replayed: replayed,
 	}
 	return issued, eventID, nil
 }

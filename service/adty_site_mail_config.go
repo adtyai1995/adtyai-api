@@ -580,7 +580,11 @@ func EnsureAdtySiteMailConfigured(site *model.AdtySite) error {
 	}
 	switch cfg.Provider {
 	case model.AdtySiteMailProviderSMTP:
-		if strings.TrimSpace(cfg.SMTPServer) == "" || strings.TrimSpace(cfg.SMTPFrom) == "" {
+		effectiveFrom := strings.TrimSpace(cfg.SMTPFrom)
+		if effectiveFrom == "" {
+			effectiveFrom = strings.TrimSpace(cfg.SMTPAccount)
+		}
+		if strings.TrimSpace(cfg.SMTPServer) == "" || effectiveFrom == "" {
 			return ErrAdtySiteMailNotConfigured
 		}
 		return nil

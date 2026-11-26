@@ -18,15 +18,17 @@ const AdtyPublicAnnouncementLimit = 100
 // `/api/status`，字段是 content/publishDate/type/extra。换数据源不换形状，
 // 前端的未登录可见性就不会因为这次迁移而改变——这正是「读路径分叉」的要点。
 type AdtyPublicAnnouncement struct {
-	Id            int    `json:"id"`
-	Title         string `json:"title,omitempty"`
-	TitleEn       string `json:"title_en,omitempty"`
-	Content       string `json:"content"`
-	ContentEn     string `json:"content_en,omitempty"`
-	ContentFormat string `json:"content_format,omitempty"`
-	PublishDate   string `json:"publishDate"`
-	Type          string `json:"type"`
-	Extra         string `json:"extra"`
+	Id                int    `json:"id"`
+	Title             string `json:"title,omitempty"`
+	TitleEn           string `json:"title_en,omitempty"`
+	Content           string `json:"content"`
+	ContentEn         string `json:"content_en,omitempty"`
+	ContentFormat     string `json:"content_format,omitempty"`
+	TranslationStatus string `json:"translation_status,omitempty"`
+	TranslationNotice string `json:"translation_notice,omitempty"`
+	PublishDate       string `json:"publishDate"`
+	Type              string `json:"type"`
+	Extra             string `json:"extra"`
 }
 
 // AdtyPublicAnnouncementsForRequest 按请求的站点读已发布公告，供 `/api/status` 用。
@@ -55,7 +57,7 @@ func AdtyPublicAnnouncementsForRequest(c *gin.Context) []AdtyPublicAnnouncement 
 		}
 		if len(keys) > 0 {
 			var heads []model.AdtyTranslationHead
-			if err := model.DB.Where("object_key IN ? AND status = ?", keys, model.AdtyTranslationReady).Find(&heads).Error; err == nil {
+			if err := model.DB.Where("object_key IN ?", keys).Find(&heads).Error; err == nil {
 				for _, head := range heads {
 					headByKey[head.ObjectKey] = head
 				}
@@ -69,57 +71,87 @@ func AdtyPublicAnnouncementsForRequest(c *gin.Context) []AdtyPublicAnnouncement 
 		}
 		isHTML := contentFormat == "html"
 		rawContent := strings.TrimSpace(row.Content)
-		content := rawContent
+		cleanRawContent := stripAdtyNotificationTranslationSuffix(rawContent, "")
+		content := cleanRawContent
 		if isHTML {
 			content = SanitizeAdtyNotificationHTML(content)
 		}
 		contentEn := ""
-		if head, ok := headByKey[adtyNotificationTranslationKey(row.Id)]; ok && strings.TrimSpace(head.English) != "" {
-			currentSrc := stripAdtyNotificationTranslationSuffix(rawContent, head.English)
-			if adtyTranslationHeadMatchesSource(head, currentSrc) {
-				eng := strings.TrimSpace(head.English)
-				if isHTML {
-					eng = SanitizeAdtyNotificationHTML(eng)
+		bodyHead, hasBodyHead := headByKey[adtyNotificationTranslationKey(row.Id)]
+		bodySrc := cleanRawContent
+		bodyMatched := false
+		if hasBodyHead {
+			candidateSrc := stripAdtyNotificationTranslationSuffix(rawContent, bodyHead.English)
+			if adtyTranslationHeadMatchesSource(bodyHead, candidateSrc) {
+				bodySrc = candidateSrc
+				bodyMatched = true
+			}
+		}
+		if bodyMatched && bodyHead.Status == model.AdtyTranslationReady && strings.TrimSpace(bodyHead.English) != "" {
+			eng := strings.TrimSpace(bodyHead.English)
+			if isHTML {
+				eng = SanitizeAdtyNotificationHTML(eng)
+			}
+			src := strings.TrimSpace(bodyHead.Source)
+			// Guard against legacy rows where title was stored in notification:<id>
+			// while the body itself was pure English.
+			isLegacyTitleOnly := src != "" && src == strings.TrimSpace(row.Title) && !adtyContainsChinese(bodySrc)
+			if !isLegacyTitleOnly && adtyContainsChinese(bodySrc) && !isAdtyTranslationNotReadyText(eng) {
+				if src == "" {
+					src = bodySrc
 				}
-				src := strings.TrimSpace(head.Source)
-				// Guard against legacy rows where title was stored in notification:<id>
-				// while the body itself was pure English.
-				isLegacyTitleOnly := src != "" && src == strings.TrimSpace(row.Title) && !adtyContainsChinese(currentSrc)
-				if !isLegacyTitleOnly && adtyContainsChinese(rawContent) {
-					if src == "" {
-						src = currentSrc
-					}
-					if isHTML {
-						src = SanitizeAdtyNotificationHTML(src)
-					}
-					contentEn = eng
-					if eng != "" && !strings.Contains(src, eng) {
-						content = src + "\n\n" + eng
-					} else if src != "" {
-						content = src
-					}
+				if isHTML {
+					src = SanitizeAdtyNotificationHTML(src)
+				}
+				contentEn = eng
+				if eng != "" && !strings.Contains(src, eng) {
+					content = src + "\n\n" + eng
+				} else if src != "" {
+					content = src
 				}
 			}
 		}
 		title := strings.TrimSpace(row.Title)
 		titleEn := ""
 		extra := row.Title
-		if head, ok := headByKey[adtyNotificationTitleTranslationKey(row.Id)]; ok && strings.TrimSpace(head.English) != "" && adtyTranslationHeadMatchesSource(head, title) {
-			titleEn = strings.TrimSpace(head.English)
-			if title != "" && adtyContainsChinese(title) && !strings.Contains(title, titleEn) {
-				extra = title + " / " + titleEn
+		titleHead, hasTitleHead := headByKey[adtyNotificationTitleTranslationKey(row.Id)]
+		titleMatched := hasTitleHead && adtyTranslationHeadMatchesSource(titleHead, title)
+		if titleMatched && titleHead.Status == model.AdtyTranslationReady && strings.TrimSpace(titleHead.English) != "" {
+			engTitle := strings.TrimSpace(titleHead.English)
+			if !isAdtyTranslationNotReadyText(engTitle) {
+				titleEn = engTitle
+				if title != "" && adtyContainsChinese(title) && !strings.Contains(title, titleEn) {
+					extra = title + " / " + titleEn
+				}
 			}
 		}
+		bodyNeedsEn := adtyContainsChinese(bodySrc) && strings.TrimSpace(contentEn) == ""
+		titleNeedsEn := adtyContainsChinese(title) && strings.TrimSpace(titleEn) == ""
+		translationStatus := ""
+		translationNotice := ""
+		if bodyNeedsEn || titleNeedsEn {
+			var bodyHeadPtr, titleHeadPtr *model.AdtyTranslationHead
+			if hasBodyHead {
+				bodyHeadPtr = &bodyHead
+			}
+			if hasTitleHead {
+				titleHeadPtr = &titleHead
+			}
+			translationStatus = adtyNotReadyTranslationStatus(bodyNeedsEn, bodyHeadPtr, bodyMatched, titleNeedsEn, titleHeadPtr, titleMatched, model.AdtyTranslationPending)
+			translationNotice = AdtyTranslationNotReady
+		}
 		out = append(out, AdtyPublicAnnouncement{
-			Id:            row.Id,
-			Title:         title,
-			TitleEn:       titleEn,
-			Content:       content,
-			ContentEn:     contentEn,
-			ContentFormat: contentFormat,
-			PublishDate:   time.Unix(row.PublishedAt, 0).UTC().Format(time.RFC3339),
-			Type:          adtyLegacyAnnouncementColor(row.Business),
-			Extra:         extra,
+			Id:                row.Id,
+			Title:             title,
+			TitleEn:           titleEn,
+			Content:           content,
+			ContentEn:         contentEn,
+			ContentFormat:     contentFormat,
+			TranslationStatus: translationStatus,
+			TranslationNotice: translationNotice,
+			PublishDate:       time.Unix(row.PublishedAt, 0).UTC().Format(time.RFC3339),
+			Type:              adtyLegacyAnnouncementColor(row.Business),
+			Extra:             extra,
 		})
 	}
 	return out

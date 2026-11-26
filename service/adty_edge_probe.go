@@ -170,10 +170,33 @@ func adtySelectEdgeProbeTarget(ctx context.Context, cfg *adty_setting.ResellerSe
 		return strings.ToLower(strings.TrimSpace(dom.Hostname)), dom.SiteId, dom.Role, nil
 	}
 	roots := adtyEdgeRootDomains(cfg)
-	if len(roots) == 0 {
-		if mainHost := adtyEdgeMainSiteHost(cfg); mainHost != "" {
+	mainHost := adtyEdgeMainSiteHost(cfg)
+	if mainHost != "" {
+		if len(roots) == 0 {
 			return mainHost, 0, "", nil
 		}
+		var mainReady int64
+		if err := model.DB.WithContext(ctx).Model(&model.AdtyEdgeCert{}).
+			Where("kind = ? AND cert_name = ? AND status = ? AND cert_pem <> ''",
+				model.AdtyEdgeCertKindMain, mainHost, model.AdtyEdgeCertStatusReady).
+			Count(&mainReady).Error; err != nil {
+			return "", 0, "", err
+		}
+		if mainReady > 0 {
+			return mainHost, 0, "", nil
+		}
+		var wildcardReady int64
+		if err := model.DB.WithContext(ctx).Model(&model.AdtyEdgeCert{}).
+			Where("kind = ? AND cert_name = ? AND status = ? AND cert_pem <> ''",
+				model.AdtyEdgeCertKindWildcard, "*."+roots[0], model.AdtyEdgeCertStatusReady).
+			Count(&wildcardReady).Error; err != nil {
+			return "", 0, "", err
+		}
+		if wildcardReady == 0 {
+			return mainHost, 0, "", nil
+		}
+	}
+	if len(roots) == 0 {
 		return "", 0, "", common.NewMessage("Configure at least one root domain before probing the edge node")
 	}
 	return "adty-edge-probe." + roots[0], 0, "", nil

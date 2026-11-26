@@ -14,12 +14,6 @@ type headerNavAccess struct {
 }
 
 func getHeaderNavAccess(module string) headerNavAccess {
-	if strings.EqualFold(strings.TrimSpace(module), "rankings") {
-		return headerNavAccess{
-			Enabled:     false,
-			RequireAuth: true,
-		}
-	}
 	fallback := headerNavAccess{
 		Enabled:     true,
 		RequireAuth: false,
@@ -117,8 +111,6 @@ func HeaderNavModuleAuth(module string) gin.HandlerFunc {
 			}
 			if module == "pricing" {
 				common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Model pricing is disabled"))
-			} else if module == "rankings" {
-				common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Rankings are disabled"))
 			} else {
 				common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("This feature is currently disabled"))
 			}

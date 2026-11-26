@@ -2,6 +2,7 @@ package aws
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -20,6 +21,19 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/gin-gonic/gin"
 )
+
+type mantleCancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *mantleCancelBody) Close() error {
+	err := b.ReadCloser.Close()
+	if b.cancel != nil {
+		b.cancel()
+	}
+	return err
+}
 
 func mantleRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	parts := strings.Split(info.ApiKey, "|")
@@ -59,20 +73,20 @@ func mantleRequestURL(info *relaycommon.RelayInfo) (string, error) {
 
 // Mantle uses native Messages JSON and SSE, not the InvokeModel envelope.
 // Sign the final payload and headers, including administrator overrides.
-func (a *Adaptor) newMantleRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (*http.Request, error) {
+func (a *Adaptor) newMantleRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (*http.Request, context.CancelFunc, error) {
 	endpoint, err := mantleRequestURL(info)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if a.IsNova || isNovaModel(getAwsModelID(info.UpstreamModelName)) {
-		return nil, fmt.Errorf("AWS Mantle Messages API requires a Claude model; use InvokeModel for Amazon Nova")
+		return nil, nil, fmt.Errorf("AWS Mantle Messages API requires a Claude model; use InvokeModel for Amazon Nova")
 	}
 	var payload map[string]json.RawMessage
 	if err := common.DecodeJson(requestBody, &payload); err != nil {
-		return nil, fmt.Errorf("decode AWS Mantle request: %w", err)
+		return nil, nil, fmt.Errorf("decode AWS Mantle request: %w", err)
 	}
 	if payload == nil {
-		return nil, fmt.Errorf("AWS Mantle request must be a JSON object")
+		return nil, nil, fmt.Errorf("AWS Mantle request must be a JSON object")
 	}
 	// Use the channel's resolved model even for passthrough requests. Do not
 	// apply InvokeModel's version suffixes or automatic cross-region prefixes.
@@ -85,17 +99,22 @@ func (a *Adaptor) newMantleRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 	}
 	payload["model"], err = common.Marshal(model)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	delete(payload, "anthropic_version")
 	delete(payload, "anthropic_beta")
 	body, err := common.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("marshal AWS Mantle request: %w", err)
+		return nil, nil, fmt.Errorf("marshal AWS Mantle request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, endpoint, bytes.NewReader(body))
+	upstreamCtx, cancel, cancelErr := channel.DetachedNonStreamContext(c, info, 0)
+	if cancelErr != nil {
+		return nil, nil, cancelErr
+	}
+	req, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create AWS Mantle request: %w", err)
+		cancel()
+		return nil, nil, fmt.Errorf("create AWS Mantle request: %w", err)
 	}
 	channel.SetupApiRequestHeader(info, c, &req.Header)
 	req.Header.Set("Content-Type", "application/json")
@@ -107,7 +126,8 @@ func (a *Adaptor) newMantleRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 	}
 	headerOverride, err := channel.ResolveHeaderOverride(info, c)
 	if err != nil {
-		return nil, err
+		cancel()
+		return nil, nil, err
 	}
 	for key, value := range headerOverride {
 		req.Header.Set(key, value)
@@ -137,8 +157,9 @@ func (a *Adaptor) newMantleRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 		credentials := aws.Credentials{AccessKeyID: parts[0], SecretAccessKey: parts[1]}
 		hash := sha256.Sum256(body)
 		if err := v4.NewSigner().SignHTTP(req.Context(), credentials, req, hex.EncodeToString(hash[:]), "bedrock-mantle", parts[2], time.Now()); err != nil {
-			return nil, fmt.Errorf("sign AWS Mantle request: %w", err)
+			cancel()
+			return nil, nil, fmt.Errorf("sign AWS Mantle request: %w", err)
 		}
 	}
-	return req, nil
+	return req, cancel, nil
 }

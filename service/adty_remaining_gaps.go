@@ -230,23 +230,25 @@ const (
 // AdtyTodoItem persists the authoritative state of a severe todo item for a user,
 // keeping the full lifecycle and completion history instead of hiding the notice.
 type AdtyTodoItem struct {
-	Id             int64  `json:"id" gorm:"primaryKey;autoIncrement"`
-	UserId         int    `json:"user_id" gorm:"not null;uniqueIndex:idx_adty_todo_user_key,priority:1;index"`
-	SiteId         int    `json:"site_id" gorm:"not null;default:0;index"`
-	Key            string `json:"key" gorm:"type:varchar(128);not null;uniqueIndex:idx_adty_todo_user_key,priority:2;index"`
-	PublicationId  int    `json:"publication_id" gorm:"not null;default:0;index"`
-	Title          string `json:"title" gorm:"type:varchar(200);not null;default:''"`
-	TitleEn        string `json:"title_en,omitempty" gorm:"-"`
-	Content        string `json:"content" gorm:"type:text"`
-	ContentEn      string `json:"content_en,omitempty" gorm:"-"`
-	Business       string `json:"business" gorm:"type:varchar(200);not null;default:''"`
-	Severity       string `json:"severity" gorm:"type:varchar(32);not null;default:'severe'"`
-	Status         string `json:"status" gorm:"type:varchar(32);not null;default:'pending';index"`
-	Revision       int64  `json:"revision" gorm:"not null;default:1"`
-	ResolutionNote string `json:"resolution_note" gorm:"type:varchar(500);not null;default:''"`
-	CreatedAt      int64  `json:"created_at" gorm:"not null;default:0"`
-	UpdatedAt      int64  `json:"updated_at" gorm:"not null;default:0"`
-	CompletedAt    int64  `json:"completed_at" gorm:"not null;default:0"`
+	Id                int64  `json:"id" gorm:"primaryKey;autoIncrement"`
+	UserId            int    `json:"user_id" gorm:"not null;uniqueIndex:idx_adty_todo_user_key,priority:1;index"`
+	SiteId            int    `json:"site_id" gorm:"not null;default:0;index"`
+	Key               string `json:"key" gorm:"type:varchar(128);not null;uniqueIndex:idx_adty_todo_user_key,priority:2;index"`
+	PublicationId     int    `json:"publication_id" gorm:"not null;default:0;index"`
+	Title             string `json:"title" gorm:"type:varchar(200);not null;default:''"`
+	TitleEn           string `json:"title_en,omitempty" gorm:"-"`
+	Content           string `json:"content" gorm:"type:text"`
+	ContentEn         string `json:"content_en,omitempty" gorm:"-"`
+	TranslationStatus string `json:"translation_status,omitempty" gorm:"-"`
+	TranslationNotice string `json:"translation_notice,omitempty" gorm:"-"`
+	Business          string `json:"business" gorm:"type:varchar(200);not null;default:''"`
+	Severity          string `json:"severity" gorm:"type:varchar(32);not null;default:'severe'"`
+	Status            string `json:"status" gorm:"type:varchar(32);not null;default:'pending';index"`
+	Revision          int64  `json:"revision" gorm:"not null;default:1"`
+	ResolutionNote    string `json:"resolution_note" gorm:"type:varchar(500);not null;default:''"`
+	CreatedAt         int64  `json:"created_at" gorm:"not null;default:0"`
+	UpdatedAt         int64  `json:"updated_at" gorm:"not null;default:0"`
+	CompletedAt       int64  `json:"completed_at" gorm:"not null;default:0"`
 }
 
 func (AdtyTodoItem) TableName() string {
@@ -382,9 +384,11 @@ func stripAdtyTodoNotReadySuffix(content string) string {
 	for {
 		trimmed := false
 		for _, sep := range []string{"\n\n", "\n"} {
-			if before, ok := strings.CutSuffix(content, sep+AdtyTranslationNotReady); ok {
-				content = strings.TrimSpace(before)
-				trimmed = true
+			for _, marker := range []string{AdtyTranslationNotReady, adtyTranslationNotReadyEn} {
+				if before, ok := cutAdtySuffixFold(content, sep+marker); ok {
+					content = strings.TrimSpace(before)
+					trimmed = true
+				}
 			}
 		}
 		if !trimmed {
@@ -1218,28 +1222,48 @@ func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeComplet
 			} else {
 				item.Content = sanitizeAdtyTodoStoredContent(item.Content)
 			}
-			if hasBodyHead && bodyHead.Status == model.AdtyTranslationReady && strings.TrimSpace(bodyHead.English) != "" && adtyTranslationHeadMatchesSource(bodyHead, bodySrc) {
+			bodyMatched := hasBodyHead && adtyTranslationHeadMatchesSource(bodyHead, bodySrc)
+			if bodyMatched && bodyHead.Status == model.AdtyTranslationReady && strings.TrimSpace(bodyHead.English) != "" {
 				eng := strings.TrimSpace(bodyHead.English)
 				if isHTML {
 					eng = AdtyNotificationHTMLToPlainText(SanitizeAdtyNotificationHTML(eng))
 				}
 				eng = strings.TrimSpace(stripAdtyTodoNotReadySuffix(eng))
-				if eng != "" && !strings.EqualFold(eng, AdtyTranslationNotReady) {
+				if eng != "" && !isAdtyTranslationNotReadyText(eng) {
 					item.ContentEn = eng
 				}
 			}
 			titleHead, hasTitleHead := headByKey[adtyNotificationTitleTranslationKey(pub.Id)]
-			if hasTitleHead && titleHead.Status == model.AdtyTranslationReady && strings.TrimSpace(titleHead.English) != "" && adtyTranslationHeadMatchesSource(titleHead, titleSrc) {
+			titleMatched := hasTitleHead && adtyTranslationHeadMatchesSource(titleHead, titleSrc)
+			if titleMatched && titleHead.Status == model.AdtyTranslationReady && strings.TrimSpace(titleHead.English) != "" {
 				titleEn := strings.TrimSpace(stripAdtyTodoNotReadySuffix(titleHead.English))
-				if titleEn != "" && !strings.EqualFold(titleEn, AdtyTranslationNotReady) {
+				if titleEn != "" && !isAdtyTranslationNotReadyText(titleEn) {
 					item.TitleEn = truncateAdtyRunes(titleEn, 200)
 				}
+			}
+			bodyNeedsEn := (adtyContainsChinese(bodySrc) || adtyContainsChinese(item.Content)) && strings.TrimSpace(item.ContentEn) == ""
+			titleNeedsEn := (adtyContainsChinese(titleSrc) || adtyContainsChinese(item.Title)) && strings.TrimSpace(item.TitleEn) == ""
+			if bodyNeedsEn || titleNeedsEn {
+				var bodyHeadPtr, titleHeadPtr *model.AdtyTranslationHead
+				if hasBodyHead {
+					bodyHeadPtr = &bodyHead
+				}
+				if hasTitleHead {
+					titleHeadPtr = &titleHead
+				}
+				item.TranslationStatus = adtyNotReadyTranslationStatus(bodyNeedsEn, bodyHeadPtr, bodyMatched, titleNeedsEn, titleHeadPtr, titleMatched, model.AdtyTranslationPending)
+				item.TranslationNotice = AdtyTranslationNotReady
 			}
 			if strings.TrimSpace(pub.Business) != "" {
 				item.Business = truncateAdtyRunes(pub.Business, 200)
 			}
 		} else {
 			item.Content = sanitizeAdtyTodoStoredContent(item.Content)
+			if (adtyContainsChinese(item.Title) && strings.TrimSpace(item.TitleEn) == "") ||
+				(adtyContainsChinese(item.Content) && strings.TrimSpace(item.ContentEn) == "") {
+				item.TranslationStatus = model.AdtyTranslationPending
+				item.TranslationNotice = AdtyTranslationNotReady
+			}
 		}
 		filtered = append(filtered, item)
 	}

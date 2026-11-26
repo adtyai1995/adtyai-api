@@ -86,10 +86,8 @@ export function AnnouncementsPanel() {
           {list.map((item: AnnouncementItem, idx: number) => {
             const announcement: DashboardAnnouncementItem = item
             const key = announcement.id ?? `announcement-${idx}`
-            const { title, content } = resolveLocalizedAnnouncement(
-              announcement,
-              currentLanguage
-            )
+            const { title, content, translationNotReady } =
+              resolveLocalizedAnnouncement(announcement, currentLanguage)
             const titlePreview = title ? getPreviewText(title, 80) : ''
             const contentPreview = getPreviewText(content, 100)
             return (
@@ -119,6 +117,11 @@ export function AnnouncementsPanel() {
                     ) : (
                       <p className='line-clamp-2 text-sm font-medium whitespace-pre-line'>
                         {contentPreview}
+                      </p>
+                    )}
+                    {translationNotReady && (
+                      <p className='text-muted-foreground text-xs'>
+                        {t('English is not ready')}
                       </p>
                     )}
                     <div className='flex items-center justify-between'>

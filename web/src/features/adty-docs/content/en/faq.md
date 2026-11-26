@@ -14,7 +14,7 @@ Pay as you go. Each request is charged for the tokens it uses (or per call or pe
 
 ## Do you issue invoices?
 
-No. ADTY AI does not issue invoices or VAT receipts. The order history in [Wallet](/wallet) and the usage logs are the records we provide.
+Please contact customer support for details.
 
 ## Can I get a refund?
 
@@ -30,7 +30,7 @@ Yes, but it is easier to create one key per tool on the [API Keys](/keys) page. 
 
 ## Is my data stored?
 
-Your requests are passed to the model provider to generate the response. The usage logs in the console record the model, tokens and cost of each request. What is kept and for how long is described in the [Privacy Policy](/privacy-policy).
+We do not store any of your data.
 
 ## How do I earn with referrals?
 

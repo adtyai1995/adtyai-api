@@ -522,10 +522,11 @@ func reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget
 		if err := releaseSiteInviteWithdrawalTx(tx, &row); err != nil {
 			return err
 		}
+		wasApproved := row.Status == model.AdtySiteInviteWithdrawApproved
 		changes := map[string]any{"status": model.AdtySiteInviteWithdrawRejected, "reject_reason": strings.TrimSpace(reason)}
 		action := "adty.site_invite_withdrawal.reject"
 		referralAuditAction := "site_invite_withdrawal_reject"
-		if row.Status == model.AdtySiteInviteWithdrawApproved {
+		if wasApproved {
 			changes["failure_by"], changes["failure_at"] = ownerID, time.Now().Unix()
 			action = "adty.site_invite_withdrawal.failed"
 			referralAuditAction = "site_invite_withdrawal_fail"
@@ -543,7 +544,7 @@ func reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget
 		}
 		if !platform {
 			siteAuditAction := "withdrawal_reject"
-			if row.Status == model.AdtySiteInviteWithdrawApproved {
+			if wasApproved {
 				siteAuditAction = "withdrawal_fail"
 			}
 			return recordSiteReferralAuditTx(tx, row.SiteId, siteAuditAction, row.UserId, ownerID, strings.TrimSpace(reason), ip, ua, beforeSnap, map[string]any{"id": row.Id, "status": model.AdtySiteInviteWithdrawRejected})
@@ -669,6 +670,7 @@ func paySiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bo
 				return err
 			}
 		}
+		beforeStatus := row.Status
 		if err := tx.Model(&row).Updates(map[string]any{
 			"status": model.AdtySiteInviteWithdrawPaid, "paid_at": time.Now().Unix(), "paid_by": ownerID,
 			"tx_id": txID, "proof_note": cleanProof, "receipt_key": receiptKey,
@@ -680,18 +682,18 @@ func paySiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget bo
 		}
 		var auditErr error
 		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, ownerID, row.SiteId, "site_invite_withdrawal", strconv.FormatInt(row.Id, 10), "adty.site_invite_withdrawal.paid", "", "",
-			map[string]any{"id": row.Id, "site_id": row.SiteId, "status": row.Status, "amount_usd": row.AmountUSD.String()},
+			map[string]any{"id": row.Id, "site_id": row.SiteId, "status": beforeStatus, "amount_usd": row.AmountUSD.String()},
 			map[string]any{"id": row.Id, "site_id": row.SiteId, "status": model.AdtySiteInviteWithdrawPaid, "tx_id": txID, "platform": platform}, model.AuditResultSuccess)
 		if auditErr != nil {
 			return auditErr
 		}
 		if !platform {
 			return recordSiteReferralAuditTx(tx, row.SiteId, "withdrawal_pay", row.UserId, ownerID, cleanProof, ip, ua,
-				map[string]any{"id": row.Id, "status": row.Status, "amount_usd": row.AmountUSD.String()},
+				map[string]any{"id": row.Id, "status": beforeStatus, "amount_usd": row.AmountUSD.String()},
 				map[string]any{"id": row.Id, "status": model.AdtySiteInviteWithdrawPaid, "tx_id": txID})
 		}
 		return recordReferralAuditTx(tx, "site_invite_withdrawal_pay", row.UserId, 0, ownerID, cleanProof, ip, ua,
-			map[string]any{"id": row.Id, "site_id": row.SiteId, "status": row.Status, "amount_usd": row.AmountUSD.String()},
+			map[string]any{"id": row.Id, "site_id": row.SiteId, "status": beforeStatus, "amount_usd": row.AmountUSD.String()},
 			map[string]any{"id": row.Id, "site_id": row.SiteId, "status": model.AdtySiteInviteWithdrawPaid, "tx_id": txID})
 	})
 	if err != nil {

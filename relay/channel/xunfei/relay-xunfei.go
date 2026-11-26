@@ -14,6 +14,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -224,11 +225,17 @@ func xunfeiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, textReques
 }
 
 func xunfeiHandler(c *gin.Context, info *relaycommon.RelayInfo, textRequest dto.GeneralOpenAIRequest, appId string, apiSecret string, apiKey string) (*dto.Usage, *types.NewAPIError) {
-	ctx, cancel := context.WithCancel(c.Request.Context())
+	upstreamCtx, cancel, cancelErr := channel.DetachedNonStreamContext(c, info, 0)
+	if cancelErr != nil {
+		return nil, cancelErr
+	}
 	defer cancel()
 	domain, authUrl := getXunfeiAuthUrl(c, apiKey, apiSecret, textRequest.Model)
-	dataChan, stopChan, err := xunfeiMakeRequest(ctx, info, textRequest, domain, authUrl, appId)
+	dataChan, stopChan, err := xunfeiMakeRequest(upstreamCtx, info, textRequest, domain, authUrl, appId)
 	if err != nil {
+		if errors.Is(upstreamCtx.Err(), context.Canceled) {
+			return nil, types.NewError(err, types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+		}
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed)
 	}
 	var usage dto.Usage
@@ -237,8 +244,11 @@ func xunfeiHandler(c *gin.Context, info *relaycommon.RelayInfo, textRequest dto.
 	stop := false
 	for !stop {
 		select {
-		case <-ctx.Done():
-			return &usage, types.NewError(ctx.Err(), types.ErrorCodeDoRequestFailed)
+		case <-upstreamCtx.Done():
+			if errors.Is(upstreamCtx.Err(), context.Canceled) {
+				return nil, types.NewError(upstreamCtx.Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
+			}
+			return &usage, types.NewError(upstreamCtx.Err(), types.ErrorCodeDoRequestFailed)
 		case xunfeiResponse = <-dataChan:
 			if len(xunfeiResponse.Payload.Choices.Text) > 0 {
 				content += xunfeiResponse.Payload.Choices.Text[0].Content

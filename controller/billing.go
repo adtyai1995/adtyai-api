@@ -12,36 +12,36 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func resolveBillingQuotaForToken(c *gin.Context) (remainQuota int, usedQuota int, token *model.Token, expiredTime int64, err error) {
+func resolveBillingQuotaForToken(c *gin.Context) (remainQuota int, usedQuota int, token *model.Token, expiredTime int64, isTokenStat bool, err error) {
 	tokenId := c.GetInt("token_id")
 	token, err = model.GetTokenById(tokenId)
 	if err != nil {
-		return 0, 0, nil, 0, err
+		return 0, 0, nil, 0, false, err
 	}
 	if token.OwnerSelfUseSiteId > 0 {
-		return 0, 0, token, 0, common.NewMessage("Billing query is not available for this key")
+		return 0, 0, token, 0, false, common.NewMessage("Billing query is not available for this key")
 	}
 	expiredTime = token.ExpiredTime
 	if common.GetDisplayTokenStatEnabled() || !token.AllowUserQuotaQuery {
 		remainQuota, usedQuota = model.TokenQuotaForBilling(token)
-		return remainQuota, usedQuota, token, expiredTime, nil
+		return remainQuota, usedQuota, token, expiredTime, true, nil
 	}
 	teamQuota, isTeamKey, teamErr := service.AdtyTeamSharedQuotaForToken(token.Id)
 	if teamErr != nil {
-		return 0, 0, token, expiredTime, teamErr
+		return 0, 0, token, expiredTime, false, teamErr
 	}
 	if isTeamKey {
 		remainQuota = int(min(max(teamQuota, int64(0)), int64(math.MaxInt)))
 		usedQuota = token.UsedQuota
-		return remainQuota, usedQuota, token, expiredTime, nil
+		return remainQuota, usedQuota, token, expiredTime, false, nil
 	}
 	userId := c.GetInt("id")
 	remainQuota, usedQuota, err = model.UserQuotaForBilling(userId)
-	return remainQuota, usedQuota, token, expiredTime, err
+	return remainQuota, usedQuota, token, expiredTime, false, err
 }
 
 func GetSubscription(c *gin.Context) {
-	remainQuota, usedQuota, token, expiredTime, err := resolveBillingQuotaForToken(c)
+	remainQuota, usedQuota, token, expiredTime, isTokenStat, err := resolveBillingQuotaForToken(c)
 	if expiredTime <= 0 {
 		expiredTime = 0
 	}
@@ -71,7 +71,7 @@ func GetSubscription(c *gin.Context) {
 	default:
 		amount = decimal.NewFromInt(int64(quota)).Div(common.QuotaPerUnitDecimal()).InexactFloat64()
 	}
-	if token != nil && token.UnlimitedQuota {
+	if isTokenStat && token != nil && token.UnlimitedQuota {
 		amount = 100000000
 	}
 	subscription := OpenAISubscriptionResponse{
@@ -87,7 +87,7 @@ func GetSubscription(c *gin.Context) {
 }
 
 func GetUsage(c *gin.Context) {
-	_, quota, _, _, err := resolveBillingQuotaForToken(c)
+	_, quota, _, _, _, err := resolveBillingQuotaForToken(c)
 	if err != nil {
 		common.SysError(common.LogText("GetUsage failed to load quota: %s", err.Error()))
 		openAIError := types.OpenAIError{

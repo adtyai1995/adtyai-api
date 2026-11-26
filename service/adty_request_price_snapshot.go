@@ -375,5 +375,5 @@ func AdtyReuseFrozenPriceData(c *gin.Context, info *relaycommon.RelayInfo) bool 
 			info.PriceData = clonePriceData(frozenBase)
 		}
 	}
-	return info.PriceData.ModelRatio != 0 || info.PriceData.ModelPrice != 0 || info.PriceData.UsePrice || info.PriceData.FreeModel || info.PriceData.QuotaToPreConsume != 0 || info.PriceData.Quota != 0
+	return info.PriceData.ModelRatio != 0 || info.PriceData.ModelPrice != 0 || info.PriceData.UsePrice || info.PriceData.FreeModel || info.PriceData.QuotaToPreConsume != 0 || info.PriceData.Quota != 0 || info.TieredBillingSnapshot != nil
 }

@@ -122,8 +122,11 @@ func runAdtyEpayFollowUpQueries(now int64) {
 			outcome := "unpaid"
 			if err != nil {
 				outcome = "failed"
-				if !finalTeamCheck && errors.Is(err, model.ErrPaymentMethodMismatch) {
-					adtyQueuePaymentReview(ext.TradeNo, ext.GatewayTradeId, err.Error(), "")
+				if !finalTeamCheck && (errors.Is(err, model.ErrPaymentMethodMismatch) || errors.Is(err, model.ErrPaymentAmountMismatch)) {
+					if reviewErr := adtyQueuePaymentReview(ext.TradeNo, ext.GatewayTradeId, err.Error(), ""); reviewErr != nil {
+						continue
+					}
+					outcome = "rejected"
 				}
 			}
 			if recordErr := model.RecordAdtyPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, outcome, 0); recordErr != nil {
@@ -136,21 +139,32 @@ func runAdtyEpayFollowUpQueries(now int64) {
 			var credited int
 			var alreadyDone bool
 			creditErr := model.DB.Transaction(func(tx *gorm.DB) error {
+				lockedOrphans, _, lockErr := model.LockOrderPaymentOrphansForCreditTx(tx, ext.TradeNo, ext.Provider,
+					[]string{"hosted-query:" + ext.TradeNo, "epay-query:" + ext.TradeNo, "team-query:" + ext.TradeNo})
+				if lockErr != nil {
+					return lockErr
+				}
 				var txErr error
 				alreadyDone, credited, topUp, frozen, txErr = model.CompleteAdtyTopUpTx(tx, ext.TradeNo, *facts)
 				if txErr != nil {
 					return txErr
 				}
+				if len(lockedOrphans) == 0 {
+					return nil
+				}
+				orphanIDs := make([]int64, 0, len(lockedOrphans))
+				for _, row := range lockedOrphans {
+					orphanIDs = append(orphanIDs, row.ID)
+				}
+				nowTs := common.GetTimestamp()
 				return tx.Model(&model.PaymentOrphanEvent{}).
-					Where("event_id IN ? AND status = ?",
-						[]string{"hosted-query:" + ext.TradeNo, "epay-query:" + ext.TradeNo, "team-query:" + ext.TradeNo},
-						model.PaymentOrphanStatusPendingReview).
+					Where("id IN ? AND status = ?", orphanIDs, model.PaymentOrphanStatusPendingReview).
 					Updates(map[string]any{
 						"status":          model.PaymentOrphanStatusCredited,
 						"resolution":      model.PaymentOrphanStatusCredited,
 						"resolution_note": "Recovered by epay order query",
-						"resolved_at":     common.GetTimestamp(),
-						"update_time":     common.GetTimestamp(),
+						"resolved_at":     nowTs,
+						"update_time":     nowTs,
 					}).Error
 			})
 			if creditErr != nil {
@@ -208,12 +222,16 @@ func countAdtyEpayUnpaid(tradeNos []string) {
 		return
 	}
 	var exts []model.AdtyTopupOrder
-	// 过期之后又入账的订单不再算连续未付，否则回调和过期任务交错时会把已经付款的通道重新抬高。
-	if err := model.DB.Table("adty_topup_orders AS a").Select("a.*").
+	// 过期之后又入账或已核实付款进入孤儿审核的订单不再算连续未付，避免 R-41 #1 迟付过期单误触健康通道维护。
+	q := model.DB.Table("adty_topup_orders AS a").Select("a.*").
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
 		Where("a.trade_no IN ? AND a.provider = ? AND a.unpaid_counted = ? AND t.status NOT IN ?",
-			tradeNos, model.PaymentProviderAdtyEpay, false, []string{common.TopUpStatusSuccess, common.TopUpStatusRefunded}).
-		Find(&exts).Error; err != nil {
+			tradeNos, model.PaymentProviderAdtyEpay, false, []string{common.TopUpStatusSuccess, common.TopUpStatusRefunded})
+	if model.DB.Migrator().HasTable(&model.PaymentOrphanEvent{}) {
+		q = q.Where("NOT EXISTS (SELECT 1 FROM adty_payment_orphan_events o WHERE o.provider = a.provider AND o.reference_id = a.trade_no AND o.event_type IN ('payment_callback','payment_query') AND o.event_id NOT LIKE 'reversal:%' AND o.status <> ?)",
+			model.PaymentOrphanStatusDismissed)
+	}
+	if err := q.Find(&exts).Error; err != nil {
 		common.SysError(common.LogText("count unpaid epay orders: %s", err.Error()))
 		return
 	}

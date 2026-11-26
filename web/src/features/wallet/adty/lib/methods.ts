@@ -33,7 +33,7 @@ export const VOUCHER_METHOD_LABELS: Record<string, string> = {
   voucher: 'Voucher redemption',
   main_user: 'Main-site voucher',
   site_customer: 'Site customer voucher',
-  site_margin: 'Site margin voucher',
+  site_margin: 'Site margin recharge code',
   site_owner: 'Site owner voucher',
 }
 

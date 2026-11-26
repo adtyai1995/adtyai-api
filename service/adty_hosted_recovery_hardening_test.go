@@ -114,7 +114,7 @@ func TestRecoverAdtyHostedPaymentConfirmingMismatchAndScanFilter(t *testing.T) {
 		}
 		err := RecoverAdtyHostedPayment(context.Background(), ext)
 		require.ErrorIs(t, err, model.ErrPaymentAmountMismatch)
-		assert.Equal(t, "failed", recordedStatus)
+		assert.Equal(t, "rejected", recordedStatus)
 
 		var orphan model.PaymentOrphanEvent
 		require.NoError(t, db.Where("event_id = ?", "hosted-query:EPU_MISMATCH_1").First(&orphan).Error)

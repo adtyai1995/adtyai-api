@@ -990,6 +990,7 @@ func UpdateUser(c *gin.Context) {
 	}
 	authzTouched := false
 	auditEvents := make([]model.AuditLog, 0, 2)
+	var ticketAudits []model.AuditLog
 	previousAuthVersion := originUser.AuthVersion
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		// Maintain canonical lock order adty_groups -> users only when group is explicitly provided (R6-05 / R7-18).
@@ -1041,11 +1042,12 @@ func UpdateUser(c *gin.Context) {
 				return err
 			}
 		}
-		touched, err := updateAdminPermissionsForUserInTx(c, tx, updatedUser.Id, current.Role, updatedUser.AdminPermissions)
+		touched, releasedAudits, err := updateAdminPermissionsForUserInTx(c, tx, updatedUser.Id, current.Role, updatedUser.AdminPermissions)
 		authzTouched = touched
 		if err != nil {
 			return err
 		}
+		ticketAudits = append(ticketAudits, releasedAudits...)
 		if before != nil {
 			event, err := appendAdtyPermissionAuditTx(c, tx, updatedUser.Id, current.Role, before, updatedUser.AdminPermissions)
 			if err != nil {
@@ -1063,6 +1065,7 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 	deliverCommittedAudits(c, auditEvents)
+	service.DeliverAdtyCommittedAudits(ticketAudits)
 	var postCommitWarnings []string
 	if authzTouched {
 		if err := authz.ReloadPolicy(); err != nil {
@@ -1724,7 +1727,7 @@ func CreateUser(c *gin.Context) {
 			}
 			cleanUser.Group = ""
 		}
-		touched, err := updateAdminPermissionsForUserInTx(c, tx, cleanUser.Id, cleanUser.Role, user.AdminPermissions)
+		touched, _, err := updateAdminPermissionsForUserInTx(c, tx, cleanUser.Id, cleanUser.Role, user.AdminPermissions)
 		authzTouched = touched
 		if err != nil {
 			return err
@@ -1783,48 +1786,64 @@ func CreateUser(c *gin.Context) {
 	return
 }
 
-func updateAdminPermissionsForUserInTx(c *gin.Context, tx *gorm.DB, userID int, userRole int, permissions map[string]map[string]bool) (bool, error) {
+func updateAdminPermissionsForUserInTx(c *gin.Context, tx *gorm.DB, userID int, userRole int, permissions map[string]map[string]bool) (bool, []model.AuditLog, error) {
 	if isAccessTokenRequest(c) && (permissions != nil || userRole >= common.RoleAdminUser) {
-		return false, errAdtyAdminActionDenied
+		return false, nil, errAdtyAdminActionDenied
 	}
 	if permissions == nil {
 		if userRole < common.RoleAdminUser && c.GetInt("role") == common.RoleRootUser {
 			if err := authz.ClearUserAuthorizationInTx(tx, userID); err != nil {
-				return true, err
+				return true, nil, err
 			}
-			_, err := service.ReleaseAssigneeOpenTicketsTx(tx, userID, c.GetInt("id"), "admin_demote")
-			return true, err
+			return true, nil, nil
 		}
-		return false, nil
+		return false, nil, nil
 	}
 	if c.GetInt("role") != common.RoleRootUser {
-		return false, common.NewMessage("Only super administrators can update admin permissions")
+		return false, nil, common.NewMessage("Only super administrators can update admin permissions")
 	}
 	if userRole < common.RoleAdminUser {
 		if err := authz.ClearUserAuthorizationInTx(tx, userID); err != nil {
-			return true, err
+			return true, nil, err
 		}
-		_, err := service.ReleaseAssigneeOpenTicketsTx(tx, userID, c.GetInt("id"), "admin_demote")
-		return true, err
+		return true, nil, nil
+	}
+	var beforeCaps authz.PermissionsMap
+	if userRole < common.RoleRootUser {
+		var err error
+		beforeCaps, err = authz.CapabilitiesInTx(tx, userID, userRole)
+		if err != nil {
+			return false, nil, err
+		}
 	}
 	if err := authz.SetUserPermissionsInTx(tx, userID, permissions); err != nil {
-		return true, err
+		return true, nil, err
 	}
+	var ticketAudits []model.AuditLog
 	if userRole < common.RoleRootUser {
-		ticketPerms := permissions[authz.ResourceAdtyTicket]
-		canManageMain := ticketPerms["manage"]
-		canManageAll := ticketPerms["manage_all"]
-		if !canManageMain && !canManageAll {
-			if _, err := service.ReleaseAssigneeOpenTicketsTx(tx, userID, c.GetInt("id"), "ticket_permission_revoked"); err != nil {
-				return true, err
+		afterCaps, err := authz.CapabilitiesInTx(tx, userID, userRole)
+		if err != nil {
+			return true, nil, err
+		}
+		beforeMain := beforeCaps[authz.ResourceAdtyTicket]["manage"]
+		beforeAll := beforeCaps[authz.ResourceAdtyTicket]["manage_all"]
+		afterMain := afterCaps[authz.ResourceAdtyTicket]["manage"]
+		afterAll := afterCaps[authz.ResourceAdtyTicket]["manage_all"]
+		if (beforeMain || beforeAll) && !afterMain && !afterAll {
+			_, audits, err := service.ReleaseAssigneeOpenTicketsWithAuditsTx(tx, userID, c.GetInt("id"), "ticket_permission_revoked")
+			if err != nil {
+				return true, nil, err
 			}
-		} else if !canManageAll {
-			if _, err := service.ReleaseAssigneeSubsiteOpenTicketsTx(tx, userID, c.GetInt("id"), "ticket_subsite_permission_revoked"); err != nil {
-				return true, err
+			ticketAudits = append(ticketAudits, audits...)
+		} else if beforeAll && !afterAll {
+			_, audits, err := service.ReleaseAssigneeSubsiteOpenTicketsWithAuditsTx(tx, userID, c.GetInt("id"), "ticket_subsite_permission_revoked")
+			if err != nil {
+				return true, nil, err
 			}
+			ticketAudits = append(ticketAudits, audits...)
 		}
 	}
-	return true, nil
+	return true, ticketAudits, nil
 }
 
 type ManageRequest struct {
@@ -1985,6 +2004,7 @@ func ManageUser(c *gin.Context) {
 		return
 	}
 	changed := false
+	var ticketAudits []model.AuditLog
 	var postCommitWarnings []string
 	if req.Action == "demote" {
 		if err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -1996,8 +2016,12 @@ func ManageUser(c *gin.Context) {
 			if err := authz.ClearUserAuthorizationInTx(tx, user.Id); err != nil {
 				return err
 			}
-			_, err := service.ReleaseAssigneeOpenTicketsTx(tx, user.Id, c.GetInt("id"), "admin_demote")
-			return err
+			_, audits, err := service.ReleaseAssigneeOpenTicketsWithAuditsTx(tx, user.Id, c.GetInt("id"), "admin_demote")
+			if err != nil {
+				return err
+			}
+			ticketAudits = append(ticketAudits, audits...)
+			return nil
 		}); err != nil {
 			if errors.Is(err, model.ErrAdminTargetSessionRequired) {
 				denyAdtyAdminAction(c)
@@ -2010,6 +2034,7 @@ func ManageUser(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+		service.DeliverAdtyCommittedAudits(ticketAudits)
 		if err := authz.ReloadPolicy(); err != nil {
 			postCommitWarnings = append(postCommitWarnings, "policy_reload_failed")
 		} else {
@@ -2022,7 +2047,11 @@ func ManageUser(c *gin.Context) {
 			return txErr
 		}
 		if req.Action == "disable" {
-			_, txErr = service.ReleaseAssigneeOpenTicketsTx(tx, user.Id, c.GetInt("id"), "admin_disable")
+			var audits []model.AuditLog
+			_, audits, txErr = service.ReleaseAssigneeOpenTicketsWithAuditsTx(tx, user.Id, c.GetInt("id"), "admin_disable")
+			if txErr == nil {
+				ticketAudits = append(ticketAudits, audits...)
+			}
 		}
 		return txErr
 	}); err != nil {
@@ -2036,6 +2065,8 @@ func ManageUser(c *gin.Context) {
 		}
 		common.ApiError(c, err)
 		return
+	} else {
+		service.DeliverAdtyCommittedAudits(ticketAudits)
 	}
 	if delta.Status != 0 {
 		user.Status = delta.Status

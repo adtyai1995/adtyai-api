@@ -166,13 +166,23 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 	}
 	switch info.ChannelOtherSettings.AwsApiType {
 	case dto.AwsApiTypeMantle:
-		req, err := a.newMantleRequest(c, info, requestBody)
+		req, cancel, err := a.newMantleRequest(c, info, requestBody)
 		if err != nil {
 			return nil, err
 		}
 		resp, err := channel.DoRequest(c, req, info)
 		if err != nil {
-			return nil, newAwsInvokeError(c.Request.Context(), err, "Mantle Messages")
+			if cancel != nil {
+				cancel()
+			}
+			return nil, newAwsInvokeError(req.Context(), err, "Mantle Messages")
+		}
+		if cancel != nil {
+			if resp != nil && resp.Body != nil {
+				resp.Body = &mantleCancelBody{ReadCloser: resp.Body, cancel: cancel}
+			} else {
+				cancel()
+			}
 		}
 		return resp, nil
 	case "", dto.AwsApiTypeInvokeModel:

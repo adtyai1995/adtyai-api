@@ -415,24 +415,33 @@ func ManualCompleteAdtyTopUp(c *gin.Context) {
 	var credited int
 	var alreadyDone bool
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		lockedOrphans, _, lockErr := model.LockOrderPaymentOrphansForCreditTx(tx, tradeNo, topUps[0].PaymentProvider, nil)
+		if lockErr != nil {
+			return lockErr
+		}
 		var err error
 		alreadyDone, credited, topUp, ext, err = model.CompleteAdtyTopUpTx(tx, tradeNo, facts)
 		if err != nil {
 			return err
 		}
-		if !alreadyDone {
-			// 实付没有网关数据，记成应付，币种照下单时。
-			if err := tx.Model(&model.AdtyTopupOrder{}).Where("id = ?", ext.Id).Updates(map[string]any{
-				"paid_amount":   ext.PayAmount,
-				"paid_currency": ext.PayCurrency,
-			}).Error; err != nil {
-				return err
-			}
+		if alreadyDone {
+			return nil
 		}
-		if ext != nil {
+		// 实付没有网关数据，记成应付，币种照下单时。
+		if err := tx.Model(&model.AdtyTopupOrder{}).Where("id = ?", ext.Id).Updates(map[string]any{
+			"paid_amount":   ext.PayAmount,
+			"paid_currency": ext.PayCurrency,
+		}).Error; err != nil {
+			return err
+		}
+		if ext != nil && len(lockedOrphans) > 0 && (ext.SiteId == 0 || c.GetInt("role") == common.RoleRootUser) {
+			orphanIDs := make([]int64, 0, len(lockedOrphans))
+			for _, row := range lockedOrphans {
+				orphanIDs = append(orphanIDs, row.ID)
+			}
 			now := common.GetTimestamp()
 			if err := tx.Model(&model.PaymentOrphanEvent{}).
-				Where("reference_id = ? AND provider = ? AND status = ?", tradeNo, ext.Provider, model.PaymentOrphanStatusPendingReview).
+				Where("id IN ? AND status = ?", orphanIDs, model.PaymentOrphanStatusPendingReview).
 				Updates(map[string]any{
 					"status":          model.PaymentOrphanStatusCredited,
 					"resolution":      model.PaymentOrphanStatusCredited,

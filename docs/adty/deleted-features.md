@@ -652,3 +652,16 @@ R-32 至 R-37 在统一全平台、分站经营、定价、监控、客服与认
   - 退役分站 `theme_color` 与 `tagline` 品牌覆写（服务端剥离并不在 `/api/status` 返回 `theme_color`）；
   - 退役系统设置运营页中的余额不足提醒前端表单状态（`QuotaRemindEnabled`/`QuotaRemindThreshold`）。
 - **保留兼容**：历史订单、流水、日结单、已签发兑换码、历史自用/调额/托管发件域名记录与后端兼容只读查询仍保留，不改写或删除历史资金与审计数据；前端语言包旧键按约定 B 只增不删。
+
+## 全局搜索框与排行榜死代码清理（R-41 / 2026-11-27）
+
+- **全局搜索框（CommandMenu / Search）**：随顶栏移除搜索框后删除无引用的 `web/src/components/search.tsx`、`web/src/components/command-menu.tsx`、`web/src/context/search-provider.tsx`（完整路径见 [deleted-paths.txt](deleted-paths.txt)）。
+- **排行榜（Rankings）**：随顶栏与配置下线排行榜后删除全部退役死代码：
+  - 后端：`controller/rankings.go`、`service/rankings.go`、`model/usedata_rankings.go`，并清理 `middleware/header_nav.go` 中不再使用的 `rankings` 分支。
+  - 前端：`web/src/features/rankings/` 全部 13 个文件，并从 `web/src/lib/nav-modules.ts`、`web/src/features/system-settings/maintenance/{config.ts,header-navigation-section.tsx}` 移除 `rankings` 类型与写入逻辑。
+- **保留名单和理由**：
+  - `GET /api/rankings`（`router/api-router.go`）保留返回 410 Gone，防止旧客户端落回默认路由；
+  - `web/src/routes/rankings/index.tsx` 保留直访重定向至首页 `/`；
+  - `pkg/jsplugin/routing.go` 保留 `/rankings` 插件保留路径，防止插件占用旧地址；
+  - `parseHeaderNavModules` 保留静默忽略历史 `HeaderNavModules` JSON 中遗留 `rankings` 键，保证旧库平滑升级；
+  - `web/src/i18n/locales/{en,zh}.json` 中旧键按约定 B 只增不删。

@@ -296,6 +296,9 @@ func (s *BillingSession) reserve(targetQuota int, requireAvailableQuota bool) er
 			return wrapDurableReserveError(err)
 		}
 		s.preConsumedQuota, s.tokenConsumed = row.ReservedQuota, row.TokenReservedQuota
+		if row.PayerKind != "" {
+			s.relayInfo.BillingPayerKind = row.PayerKind
+		}
 		s.syncRelayInfo()
 		return nil
 	}
@@ -343,6 +346,9 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 			return wrapDurableReserveError(err)
 		}
 		s.preConsumedQuota, s.tokenConsumed = row.ReservedQuota, row.TokenReservedQuota
+		if row.PayerKind != "" {
+			s.relayInfo.BillingPayerKind = row.PayerKind
+		}
 		s.syncRelayInfo()
 		c.Set(adtyDurableBillingContextKey, true)
 		c.Set(adtyBillingOperationContextKey, s.operationKey)

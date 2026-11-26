@@ -1229,10 +1229,14 @@ func RemoveAdtyArchivedWebsiteDomain(ctx context.Context, ownerID, siteID, domai
 	return removeAdtySiteDomain(ctx, &domain)
 }
 
-// RemoveAdtySiteDomain 是站长删除自己站上的域名。
+// RemoveAdtySiteDomain 是站长删除自己站上的域名（含公示期 closing 站点）。
 func RemoveAdtySiteDomain(ctx context.Context, ownerUserId, domainId int) error {
-	site, err := adtyOwnerSite(ownerUserId)
-	if err != nil {
+	var site model.AdtySite
+	if err := model.DB.Where("owner_user_id = ? AND status IN ?", ownerUserId,
+		[]string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).First(&site).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrAdtySiteNotFound
+		}
 		return err
 	}
 	var domain model.AdtySiteDomain

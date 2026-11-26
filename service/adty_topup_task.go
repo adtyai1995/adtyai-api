@@ -126,6 +126,15 @@ func verifyExpiredOrdersUnpaidBeforeExpire(now int64) {
 		if checkErr != nil || !requiresRemote {
 			continue
 		}
+		if model.DB.Migrator().HasTable(&model.PaymentOrphanEvent{}) {
+			var orphanCount int64
+			if cErr := model.DB.Model(&model.PaymentOrphanEvent{}).
+				Where("reference_id = ? AND provider = ? AND event_type IN ? AND event_id NOT LIKE ? AND status <> ?",
+					ext.TradeNo, ext.Provider, []string{"payment_callback", "payment_query"}, "reversal:%", model.PaymentOrphanStatusDismissed).
+				Count(&orphanCount).Error; cErr == nil && orphanCount > 0 {
+				continue
+			}
+		}
 		var latest model.AdtyOrderPaymentEvent
 		if qErr := model.DB.Where("trade_no = ? AND source = ?", ext.TradeNo, model.AdtyPaymentSourceQuery).
 			Order("id desc").Limit(1).Find(&latest).Error; qErr != nil {
@@ -133,14 +142,6 @@ func verifyExpiredOrdersUnpaidBeforeExpire(now int64) {
 		}
 		if latest.Id > 0 && latest.Outcome == "unpaid" && latest.CreatedAt >= ext.ExpireAt {
 			continue
-		}
-		if latest.Id > 0 && latest.Outcome == "rejected" {
-			var orphanCount int64
-			if cErr := model.DB.Model(&model.PaymentOrphanEvent{}).
-				Where("reference_id = ? AND provider = ? AND status <> ?", ext.TradeNo, ext.Provider, model.PaymentOrphanStatusDismissed).
-				Count(&orphanCount).Error; cErr == nil && orphanCount > 0 {
-				continue
-			}
 		}
 		_ = model.UpdateAdtyTopupOrderFields(ext.TradeNo, map[string]any{"last_query_at": now})
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)

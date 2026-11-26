@@ -263,6 +263,58 @@ func LockPaymentOrphanOrderTx(tx *gorm.DB, id int64) (*PaymentOrphanEvent, *TopU
 	return orphan, topUp, ext, nil
 }
 
+// LockOrderPaymentOrphansForCreditTx locks the order and its pending
+// payment-verification orphan rows in canonical order:
+// AdtySite (when site_id > 0) -> TopUp -> AdtyTopupOrder -> PaymentOrphanEvent (id ASC).
+// Calling this before CompleteAdtyTopUpTx avoids inverting lock order against
+// User / AdtyTeam / AdtySiteWallet and never selects reversal:* or reviewed rows.
+func LockOrderPaymentOrphansForCreditTx(tx *gorm.DB, tradeNo, provider string, eventIDs []string) ([]PaymentOrphanEvent, *AdtyTopupOrder, error) {
+	if strings.TrimSpace(tradeNo) == "" {
+		return nil, nil, nil
+	}
+	var peekSite struct {
+		SiteId int
+	}
+	if err := tx.Model(&AdtyTopupOrder{}).Select("site_id").Where("trade_no = ?", tradeNo).Limit(1).Scan(&peekSite).Error; err != nil {
+		return nil, nil, err
+	}
+	if peekSite.SiteId > 0 {
+		var site AdtySite
+		if err := lockForUpdate(tx).Where("id = ?", peekSite.SiteId).Limit(1).Find(&site).Error; err != nil {
+			return nil, nil, err
+		}
+	}
+	_, ext, err := lockAdtyTopUpTx(tx, tradeNo)
+	if err != nil {
+		if err == ErrTopUpNotFound {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+	if !tx.Migrator().HasTable(&PaymentOrphanEvent{}) {
+		return nil, ext, nil
+	}
+	if strings.TrimSpace(provider) == "" && ext != nil {
+		provider = ext.Provider
+	}
+	q := lockForUpdate(tx).Where(
+		"reference_id = ? AND provider = ? AND status = ? AND event_type IN ? AND event_id NOT LIKE ? AND review_id = 0",
+		tradeNo,
+		provider,
+		PaymentOrphanStatusPendingReview,
+		[]string{"payment_callback", "payment_query", "team_payment_query"},
+		"reversal:%",
+	)
+	if len(eventIDs) > 0 {
+		q = q.Where("event_id IN ?", eventIDs)
+	}
+	var rows []PaymentOrphanEvent
+	if err := q.Order("id ASC").Find(&rows).Error; err != nil {
+		return nil, ext, err
+	}
+	return rows, ext, nil
+}
+
 // MarkPaymentOrphanCreditedTx 在补入账的同一个事务里把事件标成已入账。
 func MarkPaymentOrphanCreditedTx(tx *gorm.DB, orphan *PaymentOrphanEvent, resolvedBy int, note string) error {
 	now := common.GetTimestamp()
