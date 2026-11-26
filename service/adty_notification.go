@@ -1724,7 +1724,14 @@ func adtyTitleHasBilingualEnglish(title string) bool {
 		return false
 	}
 	after = strings.TrimSpace(after)
-	return after != "" && !adtyContainsChinese(after) && adtyContainsASCIILatin(after)
+	return after != "" && !adtyContainsChinese(after) && adtyContainsASCIILatin(after) && !isAdtyTranslationNotReadyText(after)
+}
+
+func adtyBodyHasBilingualEnglish(body string, isHTML bool) bool {
+	if isHTML {
+		body = stripAdtyNotificationTranslationSuffix(adtyNotificationHTMLToTelegramText(SanitizeAdtyNotificationHTML(body)), "")
+	}
+	return adtyHasStandaloneEnglishParagraph(body)
 }
 
 func announceTelegramBodyWithDB(db *gorm.DB, row model.AdtyNotificationPublication) string {
@@ -1768,7 +1775,7 @@ func announceTelegramBodyWithDB(db *gorm.DB, row model.AdtyNotificationPublicati
 		content = adtyNotificationHTMLToTelegramText(content)
 	}
 	content = adtyEnsureTelegramBilingualFallback(content)
-	bodyNeedsNotReady := adtyContainsChinese(bodySrc) && !bodyReady
+	bodyNeedsNotReady := adtyContainsChinese(bodySrc) && !bodyReady && !adtyBodyHasBilingualEnglish(bodySrc, isHTML)
 	rawTitle := strings.TrimSpace(row.Title)
 	if rawTitle == "" {
 		if content != "" && bodyNeedsNotReady && !strings.Contains(strings.ToLower(content), strings.ToLower(adtyTranslationNotReadyEn)) {
@@ -2595,7 +2602,8 @@ func formatAdtyNotificationItemForViewer(row model.AdtyNotificationPublication, 
 			item["object_key"] = bodyHead.ObjectKey
 		}
 	}
-	if adtyContainsChinese(bodySrc) && !bodyReady {
+	bodyStaticBilingual := bodyHead == nil && adtyBodyHasBilingualEnglish(bodySrc, contentFormat == "html")
+	if adtyContainsChinese(bodySrc) && !bodyReady && !bodyStaticBilingual {
 		if curStatus, ok := item["translation_status"].(string); !ok || strings.TrimSpace(curStatus) == "" {
 			fallbackStatus := model.AdtyTranslationPending
 			if bodyHead != nil && strings.TrimSpace(bodyHead.SourceHash) == "" && strings.TrimSpace(bodyHead.Source) == "" {
@@ -2619,7 +2627,8 @@ func formatAdtyNotificationItemForViewer(row model.AdtyNotificationPublication, 
 			titleReady = true
 		}
 	}
-	if adtyContainsChinese(title) && !titleReady {
+	titleNeedsEn := adtyContainsChinese(title) && !adtyTitleHasBilingualEnglish(title)
+	if titleNeedsEn && !titleReady {
 		titleStatus := model.AdtyTranslationPending
 		if titleHead != nil && (titleMatched || (strings.TrimSpace(titleHead.SourceHash) == "" && strings.TrimSpace(titleHead.Source) == "")) {
 			if s := strings.TrimSpace(titleHead.Status); s != "" && s != model.AdtyTranslationReady {

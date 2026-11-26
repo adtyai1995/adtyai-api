@@ -275,6 +275,9 @@ func (s *BillingSession) ReserveBeforeSubmit(targetQuota int) error {
 
 func wrapDurableReserveError(err error) *types.NewAPIError {
 	code, status := types.ErrorCodeUpdateDataError, http.StatusInternalServerError
+	if errors.Is(err, model.ErrAdtyFundWriteRestricted) {
+		code, status = types.ErrorCodeAccessDenied, http.StatusForbidden
+	}
 	if errors.Is(err, model.ErrBillingWalletInsufficient) {
 		code, status = types.ErrorCodeInsufficientUserQuota, http.StatusForbidden
 	}

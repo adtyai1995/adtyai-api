@@ -1242,8 +1242,13 @@ func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeComplet
 					item.TitleEn = truncateAdtyRunes(titleEn, 200)
 				}
 			}
-			bodyNeedsEn := (adtyContainsChinese(bodySrc) || adtyContainsChinese(item.Content)) && strings.TrimSpace(item.ContentEn) == ""
-			titleNeedsEn := (adtyContainsChinese(titleSrc) || adtyContainsChinese(item.Title)) && strings.TrimSpace(item.TitleEn) == ""
+			bodyStaticBilingual := !hasBodyHead && (adtyBodyHasBilingualEnglish(bodySrc, isHTML) || (bodySrc == "" && adtyHasStandaloneEnglishParagraph(item.Content)))
+			bodyNeedsEn := (adtyContainsChinese(bodySrc) || adtyContainsChinese(item.Content)) && strings.TrimSpace(item.ContentEn) == "" && !bodyStaticBilingual
+			titleCheck := titleSrc
+			if titleCheck == "" {
+				titleCheck = strings.TrimSpace(item.Title)
+			}
+			titleNeedsEn := (adtyContainsChinese(titleSrc) || adtyContainsChinese(item.Title)) && strings.TrimSpace(item.TitleEn) == "" && !adtyTitleHasBilingualEnglish(titleCheck)
 			if bodyNeedsEn || titleNeedsEn {
 				var bodyHeadPtr, titleHeadPtr *model.AdtyTranslationHead
 				if hasBodyHead {
@@ -1262,8 +1267,8 @@ func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeComplet
 			item.Content = sanitizeAdtyTodoStoredContent(item.Content)
 			if _, isWatcher := watcherNotifyByKey[item.Key]; isWatcher {
 				item.Source = "channel_watcher"
-			} else if (adtyContainsChinese(item.Title) && strings.TrimSpace(item.TitleEn) == "") ||
-				(adtyContainsChinese(item.Content) && strings.TrimSpace(item.ContentEn) == "") {
+			} else if (adtyContainsChinese(item.Title) && strings.TrimSpace(item.TitleEn) == "" && !adtyTitleHasBilingualEnglish(item.Title)) ||
+				(adtyContainsChinese(item.Content) && strings.TrimSpace(item.ContentEn) == "" && !adtyHasStandaloneEnglishParagraph(item.Content)) {
 				item.TranslationStatus = model.AdtyTranslationPending
 				item.TranslationNotice = AdtyTranslationNotReady
 			}

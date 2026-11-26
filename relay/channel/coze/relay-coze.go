@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -300,16 +301,23 @@ func checkIfChatComplete(ctx context.Context, a *Adaptor, c *gin.Context, info *
 	// 将 conversationId和chatId作为参数发送get请求
 	req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
 	if err != nil {
-		return err, false
+		return common.SanitizeOutboundError(err, info.ApiKey, info.ChannelSetting.Proxy), false
 	}
 	err = a.SetupRequestHeader(c, &req.Header, info)
 	if err != nil {
 		return err, false
 	}
-
-	resp, err := doRequest(req, info) // 调用 doRequest
-	if err != nil {
+	if err = channel.ApplyHeaderOverride(info, c, req); err != nil {
 		return err, false
+	}
+
+	resp, err := channel.DoRequest(c, req, info)
+	if err != nil {
+		var apiErr *types.NewAPIError
+		if errors.As(err, &apiErr) {
+			return err, false
+		}
+		return common.SanitizeOutboundError(err, info.ApiKey, info.ChannelSetting.Proxy), false
 	}
 	if resp == nil { // 确保在 doRequest 失败时 resp 不为 nil 导致 panic
 		return fmt.Errorf("resp is nil"), false
@@ -345,32 +353,22 @@ func getChatDetail(ctx context.Context, a *Adaptor, c *gin.Context, info *relayc
 	requestURL = requestURL + "?conversation_id=" + c.GetString("coze_conversation_id") + "&chat_id=" + c.GetString("coze_chat_id")
 	req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("new request failed: %w", err)
+		return nil, fmt.Errorf("new request failed: %w", common.SanitizeOutboundError(err, info.ApiKey, info.ChannelSetting.Proxy))
 	}
 	err = a.SetupRequestHeader(c, &req.Header, info)
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
-	resp, err := doRequest(req, info)
+	if err = channel.ApplyHeaderOverride(info, c, req); err != nil {
+		return nil, err
+	}
+	resp, err := channel.DoRequest(c, req, info)
 	if err != nil {
-		return nil, fmt.Errorf("do request failed: %w", err)
+		var apiErr *types.NewAPIError
+		if errors.As(err, &apiErr) {
+			return nil, fmt.Errorf("do request failed: %w", err)
+		}
+		return nil, fmt.Errorf("do request failed: %w", common.SanitizeOutboundError(err, info.ApiKey, info.ChannelSetting.Proxy))
 	}
-	return resp, nil
-}
-
-func doRequest(req *http.Request, info *relaycommon.RelayInfo) (*http.Response, error) {
-	client, err := service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
-	if err != nil {
-		return nil, fmt.Errorf("new proxy http client failed: %w", err)
-	}
-	noRedirectClient := *client
-	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
-	resp, err := noRedirectClient.Do(req)
-	if err != nil { // 增加对 client.Do(req) 返回错误的检查
-		return nil, fmt.Errorf("client.Do failed: %w", err)
-	}
-	// _ = resp.Body.Close()
 	return resp, nil
 }

@@ -238,6 +238,7 @@ const adtyUnifiedOrderSelect = `o.*, COALESCE(u.username, '') AS username,
 	COALESCE(a.business, 'wallet_topup') AS business,
 	COALESCE(a.payment_scene, '') AS payment_scene, COALESCE(a.payment_scene_name, '') AS payment_scene_name,
 	COALESCE(a.payment_scene_version, 0) AS payment_scene_version, (a.id IS NOT NULL) AS has_ext,
+	COALESCE(a.expire_at, 0) AS expire_at,
 	COALESCE(a.bonus_usd, 0) AS bonus_usd, COALESCE(a.pay_amount, 0) AS pay_amount, COALESCE(a.pay_currency, '') AS pay_currency,
 	COALESCE(t.money, o.face_usd) AS money, COALESCE(a.paid_tx_hash, '') AS paid_tx_hash,
 	COALESCE(a.paid_source, '') AS paid_source, COALESCE(a.method_label, '') AS method_label`
@@ -270,6 +271,28 @@ func getAdtyUnifiedOrders(c *gin.Context, ownerSiteID *int, selfUserID *int) {
 		common.ApiError(c, err)
 		return
 	}
+	isRootViewer := c.GetInt("role") == common.RoleRootUser
+	nowUnix := common.GetTimestamp()
+	subsiteOrphanRefs := map[string]bool{}
+	if ownerSiteID == nil && selfUserID == nil && !isRootViewer && model.DB.Migrator().HasTable(&model.PaymentOrphanEvent{}) {
+		var subsiteTradeNos []string
+		for i := range orders {
+			o := &orders[i]
+			if o.SourceType == "topup" && o.HasExt && o.SiteId != nil && *o.SiteId > 0 && o.TradeNo != "" && o.Status != common.TopUpStatusSuccess {
+				subsiteTradeNos = append(subsiteTradeNos, o.TradeNo)
+			}
+		}
+		if len(subsiteTradeNos) > 0 {
+			var refs []string
+			if err := model.DB.Model(&model.PaymentOrphanEvent{}).
+				Where("reference_id IN ? AND status <> ?", subsiteTradeNos, model.PaymentOrphanStatusDismissed).
+				Distinct("reference_id").Pluck("reference_id", &refs).Error; err == nil {
+				for _, ref := range refs {
+					subsiteOrphanRefs[ref] = true
+				}
+			}
+		}
+	}
 	for i := range orders {
 		order := &orders[i]
 		if order.SiteId != nil {
@@ -284,6 +307,8 @@ func getAdtyUnifiedOrders(c *gin.Context, ownerSiteID *int, selfUserID *int) {
 				order.ChannelName = ""
 			}
 			if selfUserID == nil && order.HasExt {
+				isExpired := order.Status == common.TopUpStatusExpired || (order.ExpireAt > 0 && nowUnix >= order.ExpireAt)
+				blockedByRootRule := !isRootViewer && (isExpired || subsiteOrphanRefs[order.TradeNo])
 				for _, capability := range service.AdtyPaymentCapabilities() {
 					if capability.Provider != order.PaymentProvider {
 						continue
@@ -293,11 +318,11 @@ func getAdtyUnifiedOrders(c *gin.Context, ownerSiteID *int, selfUserID *int) {
 						order.Actions.Refund = capability.Refund && order.Business != model.AdtyBusinessOwnerMarginTopup && (ownerSiteID == nil || order.Business != model.AdtyBusinessOwnerSelfUseTopup)
 					case common.TopUpStatusPending, common.TopUpStatusExpired, common.TopUpStatusFailed, model.TopUpStatusCanceled:
 						if ownerSiteID == nil {
-							order.Actions.Complete, order.Actions.Query = capability.Complete, capability.Query
+							order.Actions.Complete, order.Actions.Query = capability.Complete && !blockedByRootRule, capability.Query
 						}
 					case model.TopUpStatusReplaced:
 						if ownerSiteID == nil {
-							order.Actions.Complete = capability.Complete
+							order.Actions.Complete = capability.Complete && !blockedByRootRule
 						}
 					}
 				}
@@ -341,6 +366,7 @@ type rechargeAuditOrder struct {
 	Status              string               `json:"status"`
 	CreateTime          int64                `json:"create_time"`
 	CompleteTime        int64                `json:"complete_time"`
+	ExpireAt            int64                `json:"expire_at,omitempty"`
 	Amount              int64                `json:"amount"`
 	Money               float64              `json:"money"`
 	HasExt              bool                 `json:"has_ext"`
@@ -452,7 +478,7 @@ const rechargeAuditSelect = `t.id, t.user_id, COALESCE(u.username, '') AS userna
 	COALESCE(a.business, 'wallet_topup') AS business,
 	COALESCE(a.payment_scene, '') AS payment_scene, COALESCE(a.payment_scene_name, '') AS payment_scene_name, COALESCE(a.payment_scene_version, 0) AS payment_scene_version,
 	t.status, t.create_time, t.complete_time, t.amount, t.money,
-	(a.id IS NOT NULL) AS has_ext,
+	(a.id IS NOT NULL) AS has_ext, COALESCE(a.expire_at, 0) AS expire_at,
 	COALESCE(a.face_usd, 0) AS face_usd, COALESCE(a.bonus_usd, 0) AS bonus_usd, COALESCE(a.credit_quota, 0) AS credit_quota,
 	COALESCE(a.pay_amount, 0) AS pay_amount, COALESCE(a.pay_currency, '') AS pay_currency,
 	COALESCE(a.paid_amount, 0) AS paid_amount, COALESCE(a.paid_currency, '') AS paid_currency,

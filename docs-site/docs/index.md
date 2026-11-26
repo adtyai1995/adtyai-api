@@ -30,7 +30,7 @@ features:
     link: /integrations/cli/
     linkText: Setup guides
   - title: Teams & Shared Wallets
-    details: Fund a centralized USD balance, invite team members or provision staff sub-accounts, issue team-scoped API keys, and audit per-request usage.
+    details: Fund a centralized USD team wallet, provision independent team employee sub-accounts directly or via one-time invite links, issue team-scoped API keys, and audit per-request usage.
     link: /guides/teams
     linkText: Team collaboration
   - title: Live Channel Status

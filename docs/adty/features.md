@@ -38,7 +38,7 @@
   - USDT 应付 = 面额（8 位，分组充值倍率已退役，固定按 1 计算）；下单后改成网关返回的实际应付。
   - 支付宝、微信应付 = 面额 × 人民币单价 `Price`（默认 7.3，2 位；分组充值倍率已退役，固定按 1 计算）。
   - 返佣只按面额算，不含任何加赠。
-- **保障冻结与待履约**：下单/入账时按「站长出资的加赠」从收益钱包冻结，不够再用 Root 授权的保证金（流水 `gift_reserve`）；取消、过期、替换时按原路释放（`gift_release`）；客户实际消费赠金时，在结算事务中按原订单出资比例同时扣减原钱包的账面余额和冻结金额（`gift_spend`），未用保障继续冻结；预扣未用部分的释放不产生赠金支出（`service/adty_method_bonus.go`、`service/adty_gift_fulfillment.go`、`model/adty_fund_allocation.go`）。如果客户在订单取消或过期之后才付款、而站长当时保障不足：**本金照常入账，赠金记成「待履约」**（`adty_gift_fulfillments`，状态 `pending`），不可消费；站长把收益转进保证金（`POST /api/adty/site/wallets/earning-to-margin`）后，系统立即重取保障并补发（`service/adty_gift_fulfillment.go:340-472`、`service/adty_site_finance.go:420-425`）。整笔退款会把 pending 取消。
+- **保障冻结与待履约**：下单/入账时按「站长出资的加赠」从收益钱包冻结，不够再用 Root 授权的保证金（流水 `gift_reserve`）；取消、过期、替换时按原路释放（`gift_release`）；客户实际消费赠金时，在结算事务中按原订单出资比例同时扣减原钱包的账面余额和冻结金额（`gift_spend`），未用保障继续冻结；预扣未用部分的释放不产生赠金支出（`service/adty_method_bonus.go`、`service/adty_gift_fulfillment.go`、`model/adty_fund_allocation.go`）。如果未过期订单在本地取消后、仍于有效期内完成付款（且核实付款时间未超有效期）而站长当时保障不足：**本金照常入账，赠金记成「待履约」**（`adty_gift_fulfillments`，状态 `pending`），不可消费（未能核实付款时间的记 `pending_review` 待人工核验）；站长把收益转进保证金（`POST /api/adty/site/wallets/earning-to-margin`）后，系统立即重取保障并补发（`service/adty_gift_fulfillment.go:340-472`、`service/adty_site_finance.go:420-425`）。整笔退款会把 pending 取消。**已过期订单永久禁止一切非人工自动入账**，迟到回调或补查均转入异常支付队列 `adty_payment_orphan_events` 由 Root 人工核实处理（参见下文 `[R-41] #1`）。
 - **分站客户**：只用主站已启用支付方式下站长自己启用的本站规则；站长没设或没开就不送，不存在「回落到主站规则」。
 - **优惠码**：已整条删除（2026-11-16）：报价和下单不再接受优惠码，订单上没有优惠码字段，管理接口和面板也已删除。要主动加额度只能用充值额度兑换码。
 

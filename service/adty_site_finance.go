@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -555,10 +556,40 @@ func ReviewAdtyAnomalyDispositionWithAudit(id int64, operatorID int, status, not
 			return common.NewMessage("Invalid parameters")
 		}
 		beforeStatus, beforeNote := row.Status, row.Note
-		if err := tx.Model(&row).Updates(map[string]any{
-			"status": status, "note": note, "operator_id": operatorID,
-		}).Error; err != nil {
+		updates := map[string]any{
+			"status":      status,
+			"operator_id": operatorID,
+		}
+		if note != "" {
+			updates["note"] = note
+		}
+		// Normalize pre-fix legacy batch_register rows so marking reviewing stays scoped
+		// to the inviter account (never site-wide) and preserves inviter attribution.
+		if row.Kind == "batch_register" && row.SiteId == 0 && row.AccountId == 0 && row.TeamId == 0 {
+			if legacySiteID, parseErr := strconv.Atoi(strings.TrimSpace(row.Ref)); parseErr == nil && legacySiteID > 0 {
+				row.SiteId = legacySiteID
+				updates["site_id"] = legacySiteID
+				trimmedNote := strings.TrimSpace(row.Note)
+				if len(trimmedNote) > len("inviter ") && strings.EqualFold(trimmedNote[:len("inviter ")], "inviter ") {
+					if inviterID, invErr := strconv.Atoi(strings.TrimSpace(trimmedNote[len("inviter "):])); invErr == nil && inviterID > 0 {
+						row.AccountId = inviterID
+						row.Ref = fmt.Sprintf("site:%d:inviter:%d", legacySiteID, inviterID)
+						updates["account_id"] = inviterID
+						updates["ref"] = row.Ref
+						if strings.TrimSpace(row.Evidence) == "" {
+							row.Evidence = common.GetJsonString(map[string]any{"site_id": legacySiteID, "inviter_id": inviterID})
+							updates["evidence"] = row.Evidence
+						}
+					}
+				}
+			}
+		}
+		if err := tx.Model(&row).Updates(updates).Error; err != nil {
 			return err
+		}
+		effectiveNote := note
+		if effectiveNote == "" {
+			effectiveNote = beforeNote
 		}
 		if err := notifyAdtyAnomalyDispositionTx(tx, row, operatorID, status, note); err != nil {
 			return err
@@ -573,7 +604,7 @@ func ReviewAdtyAnomalyDispositionWithAudit(id int64, operatorID int, status, not
 		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, operatorID, auditSiteID, "anomaly_disposition", strconv.FormatInt(row.Id, 10),
 			"adty.anomaly_disposition.review", note, "",
 			map[string]any{"status": beforeStatus, "note": beforeNote},
-			map[string]any{"status": status, "note": note, "kind": row.Kind, "order_ref": row.OrderRef},
+			map[string]any{"status": status, "note": effectiveNote, "kind": row.Kind, "order_ref": row.OrderRef},
 			model.AuditResultSuccess)
 		return auditErr
 	})
@@ -598,10 +629,15 @@ func notifyAdtyAnomalyDispositionTx(tx *gorm.DB, row model.AdtyAnomalyDispositio
 	if err := tx.Select("username").First(&operator, operatorID).Error; err == nil && operator.Username != "" {
 		publisher = operator.Username
 	}
-	content := "资金异常处置已记录。Fund anomaly review recorded. " + status
+	zhLine := "资金异常处置已记录（状态：" + status + "）。"
+	enLine := "Fund anomaly review recorded. Status: " + status + "."
 	if includeInternalNote && note != "" {
-		content += ": " + note
+		zhLine += " 备注：" + note
+		if !adtyContainsChinese(note) {
+			enLine += " Note: " + note
+		}
 	}
+	content := zhLine + "\n\n" + enLine
 	now := time.Now().Unix()
 	notice := model.AdtyNotificationPublication{
 		IssuerSiteId:    0,

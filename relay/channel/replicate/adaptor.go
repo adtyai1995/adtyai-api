@@ -17,8 +17,8 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/relay/helper"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -488,22 +488,21 @@ func uploadFileFromForm(c *gin.Context, info *relaycommon.RelayInfo, fieldCandid
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, uploadURL, &body)
 	if err != nil {
-		return "", fmt.Errorf("replicate adaptor: create upload request failed: %w", err)
+		return "", fmt.Errorf("replicate adaptor: create upload request failed: %w", common.SanitizeOutboundError(err, info.ApiKey, info.ChannelSetting.Proxy))
 	}
 	req.Header.Set("Content-Type", formContentType)
 	req.Header.Set("Authorization", "Bearer "+info.ApiKey)
+	if err := channel.ApplyHeaderOverride(info, c, req); err != nil {
+		return "", err
+	}
 
-	client, err := service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
+	resp, err := channel.DoRequest(c, req, info)
 	if err != nil {
-		return "", fmt.Errorf("replicate adaptor: configure http client failed: %w", err)
-	}
-	noRedirectClient := *client
-	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
-	resp, err := noRedirectClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("replicate adaptor: upload image failed: %w", err)
+		var apiErr *types.NewAPIError
+		if errors.As(err, &apiErr) {
+			return "", fmt.Errorf("replicate adaptor: upload image failed: %w", err)
+		}
+		return "", fmt.Errorf("replicate adaptor: upload image failed: %w", common.SanitizeOutboundError(err, info.ApiKey, info.ChannelSetting.Proxy))
 	}
 	defer resp.Body.Close()
 

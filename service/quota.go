@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 
@@ -311,6 +313,35 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 		if teamBound {
 			availableQuota = teamQuota
 			isTeamKey = true
+		}
+	}
+	if relayInfo.Billing != nil && quota > 0 && relayInfo.UserId > 0 {
+		siteID := 0
+		orderRef := ""
+		if op != nil {
+			siteID = op.SiteId
+			orderRef = op.OperationKey
+		}
+		if siteID == 0 && ctx != nil {
+			if value, ok := ctx.Get(AdtyOwnerSelfUseContextKey); ok {
+				if site, valid := value.(*model.AdtySite); valid && site != nil && site.Id > 0 {
+					siteID = site.Id
+				}
+			}
+			if siteID == 0 {
+				if snap := AdtyFrozenPriceSnapshot(ctx); snap != nil && snap.SiteId > 0 {
+					siteID = snap.SiteId
+				} else if ctxSite := ctx.GetInt(AdtySiteIdContextKey); ctxSite > 0 {
+					siteID = ctxSite
+				}
+			}
+		}
+		if err := model.RejectRestrictedAdtyFundWrite(model.DB, model.AdtyFundWrite{
+			SiteID:    siteID,
+			AccountID: relayInfo.UserId,
+			OrderRef:  orderRef,
+		}); err != nil {
+			return relaytypes.NewErrorWithStatusCode(err, relaytypes.ErrorCodeAccessDenied, http.StatusForbidden, relaytypes.ErrOptionWithSkipRetry())
 		}
 	}
 	if !isTeamKey {

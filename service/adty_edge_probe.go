@@ -177,6 +177,13 @@ func adtySelectEdgeProbeTargetAt(ctx context.Context, cfg *adty_setting.Reseller
 		return count > 0, err
 	}
 
+	rootSet := make(map[string]bool, len(roots))
+	for _, r := range roots {
+		if nr := strings.ToLower(strings.TrimSpace(r)); nr != "" {
+			rootSet[nr] = true
+		}
+	}
+
 	type probeSiteDomain struct {
 		Hostname   string
 		SiteId     int
@@ -188,16 +195,32 @@ func adtySelectEdgeProbeTargetAt(ctx context.Context, cfg *adty_setting.Reseller
 		Table("adty_site_domains").
 		Select("adty_site_domains.hostname, adty_site_domains.site_id, adty_site_domains.role, adty_sites.root_domain").
 		Joins("JOIN adty_sites ON adty_sites.id = adty_site_domains.site_id").
-		Where("adty_site_domains.managed_by = ? AND adty_site_domains.role = ? AND adty_site_domains.status = ? AND adty_site_domains.desired_state IN ? AND adty_sites.status IN ?",
-			"platform", model.AdtySiteDomainRoleSite, model.AdtySiteDomainActive, []string{"", "serve"}, []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).
+		Where("adty_site_domains.managed_by = ? AND adty_site_domains.role = ? AND adty_site_domains.status = ? AND adty_site_domains.desired_state = ? AND adty_sites.status IN ?",
+			"platform", model.AdtySiteDomainRoleSite, model.AdtySiteDomainActive, "serve", []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).
 		Order("adty_site_domains.id ASC").Find(&doms).Error; err != nil {
 		return "", 0, "", err
+	}
+
+	resolveActiveRoot := func(dom probeSiteDomain, host string) string {
+		root := strings.ToLower(strings.TrimSpace(dom.RootDomain))
+		if root != "" {
+			if rootSet[root] {
+				return root
+			}
+			return ""
+		}
+		for _, candidate := range roots {
+			if strings.HasSuffix(host, "."+candidate) {
+				return candidate
+			}
+		}
+		return ""
 	}
 
 	wildcardReadyCache := make(map[string]bool, len(roots))
 	isWildcardReady := func(root string) (bool, error) {
 		r := strings.ToLower(strings.TrimSpace(root))
-		if r == "" {
+		if r == "" || !rootSet[r] {
 			return false, nil
 		}
 		if ready, ok := wildcardReadyCache[r]; ok {
@@ -216,14 +239,9 @@ func adtySelectEdgeProbeTargetAt(ctx context.Context, cfg *adty_setting.Reseller
 		if h == "" {
 			continue
 		}
-		root := strings.ToLower(strings.TrimSpace(dom.RootDomain))
+		root := resolveActiveRoot(dom, h)
 		if root == "" {
-			for _, candidate := range roots {
-				if strings.HasSuffix(h, "."+candidate) {
-					root = candidate
-					break
-				}
-			}
+			continue
 		}
 		ready, err := isWildcardReady(root)
 		if err != nil {
@@ -255,11 +273,14 @@ func adtySelectEdgeProbeTargetAt(ctx context.Context, cfg *adty_setting.Reseller
 		}
 	}
 
-	// Fallback before any certificate is ready: preserve prior deterministic target selection.
+	// Fallback before any certificate is ready: preserve prior deterministic target selection
+	// across currently configured root domains only.
 	for _, dom := range doms {
-		if h := strings.ToLower(strings.TrimSpace(dom.Hostname)); h != "" {
-			return h, dom.SiteId, dom.Role, nil
+		h := strings.ToLower(strings.TrimSpace(dom.Hostname))
+		if h == "" || resolveActiveRoot(dom, h) == "" {
+			continue
 		}
+		return h, dom.SiteId, dom.Role, nil
 	}
 	if mainHost != "" {
 		return mainHost, 0, "", nil

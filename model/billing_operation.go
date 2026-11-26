@@ -456,6 +456,13 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 			}
 			return tx.Save(&result).Error
 		}
+		if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{
+			SiteID:    result.SiteId,
+			AccountID: result.UserId,
+			OrderRef:  result.OperationKey,
+		}); err != nil {
+			return err
+		}
 		var user User
 		if err := lockForUpdate(tx).First(&user, result.UserId).Error; err != nil {
 			return err

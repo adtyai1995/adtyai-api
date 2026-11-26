@@ -3,10 +3,13 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -540,8 +543,244 @@ func RecordMidjourneyPolicyResponse(c *gin.Context, response *dto.MidjourneyResp
 	return false
 }
 
+const (
+	mjClientHeaderPlaceholderPrefix = "{client_header:"
+	mjHeaderPassthroughAllKey       = "*"
+	mjHeaderPassthroughRegexPrefix  = "re:"
+	mjHeaderPassthroughRegexPrefix2 = "regex:"
+)
+
+var mjPassthroughSkipHeaderNamesLower = map[string]struct{}{
+	// RFC 7230 hop-by-hop headers.
+	"connection":          {},
+	"keep-alive":          {},
+	"proxy-authenticate":  {},
+	"proxy-authorization": {},
+	"te":                  {},
+	"trailer":             {},
+	"transfer-encoding":   {},
+	"upgrade":             {},
+
+	"cookie": {},
+
+	// Additional headers that should not be forwarded by name-matching passthrough rules.
+	"host":            {},
+	"content-length":  {},
+	"accept-encoding": {},
+
+	// Do not passthrough credentials by wildcard/regex.
+	"authorization":  {},
+	"x-api-key":      {},
+	"x-goog-api-key": {},
+	"mj-api-secret":  {},
+
+	// WebSocket handshake headers.
+	"sec-websocket-key":        {},
+	"sec-websocket-version":    {},
+	"sec-websocket-extensions": {},
+}
+
+var mjHeaderPassthroughRegexCache sync.Map // map[string]*regexp.Regexp
+
+func getMidjourneyHeaderPassthroughRegex(pattern string) (*regexp.Regexp, error) {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return nil, errors.New("empty regex pattern")
+	}
+	if v, ok := mjHeaderPassthroughRegexCache.Load(pattern); ok {
+		if re, ok := v.(*regexp.Regexp); ok {
+			return re, nil
+		}
+		mjHeaderPassthroughRegexCache.Delete(pattern)
+	}
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	actual, _ := mjHeaderPassthroughRegexCache.LoadOrStore(pattern, compiled)
+	if re, ok := actual.(*regexp.Regexp); ok {
+		return re, nil
+	}
+	return compiled, nil
+}
+
+func isMidjourneyHeaderPassthroughRuleKey(key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
+	if key == mjHeaderPassthroughAllKey {
+		return true
+	}
+	lower := strings.ToLower(key)
+	return strings.HasPrefix(lower, mjHeaderPassthroughRegexPrefix) || strings.HasPrefix(lower, mjHeaderPassthroughRegexPrefix2)
+}
+
+func shouldSkipMidjourneyPassthroughHeader(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return true
+	}
+	_, skip := mjPassthroughSkipHeaderNamesLower[strings.ToLower(name)]
+	return skip
+}
+
+func applyMidjourneyHeaderOverridePlaceholders(template string, c *gin.Context, apiKey string) (string, bool, error) {
+	trimmed := strings.TrimSpace(template)
+	if strings.HasPrefix(trimmed, mjClientHeaderPlaceholderPrefix) {
+		afterPrefix := trimmed[len(mjClientHeaderPlaceholderPrefix):]
+		end := strings.Index(afterPrefix, "}")
+		if end < 0 || end != len(afterPrefix)-1 {
+			return "", false, fmt.Errorf("client_header placeholder must be the full value: %q", template)
+		}
+		name := strings.TrimSpace(afterPrefix[:end])
+		if name == "" {
+			return "", false, fmt.Errorf("client_header placeholder name is empty: %q", template)
+		}
+		if c == nil || c.Request == nil {
+			return "", false, fmt.Errorf("missing request context for client_header placeholder")
+		}
+		clientHeaderValue := c.Request.Header.Get(name)
+		if strings.TrimSpace(clientHeaderValue) == "" {
+			return "", false, nil
+		}
+		// Do not interpolate {api_key} inside client-supplied content.
+		return clientHeaderValue, true, nil
+	}
+	if strings.Contains(template, "{api_key}") {
+		template = strings.ReplaceAll(template, "{api_key}", apiKey)
+	}
+	if strings.TrimSpace(template) == "" {
+		return "", false, nil
+	}
+	return template, true, nil
+}
+
+func applyMidjourneyHeaderOverride(c *gin.Context, req *http.Request, apiKey string) error {
+	if c == nil || req == nil {
+		return nil
+	}
+	rawOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelHeaderOverride)
+	if len(rawOverride) == 0 {
+		if strMap, ok := common.GetContextKeyType[map[string]string](c, constant.ContextKeyChannelHeaderOverride); ok && len(strMap) > 0 {
+			rawOverride = make(map[string]any, len(strMap))
+			for k, v := range strMap {
+				rawOverride[k] = v
+			}
+		}
+	}
+	if len(rawOverride) == 0 {
+		return nil
+	}
+	headerOverrideSource := relaycommon.GetEffectiveHeaderOverride(&relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			HeadersOverride: rawOverride,
+		},
+	})
+	if len(headerOverrideSource) == 0 {
+		return nil
+	}
+
+	resolved := make(map[string]string)
+	hasClientRequest := c.Request != nil
+	passAll := false
+	var passthroughRegex []*regexp.Regexp
+	if hasClientRequest {
+		for k := range headerOverrideSource {
+			key := strings.TrimSpace(strings.ToLower(k))
+			if key == "" {
+				continue
+			}
+			if key == mjHeaderPassthroughAllKey {
+				passAll = true
+				continue
+			}
+			var pattern string
+			switch {
+			case strings.HasPrefix(key, mjHeaderPassthroughRegexPrefix):
+				pattern = strings.TrimSpace(key[len(mjHeaderPassthroughRegexPrefix):])
+			case strings.HasPrefix(key, mjHeaderPassthroughRegexPrefix2):
+				pattern = strings.TrimSpace(key[len(mjHeaderPassthroughRegexPrefix2):])
+			default:
+				continue
+			}
+			if pattern == "" {
+				return fmt.Errorf("header passthrough regex pattern is empty: %q", k)
+			}
+			compiled, err := getMidjourneyHeaderPassthroughRegex(pattern)
+			if err != nil {
+				return err
+			}
+			passthroughRegex = append(passthroughRegex, compiled)
+		}
+	}
+
+	if passAll || len(passthroughRegex) > 0 {
+		for name := range c.Request.Header {
+			if shouldSkipMidjourneyPassthroughHeader(name) {
+				continue
+			}
+			if !passAll {
+				matched := false
+				for _, re := range passthroughRegex {
+					if re.MatchString(name) {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
+			}
+			value := strings.TrimSpace(c.Request.Header.Get(name))
+			if value == "" {
+				continue
+			}
+			resolved[strings.ToLower(strings.TrimSpace(name))] = value
+		}
+	}
+
+	for k, v := range headerOverrideSource {
+		if isMidjourneyHeaderPassthroughRuleKey(k) {
+			continue
+		}
+		key := strings.TrimSpace(strings.ToLower(k))
+		if key == "" {
+			continue
+		}
+		str, ok := v.(string)
+		if !ok {
+			return errors.New("channel header override value must be a string")
+		}
+		if !hasClientRequest && strings.HasPrefix(strings.TrimSpace(str), mjClientHeaderPlaceholderPrefix) {
+			continue
+		}
+		value, include, err := applyMidjourneyHeaderOverridePlaceholders(str, c, apiKey)
+		if err != nil {
+			return err
+		}
+		if !include {
+			continue
+		}
+		resolved[key] = value
+	}
+
+	for key, value := range resolved {
+		req.Header.Set(key, value)
+		if strings.EqualFold(key, "Host") {
+			req.Host = value
+		}
+	}
+	return nil
+}
+
 func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestURL string) (*dto.MidjourneyResponseWithStatusCode, []byte, error) {
 	var nullBytes []byte
+	if c != nil && c.Request != nil {
+		if err := c.Request.Context().Err(); err != nil {
+			return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "request_cancelled", 499), nullBytes, err
+		}
+	}
 	//var requestBody io.Reader
 	//requestBody = c.Request.Body
 	// read request body to json, delete accountFilter and notifyHook
@@ -576,17 +815,21 @@ func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestU
 	}
 	req, err := http.NewRequest(c.Request.Method, fullRequestURL, strings.NewReader(string(reqBody)))
 	if err != nil {
-		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "create_request_failed", http.StatusInternalServerError), nullBytes, err
+		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "create_request_failed", http.StatusInternalServerError), nullBytes, sanitizeOutboundError(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	// 使用带有超时的 context 创建新的请求
 	req = req.WithContext(ctx)
 	req.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
 	req.Header.Set("Accept", c.Request.Header.Get("Accept"))
-	auth := common.GetContextKeyString(c, constant.ContextKeyChannelKey)
-	if auth != "" {
-		auth = strings.TrimPrefix(auth, "Bearer ")
+	channelKey := common.GetContextKeyString(c, constant.ContextKeyChannelKey)
+	if channelKey != "" {
+		auth := strings.TrimPrefix(channelKey, "Bearer ")
 		req.Header.Set("mj-api-secret", auth)
+	}
+	if err := applyMidjourneyHeaderOverride(c, req, channelKey); err != nil {
+		cancel()
+		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "channel_header_override_invalid", http.StatusInternalServerError), nullBytes, err
 	}
 	defer cancel()
 	httpClient := GetHttpClient()
@@ -594,7 +837,12 @@ func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestU
 		var clientErr error
 		httpClient, clientErr = GetHttpClientWithProxySettings(settings.Proxy, settings)
 		if clientErr != nil {
-			return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "do_request_failed", http.StatusInternalServerError), nullBytes, clientErr
+			return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "do_request_failed", http.StatusInternalServerError), nullBytes, sanitizeOutboundError(clientErr)
+		}
+	}
+	if c != nil && c.Request != nil {
+		if err := c.Request.Context().Err(); err != nil {
+			return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "request_cancelled", 499), nullBytes, err
 		}
 	}
 	noRedirectClient := *httpClient

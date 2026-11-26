@@ -2051,6 +2051,11 @@ func ManageUser(c *gin.Context) {
 			_, audits, txErr = service.ReleaseAssigneeOpenTicketsWithAuditsTx(tx, user.Id, c.GetInt("id"), "admin_disable")
 			if txErr == nil {
 				ticketAudits = append(ticketAudits, audits...)
+				var staffAudits []model.AuditLog
+				staffAudits, txErr = service.ReleaseSiteOwnerStaffOpenTicketsWithAuditsTx(tx, user.Id, c.GetInt("id"), "site_owner_disabled")
+				if txErr == nil {
+					ticketAudits = append(ticketAudits, staffAudits...)
+				}
 			}
 		}
 		return txErr

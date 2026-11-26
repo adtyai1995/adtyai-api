@@ -2,6 +2,7 @@ package dify
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -9,11 +10,12 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"os"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -24,7 +26,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func uploadDifyFile(c *gin.Context, info *relaycommon.RelayInfo, user string, media dto.MediaContent) *DifyFile {
+func uploadDifyFile(c *gin.Context, info *relaycommon.RelayInfo, user string, media dto.MediaContent) (*DifyFile, error) {
+	if info == nil {
+		return nil, errors.New("relay info is nil")
+	}
 	uploadUrl := fmt.Sprintf("%s/v1/files/upload", info.ChannelBaseUrl)
 	switch media.Type {
 	case dto.ContentTypeImageURL:
@@ -39,33 +44,17 @@ func uploadDifyFile(c *gin.Context, info *relaycommon.RelayInfo, user string, me
 		// Decode base64 string
 		decodedData, err := base64.StdEncoding.DecodeString(base64Data)
 		if err != nil {
-			common.SysLog(common.LogText("failed to decode base64: %s", err.Error()))
-			return nil
+			return nil, fmt.Errorf("failed to decode base64: %w", err)
 		}
 
-		// Create temporary file
-		tempFile, err := os.CreateTemp("", "dify-upload-*")
-		if err != nil {
-			common.SysLog(common.LogText("failed to create temp file: %s", err.Error()))
-			return nil
-		}
-		defer tempFile.Close()
-		defer os.Remove(tempFile.Name())
-
-		// Write decoded data to temp file
-		if _, err := tempFile.Write(decodedData); err != nil {
-			common.SysLog(common.LogText("failed to write to temp file: %s", err.Error()))
-			return nil
-		}
-
-		// Create multipart form
+		// Create multipart form directly from in-memory decodedData
 		body := &bytes.Buffer{}
 		writer := multipart.NewWriter(body)
 
 		// Add user field
 		if err := writer.WriteField("user", user); err != nil {
-			common.SysLog(common.LogText("failed to add user field: %s", err.Error()))
-			return nil
+			_ = writer.Close()
+			return nil, fmt.Errorf("failed to add user field: %w", err)
 		}
 
 		// Create form file with proper mime type
@@ -77,32 +66,49 @@ func uploadDifyFile(c *gin.Context, info *relaycommon.RelayInfo, user string, me
 		// Create form file
 		part, err := writer.CreateFormFile("file", fmt.Sprintf("image.%s", strings.TrimPrefix(mimeType, "image/")))
 		if err != nil {
-			common.SysLog(common.LogText("failed to create form file: %s", err.Error()))
-			return nil
+			_ = writer.Close()
+			return nil, fmt.Errorf("failed to create form file: %w", err)
 		}
 
 		// Copy file content to form
 		if _, err = io.Copy(part, bytes.NewReader(decodedData)); err != nil {
-			common.SysLog(common.LogText("failed to copy file content: %s", err.Error()))
-			return nil
+			_ = writer.Close()
+			return nil, fmt.Errorf("failed to copy file content: %w", err)
 		}
-		writer.Close()
+		if err := writer.Close(); err != nil {
+			return nil, fmt.Errorf("failed to finalize multipart form: %w", err)
+		}
+
+		parentCtx := context.Background()
+		if c != nil && c.Request != nil && c.Request.Context() != nil {
+			parentCtx = c.Request.Context()
+		}
+		if err := parentCtx.Err(); err != nil {
+			return nil, err
+		}
+		uploadTimeout := 60 * time.Second
+		if common.RelayTimeout > 0 {
+			uploadTimeout = time.Duration(common.RelayTimeout) * time.Second
+		}
+		ctx, cancel := context.WithTimeout(parentCtx, uploadTimeout)
+		defer cancel()
 
 		// Create HTTP request
-		req, err := http.NewRequest("POST", uploadUrl, body)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadUrl, body)
 		if err != nil {
-			common.SysLog(common.LogText("failed to create request: %s", err.Error()))
-			return nil
+			return nil, fmt.Errorf("failed to create upload request: %w", common.SanitizeOutboundError(err, info.ApiKey, info.ChannelSetting.Proxy))
 		}
 
 		req.Header.Set("Content-Type", writer.FormDataContentType())
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", info.ApiKey))
+		if err := channel.ApplyHeaderOverride(info, c, req); err != nil {
+			return nil, err
+		}
 
 		// Send request
 		client, err := service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
 		if err != nil {
-			common.SysLog(common.LogText("failed to configure http client: %s", err.Error()))
-			return nil
+			return nil, fmt.Errorf("failed to configure http client: %w", common.SanitizeOutboundError(err, info.ApiKey, info.ChannelSetting.Proxy))
 		}
 		noRedirectClient := *client
 		noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
@@ -110,27 +116,36 @@ func uploadDifyFile(c *gin.Context, info *relaycommon.RelayInfo, user string, me
 		}
 		resp, err := noRedirectClient.Do(req)
 		if err != nil {
-			common.SysLog(common.LogText("failed to send request: %s", err.Error()))
-			return nil
+			return nil, fmt.Errorf("failed to send upload request: %w", common.SanitizeOutboundError(err, info.ApiKey, info.ChannelSetting.Proxy))
 		}
 		defer resp.Body.Close()
+
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		if err != nil {
+			return nil, fmt.Errorf("failed to read upload response: %w", common.SanitizeOutboundError(err, info.ApiKey, info.ChannelSetting.Proxy))
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("dify file upload failed with status %d", resp.StatusCode)
+		}
 
 		// Parse response
 		var result struct {
 			Id string `json:"id"`
 		}
-		if err := common.DecodeJson(io.LimitReader(resp.Body, 4<<20), &result); err != nil {
-			common.SysLog(common.LogText("failed to decode response: %s", err.Error()))
-			return nil
+		if err := common.Unmarshal(respBody, &result); err != nil {
+			return nil, fmt.Errorf("failed to decode upload response: %w", err)
+		}
+		if strings.TrimSpace(result.Id) == "" {
+			return nil, errors.New("dify file upload response missing id")
 		}
 
 		return &DifyFile{
 			UploadFileId: result.Id,
 			Type:         "image",
 			TransferMode: "local_file",
-		}
+		}, nil
 	}
-	return nil
+	return nil, nil
 }
 
 func requestOpenAI2Dify(c *gin.Context, info *relaycommon.RelayInfo, request dto.GeneralOpenAIRequest) *DifyChatRequest {
@@ -177,7 +192,11 @@ func requestOpenAI2Dify(c *gin.Context, info *relaycommon.RelayInfo, request dto
 							URL:          media.Url,
 						}
 					} else {
-						file = uploadDifyFile(c, info, difyReq.User, mediaContent)
+						var uploadErr error
+						file, uploadErr = uploadDifyFile(c, info, difyReq.User, mediaContent)
+						if uploadErr != nil {
+							common.SysLog(common.LogText("failed to upload dify file: %s", uploadErr.Error()))
+						}
 					}
 					if file != nil {
 						files = append(files, *file)

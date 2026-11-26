@@ -30,7 +30,7 @@ features:
     link: /zh-cn/integrations/cli/
     linkText: 进入配置向导
   - title: 团队协作与共享钱包
-    details: 团队所有者统一充值美元共享钱包，支持邀请团队成员与创建独立团队员工子账号，发放团队专属 API Key 并统一审计用量。
+    details: 团队负责人统一充值美元共享钱包，支持直接创建或通过一次性邀请链接开通独立团队员工子账号，发放团队专属 API Key 并统一审计用量。
     link: /zh-cn/guides/teams
     linkText: 查看团队指南
   - title: 实时渠道状态监测

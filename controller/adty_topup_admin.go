@@ -415,9 +415,38 @@ func ManualCompleteAdtyTopUp(c *gin.Context) {
 	var credited int
 	var alreadyDone bool
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		lockedOrphans, _, lockErr := model.LockOrderPaymentOrphansForCreditTx(tx, tradeNo, topUps[0].PaymentProvider, nil)
+		lockedOrphans, lockedExt, lockErr := model.LockOrderPaymentOrphansForCreditTx(tx, tradeNo, topUps[0].PaymentProvider, nil)
 		if lockErr != nil {
 			return lockErr
+		}
+		if c.GetInt("role") != common.RoleRootUser {
+			var lockedTopUp model.TopUp
+			if qErr := tx.Where("trade_no = ?", tradeNo).First(&lockedTopUp).Error; qErr != nil {
+				if errors.Is(qErr, gorm.ErrRecordNotFound) {
+					return model.ErrTopUpNotFound
+				}
+				return qErr
+			}
+			nowUnix := common.GetTimestamp()
+			if lockedTopUp.Status == common.TopUpStatusExpired || (lockedExt != nil && lockedExt.ExpireAt > 0 && nowUnix >= lockedExt.ExpireAt) {
+				return model.ErrUserQuotaPermission
+			}
+			if lockedExt != nil && lockedExt.SiteId > 0 {
+				if len(lockedOrphans) > 0 {
+					return model.ErrUserQuotaPermission
+				}
+				if tx.Migrator().HasTable(&model.PaymentOrphanEvent{}) {
+					var nonDismissedCount int64
+					if cntErr := tx.Model(&model.PaymentOrphanEvent{}).
+						Where("reference_id = ? AND status <> ?", tradeNo, model.PaymentOrphanStatusDismissed).
+						Count(&nonDismissedCount).Error; cntErr != nil {
+						return cntErr
+					}
+					if nonDismissedCount > 0 {
+						return model.ErrUserQuotaPermission
+					}
+				}
+			}
 		}
 		var err error
 		alreadyDone, credited, topUp, ext, err = model.CompleteAdtyTopUpTx(tx, tradeNo, facts)

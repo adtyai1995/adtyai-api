@@ -125,8 +125,9 @@ func AdtyPublicAnnouncementsForRequest(c *gin.Context) []AdtyPublicAnnouncement 
 				}
 			}
 		}
-		bodyNeedsEn := adtyContainsChinese(bodySrc) && strings.TrimSpace(contentEn) == ""
-		titleNeedsEn := adtyContainsChinese(title) && strings.TrimSpace(titleEn) == ""
+		bodyStaticBilingual := !hasBodyHead && adtyBodyHasBilingualEnglish(bodySrc, isHTML)
+		bodyNeedsEn := adtyContainsChinese(bodySrc) && strings.TrimSpace(contentEn) == "" && !bodyStaticBilingual
+		titleNeedsEn := adtyContainsChinese(title) && strings.TrimSpace(titleEn) == "" && !adtyTitleHasBilingualEnglish(title)
 		translationStatus := ""
 		translationNotice := ""
 		if bodyNeedsEn || titleNeedsEn {

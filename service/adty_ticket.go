@@ -867,12 +867,14 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 	var statusAudit map[string]any
 	var statusBefore map[string]any
 	var statusAuditEntry *model.AuditLog
+	var committedAudits []model.AuditLog
 	errRetryAssigneeLock := errors.New("retry ticket assignee staff lock")
 	reopenAssigneeHint := 0
 	for attempt := 0; attempt < 2; attempt++ {
 		statusAudit = nil
 		statusBefore = nil
 		statusAuditEntry = nil
+		committedAudits = nil
 		err = model.DB.Transaction(func(tx *gorm.DB) error {
 			// R12-036: On reopen without explicit assigneeId, pre-read ticket.AssigneeId
 			// and lock its AdtySiteStaff membership before locking AdtyTicket so concurrent
@@ -937,8 +939,12 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 					return ErrAdtyTicketInvalid
 				}
 			}
-			if err := releaseInvalidTicketAssigneeTx(tx, &ticket, userId); err != nil {
+			releaseAudit, err := releaseInvalidTicketAssigneeTx(tx, &ticket, userId)
+			if err != nil {
 				return err
+			}
+			if releaseAudit != nil {
+				committedAudits = append(committedAudits, *releaseAudit)
 			}
 			current := model.NormalizeAdtyTicketStatus(ticket.Status, ticket.AssigneeId)
 			nextAssignee := ticket.AssigneeId
@@ -1043,7 +1049,13 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 			var auditErr error
 			statusAuditEntry, auditErr = appendAdtyOfficialAuditTx(tx, userId, ticket.SiteId, "ticket", strconv.FormatInt(ticketId, 10), "adty.ticket.status", "", "",
 				statusBefore, statusAudit, model.AuditResultSuccess)
-			return auditErr
+			if auditErr != nil {
+				return auditErr
+			}
+			if statusAuditEntry != nil {
+				committedAudits = append(committedAudits, *statusAuditEntry)
+			}
+			return nil
 		})
 		if !errors.Is(err, errRetryAssigneeLock) {
 			break
@@ -1052,10 +1064,11 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 	if errors.Is(err, errRetryAssigneeLock) {
 		return ErrAdtyTicketInvalid
 	}
-	if err == nil && statusAudit != nil {
-		if statusAuditEntry != nil {
-			deliverAdtyCommittedAudit(*statusAuditEntry)
-		} else {
+	if err == nil {
+		if len(committedAudits) > 0 {
+			DeliverAdtyCommittedAudits(committedAudits)
+		}
+		if statusAudit != nil && statusAuditEntry == nil {
 			siteID := 0
 			if value, ok := statusAudit["site_id"].(int); ok {
 				siteID = value
@@ -1182,15 +1195,37 @@ func releaseTicketAssigneeTx(tx *gorm.DB, ticket *model.AdtyTicket, actorID int)
 	return tx.Create(&model.AdtyTicketEvent{TicketId: ticket.Id, ActorId: actorID, Action: "transfer", Detail: strconv.Itoa(previous) + " → 0"}).Error
 }
 
-func releaseInvalidTicketAssigneeTx(tx *gorm.DB, ticket *model.AdtyTicket, actorID int) error {
-	if ticket.AssigneeId == 0 {
-		return nil
+func releaseInvalidTicketAssigneeTx(tx *gorm.DB, ticket *model.AdtyTicket, actorID int) (*model.AuditLog, error) {
+	if ticket == nil || ticket.AssigneeId == 0 {
+		return nil, nil
 	}
 	eligible, err := adtyTicketAssigneesTx(tx, *ticket, true, ticket.AssigneeId)
 	if err != nil || len(eligible) > 0 {
-		return err
+		return nil, err
 	}
-	return releaseTicketAssigneeTx(tx, ticket, actorID)
+	previousStatus := model.NormalizeAdtyTicketStatus(ticket.Status, ticket.AssigneeId)
+	previousAssignee := ticket.AssigneeId
+	if err := releaseTicketAssigneeTx(tx, ticket, actorID); err != nil {
+		return nil, err
+	}
+	beforeSnap := map[string]any{
+		"ticket_id":   ticket.Id,
+		"status":      previousStatus,
+		"priority":    ticket.Priority,
+		"assignee_id": previousAssignee,
+		"site_id":     ticket.SiteId,
+		"user_id":     ticket.UserId,
+	}
+	afterSnap := map[string]any{
+		"ticket_id":   ticket.Id,
+		"status":      ticket.Status,
+		"priority":    ticket.Priority,
+		"assignee_id": ticket.AssigneeId,
+		"site_id":     ticket.SiteId,
+		"user_id":     ticket.UserId,
+		"event":       "transfer",
+	}
+	return appendAdtyOfficialAuditTx(tx, actorID, ticket.SiteId, "ticket", strconv.FormatInt(ticket.Id, 10), "adty.ticket.status", "invalid_assignee_released", "", beforeSnap, afterSnap, model.AuditResultSuccess)
 }
 
 func releaseStaffTicketsWithAuditsTx(tx *gorm.DB, staff *model.AdtySiteStaff, actorID int, reason string) ([]model.AuditLog, error) {
@@ -1271,6 +1306,47 @@ func ReleaseAssigneeSubsiteOpenTicketsTx(tx *gorm.DB, assigneeID int, actorID in
 // for immediate post-commit delivery.
 func ReleaseAssigneeSubsiteOpenTicketsWithAuditsTx(tx *gorm.DB, assigneeID int, actorID int, reason string) (int64, []model.AuditLog, error) {
 	return releaseAssigneeOpenTicketsByScopeTx(tx, assigneeID, actorID, reason, true)
+}
+
+// ReleaseSiteOwnerStaffOpenTicketsWithAuditsTx locks all staff rows owned by
+// ownerUserID in deterministic order and releases every open ticket assigned
+// to those staff members (excluding ownerUserID itself), returning the
+// recorded official audit logs for post-commit delivery.
+func ReleaseSiteOwnerStaffOpenTicketsWithAuditsTx(tx *gorm.DB, ownerUserID, actorID int, reason string) ([]model.AuditLog, error) {
+	if tx == nil || ownerUserID <= 0 || !tx.Migrator().HasTable(&model.AdtySiteStaff{}) {
+		return nil, nil
+	}
+	var rows []model.AdtySiteStaff
+	if err := model.AdtyLockForUpdate(tx).
+		Select("id", "user_id").
+		Where("owner_user_id = ? AND user_id > 0", ownerUserID).
+		Order("user_id ASC, id ASC").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	seen := make(map[int]struct{}, len(rows))
+	var audits []model.AuditLog
+	for _, row := range rows {
+		staffUserID := row.UserId
+		if staffUserID <= 0 || staffUserID == ownerUserID {
+			continue
+		}
+		if _, exists := seen[staffUserID]; exists {
+			continue
+		}
+		seen[staffUserID] = struct{}{}
+		_, releasedAudits, err := ReleaseAssigneeOpenTicketsWithAuditsTx(tx, staffUserID, actorID, reason)
+		if err != nil {
+			return audits, err
+		}
+		if len(releasedAudits) > 0 {
+			audits = append(audits, releasedAudits...)
+		}
+	}
+	return audits, nil
 }
 
 // DeliverAdtyCommittedAudits delivers a batch of committed official audit
@@ -1384,6 +1460,7 @@ func AttachAdtyTicketImageWithOptions(userId int, ticketId, messageID int64, vis
 		name = objectID + adtyTicketExt(mime)
 	}
 	var row model.AdtyTicketImage
+	var committedAudits []model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		actor, err := loadAdtyTicketWorkspace(tx, userId, workspace...)
 		if err != nil {
@@ -1471,8 +1548,12 @@ func AttachAdtyTicketImageWithOptions(userId int, ticketId, messageID int64, vis
 			ticket.UpdatedAt = now
 			return nil
 		}
-		if err := releaseInvalidTicketAssigneeTx(tx, &ticket, userId); err != nil {
+		releaseAudit, err := releaseInvalidTicketAssigneeTx(tx, &ticket, userId)
+		if err != nil {
 			return err
+		}
+		if releaseAudit != nil {
+			committedAudits = append(committedAudits, *releaseAudit)
 		}
 		if ticket.Status == model.AdtyTicketWaitingUser {
 			next := reopenAdtyTicketLanding(ticket.AssigneeId)
@@ -1508,6 +1589,9 @@ func AttachAdtyTicketImageWithOptions(userId int, ticketId, messageID int64, vis
 			_ = os.Remove(filepath.Join(dir, name))
 		}
 		return nil, err
+	}
+	if len(committedAudits) > 0 {
+		DeliverAdtyCommittedAudits(committedAudits)
 	}
 	return &row, nil
 }
@@ -1721,6 +1805,7 @@ func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visib
 	createdNew := false
 	var ticketSiteID int
 	var replyAudit *model.AuditLog
+	var committedAudits []model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		actor, err := loadAdtyTicketWorkspace(tx, userId, workspace...)
 		if err != nil {
@@ -1751,8 +1836,12 @@ func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visib
 				return nil
 			}
 		}
-		if err := releaseInvalidTicketAssigneeTx(tx, &ticket, userId); err != nil {
+		releaseAudit, err := releaseInvalidTicketAssigneeTx(tx, &ticket, userId)
+		if err != nil {
 			return err
+		}
+		if releaseAudit != nil {
+			committedAudits = append(committedAudits, *releaseAudit)
 		}
 		current := model.NormalizeAdtyTicketStatus(ticket.Status, ticket.AssigneeId)
 		if current == model.AdtyTicketClosed || current == model.AdtyTicketResolved {
@@ -1817,13 +1906,17 @@ func writeAdtyTicketMessage(userId int, ticketId int64, body, idempotency, visib
 			if auditErr != nil {
 				return auditErr
 			}
+			if replyAudit != nil {
+				committedAudits = append(committedAudits, *replyAudit)
+			}
 		}
 		return nil
 	})
-	if err == nil && createdNew && saved != nil && visibility == model.AdtyTicketVisibilityPublic {
-		if replyAudit != nil {
-			deliverAdtyCommittedAudit(*replyAudit)
-		} else {
+	if err == nil {
+		if len(committedAudits) > 0 {
+			DeliverAdtyCommittedAudits(committedAudits)
+		}
+		if createdNew && saved != nil && visibility == model.AdtyTicketVisibilityPublic && replyAudit == nil {
 			writeAdtyOfficialAudit(userId, ticketSiteID, "ticket", strconv.FormatInt(ticketId, 10), "adty.ticket.reply", "", "",
 				nil,
 				map[string]any{

@@ -523,7 +523,14 @@ func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, bod
 	// keeps reading to the end and settles.
 	var release context.CancelFunc
 	if a.submit != nil && a.submit.ResponseType == "sse" && relaysSubmitEvents(c) {
-		detached := c.Request.WithContext(context.WithoutCancel(c.Request.Context()))
+		if c.Request == nil {
+			return nil, errors.New("client request is missing")
+		}
+		if err := c.Request.Context().Err(); err != nil {
+			return nil, err
+		}
+		origReq := c.Request
+		detached := origReq.WithContext(context.WithoutCancel(origReq.Context()))
 		timeout := time.Duration(constant.TaskPluginProtocolTimeoutSeconds) * time.Second
 		if timeout <= 0 {
 			timeout = 10 * time.Minute
@@ -531,7 +538,7 @@ func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, bod
 		var upstream context.Context
 		upstream, release = context.WithTimeout(detached.Context(), timeout)
 		c.Request = detached.WithContext(upstream)
-		defer func() { c.Request = detached }()
+		defer func() { c.Request = origReq }()
 	}
 	if a.submit != nil && strings.TrimSpace(a.submit.Method) != "" {
 		originalMethod := c.Request.Method
@@ -540,7 +547,7 @@ func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, bod
 	}
 	resp, err := channel.DoTaskApiRequest(a, c, info, body)
 	if release != nil {
-		if err != nil || resp == nil {
+		if err != nil || resp == nil || resp.Body == nil {
 			release()
 		} else {
 			resp.Body = deadlineBody{ReadCloser: resp.Body, release: release}
@@ -618,7 +625,7 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 			client = c
 		}
 		var stopped bool
-		responseBody, stopped, err = a.readSubmitEvents(c.Request.Context(), resp, a.submitContext(c, info), submitEventStream{client: client, frameLimit: replyLimit})
+		responseBody, stopped, err = a.readSubmitEvents(context.WithoutCancel(c.Request.Context()), resp, a.submitContext(c, info), submitEventStream{client: client, frameLimit: replyLimit})
 		relayed = client != nil && c.Writer.Written()
 		a.keepReservation = stopped
 	} else {

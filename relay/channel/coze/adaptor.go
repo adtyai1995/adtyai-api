@@ -99,10 +99,19 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *common.RelayInfo, requestBody 
 	if err != nil {
 		return nil, err
 	}
-	// 解析 resp
-	defer resp.Body.Close()
+	if resp == nil {
+		return nil, errors.New("coze chat response is nil")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return resp, nil
+	}
+	if resp.Body == nil {
+		return nil, errors.New("coze chat response body is nil")
+	}
+	// 解析 resp 并在读取后立即关闭响应体，避免连接与第 1 步超时上下文滞留至轮询结束
 	var cozeResponse CozeChatResponse
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	_ = resp.Body.Close()
 	if err != nil {
 		return nil, err
 	}

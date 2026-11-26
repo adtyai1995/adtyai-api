@@ -181,7 +181,7 @@ For closed or transferred subsites previously owned by your account: inspect his
 
 ### 3.19 Security & Access
 
-Manage password, email binding, active sessions, 2FA, and scoped Personal Access Tokens (`site_owner_*` scopes; staff management endpoints reject PATs).
+Manage password, email binding, active sessions, 2FA, and scoped Personal Access Tokens (select matching `site_owner_*` scopes for site management endpoints, and `profile:read` / `profile:write` when accessing ticket endpoints `/api/adty/tickets*`; staff management endpoints reject PATs).
 
 ---
 
@@ -199,7 +199,8 @@ Manage password, email binding, active sessions, 2FA, and scoped Personal Access
 | Submit USDT earnings withdrawal | Yes | **Yes** | Yes (`site_owner_order:write`) |
 | Initiate / advance customer manual refund | Yes | **Yes** | Yes (`site_owner_order:write`) |
 | Create / edit / reset / delete staff account | Yes | **Yes** | **No (live browser session only)** |
-| Brand, homepage, legal, SEO, referral settings, team multiplier, earnings-to-margin, notices, tickets, closure request | **No** | — | Yes (matching `site_owner_*` scope) |
+| Brand, homepage, legal, SEO, referral settings, team multiplier, earnings-to-margin, notices, closure request | **No** | — | Yes (matching `site_owner_*` scope) |
+| Ticket management (`/api/adty/tickets*`) | **No** | — | Yes (`profile:read` / `profile:write`) |
 
 ---
 

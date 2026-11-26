@@ -524,8 +524,28 @@ func adtyEnsureEdgeCertRows(ctx context.Context, cfg *adty_setting.ResellerSetti
 		}
 	}
 
-	// Clean up stale custom/main cert rows removed more than 7 days ago.
+	// Clean up stale wildcard/main/custom cert rows removed more than 7 days ago.
 	cutoff := now.Add(-adtyEdgeCertCleanupGrace).Unix()
+	activeWildcards := make(map[string]bool, len(roots))
+	for _, root := range roots {
+		if r := strings.ToLower(strings.TrimSpace(root)); r != "" {
+			activeWildcards["*."+r] = true
+		}
+	}
+	var staleWildcardCerts []model.AdtyEdgeCert
+	if err := model.DB.WithContext(ctx).
+		Where("kind = ? AND updated_at > 0 AND updated_at <= ?", model.AdtyEdgeCertKindWildcard, cutoff).
+		Find(&staleWildcardCerts).Error; err != nil {
+		return err
+	}
+	for _, cert := range staleWildcardCerts {
+		if activeWildcards[strings.ToLower(strings.TrimSpace(cert.CertName))] {
+			continue
+		}
+		if err := model.DB.WithContext(ctx).Delete(&model.AdtyEdgeCert{}, cert.Id).Error; err != nil {
+			return err
+		}
+	}
 	var staleMainCerts []model.AdtyEdgeCert
 	if err := model.DB.WithContext(ctx).
 		Where("kind = ? AND updated_at > 0 AND updated_at <= ?", model.AdtyEdgeCertKindMain, cutoff).
@@ -702,6 +722,12 @@ func RunAdtyEdgeCertOnce(ctx context.Context, now time.Time) error {
 		return err
 	}
 
+	activeWildcardCerts := make(map[string]bool)
+	for _, root := range adtyEdgeRootDomains(cfg) {
+		if r := strings.ToLower(strings.TrimSpace(root)); r != "" {
+			activeWildcardCerts["*."+r] = true
+		}
+	}
 	var failures []error
 	started := time.Now()
 	for i := range candidates {
@@ -709,6 +735,12 @@ func RunAdtyEdgeCertOnce(ctx context.Context, now time.Time) error {
 			return errors.Join(append(failures, err)...)
 		}
 		row := &candidates[i]
+		// Skip wildcard certs whose root domain is no longer configured.
+		if row.Kind == model.AdtyEdgeCertKindWildcard {
+			if !activeWildcardCerts[strings.ToLower(strings.TrimSpace(row.CertName))] {
+				continue
+			}
+		}
 		// Skip main site certs if main site acceleration is disabled or switched to another hostname.
 		if row.Kind == model.AdtyEdgeCertKindMain {
 			if mainHost := adtyEdgeMainSiteHost(cfg); mainHost == "" || !strings.EqualFold(row.CertName, mainHost) {

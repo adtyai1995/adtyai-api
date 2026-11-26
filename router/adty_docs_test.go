@@ -165,12 +165,12 @@ func TestAdtyStaticDocsServingAndSubsiteOverride(t *testing.T) {
 	assert.Equal(t, http.StatusMovedPermanently, rec.Code)
 	assert.Equal(t, "/docs/?lang=zh", rec.Header().Get("Location"))
 
-	// /docs/ -> 200 index.html with must-revalidate.
+	// /docs/ -> 200 index.html with edge-cacheable s-maxage=300 and client must-revalidate.
 	rec = httptest.NewRecorder()
 	mainRouter.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "https://www.adtyai.com/docs/", nil))
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "Docs Root")
-	assert.Equal(t, "public, max-age=0, must-revalidate", rec.Header().Get("Cache-Control"))
+	assert.Equal(t, "public, max-age=0, s-maxage=300, must-revalidate", rec.Header().Get("Cache-Control"))
 
 	// HEAD /docs/ -> 200 empty body.
 	rec = httptest.NewRecorder()

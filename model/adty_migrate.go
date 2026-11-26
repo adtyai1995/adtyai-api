@@ -2,7 +2,9 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,6 +82,9 @@ func MigrateAdtyTablesOn(db *gorm.DB) error {
 		site_id = o.site_id, team_id = o.team_id, order_ref = o.trade_no, account_id = o.user_id
 		FROM adty_topup_orders o WHERE adty_anomaly_dispositions.ref = o.trade_no AND o.team_id > 0
 		AND adty_anomaly_dispositions.team_id = 0 AND adty_anomaly_dispositions.kind IN ('closed_team_topup', 'team_principal_review')`).Error; err != nil {
+		return err
+	}
+	if err := backfillAdtyLegacyBatchRegisterAnomalies(db); err != nil {
 		return err
 	}
 	// Historical team balances cannot identify which recharge survived. Surface
@@ -374,4 +379,43 @@ func adtyGroupSeedSources() (map[string]string, error) {
 		add(id)
 	}
 	return groups, nil
+}
+
+func backfillAdtyLegacyBatchRegisterAnomalies(db *gorm.DB) error {
+	if db == nil || !db.Migrator().HasTable(&AdtyAnomalyDisposition{}) {
+		return nil
+	}
+	var legacy []AdtyAnomalyDisposition
+	if err := db.Where("kind = ? AND site_id = 0 AND account_id = 0 AND team_id = 0", "batch_register").Find(&legacy).Error; err != nil {
+		return err
+	}
+	for _, row := range legacy {
+		siteID, siteErr := strconv.Atoi(strings.TrimSpace(row.Ref))
+		if siteErr != nil || siteID <= 0 {
+			continue
+		}
+		note := strings.TrimSpace(row.Note)
+		if len(note) <= len("inviter ") || !strings.EqualFold(note[:len("inviter ")], "inviter ") {
+			continue
+		}
+		inviterID, invErr := strconv.Atoi(strings.TrimSpace(note[len("inviter "):]))
+		if invErr != nil || inviterID <= 0 {
+			continue
+		}
+		updates := map[string]any{
+			"site_id":    siteID,
+			"account_id": inviterID,
+			"ref":        fmt.Sprintf("site:%d:inviter:%d", siteID, inviterID),
+		}
+		if strings.TrimSpace(row.Evidence) == "" {
+			updates["evidence"] = common.GetJsonString(map[string]any{
+				"site_id":    siteID,
+				"inviter_id": inviterID,
+			})
+		}
+		if err := db.Model(&AdtyAnomalyDisposition{}).Where("id = ?", row.Id).Updates(updates).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }

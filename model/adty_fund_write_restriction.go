@@ -84,7 +84,7 @@ func loadReviewingAdtyFundRestrictions(tx *gorm.DB, write AdtyFundWrite) ([]Adty
 		args = append(args, write.AccountID)
 	}
 	if write.SiteID > 0 {
-		clauses = append(clauses, "(order_ref = '' AND account_id = 0 AND (site_id = ? OR (site_id = 0 AND ref = ?)))")
+		clauses = append(clauses, "(kind <> 'batch_register' AND order_ref = '' AND account_id = 0 AND (site_id = ? OR (site_id = 0 AND ref = ?)))")
 		args = append(args, write.SiteID, strconv.Itoa(write.SiteID))
 	}
 	if len(clauses) == 0 {
@@ -105,6 +105,9 @@ func adtyFundWriteRestrictedBy(row AdtyAnomalyDisposition, write AdtyFundWrite) 
 	}
 	if row.AccountId > 0 {
 		return write.AccountID > 0 && write.AccountID == row.AccountId
+	}
+	if strings.EqualFold(strings.TrimSpace(row.Kind), "batch_register") {
+		return false
 	}
 	siteID := row.SiteId
 	if siteID <= 0 {
