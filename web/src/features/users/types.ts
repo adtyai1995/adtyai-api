@@ -36,6 +36,7 @@ export const userSchema = z.object({
   id: z.number(),
   site_id: z.number().int().nonnegative().optional(),
   staff_site_id: z.number().int().nonnegative().optional(),
+  adty_site_owner: z.boolean().optional(),
   is_team_employee: z.boolean().optional(),
   site_name: z.string().optional(),
   username: z.string(),

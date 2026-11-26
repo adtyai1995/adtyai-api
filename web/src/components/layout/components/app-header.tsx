@@ -20,7 +20,6 @@ import { ConfigDrawer } from '@/components/config-drawer'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { NotificationPopover } from '@/components/notification-popover'
 import { ProfileDropdown } from '@/components/profile-dropdown'
-import { Search } from '@/components/search'
 import { BalanceChip } from '@/features/adty-shell/balance-chip'
 import { useNotifications } from '@/hooks/use-notifications'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
@@ -98,7 +97,7 @@ export function AppHeader({
   navLinks = defaultTopNavLinks,
   showTopNav = true,
   leftContent,
-  showSearch = true,
+  showSearch: _showSearch,
   rightContent,
   showNotifications = true,
   showConfigDrawer = true,
@@ -127,9 +126,6 @@ export function AppHeader({
             <div className='me-1 hidden lg:block'>
               <TopNav links={links} />
             </div>
-          )}
-          {showSearch && (
-            <Search className='w-8 flex-none [&>span]:hidden sm:[&>span]:inline' />
           )}
           {showNotifications && (
             <NotificationPopover

@@ -42,6 +42,7 @@ import {
 import { DraftDiscardDialog } from '@/features/system-settings/components/draft-discard-dialog'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
 import { getUserSites } from '@/features/users/api'
+import { methodLabel } from '@/features/wallet/adty/lib/methods'
 import { ROLE } from '@/lib/roles'
 import {
   getServerErrorMessage,
@@ -171,7 +172,7 @@ export function PaymentSceneEditor(props: {
       label: 'Payment providers',
       options: providerOptions.map((item) => ({
         value: item.provider,
-        label: item.label,
+        label: t(item.label),
       })),
     },
     {
@@ -179,7 +180,7 @@ export function PaymentSceneEditor(props: {
       label: 'Payment methods',
       options: methodOptions.map((item) => ({
         value: item.id,
-        label: item.label || item.id,
+        label: item.label ? t(item.label) : t(methodLabel(item.id)),
       })),
     },
     {

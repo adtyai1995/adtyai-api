@@ -89,10 +89,21 @@ func CreateAdtyMainTeamRegistrationWithAudit(actorId int, ttl time.Duration) (*A
 	return issueAdtyTeamRegistrationWithAudit(actorId, 0, ttl)
 }
 
-// CreateAdtyOwnerSiteTeamRegistration permanently rejects the former owner
-// provisioning path under A.9.1 / DEC-012.
-func CreateAdtyOwnerSiteTeamRegistration(_, _ int, _ time.Duration) (*AdtyTeamRegistrationIssue, error) {
-	return nil, ErrAdtyTeamForbidden
+// CreateAdtyOwnerSiteTeamRegistration issues a one-time create-team link bound
+// to the owner's active subsite (R-41 #11).
+func CreateAdtyOwnerSiteTeamRegistration(ownerId, siteId int, ttl time.Duration) (*AdtyTeamRegistrationIssue, error) {
+	issued, _, err := CreateAdtyOwnerSiteTeamRegistrationWithAudit(ownerId, siteId, ttl)
+	return issued, err
+}
+
+func CreateAdtyOwnerSiteTeamRegistrationWithAudit(ownerId, siteId int, ttl time.Duration) (*AdtyTeamRegistrationIssue, string, error) {
+	if ownerId <= 0 || siteId <= 0 {
+		return nil, "", ErrAdtyTeamForbidden
+	}
+	if !adtyTeamRegistrationTTLValid(ttl) {
+		return nil, "", ErrAdtyTeamInvalid
+	}
+	return issueAdtyTeamRegistrationWithAudit(ownerId, siteId, ttl)
 }
 
 func issueAdtyTeamRegistrationWithAudit(actorId, siteId int, ttl time.Duration) (*AdtyTeamRegistrationIssue, string, error) {
@@ -105,6 +116,24 @@ func issueAdtyTeamRegistrationWithAudit(actorId, siteId int, ttl time.Duration) 
 	}
 	var auditEvent *model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		if siteId > 0 {
+			var site model.AdtySite
+			if err := model.AdtyLockForUpdate(tx).First(&site, siteId).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAdtyTeamForbidden
+				}
+				return err
+			}
+			if site.OwnerUserId != actorId {
+				return ErrAdtyTeamForbidden
+			}
+			if site.Status == model.AdtySiteStatusClosing {
+				return ErrAdtySiteClosing
+			}
+			if site.Status != model.AdtySiteStatusActive {
+				return ErrAdtyTeamForbidden
+			}
+		}
 		if err := tx.Create(&link).Error; err != nil {
 			return err
 		}
@@ -146,6 +175,25 @@ func CompleteAdtyTeamRegistration(code, username, password, teamName string, req
 	var newUser *model.User
 	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		// Pre-read site_id unlocked and lock AdtySite before AdtyTeamRegistrationLink
+		// to preserve canonical lock order: AdtySite -> AdtyTeamRegistrationLink -> User.
+		var peek struct {
+			SiteId int
+		}
+		if err := tx.Model(&model.AdtyTeamRegistrationLink{}).Select("site_id").Where("code_hash = ?", hash).Limit(1).Scan(&peek).Error; err != nil {
+			return err
+		}
+		var lockedSite model.AdtySite
+		lockedSiteID := 0
+		if peek.SiteId > 0 {
+			res := model.AdtyLockForUpdate(tx).Where("id = ?", peek.SiteId).Limit(1).Find(&lockedSite)
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected > 0 {
+				lockedSiteID = lockedSite.Id
+			}
+		}
 		lookup := model.AdtyLockForUpdate(tx).Where("code_hash = ?", hash).Limit(1).Find(&link)
 		if lookup.Error != nil {
 			return lookup.Error
@@ -172,8 +220,29 @@ func CompleteAdtyTeamRegistration(code, username, password, teamName string, req
 			}
 			return err
 		}
-		if issuer.Role != common.RoleRootUser || issuer.Status != common.UserStatusEnabled {
+		if issuer.Status != common.UserStatusEnabled {
 			return ErrAdtyTeamForbidden
+		}
+		if link.SiteId == 0 {
+			if issuer.Role != common.RoleRootUser {
+				return ErrAdtyTeamForbidden
+			}
+		} else {
+			site := lockedSite
+			if lockedSiteID != link.SiteId {
+				if err := model.AdtyLockForUpdate(tx).First(&site, link.SiteId).Error; err != nil {
+					if errors.Is(err, gorm.ErrRecordNotFound) {
+						return ErrAdtyTeamForbidden
+					}
+					return err
+				}
+			}
+			if site.Status != model.AdtySiteStatusActive {
+				return common.NewMessage("Site is not open for registration")
+			}
+			if issuer.Role != common.RoleRootUser && site.OwnerUserId != link.CreatedBy {
+				return ErrAdtyTeamForbidden
+			}
 		}
 		leaderID, createdUser, err := resolveAdtyTeamRegistrationLeader(tx, link.SiteId, username, password)
 		if err != nil {

@@ -24,6 +24,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { CreateTeamForm } from '@/features/adty-site-admin/components/create-team-form'
 import { FundReviewPanel } from '@/features/adty-site-admin/components/site-fund-panel'
 
+import { OwnerCreateTeamForm } from './components/owner-create-team-form'
 import { TeamDetailSheet } from './components/team-detail-sheet'
 import { TeamListPanel } from './components/team-list-panel'
 import { TeamRegistrationLinksSection } from './components/team-registration-links-section'
@@ -87,16 +88,44 @@ export function RootTeamAdmin() {
   )
 }
 
-/** The site owner's team management: teams on its site, discounts and past registration links. */
-export function OwnerTeamAdmin(props: { closing?: boolean }) {
+/** The site owner's full team management: teams on its site, team creation and registration links. */
+export function OwnerTeamAdmin(props: {
+  closing?: boolean
+  siteBaseUrl?: string
+}) {
+  const { t } = useTranslation()
   const [openTeam, setOpenTeam] = useState<number | null>(null)
   return (
-    <div className='flex flex-col gap-8'>
-      <TeamListPanel
-        scope='owner'
-        onOpenTeam={(team) => setOpenTeam(team.id)}
-      />
-      <TeamRegistrationLinksSection actor='owner' closing={props.closing} />
+    <div className='flex flex-col gap-6'>
+      <Tabs defaultValue='teams'>
+        <TabsList variant='line' className={tabListClassName}>
+          <TabsTrigger value='teams' className={tabTriggerClassName}>
+            {t('Teams')}
+          </TabsTrigger>
+          <TabsTrigger value='create' className={tabTriggerClassName}>
+            {t('Create team')}
+          </TabsTrigger>
+          <TabsTrigger value='registrations' className={tabTriggerClassName}>
+            {t('Team registration links')}
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value='teams' className='min-w-0 pt-2'>
+          <TeamListPanel
+            scope='owner'
+            onOpenTeam={(team) => setOpenTeam(team.id)}
+          />
+        </TabsContent>
+        <TabsContent value='create' className='pt-2'>
+          <OwnerCreateTeamForm closing={props.closing} />
+        </TabsContent>
+        <TabsContent value='registrations' className='pt-2'>
+          <TeamRegistrationLinksSection
+            actor='owner'
+            closing={props.closing}
+            publicOrigin={props.siteBaseUrl}
+          />
+        </TabsContent>
+      </Tabs>
       <TeamDetailSheet
         scope='owner'
         teamId={openTeam}

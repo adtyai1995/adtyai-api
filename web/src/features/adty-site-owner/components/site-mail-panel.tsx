@@ -23,6 +23,7 @@ import { toast } from 'sonner'
 
 import { ErrorState } from '@/components/error-state'
 import { PasswordInput } from '@/components/password-input'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -46,7 +47,7 @@ import type {
   OwnerSite,
   SiteMailConfig,
   SiteMailConfigUpdate,
-  SiteMailProvider,
+  SiteMailSaveProvider,
 } from '../types'
 import { useOwnerVerification } from './owner-verification'
 
@@ -55,8 +56,7 @@ type SmtpSecurityMode = 'none' | 'ssl_tls' | 'starttls'
 const MAIL_CONFIG_ACTION: SiteOwnerAction = 'mail.config'
 
 type MailDraft = {
-  provider: SiteMailProvider
-  sender_name: string
+  provider: SiteMailSaveProvider
   smtp_server: string
   smtp_port: string
   smtp_account: string
@@ -87,8 +87,7 @@ function getSmtpSecurityMode(values: {
 
 function toDraft(cfg: SiteMailConfig): MailDraft {
   return {
-    provider: cfg.provider || 'platform',
-    sender_name: cfg.sender_name ?? '',
+    provider: cfg.provider === 'resend' ? 'resend' : 'smtp',
     smtp_server: cfg.smtp_server ?? '',
     smtp_port: String(cfg.smtp_port > 0 ? cfg.smtp_port : 587),
     smtp_account: cfg.smtp_account ?? '',
@@ -194,11 +193,14 @@ export function SiteMailPanel(props: { site: OwnerSite }) {
   }
 
   const savedConfig = configQuery.data
+  const configured =
+    savedConfig.provider === 'smtp' || savedConfig.provider === 'resend'
   const disabled = isClosing || save.isPending || ownerVerification.verifying
+  const canSave = !disabled && (isDirty || !configured)
 
   const handleSave = (event: FormEvent) => {
     event.preventDefault()
-    if (disabled || !isDirty) return
+    if (!canSave) return
 
     if (draft.provider === 'smtp') {
       if (!draft.smtp_server.trim()) {
@@ -237,7 +239,6 @@ export function SiteMailPanel(props: { site: OwnerSite }) {
     const securityMode = getSmtpSecurityMode(draft)
     const payload: SiteMailConfigUpdate = {
       provider: draft.provider,
-      sender_name: draft.sender_name.trim(),
       smtp_server: draft.smtp_server.trim(),
       smtp_port: Number(draft.smtp_port.trim()) || 587,
       smtp_account: draft.smtp_account.trim(),
@@ -264,7 +265,9 @@ export function SiteMailPanel(props: { site: OwnerSite }) {
   const handleSendTest = (event: FormEvent) => {
     event.preventDefault()
     const target = testEmail.trim()
-    if (!target || isClosing || isDirty || sendTest.isPending) return
+    if (!target || !configured || isClosing || isDirty || sendTest.isPending) {
+      return
+    }
     sendTest.mutate(target)
   }
 
@@ -281,26 +284,25 @@ export function SiteMailPanel(props: { site: OwnerSite }) {
           autoComplete='off'
           className='flex max-w-3xl flex-col gap-6'
         >
+          {!configured && (
+            <Alert>
+              <AlertDescription>
+                {t(
+                  'Email sending is not configured yet. Configure SMTP or Resend and save before sending emails.'
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
           <div className='space-y-3'>
             <Label>{t('Email sending method')}</Label>
             <RadioGroup
               value={draft.provider}
               onValueChange={(value) =>
-                updateDraft({ provider: value as SiteMailProvider })
+                updateDraft({ provider: value as SiteMailSaveProvider })
               }
               disabled={disabled}
-              className='grid-cols-1 gap-3 sm:grid-cols-3'
+              className='grid-cols-1 gap-3 sm:grid-cols-2'
             >
-              <Label
-                className='flex cursor-pointer items-center gap-3 rounded-lg border p-4'
-                htmlFor='site-mail-provider-platform'
-              >
-                <RadioGroupItem
-                  value='platform'
-                  id='site-mail-provider-platform'
-                />
-                {t('Platform default')}
-              </Label>
               <Label
                 className='flex cursor-pointer items-center gap-3 rounded-lg border p-4'
                 htmlFor='site-mail-provider-smtp'
@@ -317,30 +319,6 @@ export function SiteMailPanel(props: { site: OwnerSite }) {
               </Label>
             </RadioGroup>
           </div>
-
-          {draft.provider === 'platform' && (
-            <div className='space-y-2'>
-              <Label htmlFor='site-mail-platform-sender-name'>
-                {t('Sender display name')}
-              </Label>
-              <Input
-                id='site-mail-platform-sender-name'
-                autoComplete='off'
-                maxLength={128}
-                disabled={disabled}
-                placeholder={fallbackSenderName}
-                value={draft.sender_name}
-                onChange={(event) =>
-                  updateDraft({ sender_name: event.target.value })
-                }
-              />
-              <p className='text-muted-foreground text-xs'>
-                {t(
-                  'Uses the platform mail transport with your site display name. Leave blank to use your site name.'
-                )}
-              </p>
-            </div>
-          )}
 
           {draft.provider === 'smtp' && (
             <div className='flex flex-col gap-6'>
@@ -697,11 +675,7 @@ export function SiteMailPanel(props: { site: OwnerSite }) {
           )}
 
           <div>
-            <Button
-              type='submit'
-              variant='brand'
-              disabled={disabled || !isDirty}
-            >
+            <Button type='submit' variant='brand' disabled={!canSave}>
               {save.isPending ? t('Saving...') : t('Save')}
             </Button>
           </div>
@@ -727,7 +701,7 @@ export function SiteMailPanel(props: { site: OwnerSite }) {
                 id='site-mail-test-to'
                 type='email'
                 autoComplete='off'
-                disabled={isClosing || sendTest.isPending}
+                disabled={!configured || isClosing || sendTest.isPending}
                 placeholder='you@example.com'
                 value={testEmail}
                 onChange={(event) => setTestEmail(event.target.value)}
@@ -737,13 +711,24 @@ export function SiteMailPanel(props: { site: OwnerSite }) {
               type='submit'
               variant='outline'
               disabled={
-                isClosing || isDirty || sendTest.isPending || !testEmail.trim()
+                !configured ||
+                isClosing ||
+                isDirty ||
+                sendTest.isPending ||
+                !testEmail.trim()
               }
             >
               {sendTest.isPending ? t('Sending...') : t('Send test email')}
             </Button>
           </div>
-          {isDirty && (
+          {!configured && (
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                'Configure and save SMTP or Resend before sending a test email.'
+              )}
+            </p>
+          )}
+          {configured && isDirty && (
             <p className='text-muted-foreground text-xs'>
               {t('Save your changes before sending a test email.')}
             </p>

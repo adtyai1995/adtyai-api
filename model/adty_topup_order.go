@@ -327,7 +327,8 @@ func lockAdtyTopUpTx(tx *gorm.DB, tradeNo string) (*TopUp, *AdtyTopupOrder, erro
 }
 
 // CompleteAdtyTopUpTx 在调用方的事务里给我们的订单入账（照上游 RechargeEpay 的写法）。
-// pending、expired、canceled、failed 都允许入账：钱已经收到了（执行层决定 4）。
+// R-41 #1：已过期订单（status=expired 或 pending 但已过 expire_at）不再允许非人工回调/查单自动入账，
+// 仅保留人工对账审核入口（Source=manual）由管理员核验后手动补单。
 // Source=manual 时跳过金额核对，按下单时的面额加赠入账（任务 3.5）。
 func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (alreadyDone bool, credited int, topUp *TopUp, ext *AdtyTopupOrder, err error) {
 	// R4-006: Pre-read site_id unlocked and lock AdtySite BEFORE TopUp/AdtyTopupOrder/User
@@ -394,7 +395,11 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 	default:
 		return false, 0, nil, nil, ErrTopUpStatusInvalid
 	}
+	now := common.GetTimestamp()
 	if facts.Source != AdtyPaymentSourceManual {
+		if topUp.Status == common.TopUpStatusExpired || (topUp.Status == common.TopUpStatusPending && ext.ExpireAt > 0 && now > ext.ExpireAt) {
+			return false, 0, nil, nil, ErrTopUpStatusInvalid
+		}
 		var reversals int64
 		if err := tx.Model(&PaymentOrphanEvent{}).Where("provider = ? AND reference_id = ? AND status <> ? AND (event_id LIKE ? OR status IN ?)", ext.Provider, tradeNo, PaymentOrphanStatusDismissed, "reversal:%", []string{PaymentOrphanStatusNeverCredited, PaymentOrphanStatusRefunded}).Count(&reversals).Error; err != nil {
 			return false, 0, nil, nil, err
@@ -418,7 +423,6 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 	if ext.CreditQuota <= 0 || ext.CreditQuota > int64(common.MaxWalletQuota) {
 		return false, 0, nil, nil, ErrInvalidTopUpQuota
 	}
-	now := common.GetTimestamp()
 	credited = int(ext.CreditQuota)
 	if ext.TeamId > 0 {
 		if ext.BonusUSD.IsPositive() || !ext.BonusRate.IsZero() || int64(credited) != ext.FaceQuota() {

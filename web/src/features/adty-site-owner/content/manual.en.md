@@ -23,7 +23,7 @@ After receiving your owner account and default domains, complete these steps in 
 2. **Configure Branding & Support** (`Site settings → Brand`): Set your site name, page title, announcement, wallet notice, support contact, upload PNG/JPEG/WebP Logo & Favicon (≤ 200 KB), and click **Save brand**. If using Tawk.to live chat, fill in both `property_id` and `widget_id`.
 3. **Bind Custom Dual Domains (Optional)** (`Site settings → Custom domains`): Copy the platform's **default DNS CNAME target**, prepare two **distinct subdomains** (such as `www.yourdomain.com` for the website and `api.yourdomain.com` for API requests—**apex/root domains are prohibited**), submit them together, and add the generated `TXT` + `CNAME` records within 72 hours. If Mainland China homepage acceleration is enabled by the platform, you may optionally complete its two-step setup for your active custom website domain.
 4. **Publish Legal Documents** (`Site settings → Multilingual legal pages`): Subsites **never inherit** the main site's legal documents. Fill in `zh-CN` and `en` versions of your User Agreement, Privacy Policy, and Refund Policy as needed; publishing a User Agreement or Privacy Policy automatically enables the sign-up consent checkbox and footer links.
-5. **Configure Outbound Email & Test** (`Email configuration`): By default, emails are sent through the platform channel using your subsite brand name. If switching to **Custom SMTP** or your own **Resend API**, **save first** and then send a test email to confirm delivery.
+5. **Configure Outbound Email & Test** (`Email configuration`): Subsites do not use a platform default mail transport. Configure **Custom SMTP** or your own **Resend API**, click **Save**, and then send a test email to confirm delivery. Until configured, subsite operational emails return an error prompting configuration.
 6. **Review Supply Cost Factor & Set Retail Multiplier** (`Site Overview` → `Pricing & Multiplier`): Verify your `cost_factor` and configure a unified site retail multiplier (`1.0x – 10.0x`, default `1.0x` with zero markup).
 7. **Configure Marketing Tools (Optional)** (`Recharge Bonus` / `Promotion Management`): Before enabling bonuses or referrals, ensure your **Earnings Wallet available balance** (or authorized margin cycle allowance) is sufficient so customer checkouts are never blocked.
 
@@ -48,11 +48,13 @@ After receiving your owner account and default domains, complete these steps in 
 
 ### 3.3 Team Management (`/site-owner/teams`)
 
-- **Permissions**: Creating teams and issuing team registration links are platform-admin-only operations. Site owners cannot create teams or manually add team balance.
-- **Available Actions**:
-  1. Read-only visibility into your subsite's active/closed teams, members, team API keys, and shared balance ledger.
-  2. View and **revoke** unused historical team registration links.
-  3. **Adjust Active Team Supply Multiplier**: Valid range **`1.0` – `10.0`** (up to 4 decimals). Billing formula: `Team Price = Subsite Supply Cost × Team Multiplier` (cannot go below `1.0x`). Changes affect only future requests.
+Provides three tabs (`Teams`, `Create team`, `Team registration links`) matching the main site's team management capabilities:
+
+1. **Teams & Details (`Teams`)**: View your subsite's active/closed teams, members, bound API keys, and shared balance ledger.
+2. **Create Team (`Create team`)**: Appoint an enabled customer of your subsite as team leader with a team name (1–64 chars) and supply price multiplier (`1.0` – `10.0`, blank defaults to `1.0`). Cross-site customers are rejected; disabled while closing.
+3. **Team Registration Links (`Team registration links`)**: Issue one-time registration links (1–168 hours validity, shown once, bound to your subsite's public domain) and **revoke** unused links.
+4. **Adjust Active Team Supply Multiplier**: Valid range **`1.0` – `10.0`** (up to 4 decimals). Billing formula: `Team Price = Subsite Supply Cost × Team Multiplier` (cannot go below `1.0x`). Changes affect only future requests.
+5. **Boundary**: Manual team balance top-ups remain permanently disabled; team leaders recharge online.
 
 ### 3.4 Orders & Customer Refunds (`/site-owner/orders`)
 
@@ -154,16 +156,16 @@ Displays your **Earnings Wallet (`earnings`)** and **Margin Wallet (`margin`)** 
 
 ### 3.16 Email Configuration (`/site-owner/mail`)
 
-Choose one of three mutually exclusive outbound mail modes (secrets are stored encrypted and never displayed back):
-1. **Platform Default (`platform`)**: Uses platform mail delivery with your customizable sender display name (never exposes the main site name).
-2. **Custom SMTP (`smtp`)**: Configure host, port, encryption (`None` / `SSL/TLS` / `STARTTLS`), credentials, and sender address. `localhost` and private/internal IPs are blocked (SSRF protection).
-3. **Own Resend API (`resend`)**: Use your own Resend API key and verified sender domain.
+Choose one of two mutually exclusive outbound mail modes (secrets are stored encrypted and never displayed back):
+1. **Custom SMTP (`smtp`)**: Configure host, port, encryption (`None` / `SSL/TLS` / `STARTTLS`), credentials, and sender address. `localhost` and private/internal IPs are blocked (SSRF protection).
+2. **Own Resend API (`resend`)**: Use your own Resend API key and verified sender domain.
 
+- **Unconfigured Policy**: There is no platform default transport for subsites. Until valid SMTP or Resend credentials are saved, subsite operational mail sends return an error asking you to configure SMTP or Resend first (official site-closure migration emails continue to be delivered by the platform).
 - Always click **Save** before clicking **Send test email**.
 
 ### 3.17 Site Settings (`/site-owner/settings`)
 
-1. **Brand**: Name, title, notice, wallet hint, support contact, optional custom external docs URL (leave blank to use the built-in white-label `/docs/`), Tawk.to IDs, and Logo / Favicon (PNG/JPEG/WebP ≤ 200 KB; **click Save brand after uploading**).
+1. **Brand**: Name, website title, announcement, wallet notice, support contact, optional custom external docs URL (leave blank to use the built-in white-label `/docs/`), Tawk.to IDs, and Logo / Favicon (PNG/JPEG/WebP ≤ 200 KB; **click Save brand after uploading**).
 2. **Custom Homepage**: Markdown, HTML, or iframe URL; clear to restore the default homepage.
 3. **Multilingual Legal Pages**: Independent `en` and `zh-CN` User Agreement, Privacy Policy, and Refund Policy (never inherited from main site).
 4. **Custom Domains**:

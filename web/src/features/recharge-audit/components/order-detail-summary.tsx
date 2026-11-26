@@ -63,7 +63,7 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
           [
             t('Payment scene'),
             order.payment_scene
-              ? `${order.payment_scene_name || order.payment_scene} (${order.payment_scene}) · v${order.payment_scene_version}`
+              ? `${t(order.payment_scene_name || order.payment_scene)} (${order.payment_scene}) · v${order.payment_scene_version}`
               : '-',
           ],
           [

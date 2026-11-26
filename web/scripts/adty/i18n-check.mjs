@@ -145,6 +145,7 @@ const ADTY_LITERAL_KEYS = [
   'USDT · BEP20',
   'USDT · Polygon',
   'USDT · X Layer',
+  'BEpusdt',
   'USDT (BEpusdt)',
   '{{amount}} USDT (1 USDT = 1 USD)',
   '¥{{amount}} (1 USD = {{rate}} CNY)',

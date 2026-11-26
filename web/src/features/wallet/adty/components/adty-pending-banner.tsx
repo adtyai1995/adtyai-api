@@ -26,6 +26,7 @@ import { Button } from '@/components/ui/button'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import { cancelAdtyOrder } from '../api'
+import { useNowSeconds } from '../lib/countdown'
 import { methodLabel } from '../lib/methods'
 import { clearPendingPayment, loadPendingPayment } from '../lib/pending-payment'
 import type { AdtyOrder } from '../types'
@@ -57,9 +58,14 @@ export function AdtyPendingBanner(props: AdtyPendingBannerProps) {
   })
 
   const rawOrders = props.orders ?? (props.order ? [props.order] : [])
+  const nowSec = useNowSeconds(rawOrders.length > 0)
   const list = rawOrders.filter(
     (item): item is AdtyOrder & { ext: NonNullable<AdtyOrder['ext']> } =>
-      Boolean(item?.ext)
+      Boolean(
+        item?.ext &&
+          item.status === 'pending' &&
+          (!item.ext.expire_at || item.ext.expire_at > nowSec)
+      )
   )
   if (list.length === 0) return null
 

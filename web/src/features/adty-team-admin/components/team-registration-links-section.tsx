@@ -77,10 +77,13 @@ function ttlSecondsFromHours(value: string): number | null {
 export function TeamRegistrationLinksSection(props: {
   actor: TeamRegistrationActor
   closing?: boolean
+  publicOrigin?: string
 }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const closing = Boolean(props.closing)
+  const linkOrigin =
+    props.publicOrigin?.trim().replace(/\/+$/, '') || window.location.origin
   const queryKey = ['adty-team-registrations', props.actor] as const
   const links = useQuery({
     queryKey,
@@ -94,6 +97,7 @@ export function TeamRegistrationLinksSection(props: {
   const refresh = () => void queryClient.invalidateQueries({ queryKey })
 
   const issue = async () => {
+    if (closing) return
     const ttlSeconds = ttlSecondsFromHours(ttlHours)
     if (ttlSeconds == null) {
       setError(t('Invalid parameters'))
@@ -103,7 +107,7 @@ export function TeamRegistrationLinksSection(props: {
     setError('')
     try {
       const issued = await issueTeamRegistration(props.actor, ttlSeconds)
-      setIssuedUrl(teamRegistrationUrl(issued.code))
+      setIssuedUrl(teamRegistrationUrl(issued.code, linkOrigin))
       refresh()
     } catch (cause) {
       setError(t(getServerErrorMessage(cause, t('Failed to save'))))
@@ -131,16 +135,7 @@ export function TeamRegistrationLinksSection(props: {
     : []
 
   const tableSection = (
-    <ContentSection
-      title={
-        props.actor === 'root'
-          ? t('Team registration links')
-          : t('Team registration')
-      }
-    >
-      {error && props.actor !== 'root' && (
-        <p className='text-destructive text-sm'>{error}</p>
-      )}
+    <ContentSection title={t('Team registration links')}>
       {links.isPending && <LoadingState />}
       {links.isError && <ErrorState onRetry={() => void links.refetch()} />}
       {links.isSuccess && (
@@ -205,10 +200,6 @@ export function TeamRegistrationLinksSection(props: {
     </ContentSection>
   )
 
-  if (props.actor !== 'root') {
-    return tableSection
-  }
-
   return (
     <div className='flex flex-col gap-8'>
       <SettingsSection
@@ -226,6 +217,7 @@ export function TeamRegistrationLinksSection(props: {
               <Input
                 id={`team-registration-ttl-${props.actor}`}
                 className='w-36'
+                disabled={closing || pending}
                 value={ttlHours}
                 inputMode='decimal'
                 autoComplete='off'
@@ -235,7 +227,7 @@ export function TeamRegistrationLinksSection(props: {
             <Button
               type='button'
               variant='brand'
-              disabled={pending}
+              disabled={closing || pending}
               onClick={() => void issue()}
             >
               {t('Issue registration link')}

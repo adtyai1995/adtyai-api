@@ -31,6 +31,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { getCurrencyDisplay } from '@/lib/currency'
+import { ROLE } from '@/lib/roles'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import {
@@ -224,7 +225,11 @@ export function useUsersColumns(): ColumnDef<User>[] {
         accessorKey: 'role',
         header: t('Role'),
         cell: ({ row }) => {
+          const user = row.original
           const roleValue = row.getValue('role') as number
+          if (user.adty_site_owner && roleValue < ROLE.ADMIN) {
+            return <span className='text-sm'>{t('Subsite Owner')}</span>
+          }
           const roleConfig = USER_ROLES[roleValue as keyof typeof USER_ROLES]
 
           if (!roleConfig) {

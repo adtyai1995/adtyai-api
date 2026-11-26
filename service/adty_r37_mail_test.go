@@ -3,6 +3,7 @@ package service
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -39,7 +40,6 @@ func setupR37MailTest(t *testing.T) *gorm.DB {
 	oldLookup := adtyMailLookupIP
 	oldSMTP := adtySendSubsiteSMTP
 	oldResend := adtySendSubsiteResend
-	oldPlatform := adtySendSubsitePlatform
 	oldDeliver := AdtyDeliverSiteEmail
 	oldSystemSender := AdtySystemEmailSender
 
@@ -51,7 +51,6 @@ func setupR37MailTest(t *testing.T) *gorm.DB {
 		adtyMailLookupIP = oldLookup
 		adtySendSubsiteSMTP = oldSMTP
 		adtySendSubsiteResend = oldResend
-		adtySendSubsitePlatform = oldPlatform
 		AdtyDeliverSiteEmail = oldDeliver
 		AdtySystemEmailSender = oldSystemSender
 		InvalidateAdtySiteCache()
@@ -96,28 +95,24 @@ func TestR37MailConfigCRUDAndSecretEncryption(t *testing.T) {
 		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
 	}
 
-	// 1. Default view before any row exists.
+	// 1. Default view before any row exists (unconfigured, provider="").
 	defView, err := GetAdtySiteMailConfig(201)
 	if err != nil {
 		t.Fatalf("default get failed: %v", err)
 	}
-	if defView.Provider != model.AdtySiteMailProviderPlatform || defView.SMTPPort != 587 {
+	if defView.Provider != "" || defView.SMTPPort != 587 {
 		t.Fatalf("unexpected default view: %+v", defView)
 	}
 	if defView.SMTPTokenConfigured || defView.ResendApiKeyConfigured {
 		t.Fatalf("expected no configured secrets by default: %+v", defView)
 	}
 
-	// 2. Save platform sender name.
-	platView, err := SaveAdtySiteMailConfig(ctx, 201, AdtySiteMailConfigUpdate{
+	// 2. Saving platform provider is rejected under R-41 #8.
+	if _, err := SaveAdtySiteMailConfig(ctx, 201, AdtySiteMailConfigUpdate{
 		Provider:   model.AdtySiteMailProviderPlatform,
 		SenderName: "Alpha Notifications",
-	})
-	if err != nil {
-		t.Fatalf("save platform config: %v", err)
-	}
-	if platView.Provider != model.AdtySiteMailProviderPlatform || platView.SenderName != "Alpha Notifications" {
-		t.Fatalf("unexpected platform view: %+v", platView)
+	}); err == nil {
+		t.Fatalf("expected platform mail provider to be rejected")
 	}
 
 	// 3. Save SMTP config with secret token -> sealed in DB, never returned in JSON view.
@@ -257,14 +252,19 @@ func TestR37MailConfigCRUDAndSecretEncryption(t *testing.T) {
 		t.Fatalf("unexpected updated resend view: %+v", resendView2)
 	}
 
-	// Clearing ResendApiKey while switching back to platform works.
+	// Clearing ResendApiKey while switching back to SMTP works.
 	clearedResendView, err := SaveAdtySiteMailConfig(ctx, 201, AdtySiteMailConfigUpdate{
-		Provider:          model.AdtySiteMailProviderPlatform,
-		SenderName:        "Alpha Back",
-		ClearResendApiKey: true,
+		Provider:            model.AdtySiteMailProviderSMTP,
+		SMTPServer:          "smtp.public.example",
+		SMTPPort:            587,
+		SMTPAccount:         "auth@alpha.example",
+		SMTPFrom:            "noreply@alpha.example",
+		SMTPSenderName:      "Alpha Mailer",
+		SMTPStartTLSEnabled: true,
+		ClearResendApiKey:   true,
 	})
 	if err != nil {
-		t.Fatalf("clear resend key on platform switch: %v", err)
+		t.Fatalf("clear resend key on smtp switch: %v", err)
 	}
 	if clearedResendView.ResendApiKeyConfigured {
 		t.Fatalf("expected resend_api_key_configured=false after clear")
@@ -502,13 +502,9 @@ func TestR37MailSubsiteDeliveryRouting(t *testing.T) {
 		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
 	}
 
-	var gotPlatformFrom, gotSMTPServer, gotSMTPDisplayName, gotSMTPToken string
+	var gotSMTPServer, gotSMTPDisplayName, gotSMTPToken string
 	var gotResendKey, gotResendFrom, gotResendDisplayName string
 
-	adtySendSubsitePlatform = func(from, subject, receiver, content string) error {
-		gotPlatformFrom = from
-		return nil
-	}
 	adtySendSubsiteSMTP = func(cfg common.SMTPTransportConfig, fromHeader, subject, receiver, content string) error {
 		gotSMTPServer = cfg.Server
 		gotSMTPDisplayName = cfg.DisplayName
@@ -525,27 +521,32 @@ func TestR37MailSubsiteDeliveryRouting(t *testing.T) {
 		return nil
 	}
 
-	// 1. Default (no config row): platform transport uses site brand, NEVER main site name.
-	if err := AdtySendSiteEmail(&site, "Test", "user@example.com", "<p>hi</p>"); err != nil {
-		t.Fatalf("platform default send: %v", err)
-	}
-	if !strings.Contains(gotPlatformFrom, "Bravo Brand") || strings.Contains(gotPlatformFrom, "MAIN PLATFORM NAME") {
-		t.Fatalf("expected site brand in platform sender, got %q", gotPlatformFrom)
+	// 1. Default (no config row): sending fails explicitly under R-41 #8A (no platform fallback).
+	if err := AdtySendSiteEmail(&site, "Test", "user@example.com", "<p>hi</p>"); !errors.Is(err, ErrAdtySiteMailNotConfigured) {
+		t.Fatalf("expected ErrAdtySiteMailNotConfigured when unconfigured, got %v", err)
 	}
 
-	// 2. Platform config with custom SenderName overrides brand name.
-	if _, err := SaveAdtySiteMailConfig(ctx, 301, AdtySiteMailConfigUpdate{
+	// 2. Legacy DB row with provider="platform" also returns ErrAdtySiteMailNotConfigured and renders provider="".
+	if err := db.Create(&model.AdtySiteMailConfig{
+		SiteId:     site.Id,
 		Provider:   model.AdtySiteMailProviderPlatform,
-		SenderName: "Bravo Support Team",
-	}); err != nil {
-		t.Fatalf("save platform sender name: %v", err)
+		SenderName: "Legacy Platform",
+		SMTPPort:   587,
+	}).Error; err != nil {
+		t.Fatalf("seed legacy platform row: %v", err)
 	}
-	gotPlatformFrom = ""
-	if err := AdtySendSiteEmail(&site, "Test", "user@example.com", "<p>hi</p>"); err != nil {
-		t.Fatalf("platform custom sender send: %v", err)
+	legacyView, err := GetAdtySiteMailConfig(301)
+	if err != nil {
+		t.Fatalf("get legacy view: %v", err)
 	}
-	if !strings.Contains(gotPlatformFrom, "Bravo Support Team") {
-		t.Fatalf("expected custom platform SenderName, got %q", gotPlatformFrom)
+	if legacyView.Provider != "" {
+		t.Fatalf("expected legacy platform row to surface as unconfigured, got %q", legacyView.Provider)
+	}
+	if err := AdtySendSiteEmail(&site, "Test", "user@example.com", "<p>hi</p>"); !errors.Is(err, ErrAdtySiteMailNotConfigured) {
+		t.Fatalf("expected ErrAdtySiteMailNotConfigured for legacy platform row, got %v", err)
+	}
+	if err := TestAdtySiteMailConfig(ctx, 301, "owner@example.com"); !errors.Is(err, ErrAdtySiteMailNotConfigured) {
+		t.Fatalf("expected TestAdtySiteMailConfig to reject unconfigured subsite, got %v", err)
 	}
 
 	// 3. SMTP config dispatches via subsite SMTP with decrypted token and site brand fallback.

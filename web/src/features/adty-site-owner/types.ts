@@ -99,7 +99,8 @@ export type SiteLegalDocs = {
   refund_policy_enabled: boolean
 }
 
-export type SiteMailProvider = 'platform' | 'smtp' | 'resend'
+export type SiteMailSaveProvider = 'smtp' | 'resend'
+export type SiteMailProvider = '' | SiteMailSaveProvider
 
 /** GET /api/adty/site/mail-config — secrets are never returned in plaintext. */
 export type SiteMailConfig = {
@@ -122,7 +123,7 @@ export type SiteMailConfig = {
 }
 
 export type SiteMailConfigUpdate = {
-  provider: SiteMailProvider
+  provider: SiteMailSaveProvider
   sender_name?: string
   smtp_server?: string
   smtp_port?: number

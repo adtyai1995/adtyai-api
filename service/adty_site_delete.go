@@ -121,8 +121,7 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 	}
 
 	var auditEvent *model.AuditLog
-	deletedOwnerID := 0
-	var deletedOwnerAuthVersion int64
+	preservedOwnerID := 0
 	cleanedOptions := map[string]string{}
 	commissionMarginKey := commissionMarginOptionKey(siteID)
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
@@ -304,16 +303,10 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 		if err := tx.Delete(&model.AdtySite{}, siteID).Error; err != nil {
 			return err
 		}
-		// Clean up standalone owner user if they have no other sites, balance, tokens, or orders.
+		// R-41 #4: Always preserve the former owner account and restore them as a
+		// regular main-site user when hard-deleting a zero-data subsite.
 		if site.OwnerUserId > 0 {
-			deleted, nextAuthVer, ownerErr := maybeDeleteEmptyStandaloneOwnerTx(tx, site.OwnerUserId)
-			if ownerErr != nil {
-				return ownerErr
-			}
-			if deleted {
-				deletedOwnerID = site.OwnerUserId
-				deletedOwnerAuthVersion = nextAuthVer
-			}
+			preservedOwnerID = site.OwnerUserId
 		}
 		mode = "hard_deleted"
 		auditEvent, err = recordSiteAuditWithIntentTx(tx, siteID, "delete", adminID, oldSnapshot, map[string]any{"deleted": true}, reason)
@@ -330,15 +323,10 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			common.SysError(common.LogText("failed to sync cleaned site options after hard-deleting site %d: %v", siteID, err))
 		}
 	}
-	if deletedOwnerID > 0 {
-		if err := model.PublishCommittedUserAuthVersion(deletedOwnerID, deletedOwnerAuthVersion); err != nil {
-			common.SysError(common.LogText("failed to publish auth tombstone after hard-deleting standalone site owner %d: %v", deletedOwnerID, err))
+	if preservedOwnerID > 0 && common.RedisEnabled && common.RDB != nil {
+		if err := model.InvalidateUserCache(preservedOwnerID); err != nil {
+			common.SysError(common.LogText("failed to invalidate user cache after hard-deleting site %d for preserved owner %d: %v", siteID, preservedOwnerID, err))
 		}
-		if err := model.InvalidateUserCache(deletedOwnerID); err != nil {
-			common.SysError(common.LogText("failed to invalidate user cache after hard-deleting standalone site owner %d: %v", deletedOwnerID, err))
-		}
-		_, _ = model.RevokeAllUserSessions(deletedOwnerID, "site_deleted")
-		model.InvalidateUserTokensCache(deletedOwnerID)
 	}
 	if auditEvent != nil {
 		eventID = auditEvent.EventId
@@ -600,91 +588,4 @@ func adtySiteHasBusinessDataTx(tx *gorm.DB, siteID int) (bool, error) {
 		}
 	}
 	return false, nil
-}
-
-func maybeDeleteEmptyStandaloneOwnerTx(tx *gorm.DB, userID int) (bool, int64, error) {
-	var user model.User
-	if err := model.AdtyLockForUpdate(tx).Select("id", "role", "quota", "quota_pending", "used_quota", "request_count", "site_id", "staff_site_id").First(&user, userID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return false, 0, nil
-		}
-		return false, 0, err
-	}
-	if user.Role >= common.RoleAdminUser || user.Quota != 0 || user.QuotaPending != 0 || user.UsedQuota != 0 || user.RequestCount != 0 || user.SiteId != 0 || user.StaffSiteId != 0 {
-		return false, 0, nil
-	}
-	assetChecks := []struct {
-		model    any
-		where    string
-		args     []any
-		unscoped bool
-	}{
-		{&model.AdtySite{}, "owner_user_id = ?", []any{userID}, false},
-		{&model.AdtySiteOwnership{}, "old_owner_user_id = ? OR new_owner_user_id = ?", []any{userID, userID}, false},
-		{&model.AdtySiteEarningDaily{}, "site_owner_user_id = ? OR user_id = ?", []any{userID, userID}, false},
-		{&model.AdtySiteEarningEvent{}, "site_owner_user_id = ? OR user_id = ?", []any{userID, userID}, false},
-		{&model.AdtySiteTrialGrant{}, "site_owner_user_id = ? OR user_id = ?", []any{userID, userID}, false},
-		{&model.AdtySiteStaff{}, "owner_user_id = ? OR user_id = ?", []any{userID, userID}, false},
-		{&model.AdtySiteCustomer{}, "user_id = ?", []any{userID}, false},
-		{&model.AdtyFinancialAdjustment{}, "user_id = ?", []any{userID}, false},
-		{&model.AdtyStaffBalanceRequest{}, "staff_user_id = ? OR customer_user_id = ?", []any{userID, userID}, false},
-		{&model.AdtyTopupOrder{}, "user_id = ?", []any{userID}, false},
-		{&model.TopUp{}, "user_id = ?", []any{userID}, false},
-		{&model.Token{}, "user_id = ?", []any{userID}, true},
-		{&model.AdtyFundBatch{}, "user_id = ?", []any{userID}, false},
-		{&model.BillingOperation{}, "user_id = ?", []any{userID}, false},
-		{&model.AdtyManualRefund{}, "user_id = ?", []any{userID}, false},
-		{&model.ReferralCommissionAccount{}, "user_id = ? AND (pending_amount <> 0 OR available_amount <> 0 OR frozen_amount <> 0 OR withdrawn_amount <> 0)", []any{userID}, false},
-		{&model.ReferralWithdrawal{}, "user_id = ?", []any{userID}, false},
-		{&model.ReferralCommission{}, "affiliate_user_id = ? OR invitee_user_id = ?", []any{userID, userID}, false},
-		{&model.AdtyTeam{}, "leader_user_id = ?", []any{userID}, false},
-		{&model.AdtyTeamMember{}, "user_id = ?", []any{userID}, false},
-		{&model.AdtyVoucher{}, "issuer_id = ? OR redeemer_id = ? OR designated_owner_id = ?", []any{userID, userID, userID}, false},
-		{&model.AdtySiteWithdrawal{}, "owner_user_id = ?", []any{userID}, false},
-		{&model.AdtySiteInviteCommission{}, "inviter_id = ? OR invitee_id = ?", []any{userID, userID}, false},
-		{&model.AdtySiteInviteWithdrawal{}, "user_id = ?", []any{userID}, false},
-		{&model.AdtyTicket{}, "user_id = ?", []any{userID}, false},
-	}
-	for _, chk := range assetChecks {
-		if !tx.Migrator().HasTable(chk.model) {
-			continue
-		}
-		var n int64
-		q := tx
-		if chk.unscoped {
-			q = tx.Unscoped()
-		}
-		if err := q.Model(chk.model).Where(chk.where, chk.args...).Limit(1).Count(&n).Error; err != nil {
-			return false, 0, err
-		}
-		if n > 0 {
-			return false, 0, nil
-		}
-	}
-	if err := model.DisableDeletedUserAffiliatesWithTx(tx, userID); err != nil {
-		return false, 0, err
-	}
-	nextAuthVersion, err := model.IncrementUserAuthVersionWithTx(tx, userID)
-	if err != nil {
-		return false, 0, err
-	}
-	if err := tx.Model(&model.User{}).Where("id = ?", userID).Updates(map[string]any{
-		"status":                  common.UserStatusDisabled,
-		"access_token":            nil,
-		"access_token_created_at": nil,
-	}).Error; err != nil {
-		return false, 0, err
-	}
-	if tx.Migrator().HasTable(&model.UserAccessToken{}) {
-		if err := tx.Where("user_id = ?", userID).Delete(&model.UserAccessToken{}).Error; err != nil {
-			return false, 0, err
-		}
-	}
-	if err := model.ReleaseSoftDeletedIdentityWithTx(tx, userID); err != nil {
-		return false, 0, err
-	}
-	if err := tx.Delete(&model.User{}, userID).Error; err != nil {
-		return false, 0, err
-	}
-	return true, nextAuthVersion, nil
 }

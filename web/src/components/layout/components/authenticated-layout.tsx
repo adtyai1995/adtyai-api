@@ -21,12 +21,10 @@ import { useLocation } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { CommandMenu } from '@/components/command-menu'
 import { AnimatedOutlet } from '@/components/page-transition'
 import { SkipToMain } from '@/components/skip-to-main'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { LayoutProvider } from '@/context/layout-provider'
-import { SearchProvider } from '@/context/search-provider'
 import {
   SecureVerificationDialog,
   useSecureVerification,
@@ -113,37 +111,34 @@ export function AuthenticatedLayout(props: AuthenticatedLayoutProps) {
 
   return (
     <LayoutProvider>
-      <SearchProvider>
-        <SidebarProvider
-          open={sidebarOpen}
-          onOpenChange={handleSidebarOpenChange}
-          className='flex-col'
-          style={
-            wideSidebar
-              ? ({ '--sidebar-width': '15rem' } as React.CSSProperties)
-              : undefined
-          }
-        >
-          <SkipToMain />
-          <AppHeader />
-          <div className='flex min-h-0 w-full flex-1'>
-            <AppSidebar />
-            <SidebarInset
-              className={cn(
-                '@container/content',
-                'bg-background',
-                'h-[calc(100svh-var(--app-header-height,0px))]',
-                'min-h-0 overflow-hidden',
-                'peer-data-[variant=inset]:h-[calc(100svh-var(--app-header-height,0px)-(var(--spacing)*4))]'
-              )}
-            >
-              {props.children ?? <AnimatedOutlet />}
-            </SidebarInset>
-          </div>
-        </SidebarProvider>
-        <CommandMenu />
-        <SecureVerificationDialog {...dialogProps} />
-      </SearchProvider>
+      <SidebarProvider
+        open={sidebarOpen}
+        onOpenChange={handleSidebarOpenChange}
+        className='flex-col'
+        style={
+          wideSidebar
+            ? ({ '--sidebar-width': '15rem' } as React.CSSProperties)
+            : undefined
+        }
+      >
+        <SkipToMain />
+        <AppHeader />
+        <div className='flex min-h-0 w-full flex-1'>
+          <AppSidebar />
+          <SidebarInset
+            className={cn(
+              '@container/content',
+              'bg-background',
+              'h-[calc(100svh-var(--app-header-height,0px))]',
+              'min-h-0 overflow-hidden',
+              'peer-data-[variant=inset]:h-[calc(100svh-var(--app-header-height,0px)-(var(--spacing)*4))]'
+            )}
+          >
+            {props.children ?? <AnimatedOutlet />}
+          </SidebarInset>
+        </div>
+      </SidebarProvider>
+      <SecureVerificationDialog {...dialogProps} />
     </LayoutProvider>
   )
 }

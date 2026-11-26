@@ -160,7 +160,7 @@ function SceneManagement(props: { userId: number }) {
                     size='sm'
                     variant='outline'
                     aria-label={t('Edit payment scene {{name}}', {
-                      name: scene.name,
+                      name: t(scene.name),
                     })}
                     onClick={() =>
                       query.data && setEditing({ config: query.data, index })
@@ -173,7 +173,7 @@ function SceneManagement(props: { userId: number }) {
                     size='sm'
                     variant='outline'
                     aria-label={t('Delete payment scene {{name}}', {
-                      name: scene.name,
+                      name: t(scene.name),
                     })}
                     onClick={() =>
                       query.data && setRemoving({ config: query.data, index })

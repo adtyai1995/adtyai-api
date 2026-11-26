@@ -63,6 +63,10 @@ type AdtySiteMailConfigUpdate struct {
 }
 
 var (
+	// ErrAdtySiteMailNotConfigured is returned when a subsite tries to send
+	// operational mail without configuring its own SMTP or Resend transport (R-41 #8).
+	ErrAdtySiteMailNotConfigured = common.NewMessage("Site email sending is not configured. Configure SMTP or Resend first.")
+
 	// adtyMailLookupIP resolves hostnames for subsite SMTP SSRF validation.
 	// Overridable in tests.
 	adtyMailLookupIP = func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -70,9 +74,8 @@ var (
 	}
 
 	// Transport hooks used by sendSubsiteConfiguredEmail; overridable in tests.
-	adtySendSubsiteSMTP     = common.SendSMTPEmailWithConfig
-	adtySendSubsiteResend   = common.SendResendEmailWithConfig
-	adtySendSubsitePlatform = common.SendEmailFrom
+	adtySendSubsiteSMTP   = common.SendSMTPEmailWithConfig
+	adtySendSubsiteResend = common.SendResendEmailWithConfig
 
 	subsiteBlockedIPPrefixes = []netip.Prefix{
 		netip.MustParsePrefix("0.0.0.0/8"),      // RFC 1122 "this network"
@@ -287,13 +290,13 @@ func loadAdtySiteMailConfig(siteID int) (*model.AdtySiteMailConfig, bool, error)
 func adtySiteMailConfigToView(row *model.AdtySiteMailConfig) *AdtySiteMailConfigView {
 	if row == nil {
 		return &AdtySiteMailConfigView{
-			Provider: model.AdtySiteMailProviderPlatform,
+			Provider: "",
 			SMTPPort: 587,
 		}
 	}
 	provider := strings.TrimSpace(row.Provider)
-	if provider == "" {
-		provider = model.AdtySiteMailProviderPlatform
+	if provider == model.AdtySiteMailProviderPlatform {
+		provider = ""
 	}
 	port := row.SMTPPort
 	if port <= 0 {
@@ -362,9 +365,9 @@ func SaveAdtySiteMailConfig(ctx context.Context, ownerUserID int, input AdtySite
 
 	provider := strings.ToLower(strings.TrimSpace(input.Provider))
 	switch provider {
-	case model.AdtySiteMailProviderPlatform, model.AdtySiteMailProviderSMTP, model.AdtySiteMailProviderResend:
+	case model.AdtySiteMailProviderSMTP, model.AdtySiteMailProviderResend:
 	default:
-		return nil, common.NewMessage("Email provider must be platform, SMTP, or Resend")
+		return nil, common.NewMessage("Email provider must be SMTP or Resend")
 	}
 
 	senderName := strings.TrimSpace(input.SenderName)
@@ -444,18 +447,17 @@ func SaveAdtySiteMailConfig(ctx context.Context, ownerUserID int, input AdtySite
 			return lookup.Error
 		}
 		existed := lookup.RowsAffected > 0
-		oldProvider := model.AdtySiteMailProviderPlatform
-		if existed && strings.TrimSpace(row.Provider) != "" {
+		oldProvider := ""
+		if existed && strings.TrimSpace(row.Provider) != "" && row.Provider != model.AdtySiteMailProviderPlatform {
 			oldProvider = row.Provider
-		} else {
+		} else if !existed {
 			row.SiteId = site.Id
 			row.SMTPPort = 587
 		}
 
 		row.Provider = provider
+		row.SenderName = ""
 		switch provider {
-		case model.AdtySiteMailProviderPlatform:
-			row.SenderName = senderName
 		case model.AdtySiteMailProviderSMTP:
 			row.SMTPServer = smtpServer
 			row.SMTPPort = input.SMTPPort
@@ -564,8 +566,9 @@ func adtySubsiteFallbackDisplayName(site *model.AdtySite) string {
 }
 
 // sendSubsiteConfiguredEmail delivers a subsite email using its configured
-// transport (custom SMTP, own Resend API key, or platform default with the
-// site's own display name).
+// transport (custom SMTP or own Resend API key). Unconfigured subsites return
+// ErrAdtySiteMailNotConfigured (R-41 #8A); official site-closure migration
+// emails and platform-to-owner notices use platform transport separately.
 func sendSubsiteConfiguredEmail(site *model.AdtySite, subject, receiver, content string) error {
 	if site == nil {
 		return common.SendEmail(subject, receiver, content)
@@ -574,91 +577,83 @@ func sendSubsiteConfiguredEmail(site *model.AdtySite, subject, receiver, content
 	if err != nil {
 		return err
 	}
-	if found && cfg != nil {
-		switch cfg.Provider {
-		case model.AdtySiteMailProviderSMTP:
-			token := ""
-			if strings.TrimSpace(cfg.SMTPTokenCipher) != "" {
-				opened, err := model.OpenAdtyPurposeSecret(adtySiteMailSMTPPurpose(site.Id), cfg.SMTPTokenCipher)
-				if err != nil {
-					return err
-				}
-				token = opened
-			}
-			displayName := strings.TrimSpace(cfg.SMTPSenderName)
-			if displayName == "" {
-				if parsed, ok := validateSubsiteMailAddress(cfg.SMTPFrom); ok && strings.TrimSpace(parsed.Name) != "" {
-					displayName = strings.TrimSpace(parsed.Name)
-				}
-			}
-			if displayName == "" {
-				displayName = adtySubsiteFallbackDisplayName(site)
-			}
-			port := cfg.SMTPPort
-			if port <= 0 {
-				port = 587
-			}
-			sendErr := adtySendSubsiteSMTP(common.SMTPTransportConfig{
-				Server:             cfg.SMTPServer,
-				Port:               port,
-				Account:            cfg.SMTPAccount,
-				Token:              token,
-				From:               cfg.SMTPFrom,
-				DisplayName:        displayName,
-				SSLEnabled:         cfg.SMTPSSLEnabled,
-				StartTLSEnabled:    cfg.SMTPStartTLSEnabled,
-				InsecureSkipVerify: cfg.SMTPInsecureSkipVerify,
-				ForceAuthLogin:     cfg.SMTPForceAuthLogin,
-				DialContext:        subsiteSMTPDialContext,
-			}, "", subject, receiver, content)
-			if sendErr != nil {
-				var msg *common.Message
-				if errors.As(sendErr, &msg) {
-					return sendErr
-				}
-				return common.SanitizeSMTPError(sendErr, cfg.SMTPAccount, token)
-			}
-			return nil
-
-		case model.AdtySiteMailProviderResend:
-			if strings.TrimSpace(cfg.ResendApiKeyCipher) == "" {
-				return common.NewMessage("Resend API key is not configured or invalid")
-			}
-			apiKey, err := model.OpenAdtyPurposeSecret(adtySiteMailResendPurpose(site.Id), cfg.ResendApiKeyCipher)
+	if !found || cfg == nil {
+		return ErrAdtySiteMailNotConfigured
+	}
+	switch cfg.Provider {
+	case model.AdtySiteMailProviderSMTP:
+		token := ""
+		if strings.TrimSpace(cfg.SMTPTokenCipher) != "" {
+			opened, err := model.OpenAdtyPurposeSecret(adtySiteMailSMTPPurpose(site.Id), cfg.SMTPTokenCipher)
 			if err != nil {
 				return err
 			}
-			displayName := strings.TrimSpace(cfg.ResendSenderName)
-			if displayName == "" {
-				if parsed, ok := validateSubsiteMailAddress(cfg.ResendFrom); ok && strings.TrimSpace(parsed.Name) != "" {
-					displayName = strings.TrimSpace(parsed.Name)
-				}
-			}
-			if displayName == "" {
-				displayName = adtySubsiteFallbackDisplayName(site)
-			}
-			if sendErr := adtySendSubsiteResend(apiKey, cfg.ResendFrom, displayName, subject, receiver, content); sendErr != nil {
-				var msg *common.Message
-				if errors.As(sendErr, &msg) {
-					return sendErr
-				}
-				return common.SanitizeOutboundError(sendErr, apiKey)
-			}
-			return nil
+			token = opened
 		}
-	}
+		displayName := strings.TrimSpace(cfg.SMTPSenderName)
+		if displayName == "" {
+			if parsed, ok := validateSubsiteMailAddress(cfg.SMTPFrom); ok && strings.TrimSpace(parsed.Name) != "" {
+				displayName = strings.TrimSpace(parsed.Name)
+			}
+		}
+		if displayName == "" {
+			displayName = adtySubsiteFallbackDisplayName(site)
+		}
+		port := cfg.SMTPPort
+		if port <= 0 {
+			port = 587
+		}
+		sendErr := adtySendSubsiteSMTP(common.SMTPTransportConfig{
+			Server:             cfg.SMTPServer,
+			Port:               port,
+			Account:            cfg.SMTPAccount,
+			Token:              token,
+			From:               cfg.SMTPFrom,
+			DisplayName:        displayName,
+			SSLEnabled:         cfg.SMTPSSLEnabled,
+			StartTLSEnabled:    cfg.SMTPStartTLSEnabled,
+			InsecureSkipVerify: cfg.SMTPInsecureSkipVerify,
+			ForceAuthLogin:     cfg.SMTPForceAuthLogin,
+			DialContext:        subsiteSMTPDialContext,
+		}, "", subject, receiver, content)
+		if sendErr != nil {
+			var msg *common.Message
+			if errors.As(sendErr, &msg) {
+				return sendErr
+			}
+			return common.SanitizeSMTPError(sendErr, cfg.SMTPAccount, token)
+		}
+		return nil
 
-	if sendErr := adtySendSubsitePlatform(AdtySenderFor(site), subject, receiver, content); sendErr != nil {
-		common.OptionMapRWMutex.RLock()
-		platSecrets := []string{common.SMTPToken, common.OptionMap["ResendApiKey"]}
-		if common.SMTPToken != "" {
-			platSecrets = append(platSecrets, "\x00"+common.SMTPAccount+"\x00"+common.SMTPToken)
+	case model.AdtySiteMailProviderResend:
+		if strings.TrimSpace(cfg.ResendApiKeyCipher) == "" {
+			return common.NewMessage("Resend API key is not configured or invalid")
 		}
-		common.OptionMapRWMutex.RUnlock()
-		common.SysError(common.LogText("subsite %d platform mail delivery failed: %s", site.Id, common.SanitizeOutboundError(sendErr, platSecrets...).Error()))
-		return common.NewMessage("Failed to send email via platform mail service")
+		apiKey, err := model.OpenAdtyPurposeSecret(adtySiteMailResendPurpose(site.Id), cfg.ResendApiKeyCipher)
+		if err != nil {
+			return err
+		}
+		displayName := strings.TrimSpace(cfg.ResendSenderName)
+		if displayName == "" {
+			if parsed, ok := validateSubsiteMailAddress(cfg.ResendFrom); ok && strings.TrimSpace(parsed.Name) != "" {
+				displayName = strings.TrimSpace(parsed.Name)
+			}
+		}
+		if displayName == "" {
+			displayName = adtySubsiteFallbackDisplayName(site)
+		}
+		if sendErr := adtySendSubsiteResend(apiKey, cfg.ResendFrom, displayName, subject, receiver, content); sendErr != nil {
+			var msg *common.Message
+			if errors.As(sendErr, &msg) {
+				return sendErr
+			}
+			return common.SanitizeOutboundError(sendErr, apiKey)
+		}
+		return nil
+
+	default:
+		return ErrAdtySiteMailNotConfigured
 	}
-	return nil
 }
 
 func classifySubsiteTestMailError(siteID int, sendErr error) error {

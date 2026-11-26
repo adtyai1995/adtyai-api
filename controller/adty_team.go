@@ -580,7 +580,35 @@ func PostAdtyMainTeam(c *gin.Context) {
 }
 
 func PostAdtyOwnerSiteTeam(c *gin.Context) {
-	common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtyTeamForbidden)
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Name     string `json:"name"`
+		LeaderId int    `json:"leader_id"`
+		Discount string `json:"discount"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	created, eventID, replayed, err := service.CreateAdtyOwnerSiteTeamWithAudit(c.GetInt("id"), site.Id, body.LeaderId, body.Name, body.Discount, c.GetHeader("Idempotency-Key"))
+	if err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	if replayed {
+		markIdempotentReplayNoAudit(c)
+	} else if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
+	common.ApiSuccess(c, created)
 }
 
 func GetAdtyTeamMine(c *gin.Context) {
@@ -846,7 +874,24 @@ func PostAdtyMainTeamRegistrationRevoke(c *gin.Context) {
 }
 
 func PostAdtyOwnerSiteTeamRegistration(c *gin.Context) {
-	common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtyTeamForbidden)
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	ttl, ok := parseAdtyTeamInviteTTL(c)
+	if !ok {
+		return
+	}
+	issued, eventID, err := service.CreateAdtyOwnerSiteTeamRegistrationWithAudit(c.GetInt("id"), site.Id, ttl)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if eventID != "" {
+		rememberPreparedAuditEvent(c, eventID)
+		markAuditLogged(c)
+	}
+	common.ApiSuccess(c, issued)
 }
 
 func GetAdtyOwnerSiteTeamRegistrations(c *gin.Context) {

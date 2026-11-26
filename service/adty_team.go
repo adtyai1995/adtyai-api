@@ -1097,10 +1097,108 @@ func CreateAdtySiteTeamByRootWithAudit(actorId, siteId, leaderId int, name, rawD
 	return created, event.EventId, replayed, nil
 }
 
-// CreateAdtyOwnerSiteTeam is permanently rejected under A.9.1 / DEC-012:
-// only Root may create teams and designate team leaders.
-func CreateAdtyOwnerSiteTeam(_ int, _ int, _ int, _, _ string) (*AdtyTeamCreated, error) {
-	return nil, ErrAdtyTeamForbidden
+// CreateAdtyOwnerSiteTeam lets an active subsite's owner create a team on their
+// own site and designate one of their site's ordinary customers as leader (R-41 #11).
+func CreateAdtyOwnerSiteTeam(ownerId, siteId, leaderId int, name, rawDiscount string, keys ...string) (*AdtyTeamCreated, error) {
+	created, _, _, err := CreateAdtyOwnerSiteTeamWithAudit(ownerId, siteId, leaderId, name, rawDiscount, keys...)
+	return created, err
+}
+
+func CreateAdtyOwnerSiteTeamWithAudit(ownerId, siteId, leaderId int, name, rawDiscount string, keys ...string) (*AdtyTeamCreated, string, bool, error) {
+	if ownerId <= 0 || siteId <= 0 {
+		return nil, "", false, ErrAdtyTeamForbidden
+	}
+	if leaderId <= 0 {
+		return nil, "", false, ErrAdtyTeamInvalid
+	}
+	discount, err := adtyTeamDiscountOrDefault(rawDiscount)
+	if err != nil {
+		return nil, "", false, err
+	}
+	if err := validateAdtyTeamDiscountForSite(siteId, discount); err != nil {
+		return nil, "", false, err
+	}
+	key := ""
+	if len(keys) > 0 {
+		key = strings.TrimSpace(keys[0])
+	}
+	if len(key) > 64 {
+		return nil, "", false, ErrAdtyTeamIdempotencyKey
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d/%s", ownerId, key))))
+	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d/%d/%s/%s", siteId, leaderId, discount.String(), strings.TrimSpace(name)))))
+
+	var created *AdtyTeamCreated
+	var event model.AuditLog
+	replayed := false
+	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		// Preserve canonical AdtySite -> User (id ASC) lock order.
+		var site model.AdtySite
+		if err := model.AdtyLockForUpdate(tx).First(&site, siteId).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAdtyTeamForbidden
+			}
+			return err
+		}
+		if site.OwnerUserId != ownerId {
+			return ErrAdtyTeamForbidden
+		}
+		if site.Status == model.AdtySiteStatusClosing {
+			return ErrAdtySiteClosing
+		}
+		if site.Status != model.AdtySiteStatusActive {
+			return ErrAdtyTeamForbidden
+		}
+		if key != "" {
+			lockUserIDs := []int{ownerId}
+			if leaderId != ownerId {
+				lockUserIDs = append(lockUserIDs, leaderId)
+			}
+			sort.Ints(lockUserIDs)
+			var prelockedUsers []model.User
+			if err := model.AdtyLockForUpdate(tx).Select("id", "role").Where("id IN ?", lockUserIDs).Order("id ASC").Find(&prelockedUsers).Error; err != nil {
+				return err
+			}
+			var existing model.AdtyTeam
+			if err := tx.Where("create_key = ?", digest).Limit(1).Find(&existing).Error; err != nil {
+				return err
+			}
+			if existing.Id > 0 {
+				if existing.CreateFingerprint != fingerprint {
+					return model.ErrAdtyIdempotencyConflict
+				}
+				var member model.AdtyTeamMember
+				if err := tx.Where("team_id = ? AND user_id = ?", existing.Id, leaderId).First(&member).Error; err != nil {
+					return err
+				}
+				created = &AdtyTeamCreated{Team: existing, Member: member}
+				replayed = true
+				return nil
+			}
+		}
+		var err error
+		created, err = createAdtyTeamTx(tx, leaderId, siteId, name, discount)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrAdtyTeamForbidden
+		}
+		if err != nil {
+			return err
+		}
+		if key != "" {
+			if err := tx.Model(&created.Team).Updates(map[string]any{"create_key": digest, "create_fingerprint": fingerprint}).Error; err != nil {
+				return err
+			}
+		}
+		event, err = appendAdtyTeamAuditTx(tx, ownerId, siteId, "team", strconv.FormatInt(created.Team.Id, 10), "adty.team.create", nil, map[string]any{"team_id": created.Team.Id, "site_id": siteId, "leader_user_id": leaderId, "name": created.Team.Name, "discount": discount.String()})
+		return err
+	})
+	if err != nil {
+		return nil, "", false, err
+	}
+	if event.EventId != "" {
+		deliverAdtyCommittedAudit(event)
+	}
+	return created, event.EventId, replayed, nil
 }
 
 func CreateAdtyTeam(leaderId, siteId int, name string, discount decimal.Decimal) (*AdtyTeamCreated, error) {

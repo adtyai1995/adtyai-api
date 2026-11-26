@@ -153,10 +153,7 @@ export function AdtyTopupHistory(props: {
       }
       className='scroll-mt-4'
     >
-      <ContentSection
-        title={historyTitle}
-        description={t('Orders paid after they expire are still credited.')}
-      >
+      <ContentSection title={historyTitle}>
         <div className='flex flex-wrap items-end gap-2'>
           <div className='flex flex-col gap-1'>
             <Label htmlFor={`${fieldId}-status`}>{t('Status')}</Label>
@@ -290,7 +287,7 @@ export function AdtyTopupHistory(props: {
               header: t('Payment scene'),
               cell: (row) =>
                 row.ext?.payment_scene
-                  ? `${row.ext.payment_scene_name || row.ext.payment_scene} (${row.ext.payment_scene}) · v${row.ext.payment_scene_version}`
+                  ? `${t(row.ext.payment_scene_name || row.ext.payment_scene)} (${row.ext.payment_scene}) · v${row.ext.payment_scene_version}`
                   : '—',
             },
             {
@@ -344,13 +341,23 @@ export function AdtyTopupHistory(props: {
             {
               id: 'status',
               header: t('Status'),
-              cell: (row) => (
-                <StatusBadge
-                  label={t(ORDER_STATUS_LABELS[row.status] ?? row.status)}
-                  variant={ORDER_STATUS_VARIANTS[row.status] ?? 'neutral'}
-                  copyable={false}
-                />
-              ),
+              cell: (row) => {
+                const effectiveStatus =
+                  row.status === 'pending' &&
+                  row.ext?.expire_at &&
+                  row.ext.expire_at <= nowSec
+                    ? 'expired'
+                    : row.status
+                return (
+                  <StatusBadge
+                    label={t(
+                      ORDER_STATUS_LABELS[effectiveStatus] ?? effectiveStatus
+                    )}
+                    variant={ORDER_STATUS_VARIANTS[effectiveStatus] ?? 'neutral'}
+                    copyable={false}
+                  />
+                )
+              },
             },
             {
               id: 'trade_no',

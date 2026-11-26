@@ -346,7 +346,7 @@ function BrandCard(props: { site: OwnerSite }) {
   const brandFieldLabels: Record<keyof SiteBrand, string> = {
     name: t('Site name'),
     title: t('Website title'),
-    notice: t('Notice'),
+    notice: t('Announcement'),
     support_contact: t('Support contact'),
     tawk_property_id: t('Tawk.to property ID'),
     tawk_widget_id: t('Tawk.to widget ID'),
@@ -395,7 +395,7 @@ function BrandCard(props: { site: OwnerSite }) {
         <div className='grid gap-x-6 gap-y-4 lg:grid-cols-2'>
           {field('name', t('Site name'))}
           {field('title', t('Website title'))}
-          {field('notice', t('Notice'), true)}
+          {field('notice', t('Announcement'), true)}
           {field(
             'wallet_notice',
             t('Wallet notice'),

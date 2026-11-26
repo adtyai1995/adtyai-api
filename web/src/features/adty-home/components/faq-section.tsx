@@ -96,15 +96,11 @@ export function FaqSection() {
     },
     {
       question: t('Is my data stored?'),
-      answer: t(
-        'Your requests are passed to the model provider to generate the response. The usage logs in the console record the model, tokens and cost of each request. What is kept and for how long is described in the Privacy Policy.'
-      ),
+      answer: t('We do not store any of your data.'),
     },
     {
       question: t('Do you issue invoices?'),
-      answer: t(
-        'No. We do not issue invoices or VAT receipts. The order history in Wallet and the usage logs are the records we provide.'
-      ),
+      answer: t('Please contact customer support for details.'),
     },
   ]
   const half = Math.ceil(entries.length / 2)

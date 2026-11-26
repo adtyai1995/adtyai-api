@@ -107,18 +107,6 @@ export function useTopNavLinks(): TopNavLink[] {
     })
   }
 
-  // Rankings
-  const rankings = modules?.rankings
-  if (rankings && typeof rankings === 'object' && rankings.enabled) {
-    const requiresAuth = rankings.requireAuth && !isAuthed
-    links.push({
-      id: 'rankings',
-      title: t('Rankings'),
-      href: '/rankings',
-      requiresAuth,
-    })
-  }
-
   // Docs (supports external links and mounted static /docs/)
   if (modules?.docs !== false) {
     links.push({

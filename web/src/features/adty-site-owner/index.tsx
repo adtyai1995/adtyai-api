@@ -26,7 +26,6 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { NotificationManager } from '@/features/adty-notifications/components/notification-manager'
 import { OwnerTeamAdmin } from '@/features/adty-team-admin'
-import { TelegramBindCard } from '@/features/adty-telegram/bind-card'
 import { TicketCenter } from '@/features/adty-ticket/ticket-center'
 import { RechargeAudit } from '@/features/recharge-audit'
 import { DraftNavigationProvider } from '@/features/system-settings/components/draft-navigation-provider'
@@ -154,7 +153,10 @@ export function SiteOwnerCenter(props: {
                   </div>
                 )}
                 {props.section === 'teams' && (
-                  <OwnerTeamAdmin closing={closing} />
+                  <OwnerTeamAdmin
+                    closing={closing}
+                    siteBaseUrl={site.data.base_url}
+                  />
                 )}
                 {props.section === 'orders' && (
                   <RechargeAudit ownerMode ownerSiteId={site.data.id} />
@@ -199,14 +201,11 @@ export function SiteOwnerCenter(props: {
                   <VoucherPanel siteId={site.data.id} closing={closing} />
                 )}
                 {props.section === 'notices' && (
-                  <div className='flex flex-col gap-6'>
-                    <NotificationManager
-                      mode='owner'
-                      siteId={site.data.id}
-                      closing={closing}
-                    />
-                    <TelegramBindCard purpose='admin' />
-                  </div>
+                  <NotificationManager
+                    mode='owner'
+                    siteId={site.data.id}
+                    closing={closing}
+                  />
                 )}
                 {props.section === 'staff' && (
                   <StaffPanel siteId={site.data.id} closing={closing} />
