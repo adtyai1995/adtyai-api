@@ -23,7 +23,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
+import { resolveDocsLink } from '../use-docs-link'
 import { useTopNavLinks, type TopNavLink } from '../use-top-nav-links'
+
+let mockStatus: Record<string, unknown> = {}
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -32,7 +35,7 @@ vi.mock('react-i18next', () => ({
 }))
 
 vi.mock('@/hooks/use-status', () => ({
-  useStatus: () => ({ status: {} }),
+  useStatus: () => ({ status: mockStatus }),
 }))
 
 function collectLinks(): TopNavLink[] {
@@ -48,6 +51,7 @@ function collectLinks(): TopNavLink[] {
 describe('useTopNavLinks', () => {
   afterEach(() => {
     cleanup()
+    mockStatus = {}
     useAuthStore.getState().auth.reset('complete')
   })
 
@@ -64,6 +68,64 @@ describe('useTopNavLinks', () => {
       id: 'model-status',
       title: 'Channel Status',
       href: '/model-status',
+    })
+  })
+
+  it('resolves docs link across external override, mounted static /docs/, and SPA fallback', () => {
+    expect(resolveDocsLink({})).toEqual({
+      href: '/docs',
+      external: false,
+      reloadDocument: false,
+    })
+
+    expect(resolveDocsLink({ docs_static_mounted: true })).toEqual({
+      href: '/docs/',
+      external: false,
+      reloadDocument: true,
+    })
+
+    expect(
+      resolveDocsLink({
+        docs_link: 'https://help.sub.example/guide',
+        docs_static_mounted: true,
+      })
+    ).toEqual({
+      href: 'https://help.sub.example/guide',
+      external: true,
+      reloadDocument: false,
+    })
+
+    expect(
+      resolveDocsLink({
+        docs_link: 'javascript:alert(1)',
+        docs_static_mounted: true,
+      })
+    ).toEqual({
+      href: '/docs/',
+      external: false,
+      reloadDocument: true,
+    })
+
+    mockStatus = { docs_static_mounted: true }
+    const mountedLinks = collectLinks()
+    expect(mountedLinks.find((link) => link.id === 'docs')).toEqual({
+      id: 'docs',
+      title: 'Docs',
+      href: '/docs/',
+      reloadDocument: true,
+    })
+
+    cleanup()
+    mockStatus = {
+      docs_link: 'https://docs.sub.example',
+      docs_static_mounted: true,
+    }
+    const externalLinks = collectLinks()
+    expect(externalLinks.find((link) => link.id === 'docs')).toEqual({
+      id: 'docs',
+      title: 'Docs',
+      href: 'https://docs.sub.example',
+      external: true,
     })
   })
 })

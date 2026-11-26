@@ -43,6 +43,7 @@ type AdtySiteBrand struct {
 	TawkWidgetID       string `json:"tawk_widget_id"`
 	WalletNotice       string `json:"wallet_notice"`
 	VoucherPurchaseURL string `json:"voucher_purchase_url"`
+	DocsURL            string `json:"docs_url"`
 	BaseURL            string `json:"base_url"`
 }
 
@@ -60,6 +61,7 @@ type AdtySiteBrandInput struct {
 	TawkWidgetID       string `json:"tawk_widget_id"`
 	WalletNotice       string `json:"wallet_notice"`
 	VoucherPurchaseURL string `json:"voucher_purchase_url"`
+	DocsURL            string `json:"docs_url"`
 }
 
 // 品牌字段的字数上限（按字符数，不是字节）。
@@ -121,6 +123,7 @@ func NormalizeAdtySiteBrand(input AdtySiteBrandInput) (AdtySiteBrandInput, error
 		TawkWidgetID:       strings.TrimSpace(input.TawkWidgetID),
 		WalletNotice:       adtyPlainText(input.WalletNotice, true),
 		VoucherPurchaseURL: strings.TrimSpace(input.VoucherPurchaseURL),
+		DocsURL:            strings.TrimSpace(input.DocsURL),
 	}
 	if utf8.RuneCountInString(out.Title) > 80 {
 		return out, common.NewMessage("Website title must be at most 80 characters")
@@ -130,8 +133,14 @@ func NormalizeAdtySiteBrand(input AdtySiteBrandInput) (AdtySiteBrandInput, error
 	}
 	if out.VoucherPurchaseURL != "" {
 		parsed, err := url.Parse(out.VoucherPurchaseURL)
-		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || len(out.VoucherPurchaseURL) > 500 {
+		if err != nil || strings.ContainsAny(out.VoucherPurchaseURL, " \t\r\n") || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || len(out.VoucherPurchaseURL) > 500 {
 			return out, common.NewMessage("Voucher purchase link must be a valid http:// or https:// URL")
+		}
+	}
+	if out.DocsURL != "" {
+		parsed, err := url.Parse(out.DocsURL)
+		if err != nil || strings.ContainsAny(out.DocsURL, " \t\r\n") || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || len(out.DocsURL) > 500 {
+			return out, common.NewMessage("Documentation link must be a valid http:// or https:// URL")
 		}
 	}
 	if err := ValidateAdtyTawkID(out.TawkPropertyID); err != nil {
@@ -263,6 +272,7 @@ func SaveAdtyBrandPatch(siteID, ownerID int, fields, expected map[string]string,
 				"support_contact": &brand.SupportContact, "logo_url": &brand.LogoURL, "favicon_url": &brand.FaviconURL,
 				"tawk_property_id": &brand.TawkPropertyID, "tawk_widget_id": &brand.TawkWidgetID,
 				"wallet_notice": &brand.WalletNotice, "voucher_purchase_url": &brand.VoucherPurchaseURL,
+				"docs_url": &brand.DocsURL,
 			}
 			for key, value := range fields {
 				if key == "tagline" || key == "theme_color" {
@@ -322,7 +332,9 @@ func AdtyBrandFor(site *model.AdtySite) AdtySiteBrand {
 		Title: brand.Title, FaviconURL: strings.TrimSpace(brand.FaviconURL),
 		SupportContact: brand.SupportContact, TawkPropertyID: strings.TrimSpace(brand.TawkPropertyID),
 		TawkWidgetID: strings.TrimSpace(brand.TawkWidgetID), WalletNotice: brand.WalletNotice,
-		VoucherPurchaseURL: strings.TrimSpace(brand.VoucherPurchaseURL), BaseURL: AdtySiteBaseURL(site),
+		VoucherPurchaseURL: strings.TrimSpace(brand.VoucherPurchaseURL),
+		DocsURL:            strings.TrimSpace(brand.DocsURL),
+		BaseURL:            AdtySiteBaseURL(site),
 	}
 }
 

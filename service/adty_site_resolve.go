@@ -606,6 +606,9 @@ func AdtyOverrideStatus(c *gin.Context, data map[string]any) {
 	for _, key := range []string{"footer_html", "wechat_qrcode", "docs_link", "passkey_rp_id", "telegram_bot_name", "passkey_display_name"} {
 		data[key] = ""
 	}
+	if brand.DocsURL != "" {
+		data["docs_link"] = brand.DocsURL
+	}
 	for _, key := range []string{"chats", "api_info", "faq", "passkey_rp_ids"} {
 		data[key] = []any{}
 	}

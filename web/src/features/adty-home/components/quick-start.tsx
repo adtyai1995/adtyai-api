@@ -107,8 +107,20 @@ function EndpointTable(props: { rows: EndpointRow[] }) {
  * and a terminal window on the right holding the four base URLs with their
  * auth headers, plus the client snippets the console uses.
  */
-export function QuickStart(props: { signedIn: boolean; baseUrl: string }) {
+export function QuickStart(props: {
+  signedIn: boolean
+  baseUrl: string
+  docsHref?: string
+  docsExternal?: boolean
+}) {
   const { t } = useTranslation()
+  const docsIsCustomOrStatic =
+    Boolean(props.docsExternal) || props.docsHref === '/docs/'
+  const docsQuickstartHref = docsIsCustomOrStatic
+    ? props.docsHref || '/docs/'
+    : '/docs/quickstart'
+  const docsTarget = props.docsExternal ? '_blank' : undefined
+  const docsRel = props.docsExternal ? 'noopener noreferrer' : undefined
   const [tab, setTab] = useState<string>(ENDPOINTS_TAB)
   const snippetLabels = {
     provider: t('Provider type'),
@@ -197,7 +209,9 @@ export function QuickStart(props: { signedIn: boolean; baseUrl: string }) {
                   {props.signedIn ? t('Create an API key') : t('Get a key')}
                 </a>
                 <a
-                  href='/docs/quickstart'
+                  href={docsQuickstartHref}
+                  target={docsTarget}
+                  rel={docsRel}
                   className={cn(
                     buttonVariants({ variant: 'outline', size: 'lg' }),
                     'h-12 rounded-full border-white/25 bg-transparent px-7 text-[15px] font-semibold text-white hover:bg-white/10 hover:text-white'
@@ -287,27 +301,33 @@ export function QuickStart(props: { signedIn: boolean; baseUrl: string }) {
             <li>
               <a
                 className='hover:text-primary transition-colors'
-                href='/docs/quickstart'
+                href={docsQuickstartHref}
+                target={docsTarget}
+                rel={docsRel}
               >
                 {t('Quick start guide')}
               </a>
             </li>
-            <li>
-              <a
-                className='hover:text-primary transition-colors'
-                href='/docs/claude-code'
-              >
-                {t('Claude Code setup')}
-              </a>
-            </li>
-            <li>
-              <a
-                className='hover:text-primary transition-colors'
-                href='/docs/codex-cli'
-              >
-                {t('Codex CLI setup')}
-              </a>
-            </li>
+            {!docsIsCustomOrStatic && (
+              <>
+                <li>
+                  <a
+                    className='hover:text-primary transition-colors'
+                    href='/docs/claude-code'
+                  >
+                    {t('Claude Code setup')}
+                  </a>
+                </li>
+                <li>
+                  <a
+                    className='hover:text-primary transition-colors'
+                    href='/docs/codex-cli'
+                  >
+                    {t('Codex CLI setup')}
+                  </a>
+                </li>
+              </>
+            )}
           </ul>
         </nav>
       </div>

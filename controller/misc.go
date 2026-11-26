@@ -96,24 +96,26 @@ func GetStatus(c *gin.Context) {
 	logSetting := operation_setting.GetLogSetting()
 	serverAddress := service.AdtySiteAPIBaseURL(nil)
 	referralEnabled := service.IsAdtyReferralEnabledForSite(service.AdtyRequestSiteID(c))
+	docsStaticMounted := service.AdtyStaticDocsMounted()
 	// 锁只包住读 OptionMap / 全局变量的这段，读完立刻放（下面都是拼响应，不碰配置）。
 	// 禁止在持锁期间调用任何内部加锁 getter（避免 Go RWMutex 递归 RLock 死锁）。
 	common.OptionMapRWMutex.RLock()
 
 	data := gin.H{
-		"version":            common.Version,
-		"start_time":         common.StartTime,
-		"email_verification": common.EmailVerificationEnabled,
-		"telegram_bot_name":  common.TelegramBotName,
-		"theme":              "default",
-		"system_name":        common.SystemName,
-		"logo":               common.Logo,
-		"footer_html":        common.Footer,
-		"server_address":     serverAddress,
-		"turnstile_check":    common.TurnstileCheckEnabled,
-		"turnstile_site_key": turnstileSiteKey,
-		"docs_link":          generalSetting.DocsLink,
-		"quota_per_unit":     common.QuotaPerUnit,
+		"version":             common.Version,
+		"start_time":          common.StartTime,
+		"email_verification":  common.EmailVerificationEnabled,
+		"telegram_bot_name":   common.TelegramBotName,
+		"theme":               "default",
+		"system_name":         common.SystemName,
+		"logo":                common.Logo,
+		"footer_html":         common.Footer,
+		"server_address":      serverAddress,
+		"turnstile_check":     common.TurnstileCheckEnabled,
+		"turnstile_site_key":  turnstileSiteKey,
+		"docs_link":           generalSetting.DocsLink,
+		"docs_static_mounted": docsStaticMounted,
+		"quota_per_unit":      common.QuotaPerUnit,
 		// 兼容旧前端：保留 display_in_currency，同时提供新的 quota_display_type
 		"display_in_currency":           isCurrencyDisplay,
 		"quota_display_type":            quotaDisplayType,

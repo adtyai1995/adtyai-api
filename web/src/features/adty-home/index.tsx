@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useApiBaseUrl } from '@/features/adty-site/api'
+import { useDocsLink } from '@/hooks/use-docs-link'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { AffiliateBanner } from './components/affiliate-banner'
@@ -39,13 +40,19 @@ export function LandingSections(props: {
   signedIn: boolean
   baseUrl: string
   data: LandingData
+  docsHref?: string
+  docsExternal?: boolean
 }) {
   // Before the site address loads (or when it cannot), show the same
   // placeholder the build-time render uses instead of a bare "/v1".
   const baseUrl = props.baseUrl.trim() || '<BASE_URL>'
   return (
     <>
-      <Hero signedIn={props.signedIn} />
+      <Hero
+        signedIn={props.signedIn}
+        docsHref={props.docsHref}
+        docsExternal={props.docsExternal}
+      />
       <ModelWall />
       <FeatureCards baseUrl={baseUrl} />
       <BillingSection />
@@ -55,7 +62,12 @@ export function LandingSections(props: {
         open={props.data.affiliate.open}
         rate={props.data.affiliate.rate}
       />
-      <QuickStart signedIn={props.signedIn} baseUrl={baseUrl} />
+      <QuickStart
+        signedIn={props.signedIn}
+        baseUrl={baseUrl}
+        docsHref={props.docsHref}
+        docsExternal={props.docsExternal}
+      />
     </>
   )
 }
@@ -67,6 +79,15 @@ export function LandingSections(props: {
 export function AdtyLanding() {
   const user = useAuthStore((state) => state.auth.user)
   const baseUrl = useApiBaseUrl()
+  const docsLink = useDocsLink()
   const data = useLandingData()
-  return <LandingSections signedIn={!!user} baseUrl={baseUrl} data={data} />
+  return (
+    <LandingSections
+      signedIn={!!user}
+      baseUrl={baseUrl}
+      data={data}
+      docsHref={docsLink.href}
+      docsExternal={docsLink.external}
+    />
+  )
 }

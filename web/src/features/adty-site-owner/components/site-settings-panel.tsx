@@ -66,6 +66,7 @@ const BRAND_LIMITS: Record<
   tawk_widget_id: 64,
   wallet_notice: 2000,
   voucher_purchase_url: 500,
+  docs_url: 500,
 }
 
 type DomainVerifyRecord = {
@@ -267,11 +268,11 @@ function BrandCard(props: { site: OwnerSite }) {
     extraHint?: string
   ) => {
     const id = `brand-${key}`
+    const isUrlField = key === 'voucher_purchase_url' || key === 'docs_url'
     let placeholder: string | undefined
-    if (key === 'voucher_purchase_url') placeholder = 'https://...'
+    if (isUrlField) placeholder = 'https://...'
     const isUrlInvalid =
-      key === 'voucher_purchase_url' &&
-      !isValidOptionalHttpUrl(brand.voucher_purchase_url ?? '')
+      isUrlField && !isValidOptionalHttpUrl(brand[key] ?? '')
     const inputProps = {
       id,
       maxLength: BRAND_LIMITS[key],
@@ -351,12 +352,14 @@ function BrandCard(props: { site: OwnerSite }) {
     tawk_widget_id: t('Tawk.to widget ID'),
     wallet_notice: t('Wallet notice'),
     voucher_purchase_url: t('Voucher purchase link'),
+    docs_url: t('Documentation link'),
     logo_url: t('Logo'),
     favicon_url: t('Favicon'),
   }
   const voucherUrlInvalid = !isValidOptionalHttpUrl(
     brand.voucher_purchase_url ?? ''
   )
+  const docsUrlInvalid = !isValidOptionalHttpUrl(brand.docs_url ?? '')
   return (
     <Card>
       <CardHeader>
@@ -405,6 +408,14 @@ function BrandCard(props: { site: OwnerSite }) {
             false,
             t('External http(s) link where customers can buy redemption codes')
           )}
+          {field(
+            'docs_url',
+            t('Documentation link'),
+            false,
+            t(
+              'Optional external http(s) documentation link; leave empty to use the built-in same-domain /docs/ documentation'
+            )
+          )}
           {field('support_contact', t('Support contact'))}
           {field('tawk_property_id', t('Tawk.to property ID'))}
           {field('tawk_widget_id', t('Tawk.to widget ID'))}
@@ -428,7 +439,8 @@ function BrandCard(props: { site: OwnerSite }) {
               save.isPending ||
               !changed.length ||
               conflicts.length > 0 ||
-              voucherUrlInvalid
+              voucherUrlInvalid ||
+              docsUrlInvalid
             }
             onClick={() => save.mutate({ ...edits.current })}
           >

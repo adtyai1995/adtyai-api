@@ -298,7 +298,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 改全站售价倍率、改充值赠送、签发/冻结/作废兑换码、USDT 提现、修改邮件配置、删自定义域名（及清理历史发件域名），都要重新验证身份（二次验证支持 2FA/TOTP、邮箱验证码或密码；前端 Passkey 已退役，产品不对外提供 Passkey 登录与验证；验证一次只能用一次，绑定具体操作和对象）。
 
-品牌图片：Logo 和独立 Favicon 均接受 PNG、JPEG、WebP，不超过 200 KB，存在 `/data/uploads/site-assets`；新上传拒绝 SVG。站长可保存站名、最多 80 字符的网站标题、公告与客服联系方式（按纯文本显示）；分站仅替换站名、标题、Logo 与 Favicon，不覆盖平台配色或主题色（历史 `theme_color` / `tagline` 字段已退役并由服务端剥离）。标题留空沿用站名；Favicon 留空回退 Logo，再回退平台图标。保存按当前站长归属更新，公开配置按 Host 隔离。
+品牌图片：Logo 和独立 Favicon 均接受 PNG、JPEG、WebP，不超过 200 KB，存在 `/data/uploads/site-assets`；新上传拒绝 SVG。站长可保存站名、最多 80 字符的网站标题、公告、客服联系方式、钱包公告、兑换码购买链接与可选外部文档链接 `docs_url`（按纯文本显示；外链仅接受 `http://` / `https://`）；分站仅替换站名、标题、Logo 与 Favicon，不覆盖平台配色或主题色（历史 `theme_color` / `tagline` 字段已退役并由服务端剥离）。标题留空沿用站名；Favicon 留空回退 Logo，再回退平台图标；`docs_url` 留空时分站使用本站同域 `/docs/` 白标文档（支持源站 `ADTY_DOCS_DIR` 挂载静态 VitePress 产物并兼容海外源站与大陆边缘缓存，未挂载时回退内置白标文档页），填写 `docs_url` 后分站 `/api/status` 的 `docs_link`、界面文档入口及 `/docs` 访问均覆盖跳转至站长外链（且不泄露主站文档地址）。保存按当前站长归属更新，公开配置按 Host 隔离。
 
 ### 站长能看到客户的哪些信息
 

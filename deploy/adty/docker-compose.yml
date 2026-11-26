@@ -40,6 +40,8 @@ services:
       ADTY_HOME_SHARED_CACHE: ${ADTY_HOME_SHARED_CACHE:-false}
       ADTY_FLUSH_TOKEN: ${ADTY_FLUSH_TOKEN:?set ADTY_FLUSH_TOKEN in .env}
       ADTY_EDGE_TOKEN: ${ADTY_EDGE_TOKEN:-}
+      # 同域白标静态文档目录（可选，放入 VitePress base="/docs/" 构建产物后全站 /docs/ 自动生效；设 off 回退内置文档）
+      ADTY_DOCS_DIR: ${ADTY_DOCS_DIR:-/data/docs}
       # Telegram 出站总开关。不设时 `AdtyTelegramSender` 是 nil，每条投递
       # Fail→×5→Dead、队列自己清干净、零日志——「没有通知要发」和「一条都发不出去」
       # 外观完全一样。默认开：库里配了 bot 就该发；要紧急停用设 0 即可，不用改本文件。

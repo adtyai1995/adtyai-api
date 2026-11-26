@@ -66,6 +66,7 @@ type EditableBrandKey =
   | 'tawk_widget_id'
   | 'wallet_notice'
   | 'voucher_purchase_url'
+  | 'docs_url'
 
 const EDITABLE_BRAND_KEYS: ReadonlyArray<EditableBrandKey> = [
   'name',
@@ -76,6 +77,7 @@ const EDITABLE_BRAND_KEYS: ReadonlyArray<EditableBrandKey> = [
   'tawk_widget_id',
   'wallet_notice',
   'voucher_purchase_url',
+  'docs_url',
 ]
 
 const BRAND_LIMITS: Record<EditableBrandKey, number> = {
@@ -87,6 +89,7 @@ const BRAND_LIMITS: Record<EditableBrandKey, number> = {
   tawk_widget_id: 64,
   wallet_notice: 2000,
   voucher_purchase_url: 500,
+  docs_url: 500,
 }
 
 function readAllowedGroups(raw?: string): string {
@@ -116,6 +119,7 @@ function brandSnapshot(
     tawk_widget_id: brand.tawk_widget_id ?? '',
     wallet_notice: brand.wallet_notice ?? '',
     voucher_purchase_url: brand.voucher_purchase_url ?? '',
+    docs_url: brand.docs_url ?? '',
   }
 }
 
@@ -219,6 +223,7 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
     visibilityChanged
 
   const voucherUrlInvalid = !isValidOptionalHttpUrl(brand.voucher_purchase_url)
+  const docsUrlInvalid = !isValidOptionalHttpUrl(brand.docs_url)
 
   const dirty = hasChanges || reason !== ''
   useDraftNavigation(dirty)
@@ -362,7 +367,7 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
       className='flex flex-col gap-6'
       onSubmit={(event) => {
         event.preventDefault()
-        if (!editable || !hasChanges || voucherUrlInvalid) {
+        if (!editable || !hasChanges || voucherUrlInvalid || docsUrlInvalid) {
           return
         }
         save.mutate()
@@ -557,6 +562,38 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
             )}
           </div>
 
+          <div className='max-w-xl space-y-1.5'>
+            <Label htmlFor={`${fieldId}-docs-url`}>
+              {t('Documentation link')}
+            </Label>
+            <Input
+              id={`${fieldId}-docs-url`}
+              type='url'
+              maxLength={BRAND_LIMITS.docs_url}
+              disabled={!editable || busy}
+              placeholder='https://...'
+              aria-invalid={docsUrlInvalid}
+              value={brand.docs_url}
+              onChange={(event) =>
+                setBrand((prev) => ({
+                  ...prev,
+                  docs_url: event.target.value,
+                }))
+              }
+            />
+            {docsUrlInvalid ? (
+              <p className='text-destructive text-xs'>
+                {t('Enter a valid http:// or https:// URL')}
+              </p>
+            ) : (
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'Optional external http(s) documentation link; leave empty to use the built-in same-domain /docs/ documentation'
+                )}
+              </p>
+            )}
+          </div>
+
           <div className='grid max-w-3xl gap-4 sm:grid-cols-2'>
             <div className='space-y-1.5'>
               <Label htmlFor={`${fieldId}-tawk-property`}>
@@ -712,7 +749,11 @@ export function SiteBasicBrandForm(props: { site: AdminSite }) {
                 type='submit'
                 variant='brand'
                 disabled={
-                  busy || !hasChanges || voucherUrlInvalid || !visibilityValid
+                  busy ||
+                  !hasChanges ||
+                  voucherUrlInvalid ||
+                  docsUrlInvalid ||
+                  !visibilityValid
                 }
               >
                 {t('Save site settings')}

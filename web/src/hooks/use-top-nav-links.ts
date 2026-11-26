@@ -20,6 +20,7 @@ import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { TopNavLink } from '@/components/layout/types'
+import { resolveDocsLink } from '@/hooks/use-docs-link'
 import { useStatus } from '@/hooks/use-status'
 import { parseHeaderNavModulesFromStatus } from '@/lib/nav-modules'
 import { ROLE } from '@/lib/roles'
@@ -52,8 +53,10 @@ export function useTopNavLinks(): TopNavLink[] {
     )
   }, [status])
 
-  // Documentation link (may be external)
-  const docsLink: string | undefined = status?.docs_link as string | undefined
+  // Documentation link (external URL, mounted static /docs/, or built-in /docs)
+  const docsTarget = resolveDocsLink(
+    status as Record<string, unknown> | null | undefined
+  )
 
   const user = auth?.user
   const isAuthed = !!user
@@ -116,18 +119,15 @@ export function useTopNavLinks(): TopNavLink[] {
     })
   }
 
-  // Docs (supports external links)
+  // Docs (supports external links and mounted static /docs/)
   if (modules?.docs !== false) {
-    if (docsLink) {
-      links.push({
-        id: 'docs',
-        title: t('Docs'),
-        href: docsLink,
-        external: true,
-      })
-    } else {
-      links.push({ id: 'docs', title: t('Docs'), href: '/docs' })
-    }
+    links.push({
+      id: 'docs',
+      title: t('Docs'),
+      href: docsTarget.href,
+      ...(docsTarget.external ? { external: true } : {}),
+      ...(docsTarget.reloadDocument ? { reloadDocument: true } : {}),
+    })
   }
 
   // About

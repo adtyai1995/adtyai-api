@@ -54,6 +54,8 @@ func setWebRouter(router *gin.Engine, assets WebAssets, pluginDispatcher, extern
 		},
 		middleware.GlobalWebRateLimit(frontendFS),
 		middleware.Cache(),
+		// Serve externally mounted white-label /docs/ static site and subsite docs_url redirects.
+		AdtyStaticDocs(),
 		// Serve SEO metadata and prerendered content for the two official homes.
 		AdtySEOHomePages(assets.IndexPage, assets.BuildFS),
 		func(c *gin.Context) {

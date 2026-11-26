@@ -52,14 +52,14 @@ export function PublicNavigation({
   return (
     <nav className={cn('hidden items-center gap-1 md:flex', className)}>
       {links.map((link) => {
-        // Handle external links
-        if (link.external) {
+        // Handle external links and full-page document loads (e.g. mounted /docs/)
+        if (link.external || link.reloadDocument) {
           return (
             <a
               key={link.id}
               href={link.href}
-              target='_blank'
-              rel='noopener noreferrer'
+              target={link.external ? '_blank' : undefined}
+              rel={link.external ? 'noopener noreferrer' : undefined}
               className={cn(
                 'text-muted-foreground hover:text-foreground focus-visible:text-foreground inline-flex h-9 w-max items-center justify-center rounded-lg px-2.5 text-sm font-medium transition-colors focus-visible:outline-none',
                 link.disabled && 'pointer-events-none opacity-50'

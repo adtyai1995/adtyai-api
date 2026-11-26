@@ -68,7 +68,11 @@ const ENDPOINTS = [...new Set(ARCS.flat())]
  * headline sits bottom-left, and the protocol pills with both actions sit
  * bottom-right. Built from props only (prerendered at build time).
  */
-export function Hero(props: { signedIn: boolean }) {
+export function Hero(props: {
+  signedIn: boolean
+  docsHref?: string
+  docsExternal?: boolean
+}) {
   const { t } = useTranslation()
   const firstLine = t('One API,')
   const apiAt = firstLine.indexOf('API')
@@ -189,7 +193,9 @@ export function Hero(props: { signedIn: boolean }) {
               {props.signedIn ? t('Go to console') : t('Get a key')}
             </a>
             <a
-              href='/docs'
+              href={props.docsHref || '/docs'}
+              target={props.docsExternal ? '_blank' : undefined}
+              rel={props.docsExternal ? 'noopener noreferrer' : undefined}
               className={cn(
                 buttonVariants({ variant: 'outline', size: 'lg' }),
                 HOME_SECONDARY_BUTTON

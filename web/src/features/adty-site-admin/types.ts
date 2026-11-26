@@ -60,6 +60,7 @@ export type AdminSiteBrand = {
   tawk_widget_id?: string
   wallet_notice?: string
   voucher_purchase_url?: string
+  docs_url?: string
 }
 
 /** A row of GET /api/adty/admin/sites (controller/adty_site_admin.go). Decimals are strings. */

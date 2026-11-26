@@ -837,6 +837,7 @@ func AdjustAdtySiteWithAuditForActor(siteId, adminId, actorRole int, denyAdminTa
 				"support_contact":  &brand.SupportContact,
 				"tawk_property_id": &brand.TawkPropertyID, "tawk_widget_id": &brand.TawkWidgetID,
 				"wallet_notice": &brand.WalletNotice, "voucher_purchase_url": &brand.VoucherPurchaseURL,
+				"docs_url": &brand.DocsURL,
 			}
 			for key, val := range adjust.Brand {
 				if key == "tagline" || key == "theme_color" {

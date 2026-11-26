@@ -94,6 +94,8 @@ export type TopNavLink = {
   disabled?: boolean
   requiresAuth?: boolean
   external?: boolean
+  /** Force a full document load instead of SPA routing (e.g. mounted /docs/). */
+  reloadDocument?: boolean
 }
 
 /**

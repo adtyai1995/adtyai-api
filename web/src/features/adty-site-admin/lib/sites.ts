@@ -50,6 +50,7 @@ const BRAND_KEYS: ReadonlyArray<keyof AdminSiteBrand> = [
   'tawk_widget_id',
   'wallet_notice',
   'voucher_purchase_url',
+  'docs_url',
 ]
 
 /** Safely parses a site's brand JSON string into an AdminSiteBrand object. */

@@ -28,13 +28,14 @@ import { buildResellerUpdate, toResellerDrafts } from '../lib/settings'
 import type { ResellerSettings } from '../types'
 
 describe('adty-site-admin/lib/sites', () => {
-  it('parses valid brand JSON including wallet_notice and voucher_purchase_url', () => {
+  it('parses valid brand JSON including wallet_notice, voucher_purchase_url and docs_url', () => {
     const raw = JSON.stringify({
       name: 'Acme AI',
       title: 'Acme Portal',
       notice: '  Maintenance tonight  ',
       wallet_notice: 'Top-up bonus active',
       voucher_purchase_url: 'https://shop.example.com/codes',
+      docs_url: 'https://docs.acme.example',
       unknown_field: 123,
     })
     expect(parseSiteBrand(raw)).toEqual({
@@ -43,6 +44,7 @@ describe('adty-site-admin/lib/sites', () => {
       notice: '  Maintenance tonight  ',
       wallet_notice: 'Top-up bonus active',
       voucher_purchase_url: 'https://shop.example.com/codes',
+      docs_url: 'https://docs.acme.example',
     })
     expect(siteNotice(raw)).toBe('Maintenance tonight')
   })

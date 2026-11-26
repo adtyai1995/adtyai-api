@@ -41,6 +41,7 @@ export type SiteBrand = {
   tawk_widget_id?: string
   wallet_notice?: string
   voucher_purchase_url?: string
+  docs_url?: string
 }
 
 /** One site price row (model.AdtySitePrice). Decimals are strings. */

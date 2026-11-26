@@ -26,6 +26,7 @@ import {
   CardStaggerItem,
 } from '@/components/page-transition'
 import { Button } from '@/components/ui/button'
+import { useDocsLink } from '@/hooks/use-docs-link'
 
 import { useDashboardContentVisibility } from '../../hooks/use-status-data'
 import { AnnouncementsPanel } from './announcements-panel'
@@ -36,11 +37,23 @@ import { UptimePanel } from './uptime-panel'
 
 export function OverviewDashboard() {
   const { t } = useTranslation()
+  const docsLink = useDocsLink()
   const {
     announcements: showAnnouncementsPanel,
     faq: showFAQPanel,
     uptimeKuma: showUptimePanel,
   } = useDashboardContentVisibility()
+
+  const docsRender =
+    docsLink.external || docsLink.reloadDocument ? (
+      <a
+        href={docsLink.href}
+        target={docsLink.external ? '_blank' : undefined}
+        rel={docsLink.external ? 'noopener noreferrer' : undefined}
+      />
+    ) : (
+      <Link to='/docs' />
+    )
 
   return (
     <SectionPageLayout>
@@ -49,7 +62,7 @@ export function OverviewDashboard() {
         {t('Monitor balance, usage, and request volume')}
       </SectionPageLayout.Description>
       <SectionPageLayout.Actions>
-        <Button variant='outline' size='sm' render={<Link to='/docs' />}>
+        <Button variant='outline' size='sm' render={docsRender}>
           {t('Docs')}
         </Button>
         <Button variant='brand' size='sm' render={<Link to='/keys' />}>
