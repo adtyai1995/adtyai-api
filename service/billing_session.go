@@ -578,7 +578,12 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 				types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
 				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 		}
-		relayInfo.UserQuota = userQuota
+		relayInfo.BillingPayerKind = payerKind
+		if payerKind == model.BillingPayerTeam {
+			relayInfo.UserQuota = remaining
+		} else {
+			relayInfo.UserQuota = userQuota
+		}
 		return newDurableBillingSession(c, relayInfo, preConsumedQuota)
 	}
 

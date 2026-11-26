@@ -184,7 +184,9 @@ func CanCreditPaymentOrphanEvent(orphan *PaymentOrphanEvent) bool {
 		return false
 	}
 	errorText := strings.ToLower(orphan.Error)
-	if strings.Contains(errorText, ErrPaymentMethodMismatch.Error()) || strings.Contains(errorText, ErrPaymentAmountMismatch.Error()) {
+	if strings.Contains(errorText, ErrPaymentMethodMismatch.Error()) ||
+		strings.Contains(errorText, ErrPaymentAmountMismatch.Error()) ||
+		strings.Contains(errorText, ErrTopUpStatusInvalid.Error()) {
 		return false
 	}
 	var topUps []TopUp
@@ -196,10 +198,18 @@ func CanCreditPaymentOrphanEvent(orphan *PaymentOrphanEvent) bool {
 		return false
 	}
 	switch topUp.Status {
-	case common.TopUpStatusPending, common.TopUpStatusFailed, common.TopUpStatusExpired, TopUpStatusCanceled, TopUpStatusReplaced:
-		return true
+	case common.TopUpStatusPending, common.TopUpStatusFailed, TopUpStatusCanceled, TopUpStatusReplaced:
+	default:
+		return false
 	}
-	return false
+	var ext AdtyTopupOrder
+	if err := DB.Select("expire_at").Where("trade_no = ?", orphan.ReferenceID).Limit(1).Find(&ext).Error; err != nil {
+		return false
+	}
+	if ext.ExpireAt > 0 && common.GetTimestamp() >= ext.ExpireAt {
+		return false
+	}
+	return true
 }
 
 // LockPaymentOrphanTx 在事务里锁住一条事件。

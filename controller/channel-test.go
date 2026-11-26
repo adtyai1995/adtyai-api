@@ -32,6 +32,7 @@ import (
 	hosttypes "github.com/QuantumNous/new-api/types"
 
 	"github.com/samber/lo"
+	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
 
 	"github.com/gin-gonic/gin"
@@ -558,7 +559,8 @@ func settleTestQuota(info *relaycommon.RelayInfo, priceData hosttypes.PriceData,
 		return quota, nil
 	}
 
-	return common.QuotaFromFloat(priceData.ModelPrice * common.QuotaPerUnit), nil
+	quota, _ = common.QuotaFromDecimalChecked(decimal.NewFromFloat(priceData.ModelPrice).Mul(common.QuotaPerUnitDecimal()))
+	return quota, nil
 }
 
 func buildTestLogOther(c *gin.Context, info *relaycommon.RelayInfo, priceData hosttypes.PriceData, usage *dto.Usage, tieredResult *billingexpr.TieredResult) *model.LogOther {

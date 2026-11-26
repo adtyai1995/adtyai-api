@@ -127,7 +127,9 @@ var auditSecretKeyNames = map[string]struct{}{
 	"reset_token":              {},
 	"email_code":               {},
 	"cf_api_token":             {},
+	"cloudflare_api_token":     {},
 	"alidns_access_key_secret": {},
+	"aliyun_access_key_id":     {},
 	"access_key_secret":        {},
 	"epay_private_key":         {},
 	"signing_secret":           {},
@@ -135,6 +137,13 @@ var auditSecretKeyNames = map[string]struct{}{
 	"key_secret":               {},
 	"voucher_code":             {},
 	"redemption_code":          {},
+	"bark_url":                 {},
+	"bepusdt_api_token":        {},
+	"turnstile_secret_key":     {},
+	"edge_token":               {},
+	"key_pem":                  {},
+	"acme_key":                 {},
+	"acme_account_key":         {},
 	"验证码":                      {},
 	"密码":                       {},
 	"口令":                       {},
@@ -736,7 +745,7 @@ func isOfficialAuditSecretKey(key string) bool {
 			return false
 		}
 	}
-	for _, suffix := range []string{"_password", "_passwd", "_secret", "_private_key", "_api_key", "_apikey"} {
+	for _, suffix := range []string{"_password", "_passwd", "_secret", "_private_key", "_api_key", "_apikey", "_token"} {
 		if strings.HasSuffix(normalized, suffix) {
 			return true
 		}

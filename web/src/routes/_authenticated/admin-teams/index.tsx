@@ -22,7 +22,7 @@ import { RootTeamAdmin } from '@/features/adty-team-admin'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
-// Team management is Root-only on the server (DEC-012: only Root creates teams).
+// Cross-site global team administration is Root-only; site owners manage their own subsite teams under /site-owner/teams.
 export const Route = createFileRoute('/_authenticated/admin-teams/')({
   beforeLoad: () => {
     if (useAuthStore.getState().auth.user?.role !== ROLE.SUPER_ADMIN) {

@@ -618,7 +618,10 @@ function DomainsCard(props: { site: OwnerSite }) {
                             size='sm'
                             variant='outline'
                             onClick={() => setDeleting(domain)}
-                            disabled={closing || domain.managed_by === 'platform'}
+                            disabled={
+                              remove.isPending ||
+                              domain.managed_by === 'platform'
+                            }
                           >
                             {t('Delete')}
                           </Button>

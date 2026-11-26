@@ -397,7 +397,7 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 	}
 	now := common.GetTimestamp()
 	if facts.Source != AdtyPaymentSourceManual {
-		if topUp.Status == common.TopUpStatusExpired || (topUp.Status == common.TopUpStatusPending && ext.ExpireAt > 0 && now > ext.ExpireAt) {
+		if topUp.Status == common.TopUpStatusExpired || (ext.ExpireAt > 0 && now >= ext.ExpireAt) {
 			return false, 0, nil, nil, ErrTopUpStatusInvalid
 		}
 		var reversals int64

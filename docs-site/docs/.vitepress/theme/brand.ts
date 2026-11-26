@@ -22,12 +22,15 @@ import { ref, type Ref } from 'vue'
 /**
  * VitePress white-label & live site-status runtime helper for ADTY AI.
  *
- * When mounted under "/docs/" on the main site or any subsite, fetches same-origin
- * GET /api/status (zero CORS, fresh per page session) and drives:
- * 1. Brand replacement (site name, logo, favicon, console URL, API Base URL).
- * 2. Live referral summary (<ReferralSummary />) and automatic nav hiding when disabled.
- * 3. Live payment methods (<PaymentMethodsList />).
- * 4. Main-site-only gating (<MainSiteOnly />) so subsites hide reseller partner docs.
+ * Behavior:
+ * - On the standalone main docs domain (e.g. docs.adtyai.com at "/"), keeps the
+ *   configured default brand (ADTY AI / https://api.adtyai.com / https://www.adtyai.com).
+ * - When mounted under "/docs/" on the main site or any subsite, fetches same-origin
+ *   GET /api/status (zero CORS, fresh per page session) and drives:
+ *   1. Brand replacement (site name, logo, favicon, console URL, API Base URL).
+ *   2. Live referral summary (<ReferralSummary />) and automatic nav hiding when disabled.
+ *   3. Live payment methods (<PaymentMethodsList />).
+ *   4. Main-site-only gating (<MainSiteOnly />) so subsites hide reseller partner docs.
  */
 export interface PublicReferralInfo {
   enabled: boolean
@@ -75,6 +78,17 @@ export const DEFAULT_BRAND: SiteBrand = {
   referral: { ...DEFAULT_REFERRAL },
 }
 
+const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F]/
+
+interface BrandReplacementState {
+  template: string
+  rendered: string
+}
+
+const textNodeState = new WeakMap<Text, BrandReplacementState>()
+const anchorHrefState = new WeakMap<HTMLAnchorElement, BrandReplacementState>()
+let lastTitleState: BrandReplacementState | null = null
+
 const brandState = ref<SiteBrand>({
   ...DEFAULT_BRAND,
   referral: { ...DEFAULT_REFERRAL },
@@ -88,6 +102,41 @@ export function useSiteBrand(): Ref<SiteBrand> {
 
 function normalizeOrigin(raw: string): string {
   return raw.trim().replace(/\/+$/, '')
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+export function isSafeHttpOrigin(raw: string): boolean {
+  if (typeof raw !== 'string' || CONTROL_CHAR_RE.test(raw)) return false
+  const value = raw.trim()
+  if (!value || !/^https?:\/\//i.test(value)) return false
+  try {
+    const parsed = new URL(value)
+    return (
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+      parsed.hostname.length > 0
+    )
+  } catch {
+    return false
+  }
+}
+
+export function isSafeAssetUrl(raw: string): boolean {
+  if (typeof raw !== 'string' || CONTROL_CHAR_RE.test(raw)) return false
+  const value = raw.trim()
+  if (!value) return false
+  if (value.startsWith('/')) {
+    if (value.startsWith('//') || value.startsWith('/\\')) return false
+    try {
+      const parsed = new URL(value, 'https://example.invalid')
+      return parsed.origin === 'https://example.invalid'
+    } catch {
+      return false
+    }
+  }
+  return isSafeHttpOrigin(value)
 }
 
 function toStringArray(raw: unknown): string[] {
@@ -171,11 +220,18 @@ export async function resolveSiteBrand(): Promise<SiteBrand> {
       }
 
       const name = String(data.system_name || '').trim() || DEFAULT_BRAND.name
-      const apiBase =
-        normalizeOrigin(String(data.server_address || '')) || DEFAULT_BRAND.apiBase
-      const siteUrl = normalizeOrigin(window.location.origin) || DEFAULT_BRAND.siteUrl
-      const logo = String(data.logo || '').trim()
-      const favicon = String(data.favicon || '').trim()
+      const rawApiBase = String(data.server_address || '')
+      const apiBase = isSafeHttpOrigin(rawApiBase)
+        ? normalizeOrigin(rawApiBase)
+        : DEFAULT_BRAND.apiBase
+      const rawSiteUrl = String(window.location.origin || '')
+      const siteUrl = isSafeHttpOrigin(rawSiteUrl)
+        ? normalizeOrigin(rawSiteUrl)
+        : DEFAULT_BRAND.siteUrl
+      const rawLogo = String(data.logo || '')
+      const logo = isSafeAssetUrl(rawLogo) ? rawLogo.trim() : ''
+      const rawFavicon = String(data.favicon || '')
+      const favicon = isSafeAssetUrl(rawFavicon) ? rawFavicon.trim() : ''
       const isSubsite = Boolean(data.adty_site && typeof data.adty_site === 'object')
       const paymentMethods = toStringArray(data.payment_methods)
       const referral = parseReferralInfo(data)
@@ -208,18 +264,59 @@ export async function resolveSiteBrand(): Promise<SiteBrand> {
   return inflightPromise
 }
 
+function containsDefaultBrandToken(value: string): boolean {
+  return (
+    value.includes(DEFAULT_BRAND.apiBase) ||
+    value.includes(DEFAULT_BRAND.siteUrl) ||
+    value.includes(DEFAULT_BRAND.name)
+  )
+}
+
 function replaceBrandText(input: string, brand: SiteBrand): string {
-  let out = input
-  if (brand.apiBase && brand.apiBase !== DEFAULT_BRAND.apiBase) {
-    out = out.split(DEFAULT_BRAND.apiBase).join(brand.apiBase)
+  const replacements: Array<[string, string]> = []
+  if (
+    brand.apiBase &&
+    brand.apiBase !== DEFAULT_BRAND.apiBase &&
+    isSafeHttpOrigin(brand.apiBase)
+  ) {
+    replacements.push([DEFAULT_BRAND.apiBase, normalizeOrigin(brand.apiBase)])
   }
-  if (brand.siteUrl && brand.siteUrl !== DEFAULT_BRAND.siteUrl) {
-    out = out.split(DEFAULT_BRAND.siteUrl).join(brand.siteUrl)
+  if (
+    brand.siteUrl &&
+    brand.siteUrl !== DEFAULT_BRAND.siteUrl &&
+    isSafeHttpOrigin(brand.siteUrl)
+  ) {
+    replacements.push([DEFAULT_BRAND.siteUrl, normalizeOrigin(brand.siteUrl)])
   }
   if (brand.name && brand.name !== DEFAULT_BRAND.name) {
-    out = out.split(DEFAULT_BRAND.name).join(brand.name)
+    replacements.push([DEFAULT_BRAND.name, brand.name])
   }
-  return out
+  if (replacements.length === 0) return input
+
+  const pattern = new RegExp(
+    replacements.map(([from]) => escapeRegExp(from)).join('|'),
+    'g'
+  )
+  const lookup = new Map(replacements)
+  return input.replace(pattern, (match) => lookup.get(match) ?? match)
+}
+
+function replaceOriginPrefix(
+  href: string,
+  fromOrigin: string,
+  toOrigin: string
+): string | null {
+  if (href === fromOrigin) {
+    return toOrigin
+  }
+  if (
+    href.startsWith(`${fromOrigin}/`) ||
+    href.startsWith(`${fromOrigin}?`) ||
+    href.startsWith(`${fromOrigin}#`)
+  ) {
+    return toOrigin + href.slice(fromOrigin.length)
+  }
+  return null
 }
 
 function toggleNavItemVisibility(pathNeedle: string, hidden: boolean): void {
@@ -256,47 +353,88 @@ export function applyBrandToDOM(brand: SiteBrand): void {
   if (!brand.isWhiteLabel) return
 
   if (document.title) {
-    document.title = replaceBrandText(document.title, brand)
+    const currentTitle = document.title
+    const titleTemplate =
+      lastTitleState && currentTitle === lastTitleState.rendered
+        ? lastTitleState.template
+        : currentTitle
+    const nextTitle = replaceBrandText(titleTemplate, brand)
+    if (nextTitle !== currentTitle) {
+      document.title = nextTitle
+    }
+    lastTitleState = { template: titleTemplate, rendered: nextTitle }
   }
 
-  if (brand.favicon) {
+  if (brand.favicon && isSafeAssetUrl(brand.favicon)) {
+    const safeFavicon = brand.favicon.trim()
     let iconLink = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
     if (!iconLink) {
       iconLink = document.createElement('link')
       iconLink.rel = 'icon'
       document.head.appendChild(iconLink)
     }
-    if (iconLink.href !== brand.favicon) {
-      iconLink.href = brand.favicon
+    if (iconLink.getAttribute('href') !== safeFavicon) {
+      iconLink.href = safeFavicon
     }
   }
 
-  if (brand.logo) {
+  if (brand.logo && isSafeAssetUrl(brand.logo)) {
+    const safeLogo = brand.logo.trim()
     const titleEl = document.querySelector<HTMLElement>('.VPNavBarTitle .title')
-    if (titleEl && !titleEl.querySelector('img.adty-wl-logo')) {
-      const img = document.createElement('img')
-      img.className = 'adty-wl-logo'
-      img.src = brand.logo
-      img.alt = brand.name
-      img.style.height = '24px'
-      img.style.width = 'auto'
-      img.style.marginRight = '8px'
-      img.style.borderRadius = '4px'
-      titleEl.prepend(img)
+    if (titleEl) {
+      let img = titleEl.querySelector<HTMLImageElement>('img.adty-wl-logo')
+      if (!img) {
+        img = document.createElement('img')
+        img.className = 'adty-wl-logo'
+        img.style.height = '24px'
+        img.style.width = 'auto'
+        img.style.marginRight = '8px'
+        img.style.borderRadius = '4px'
+        titleEl.prepend(img)
+      }
+      if (img.getAttribute('src') !== safeLogo) {
+        img.src = safeLogo
+      }
+      if (img.alt !== brand.name) {
+        img.alt = brand.name
+      }
     }
   }
+
+  const safeSiteUrl = isSafeHttpOrigin(brand.siteUrl)
+    ? normalizeOrigin(brand.siteUrl)
+    : ''
+  const safeApiBase = isSafeHttpOrigin(brand.apiBase)
+    ? normalizeOrigin(brand.apiBase)
+    : ''
 
   document.querySelectorAll<HTMLAnchorElement>('a[href]').forEach((anchor) => {
-    const href = anchor.getAttribute('href') || ''
-    if (href.startsWith(DEFAULT_BRAND.siteUrl)) {
-      anchor.setAttribute('href', href.replace(DEFAULT_BRAND.siteUrl, brand.siteUrl))
-    } else if (href.startsWith(DEFAULT_BRAND.apiBase)) {
-      anchor.setAttribute('href', href.replace(DEFAULT_BRAND.apiBase, brand.apiBase))
+    if (anchor.closest('[data-adty-keep-raw="true"]')) return
+    const currentHref = anchor.getAttribute('href') || ''
+    const prev = anchorHrefState.get(anchor)
+    const template =
+      prev && currentHref === prev.rendered ? prev.template : currentHref
+
+    let nextHref: string | null = null
+    if (safeSiteUrl) {
+      nextHref = replaceOriginPrefix(template, DEFAULT_BRAND.siteUrl, safeSiteUrl)
+    }
+    if (nextHref === null && safeApiBase) {
+      nextHref = replaceOriginPrefix(template, DEFAULT_BRAND.apiBase, safeApiBase)
+    }
+
+    if (nextHref !== null && isSafeHttpOrigin(nextHref)) {
+      if (currentHref !== nextHref) {
+        anchor.setAttribute('href', nextHref)
+      }
+      anchorHrefState.set(anchor, { template, rendered: nextHref })
+    } else if (prev && currentHref !== prev.rendered) {
+      anchorHrefState.delete(anchor)
     }
   })
 
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
-  let node: Node | null = walker.nextNode()
+  let node = walker.nextNode() as Text | null
   while (node) {
     const parentEl = node.parentElement
     const parentTag = parentEl?.tagName
@@ -305,19 +443,22 @@ export function applyBrandToDOM(brand: SiteBrand): void {
       parentTag !== 'STYLE' &&
       !parentEl?.closest('[data-adty-keep-raw="true"]')
     ) {
-      const val = node.nodeValue
-      if (
-        val &&
-        (val.includes(DEFAULT_BRAND.apiBase) ||
-          val.includes(DEFAULT_BRAND.siteUrl) ||
-          val.includes(DEFAULT_BRAND.name))
-      ) {
-        const next = replaceBrandText(val, brand)
-        if (next !== val) {
-          node.nodeValue = next
+      const currentVal = node.nodeValue
+      if (currentVal) {
+        const prev = textNodeState.get(node)
+        const template =
+          prev && currentVal === prev.rendered ? prev.template : currentVal
+        if (containsDefaultBrandToken(template)) {
+          const next = replaceBrandText(template, brand)
+          if (next !== currentVal) {
+            node.nodeValue = next
+          }
+          textNodeState.set(node, { template, rendered: next })
+        } else if (prev && currentVal !== prev.rendered) {
+          textNodeState.delete(node)
         }
       }
     }
-    node = walker.nextNode()
+    node = walker.nextNode() as Text | null
   }
 }

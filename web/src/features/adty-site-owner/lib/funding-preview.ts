@@ -21,7 +21,8 @@ import type { SiteWallet } from '@/features/adty-ledger/site-wallet-labels'
 const TWO_DECIMAL_PATTERN = /^\d+(?:\.\d{1,2})?$/
 const SCALE_DIGITS = 8
 const SCALE = 100_000_000n
-const MAX_SINGLE_WALLET_USD_UNITS = 100_000n * SCALE
+export const DEFAULT_MAX_SINGLE_WALLET_USD = 100_000
+const MAX_SINGLE_WALLET_USD_UNITS = BigInt(DEFAULT_MAX_SINGLE_WALLET_USD) * SCALE
 
 export type OwnerFundingPreview = {
   valid: boolean
@@ -97,7 +98,8 @@ export function formatFundingUsd(value: bigint | number | string): string {
  */
 export function computeOwnerFundingPreview(
   wallets: SiteWallet[],
-  amountRaw: string
+  amountRaw: string,
+  maxAmount: number = DEFAULT_MAX_SINGLE_WALLET_USD
 ): OwnerFundingPreview {
   const earnings = wallets.find((item) => item.kind === 'earnings')
   const margin = wallets.find((item) => item.kind === 'margin')
@@ -111,6 +113,11 @@ export function computeOwnerFundingPreview(
     0n,
     toUnits(margin?.balance) - totalFrozenUnits(margin) - marginFloorUnits
   )
+
+  const maxUnits =
+    Number.isFinite(maxAmount) && maxAmount > 0
+      ? toUnits(maxAmount.toFixed(SCALE_DIGITS))
+      : MAX_SINGLE_WALLET_USD_UNITS
 
   const trimmed = amountRaw.trim()
   if (!TWO_DECIMAL_PATTERN.test(trimmed)) {
@@ -142,7 +149,7 @@ export function computeOwnerFundingPreview(
       sufficient: false,
     }
   }
-  if (amountUnits > MAX_SINGLE_WALLET_USD_UNITS) {
+  if (amountUnits > maxUnits) {
     return {
       valid: false,
       exceedsMax: true,

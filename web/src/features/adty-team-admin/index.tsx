@@ -20,9 +20,11 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { CreateTeamForm } from '@/features/adty-site-admin/components/create-team-form'
 import { FundReviewPanel } from '@/features/adty-site-admin/components/site-fund-panel'
+import type { OwnerSiteStatus } from '@/features/adty-site-owner/types'
 
 import { OwnerCreateTeamForm } from './components/owner-create-team-form'
 import { TeamDetailSheet } from './components/team-detail-sheet'
@@ -91,12 +93,37 @@ export function RootTeamAdmin() {
 /** The site owner's full team management: teams on its site, team creation and registration links. */
 export function OwnerTeamAdmin(props: {
   closing?: boolean
+  siteStatus?: OwnerSiteStatus
   siteBaseUrl?: string
 }) {
   const { t } = useTranslation()
   const [openTeam, setOpenTeam] = useState<number | null>(null)
+  const isPaused = props.siteStatus === 'paused'
+  const isClosing =
+    props.siteStatus === 'closing' ||
+    (props.siteStatus === undefined && Boolean(props.closing))
+  const readOnly =
+    Boolean(props.closing) ||
+    (props.siteStatus !== undefined && props.siteStatus !== 'active')
+  let readOnlyMessage = t(
+    'This site is not active. Creating teams, issuing registration links, and editing team multipliers are disabled.'
+  )
+  if (isClosing) {
+    readOnlyMessage = t(
+      'This site is closing. Creating teams, issuing registration links, and editing team multipliers are disabled.'
+    )
+  } else if (isPaused) {
+    readOnlyMessage = t(
+      'This site is paused. Creating teams, issuing registration links, and editing team multipliers are disabled.'
+    )
+  }
   return (
     <div className='flex flex-col gap-6'>
+      {readOnly && (
+        <Alert>
+          <AlertDescription>{readOnlyMessage}</AlertDescription>
+        </Alert>
+      )}
       <Tabs defaultValue='teams'>
         <TabsList variant='line' className={tabListClassName}>
           <TabsTrigger value='teams' className={tabTriggerClassName}>
@@ -116,12 +143,12 @@ export function OwnerTeamAdmin(props: {
           />
         </TabsContent>
         <TabsContent value='create' className='pt-2'>
-          <OwnerCreateTeamForm closing={props.closing} />
+          <OwnerCreateTeamForm closing={readOnly} />
         </TabsContent>
         <TabsContent value='registrations' className='pt-2'>
           <TeamRegistrationLinksSection
             actor='owner'
-            closing={props.closing}
+            closing={readOnly}
             publicOrigin={props.siteBaseUrl}
           />
         </TabsContent>
@@ -129,7 +156,7 @@ export function OwnerTeamAdmin(props: {
       <TeamDetailSheet
         scope='owner'
         teamId={openTeam}
-        closing={props.closing}
+        closing={readOnly}
         onOpenChange={(open) => !open && setOpenTeam(null)}
       />
     </div>

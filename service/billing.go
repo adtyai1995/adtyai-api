@@ -274,8 +274,8 @@ func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuo
 			return holdErr
 		}
 
-		// 发送额度通知
-		if actualQuota != 0 {
+		// 发送额度通知（团队 Key 扣减团队共享余额，不触发成员个人低余额告警）
+		if actualQuota != 0 && relayInfo.BillingPayerKind != model.BillingPayerTeam {
 			checkAndSendQuotaNotify(relayInfo, actualQuota-preConsumed, preConsumed)
 		}
 		return nil

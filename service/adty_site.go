@@ -1411,6 +1411,13 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 				return err
 			}
 		}
+		if tx.Migrator().HasTable(&model.AdtyTeamRegistrationLink{}) {
+			if err := tx.Model(&model.AdtyTeamRegistrationLink{}).
+				Where("site_id = ? AND used_at = 0 AND revoked_at = 0", site.Id).
+				Update("revoked_at", now).Error; err != nil {
+				return err
+			}
+		}
 		if err := tx.Model(&model.AdtySite{}).Where("id = ?", site.Id).Updates(map[string]any{
 			"status":                      model.AdtySiteStatusClosed,
 			"closed_at":                   now,

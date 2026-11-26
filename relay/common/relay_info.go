@@ -150,6 +150,9 @@ type RelayInfo struct {
 	// BillingSource indicates the funding source of this request.
 	// "" or "wallet" => wallet
 	BillingSource string
+	// BillingPayerKind records whether this request is billed to a personal
+	// wallet ("personal"), team shared balance ("team"), or owner account.
+	BillingPayerKind string
 	// RequestId is used for idempotent pre-consume/refund
 	RequestId                 string
 	BillingDirectSequence     uint64

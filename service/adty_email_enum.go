@@ -552,7 +552,7 @@ func deliverAdtySystemEmailRow(db *gorm.DB, row *AdtySystemEmailDelivery, now ti
 	common.SysError(common.LogText("send email to %s failed: %s", row.Recipient, sendErr.Error()))
 	row.LastError = sendErr.Error()
 	row.NextRetryAt = now.Add(time.Duration(attempts) * time.Minute).Unix()
-	if attempts >= AdtySystemEmailMaxAttempts {
+	if attempts >= AdtySystemEmailMaxAttempts || errors.Is(sendErr, ErrAdtySiteMailNotConfigured) {
 		row.Status = AdtySystemEmailStatusDead
 		row.BodyCipher = ""
 	} else {

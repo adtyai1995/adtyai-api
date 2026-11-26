@@ -379,6 +379,7 @@ export function SiteMarginVoucherPanel() {
             <Label htmlFor='margin-voucher-reason'>{t('Reason')}</Label>
             <Input
               id='margin-voucher-reason'
+              maxLength={200}
               placeholder={t('e.g. Offline bank transfer margin deposit')}
               value={reason}
               onChange={(event) => {

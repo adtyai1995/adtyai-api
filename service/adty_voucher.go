@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -71,8 +72,8 @@ var (
 	ErrAdtyVoucherFrozen         = common.NewMessage("Voucher code is frozen")
 	ErrAdtyVoucherCancelled      = common.NewMessage("Voucher code is cancelled")
 	ErrAdtyVoucherWrongAccount   = common.NewMessage("This voucher cannot be used on this account")
-	ErrAdtyVoucherDenied         = common.NewMessage("Please redeem margin vouchers from Site Owner Wallets")
-	ErrAdtyVoucherMarginOnly     = common.NewMessage("Only margin vouchers can be redeemed from Site Owner Wallets")
+	ErrAdtyVoucherDenied         = common.NewMessage("Please redeem margin recharge codes from Site Owner Wallets")
+	ErrAdtyVoucherMarginOnly     = common.NewMessage("Only margin recharge codes can be redeemed from Site Owner Wallets")
 	ErrAdtyVoucherLimit          = common.NewMessage("Issuance limit is not configured")
 	ErrAdtyVoucherFunds          = common.NewMessage("Insufficient available funds")
 	ErrAdtyVoucherRate           = common.NewMessage("Too many voucher attempts. Try again later")
@@ -193,7 +194,7 @@ func IssueAdtyVoucher(input AdtyVoucherIssueInput) (*AdtyVoucherIssued, error) {
 		input.DesignatedOwnerId = input.OwnerUserId
 	}
 	quota, err := adtyVoucherQuota(input.AmountUSD)
-	if err != nil || input.IssuerId <= 0 || input.Reason == "" || len(input.Reason) > 200 || len(input.IntentKey) > 128 {
+	if err != nil || input.IssuerId <= 0 || input.Reason == "" || utf8.RuneCountInString(input.Reason) > 200 || len(input.IntentKey) > 128 {
 		return nil, common.NewMessage("Invalid parameters")
 	}
 	code, err := newAdtyVoucherCode()
@@ -422,7 +423,7 @@ func IssueAdtyVoucherBatch(input AdtyVoucherIssueInput) (*AdtyVoucherBatchIssued
 		input.DesignatedOwnerId = input.OwnerUserId
 	}
 	quota, err := adtyVoucherQuota(input.AmountUSD)
-	if err != nil || input.IssuerId <= 0 || input.Reason == "" || len(input.Reason) > 200 || len(input.IntentKey) > 128 {
+	if err != nil || input.IssuerId <= 0 || input.Reason == "" || utf8.RuneCountInString(input.Reason) > 200 || len(input.IntentKey) > 128 {
 		return nil, common.NewMessage("Invalid parameters")
 	}
 

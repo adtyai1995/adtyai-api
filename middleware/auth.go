@@ -788,11 +788,8 @@ func TokenAuth() func(c *gin.Context) {
 		userGroup := strings.TrimSpace(userCache.Group)
 		tokenGroup := strings.TrimSpace(token.Group)
 		if tokenGroup == "" {
-			if userGroup == "" || userGroup == "auto" {
-				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAuthTokenGroupForbidden, map[string]any{"Group": tokenGroup}))
-				return
-			}
-			tokenGroup = userGroup
+			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAuthTokenGroupForbidden, map[string]any{"Group": tokenGroup}))
+			return
 		}
 		if tokenGroup == "auto" {
 			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAuthTokenGroupDeprecated, map[string]any{"Group": tokenGroup}))

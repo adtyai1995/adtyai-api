@@ -503,9 +503,9 @@ def render_configs(
     if edge_enabled:
         for root in platform_roots:
             escaped_root = escape_nginx_regex(root)
-            # Explicitly reject api-sN.<root> even if accidentally pointed here.
-            stream_lines.append(f"    ~*^api-s[0-9]+\\.{escaped_root}$ 127.0.0.1:8444;")
-            http80_lines.append(f"    ~*^api-s[0-9]+\\.{escaped_root}$ 0;")
+            # Explicitly reject api-sN.<root> and collision-suffixed api-sN-M.<root> even if accidentally pointed here.
+            stream_lines.append(f"    ~*^api-s[0-9]+(-[0-9]+)?\\.{escaped_root}$ 127.0.0.1:8444;")
+            http80_lines.append(f"    ~*^api-s[0-9]+(-[0-9]+)?\\.{escaped_root}$ 0;")
             if root in wildcard_by_root:
                 slug = f"wildcard_{safe_file_slug(root)}"
                 cert_files[slug] = (
@@ -518,7 +518,7 @@ def render_configs(
                     f"# Wildcard platform website block for *.{root}\n"
                     "server {\n"
                     "    listen 127.0.0.1:8443 ssl http2 proxy_protocol;\n"
-                    f"    server_name ~^(?!api-s[0-9]+\\.)[a-z0-9-]+\\.{escaped_root}$;\n"
+                    f"    server_name ~^(?!api-s[0-9]+(-[0-9]+)?\\.)[a-z0-9-]+\\.{escaped_root}$;\n"
                     f"    ssl_certificate     {certs_dir / (slug + '.pem')};\n"
                     f"    ssl_certificate_key {certs_dir / (slug + '.key')};\n"
                     "    ssl_protocols       TLSv1.2 TLSv1.3;\n"

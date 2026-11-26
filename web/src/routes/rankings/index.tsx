@@ -19,8 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 import { createFileRoute, redirect } from '@tanstack/react-router'
 import z from 'zod'
 
-import { Rankings } from '@/features/rankings'
-
 const rankingsSearchSchema = z.object({
   period: z
     .enum(['today', 'week', 'month', 'year'])
@@ -33,5 +31,5 @@ export const Route = createFileRoute('/rankings/')({
   beforeLoad: () => {
     throw redirect({ to: '/' })
   },
-  component: Rankings,
+  component: () => null,
 })

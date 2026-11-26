@@ -711,6 +711,7 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'adty.ticket.create': 'Created support ticket',
   'adty.ticket.status': 'Updated support ticket status',
   'adty.ticket.reply': 'Replied to support ticket',
+  'adty.ticket.image.view': 'Viewed support ticket image',
   'adty.ticket.image.delete': 'Deleted support ticket image',
   'adty.notification.create': 'Created notification publication',
   'adty.notification.update': 'Updated notification publication',

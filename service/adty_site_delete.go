@@ -203,6 +203,11 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 				return err
 			}
 		}
+		if len(domainIDs) > 0 && tx.Migrator().HasTable(&model.AdtyEdgeCert{}) {
+			if err := tx.Where("domain_id IN ?", domainIDs).Delete(&model.AdtyEdgeCert{}).Error; err != nil {
+				return err
+			}
+		}
 		for _, tableModel := range []any{
 			&model.AdtySiteWallet{},
 			&model.AdtySiteDomain{},
@@ -218,6 +223,7 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			&model.AdtySiteTierEvaluation{},
 			&model.AdtySiteOwnership{},
 			&model.AdtySettlementScan{},
+			&model.AdtyTeamRegistrationLink{},
 			&model.AdtyTelegramBinding{},
 			&model.AdtyTelegramChallenge{},
 			&model.AdtyTelegramDelivery{},
@@ -307,6 +313,28 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 		// regular main-site user when hard-deleting a zero-data subsite.
 		if site.OwnerUserId > 0 {
 			preservedOwnerID = site.OwnerUserId
+			var otherSites int64
+			if err := tx.Model(&model.AdtySite{}).Where("owner_user_id = ?", site.OwnerUserId).Count(&otherSites).Error; err != nil {
+				return err
+			}
+			if otherSites == 0 && tx.Migrator().HasTable(&model.ReferralAffiliate{}) {
+				if err := tx.Model(&model.ReferralAffiliate{}).
+					Where("user_id = ? AND site_owner_since > 0", site.OwnerUserId).
+					Update("site_owner_since", 0).Error; err != nil {
+					return err
+				}
+			}
+			if tx.Migrator().HasTable(&model.UserSession{}) {
+				if err := tx.Model(&model.UserSession{}).
+					Where("user_id = ? AND issued_site_id = ? AND status <> ?", site.OwnerUserId, siteID, model.UserSessionStatusRevoked).
+					Updates(map[string]any{
+						"status":         model.UserSessionStatusRevoked,
+						"revoked_at":     time.Now().Unix(),
+						"revoked_reason": "site_deleted",
+					}).Error; err != nil {
+					return err
+				}
+			}
 		}
 		mode = "hard_deleted"
 		auditEvent, err = recordSiteAuditWithIntentTx(tx, siteID, "delete", adminID, oldSnapshot, map[string]any{"deleted": true}, reason)
@@ -323,9 +351,10 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			common.SysError(common.LogText("failed to sync cleaned site options after hard-deleting site %d: %v", siteID, err))
 		}
 	}
-	if preservedOwnerID > 0 && common.RedisEnabled && common.RDB != nil {
-		if err := model.InvalidateUserCache(preservedOwnerID); err != nil {
-			common.SysError(common.LogText("failed to invalidate user cache after hard-deleting site %d for preserved owner %d: %v", siteID, preservedOwnerID, err))
+	if preservedOwnerID > 0 {
+		model.AdtyInvalidateUserCaches([]int{preservedOwnerID})
+		if err := model.PublishUserAuthCache(preservedOwnerID); err != nil {
+			common.SysError(common.LogText("failed to publish user auth cache after hard-deleting site %d for preserved owner %d: %v", siteID, preservedOwnerID, err))
 		}
 	}
 	if auditEvent != nil {

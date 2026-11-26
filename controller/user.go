@@ -1789,7 +1789,11 @@ func updateAdminPermissionsForUserInTx(c *gin.Context, tx *gorm.DB, userID int, 
 	}
 	if permissions == nil {
 		if userRole < common.RoleAdminUser && c.GetInt("role") == common.RoleRootUser {
-			return true, authz.ClearUserAuthorizationInTx(tx, userID)
+			if err := authz.ClearUserAuthorizationInTx(tx, userID); err != nil {
+				return true, err
+			}
+			_, err := service.ReleaseAssigneeOpenTicketsTx(tx, userID, c.GetInt("id"), "admin_demote")
+			return true, err
 		}
 		return false, nil
 	}
@@ -1797,9 +1801,30 @@ func updateAdminPermissionsForUserInTx(c *gin.Context, tx *gorm.DB, userID int, 
 		return false, common.NewMessage("Only super administrators can update admin permissions")
 	}
 	if userRole < common.RoleAdminUser {
-		return true, authz.ClearUserAuthorizationInTx(tx, userID)
+		if err := authz.ClearUserAuthorizationInTx(tx, userID); err != nil {
+			return true, err
+		}
+		_, err := service.ReleaseAssigneeOpenTicketsTx(tx, userID, c.GetInt("id"), "admin_demote")
+		return true, err
 	}
-	return true, authz.SetUserPermissionsInTx(tx, userID, permissions)
+	if err := authz.SetUserPermissionsInTx(tx, userID, permissions); err != nil {
+		return true, err
+	}
+	if userRole < common.RoleRootUser {
+		ticketPerms := permissions[authz.ResourceAdtyTicket]
+		canManageMain := ticketPerms["manage"]
+		canManageAll := ticketPerms["manage_all"]
+		if !canManageMain && !canManageAll {
+			if _, err := service.ReleaseAssigneeOpenTicketsTx(tx, userID, c.GetInt("id"), "ticket_permission_revoked"); err != nil {
+				return true, err
+			}
+		} else if !canManageAll {
+			if _, err := service.ReleaseAssigneeSubsiteOpenTicketsTx(tx, userID, c.GetInt("id"), "ticket_subsite_permission_revoked"); err != nil {
+				return true, err
+			}
+		}
+	}
+	return true, nil
 }
 
 type ManageRequest struct {
@@ -1968,7 +1993,11 @@ func ManageUser(c *gin.Context) {
 			if txErr != nil {
 				return txErr
 			}
-			return authz.ClearUserAuthorizationInTx(tx, user.Id)
+			if err := authz.ClearUserAuthorizationInTx(tx, user.Id); err != nil {
+				return err
+			}
+			_, err := service.ReleaseAssigneeOpenTicketsTx(tx, user.Id, c.GetInt("id"), "admin_demote")
+			return err
 		}); err != nil {
 			if errors.Is(err, model.ErrAdminTargetSessionRequired) {
 				denyAdtyAdminAction(c)
@@ -1989,6 +2018,12 @@ func ManageUser(c *gin.Context) {
 	} else if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var txErr error
 		changed, txErr = model.ApplyManagedUserAccessForActorTx(tx, &delta, myRole, isAccessTokenRequest(c))
+		if txErr != nil {
+			return txErr
+		}
+		if req.Action == "disable" {
+			_, txErr = service.ReleaseAssigneeOpenTicketsTx(tx, user.Id, c.GetInt("id"), "admin_disable")
+		}
 		return txErr
 	}); err != nil {
 		if errors.Is(err, model.ErrAdminTargetSessionRequired) {

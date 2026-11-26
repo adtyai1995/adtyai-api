@@ -250,19 +250,29 @@ func adtyPaymentIdentity(db *gorm.DB, userID int, lock bool) (*model.User, strin
 	switch {
 	case user.Role == common.RoleRootUser:
 		kind = "root"
-	case user.Role == common.RoleAdminUser:
-		kind = "admin"
 	case user.SiteId > 0:
 		kind = "site_customer"
 	default:
-		var affiliates []model.ReferralAffiliate
-		if err := db.Where("user_id = ?", userID).Limit(1).Find(&affiliates).Error; err != nil {
-			return nil, "", err
+		var ownedSites int64
+		if db.Migrator().HasTable(&model.AdtySite{}) {
+			if err := db.Model(&model.AdtySite{}).
+				Where("owner_user_id = ? AND status NOT IN ?", userID, []string{model.AdtySiteStatusClosed, model.AdtySiteStatusDeleting}).
+				Count(&ownedSites).Error; err != nil {
+				return nil, "", err
+			}
 		}
-		if len(affiliates) > 0 && affiliates[0].SiteOwnerSince > 0 {
+		if ownedSites > 0 {
 			kind = "site_owner"
-		} else if len(affiliates) > 0 && affiliates[0].Status == model.ReferralAffiliateStatusApproved {
-			kind = "affiliate"
+		} else if user.Role == common.RoleAdminUser {
+			kind = "admin"
+		} else {
+			var affiliates []model.ReferralAffiliate
+			if err := db.Where("user_id = ?", userID).Limit(1).Find(&affiliates).Error; err != nil {
+				return nil, "", err
+			}
+			if len(affiliates) > 0 && affiliates[0].Status == model.ReferralAffiliateStatusApproved {
+				kind = "affiliate"
+			}
 		}
 	}
 	return &user, kind, nil

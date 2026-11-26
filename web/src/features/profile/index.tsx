@@ -58,6 +58,9 @@ export function Profile() {
   const permissions = user?.permissions
 
   const isSubsiteUser = (user?.site_id ?? 0) > 0
+  const isPureSiteOwner = Boolean(
+    user?.adty_site_owner && (user?.role ?? 0) < ROLE.ADMIN
+  )
   const showSidebarModules =
     !isSubsiteUser && permissions?.sidebar_settings !== false
   const showPlatformAdminTelegram = Boolean(
@@ -120,7 +123,7 @@ export function Profile() {
                   profile={profile}
                   onProfileUpdate={refreshProfile}
                 />
-                <TelegramBindCard purpose='user' />
+                {!isPureSiteOwner && <TelegramBindCard purpose='user' />}
                 {showPlatformAdminTelegram && (
                   <TelegramBindCard purpose='admin' platformSupport />
                 )}

@@ -191,6 +191,12 @@ func recoverAdtyHostedPayments(now int64) {
 		return
 	}
 	for _, ext := range orders {
+		var orphanCount int64
+		if cErr := model.DB.Model(&model.PaymentOrphanEvent{}).
+			Where("reference_id = ? AND provider = ? AND status <> ?", ext.TradeNo, ext.Provider, model.PaymentOrphanStatusDismissed).
+			Count(&orphanCount).Error; cErr == nil && orphanCount > 0 {
+			continue
+		}
 		claim := model.DB.Model(&model.AdtyTopupOrder{}).Where("id = ? AND last_query_at <= ?", ext.Id, now-60).Update("last_query_at", now)
 		if claim.Error != nil || claim.RowsAffected != 1 {
 			continue

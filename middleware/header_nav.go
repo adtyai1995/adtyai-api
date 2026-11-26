@@ -14,6 +14,12 @@ type headerNavAccess struct {
 }
 
 func getHeaderNavAccess(module string) headerNavAccess {
+	if strings.EqualFold(strings.TrimSpace(module), "rankings") {
+		return headerNavAccess{
+			Enabled:     false,
+			RequireAuth: true,
+		}
+	}
 	fallback := headerNavAccess{
 		Enabled:     true,
 		RequireAuth: false,

@@ -852,7 +852,7 @@ func postConsumeDirectWithPrefix(prefix string, relayInfo *relaycommon.RelayInfo
 	relayInfo.BillingShortfall += op.Shortfall
 	projectBillingEarnings(key)
 
-	if sendEmail {
+	if sendEmail && relayInfo.BillingPayerKind != model.BillingPayerTeam {
 		if (quota + preConsumedQuota) != 0 {
 			checkAndSendQuotaNotify(relayInfo, quota, preConsumedQuota)
 		}
@@ -862,6 +862,9 @@ func postConsumeDirectWithPrefix(prefix string, relayInfo *relaycommon.RelayInfo
 }
 
 func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int) {
+	if relayInfo == nil || relayInfo.BillingPayerKind == model.BillingPayerTeam {
+		return
+	}
 	gopool.Go(func() {
 		userSetting := relayInfo.UserSetting
 		// UserQuota is the balance before this request; quota plus

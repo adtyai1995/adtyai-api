@@ -322,9 +322,10 @@ export function TicketDetailView(props: {
             </dl>
           )}
 
-          {(detail.can_manage || statusActionEntries.length > 0) && (
+          {((detail.can_manage && (allowed('assign') || !terminal)) ||
+            statusActionEntries.length > 0) && (
             <div className='bg-muted/25 border-border flex flex-col gap-3 rounded-xl border p-4'>
-              {detail.can_manage && (
+              {detail.can_manage && (allowed('assign') || !terminal) && (
                 <div className='flex flex-wrap items-end gap-3'>
                   {allowed('assign') && (
                     <div className='flex min-w-[220px] flex-1 flex-wrap items-end gap-2'>
@@ -397,34 +398,36 @@ export function TicketDetailView(props: {
                     </div>
                   )}
 
-                  <div className='flex flex-col gap-1'>
-                    <Label
-                      htmlFor='ticket-current-priority'
-                      className='text-xs'
-                    >
-                      {t('Priority')}
-                    </Label>
-                    <NativeSelect
-                      id='ticket-current-priority'
-                      disabled={props.busy}
-                      value={detail.ticket.priority || 'normal'}
-                      onChange={(event) =>
-                        void props.onUpdateStatus(
-                          '',
-                          undefined,
-                          event.target.value
-                        )
-                      }
-                    >
-                      {Object.entries(TICKET_PRIORITIES).map(
-                        ([value, label]) => (
-                          <NativeSelectOption value={value} key={value}>
-                            {t(label)}
-                          </NativeSelectOption>
-                        )
-                      )}
-                    </NativeSelect>
-                  </div>
+                  {!terminal && (
+                    <div className='flex flex-col gap-1'>
+                      <Label
+                        htmlFor='ticket-current-priority'
+                        className='text-xs'
+                      >
+                        {t('Priority')}
+                      </Label>
+                      <NativeSelect
+                        id='ticket-current-priority'
+                        disabled={terminal || props.busy}
+                        value={detail.ticket.priority || 'normal'}
+                        onChange={(event) =>
+                          void props.onUpdateStatus(
+                            '',
+                            undefined,
+                            event.target.value
+                          )
+                        }
+                      >
+                        {Object.entries(TICKET_PRIORITIES).map(
+                          ([value, label]) => (
+                            <NativeSelectOption value={value} key={value}>
+                              {t(label)}
+                            </NativeSelectOption>
+                          )
+                        )}
+                      </NativeSelect>
+                    </div>
+                  )}
                 </div>
               )}
 

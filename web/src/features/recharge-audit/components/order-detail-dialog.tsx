@@ -66,7 +66,10 @@ export function OrderDetailDialog(props: {
   const sections = (detail?.sections ?? ['payments'] as OrderTraceSection[]).filter(
     (value) =>
       !props.ownerMode ||
-      (value !== 'commission_movements' && value !== 'site_wallet')
+      (value !== 'commission_movements' &&
+        value !== 'site_wallet' &&
+        value !== 'exceptions' &&
+        value !== 'reviews')
   )
   return (
     <Dialog

@@ -107,12 +107,14 @@ func AdtyStaticDocs() gin.HandlerFunc {
 
 		noindex := false
 		if site == nil {
-			noindex = service.AdtyIsMainAPIHost(c.Request.Host) && !service.AdtyIsMainSiteHost(c.Request.Host)
+			noindex = !service.AdtyIsMainSiteHost(c.Request.Host)
 		} else {
 			noindex = !site.SeoIndex || service.AdtyIsApiOnlyHost(c.Request.Host)
 		}
 		if noindex {
 			c.Header("X-Robots-Tag", "noindex")
+		} else {
+			c.Header("X-Robots-Tag", "index, follow")
 		}
 
 		relClean := strings.TrimPrefix(pathpkg.Clean("/"+rawRel), "/")

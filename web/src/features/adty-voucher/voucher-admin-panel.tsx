@@ -358,6 +358,7 @@ export function VoucherAdminPanel() {
               <Label htmlFor='main-voucher-reason'>{t('Reason')}</Label>
               <Input
                 id='main-voucher-reason'
+                maxLength={200}
                 placeholder={t('e.g. Activity / Compensation')}
                 value={reason}
                 onChange={(event) => {

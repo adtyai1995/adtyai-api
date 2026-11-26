@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -73,6 +74,10 @@ func SendAccountDeletionCode(c *gin.Context) {
 	})
 	if err := sendAccountDeletionEmail(site, subject, email, content); err != nil {
 		_, _ = common.ConsumeVerificationCodeWithKey(key, code, common.AccountDeletionPurpose)
+		if errors.Is(err, service.ErrAdtySiteMailNotConfigured) {
+			common.ApiError(c, err)
+			return
+		}
 		common.ApiErrorT(c, "Failed to send email")
 		return
 	}

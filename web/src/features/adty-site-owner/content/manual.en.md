@@ -207,7 +207,7 @@ Manage password, email binding, active sessions, 2FA, and scoped Personal Access
 - **After Scheduled Closure**:
   1. Customers and teams migrate automatically to the main site with full balances and order history; legacy subsite API keys expire and customers generate new keys after signing in on the main site.
   2. Confirmed owner earnings remain fully withdrawable via USDT under `Historical site accounts`.
-  3. Unredeemed `site_customer` vouchers carry over for migrated customers only; unused margin vouchers are canceled.
+  3. Unredeemed `site_customer` vouchers carry over for migrated customers only; unused margin recharge codes are canceled.
   4. Open tickets transfer to the main site; custom website domains switch to redirect mode and API domains unbind automatically.
 
 ---

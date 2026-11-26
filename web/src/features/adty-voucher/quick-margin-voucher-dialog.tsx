@@ -281,6 +281,7 @@ export function QuickMarginVoucherDialog(props: {
             <Label htmlFor='quick-margin-reason'>{t('Reason')}</Label>
             <Input
               id='quick-margin-reason'
+              maxLength={200}
               placeholder={t('e.g. Offline bank transfer margin deposit')}
               value={reason}
               onChange={(event) => {

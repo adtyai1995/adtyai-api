@@ -22,6 +22,7 @@ import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber, formatTimestamp } from '@/lib/format'
 import { formatUserIdentity } from '@/lib/format-user-identity'
 
+import { sceneBusinessLabels } from '@/features/adty-payment-scenes/schema'
 import {
   officialCommissionStateLabel,
 } from '@/features/wallet/adty/commission-states'
@@ -63,7 +64,15 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
           [
             t('Payment scene'),
             order.payment_scene
-              ? `${t(order.payment_scene_name || order.payment_scene)} (${order.payment_scene}) · v${order.payment_scene_version}`
+              ? (() => {
+                  const rawName = order.payment_scene_name?.trim()
+                  const labelKey =
+                    (rawName && sceneBusinessLabels[rawName]) ||
+                    rawName ||
+                    sceneBusinessLabels[order.payment_scene] ||
+                    order.payment_scene
+                  return `${t(labelKey)} (${order.payment_scene}) · v${order.payment_scene_version}`
+                })()
               : '-',
           ],
           [

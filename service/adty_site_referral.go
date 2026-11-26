@@ -339,6 +339,9 @@ func SaveAdtyOwnerSiteMarketingWithAudit(siteID, ownerID int, input AdtySiteMark
 					if policy.MinUSD == nil || policy.FeeUSD == nil {
 						return common.NewMessage("Set the minimum withdrawal and USDT fee before enabling USDT withdrawals")
 					}
+					if !policy.MinUSD.GreaterThan(*policy.FeeUSD) {
+						return common.NewMessage("Minimum withdrawal must be greater than the USDT fee")
+					}
 					if len(networks) == 0 {
 						return common.NewMessage("Select at least one USDT network")
 					}
@@ -351,6 +354,9 @@ func SaveAdtyOwnerSiteMarketingWithAudit(siteID, ownerID int, input AdtySiteMark
 			} else {
 				if (policy.MinUSD == nil) != (policy.FeeUSD == nil) || (policy.MinUSD == nil) != (policy.CNYRate == nil) {
 					return common.NewMessage("Set the minimum, fee and exchange rate together to enable cash withdrawals")
+				}
+				if policy.MinUSD != nil && policy.FeeUSD != nil && !policy.MinUSD.GreaterThan(*policy.FeeUSD) {
+					return common.NewMessage("Minimum withdrawal must be greater than the USDT fee")
 				}
 				if input.WithdrawUSDTNetworks != nil && policy.MinUSD != nil && policy.FeeUSD != nil && policy.CNYRate != nil {
 					_, networks := effectiveSiteInviteWithdrawConfig(policy)

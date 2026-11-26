@@ -9,14 +9,13 @@ import (
 )
 
 // snapshotQuotaPerUnitDecimal is the financial authority for converting
-// expression output into internal quota. Official USD books always use the
-// fixed 1 USD = 500,000 scale; a non-standard snapshot unit (tests or
-// historical fixtures) is converted once at this boundary.
+// expression output into internal quota. Official USD books always enforce the
+// fixed 1 USD = 500,000 scale (DEC-001).
 func snapshotQuotaPerUnitDecimal(snap *BillingSnapshot) decimal.Decimal {
-	if snap == nil || snap.QuotaPerUnit == 0 || snap.QuotaPerUnit == float64(common.FixedQuotaPerUnit) {
-		return common.QuotaPerUnitDecimal()
+	if snap != nil && snap.QuotaPerUnit != 0 && snap.QuotaPerUnit != float64(common.FixedQuotaPerUnit) {
+		common.SysError(common.LogText("ignoring non-standard snapshot quota_per_unit=%v; enforcing fixed %d", snap.QuotaPerUnit, common.FixedQuotaPerUnit))
 	}
-	return decimal.NewFromFloat(snap.QuotaPerUnit)
+	return common.QuotaPerUnitDecimal()
 }
 
 func groupRatioDecimal(snap *BillingSnapshot) decimal.Decimal {

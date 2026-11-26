@@ -48,6 +48,7 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar'
 import { clearSidebarBadgesForPath } from '@/hooks/use-sidebar-badges'
+import { cn } from '@/lib/utils'
 
 import { checkIsActive } from '../lib/url-utils'
 import type {
@@ -108,8 +109,18 @@ export function NavGroup({ title, items }: NavGroupProps) {
 /**
  * Navigation badge component
  */
-function NavBadge({ children }: { children: ReactNode }) {
-  return <Badge className='shrink-0 px-1 py-0 text-xs'>{children}</Badge>
+function NavBadge({
+  children,
+  className,
+}: {
+  children: ReactNode
+  className?: string
+}) {
+  return (
+    <Badge className={cn('shrink-0 px-1 py-0 text-xs', className)}>
+      {children}
+    </Badge>
+  )
 }
 
 function resolveNavLinkUrl(item: NavLink): string {
@@ -173,6 +184,7 @@ function SidebarMenuCollapsible({
   href: string
 }) {
   const { isMobile, setOpenMobile } = useSidebar()
+  const queryClient = useQueryClient()
 
   return (
     <Collapsible
@@ -186,7 +198,11 @@ function SidebarMenuCollapsible({
       >
         {item.icon && <item.icon className='shrink-0' />}
         <span className='min-w-0 flex-1 truncate'>{item.title}</span>
-        {item.badge && <NavBadge>{item.badge}</NavBadge>}
+        {item.badge && (
+          <NavBadge className='group-data-[panel-open]/collapsible-trigger:hidden'>
+            {item.badge}
+          </NavBadge>
+        )}
         <ChevronRight className='ms-auto size-4 shrink-0 transition-transform duration-200 group-data-[panel-open]/collapsible-trigger:rotate-90' />
       </CollapsibleTrigger>
       <CollapsibleContent className='CollapsibleContent'>
@@ -200,7 +216,14 @@ function SidebarMenuCollapsible({
                   <Link
                     to={subItem.url}
                     preload={isMobile ? false : undefined}
-                    onClick={() => setOpenMobile(false)}
+                    onClick={() => {
+                      setOpenMobile(false)
+                      clearSidebarBadgesForPath(
+                        queryClient,
+                        typeof subItem.url === 'string' ? subItem.url : '',
+                        Boolean(subItem.badge)
+                      )
+                    }}
                   />
                 }
               >
@@ -226,6 +249,8 @@ function SidebarMenuCollapsedDropdown({
   item: NavCollapsible
   href: string
 }) {
+  const queryClient = useQueryClient()
+
   return (
     <SidebarMenuItem>
       <DropdownMenu>
@@ -257,6 +282,13 @@ function SidebarMenuCollapsedDropdown({
                   <Link
                     to={sub.url}
                     className={`${checkIsActive(href, sub) ? 'bg-secondary' : ''}`}
+                    onClick={() => {
+                      clearSidebarBadgesForPath(
+                        queryClient,
+                        typeof sub.url === 'string' ? sub.url : '',
+                        Boolean(sub.badge)
+                      )
+                    }}
                   />
                 }
               >

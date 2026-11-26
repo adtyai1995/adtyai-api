@@ -817,9 +817,24 @@ func confirmTopUpUnpaidBeforeExpireTx(tx *gorm.DB, _ *model.TopUp, ext *model.Ad
 	}
 	if latest.Id > 0 {
 		switch latest.Outcome {
-		case "confirming", "rejected", "paid":
+		case "confirming", "paid":
 			// Active on-chain confirmation or detected payment must never be
 			// expired/released even past the remote-failure max-age cap.
+			return false, nil
+		case "rejected":
+			// Under R-41 #1, post-expiry late payments are permanently barred from
+			// auto-credit and queued in PaymentOrphanEvent for manual reconciliation.
+			// Once queued, allow expiration so the order and site gift guarantee do
+			// not stay locked in pending forever.
+			var orphanCount int64
+			if err := tx.Model(&model.PaymentOrphanEvent{}).
+				Where("reference_id = ? AND provider = ?", ext.TradeNo, ext.Provider).
+				Count(&orphanCount).Error; err != nil {
+				return false, err
+			}
+			if orphanCount > 0 {
+				return true, nil
+			}
 			return false, nil
 		case "unpaid":
 			if latest.CreatedAt >= ext.ExpireAt {

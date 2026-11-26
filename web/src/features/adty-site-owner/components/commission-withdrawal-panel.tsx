@@ -124,15 +124,15 @@ function formatPayoutDisplay(
   )
 }
 
-type QrPreviewInfo = {
+type ImagePreviewInfo = {
   url: string
-  name?: string
-  accountNo?: string
+  title: string
+  description?: string
 }
 
 function PayeeCell(props: {
   row: CommissionWithdrawalRow
-  onPreviewQr: (info: QrPreviewInfo) => void
+  onPreviewImage: (info: ImagePreviewInfo) => void
 }) {
   const { t } = useTranslation()
   const row = props.row
@@ -171,10 +171,12 @@ function PayeeCell(props: {
           className='shrink-0 cursor-zoom-in rounded-md border bg-white p-0.5 transition hover:opacity-80'
           aria-label={t('Preview payment QR code')}
           onClick={() =>
-            props.onPreviewQr({
+            props.onPreviewImage({
               url: row.qr_image_url,
-              name: row.account_name,
-              accountNo: row.account_no,
+              title: t('Payment QR code'),
+              description: [row.account_name, row.account_no]
+                .filter(Boolean)
+                .join(' · '),
             })
           }
         >
@@ -238,7 +240,9 @@ export function CommissionWithdrawalPanel(
   )
   const [paying, setPaying] = useState<CommissionWithdrawalRow | null>(null)
   const [failing, setFailing] = useState<CommissionWithdrawalRow | null>(null)
-  const [previewQr, setPreviewQr] = useState<QrPreviewInfo | null>(null)
+  const [previewImage, setPreviewImage] = useState<ImagePreviewInfo | null>(
+    null
+  )
 
   const [approveNote, setApproveNote] = useState('')
   const [rejectReason, setRejectReason] = useState('')
@@ -485,7 +489,7 @@ export function CommissionWithdrawalPanel(
                 id: 'payee',
                 header: t('Pay to'),
                 cell: (row) => (
-                  <PayeeCell row={row} onPreviewQr={setPreviewQr} />
+                  <PayeeCell row={row} onPreviewImage={setPreviewImage} />
                 ),
               },
               {
@@ -571,17 +575,33 @@ export function CommissionWithdrawalPanel(
                       )}
                       {row.status === 'paid' && row.proof_note && (
                         <div className='text-muted-foreground flex items-center gap-1.5 text-xs'>
-                          {row.proof_note.startsWith(
-                            '/api/referral-assets/'
-                          ) ? (
-                            <a
-                              href={row.proof_note}
-                              target='_blank'
-                              rel='noopener noreferrer'
-                              className='underline'
+                          {row.proof_note
+                            .trim()
+                            .startsWith('/api/referral-assets/') ? (
+                            <button
+                              type='button'
+                              className='inline-flex cursor-zoom-in items-center gap-1.5 rounded-md border bg-white p-1 text-xs transition hover:opacity-80'
+                              aria-label={t('Preview payment proof')}
+                              onClick={() =>
+                                setPreviewImage({
+                                  url: row.proof_note.trim(),
+                                  title: t('Payment proof'),
+                                  description: formatUserIdentity(
+                                    row.user_id,
+                                    row.username
+                                  ),
+                                })
+                              }
                             >
-                              {t('Payment proof')}
-                            </a>
+                              <img
+                                src={row.proof_note.trim()}
+                                alt={t('Payment proof')}
+                                className='h-8 w-8 rounded object-contain'
+                              />
+                              <span className='text-foreground pr-1'>
+                                {t('Payment proof')}
+                              </span>
+                            </button>
                           ) : (
                             <span className='break-words'>
                               {row.proof_note}
@@ -854,10 +874,12 @@ export function CommissionWithdrawalPanel(
                     className='shrink-0 cursor-zoom-in rounded-md border bg-white p-1 transition hover:opacity-80'
                     aria-label={t('Preview payment QR code')}
                     onClick={() =>
-                      setPreviewQr({
+                      setPreviewImage({
                         url: paying.qr_image_url,
-                        name: paying.account_name,
-                        accountNo: paying.account_no,
+                        title: t('Payment QR code'),
+                        description: [paying.account_name, paying.account_no]
+                          .filter(Boolean)
+                          .join(' · '),
                       })
                     }
                   >
@@ -935,18 +957,27 @@ export function CommissionWithdrawalPanel(
                 )}
               </div>
               {proof.trim().startsWith('/api/referral-assets/') && (
-                <a
-                  href={proof.trim()}
-                  target='_blank'
-                  rel='noopener noreferrer'
-                  className='block w-fit pt-1'
+                <button
+                  type='button'
+                  className='mt-1 block w-fit cursor-zoom-in rounded-md border bg-white p-1 transition hover:opacity-80'
+                  aria-label={t('Preview payment proof')}
+                  onClick={() =>
+                    setPreviewImage({
+                      url: proof.trim(),
+                      title: t('Payment proof'),
+                      description: formatUserIdentity(
+                        paying.user_id,
+                        paying.username
+                      ),
+                    })
+                  }
                 >
                   <img
                     src={proof.trim()}
                     alt={t('Payment proof')}
-                    className='h-20 w-20 rounded border object-contain'
+                    className='h-20 w-20 rounded object-contain'
                   />
-                </a>
+                </button>
               )}
             </div>
           </div>
@@ -1011,24 +1042,20 @@ export function CommissionWithdrawalPanel(
         </div>
       </Dialog>
 
-      {/* QR Lightbox Preview Dialog */}
+      {/* Image Lightbox Preview Dialog */}
       <Dialog
-        open={previewQr !== null}
+        open={previewImage !== null}
         onOpenChange={(open) => {
-          if (!open) setPreviewQr(null)
+          if (!open) setPreviewImage(null)
         }}
-        title={t('Payment QR code')}
-        description={
-          previewQr
-            ? [previewQr.name, previewQr.accountNo].filter(Boolean).join(' · ')
-            : ''
-        }
+        title={previewImage?.title ?? ''}
+        description={previewImage?.description ?? ''}
         contentClassName='sm:max-w-md'
         footer={
-          previewQr ? (
+          previewImage ? (
             <div className='flex w-full items-center justify-between gap-2'>
               <a
-                href={previewQr.url}
+                href={previewImage.url}
                 target='_blank'
                 rel='noopener noreferrer'
                 className='text-primary inline-flex items-center gap-1 text-sm underline'
@@ -1036,18 +1063,18 @@ export function CommissionWithdrawalPanel(
                 <ExternalLink className='size-3.5' aria-hidden='true' />
                 {t('Open in new tab')}
               </a>
-              <Button variant='outline' onClick={() => setPreviewQr(null)}>
+              <Button variant='outline' onClick={() => setPreviewImage(null)}>
                 {t('Close')}
               </Button>
             </div>
           ) : undefined
         }
       >
-        {previewQr && (
+        {previewImage && (
           <div className='flex flex-col items-center gap-3'>
             <img
-              src={previewQr.url}
-              alt={t('Payment QR code')}
+              src={previewImage.url}
+              alt={previewImage.title}
               className='max-h-[70vh] w-full max-w-sm rounded-lg border object-contain'
             />
           </div>

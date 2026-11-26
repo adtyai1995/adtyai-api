@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -229,12 +230,23 @@ export function WithdrawalPanel({
             'This request freezes the site earnings wallet. Referral commission withdrawals stay on the Referral page.'
           ),
           t(
-            'Customer invite commission withdrawals are reviewed on the Invite commission withdrawal tab.'
+            'Customer invite commission withdrawals are reviewed on the Withdrawals tab under Promotion Management.'
           ),
           t('Invite commission holds are not available for this withdrawal.'),
         ].join(' ')}
         bodyClassName='flex flex-col gap-4'
       >
+        {!siteId && (
+          <p className='text-muted-foreground text-xs'>
+            <Link
+              to='/site-owner/$section'
+              params={{ section: 'commissions' }}
+              className='text-primary inline-flex items-center gap-1 font-medium hover:underline'
+            >
+              {t('Go to Promotion Management')}
+            </Link>
+          </p>
+        )}
         {rules.isError && (
           <p className='text-destructive text-sm'>
             {t('Could not load withdrawal rules')}

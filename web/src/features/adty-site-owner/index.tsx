@@ -154,8 +154,9 @@ export function SiteOwnerCenter(props: {
                 )}
                 {props.section === 'teams' && (
                   <OwnerTeamAdmin
-                    closing={closing}
-                    siteBaseUrl={site.data.base_url}
+                    closing={site.data.status !== 'active'}
+                    siteStatus={site.data.status}
+                    siteBaseUrl={site.data.public_base_url || site.data.base_url}
                   />
                 )}
                 {props.section === 'orders' && (

@@ -989,7 +989,8 @@ func CreateAdtyMainTeamByRoot(actorId, leaderId int, name, rawDiscount string) (
 
 // CreateAdtySiteTeamByRoot creates a team on the specified site (0 for main site,
 // >0 for an active subsite) and designates an existing user of that site as the
-// unique leader. Only Root may call this (A.9.1 / DEC-012).
+// unique leader. Root uses this endpoint; active subsite owners use
+// CreateAdtyOwnerSiteTeam (R-41 #11).
 func CreateAdtySiteTeamByRoot(actorId, siteId, leaderId int, name, rawDiscount string, keys ...string) (*AdtyTeamCreated, error) {
 	created, _, _, err := CreateAdtySiteTeamByRootWithAudit(actorId, siteId, leaderId, name, rawDiscount, keys...)
 	return created, err

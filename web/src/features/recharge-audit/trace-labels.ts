@@ -204,6 +204,10 @@ export function orphanReasonLabel(
       return t('Team payment could not be verified')
     case 'payment recovery requires reconciliation':
       return t('Payment recovery requires reconciliation')
+    case 'topup status invalid':
+      return t('Top-up status is invalid')
+    case 'payment recovery query detected conflicting gateway facts':
+      return t('Payment recovery query detected conflicting gateway facts')
     case 'order_not_found':
       return t('Order not found')
     case 'amount_mismatch':

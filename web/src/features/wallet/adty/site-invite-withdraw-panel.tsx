@@ -17,12 +17,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { X } from 'lucide-react'
+import { ExternalLink, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { CopyButton } from '@/components/copy-button'
+import { Dialog } from '@/components/dialog'
 import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -75,6 +77,8 @@ type SiteInviteWithdrawal = {
   cancel_reason: string
   payout_amount: string
   payout_currency: string
+  tx_id?: string
+  proof_note?: string
   reject_reason: string
 }
 
@@ -293,6 +297,7 @@ function SiteWithdrawForm(props: {
   const [qrUrl, setQrUrl] = useState('')
   const [confirmation, setConfirmation] = useState<Quote | null>(null)
   const [quoteChanged, setQuoteChanged] = useState(false)
+  const [previewProofUrl, setPreviewProofUrl] = useState<string | null>(null)
   const qrFileRef = useRef<HTMLInputElement | null>(null)
   const intent = useWithdrawalIntent(
     '/api/adty/site-commissions/withdrawals',
@@ -740,35 +745,127 @@ function SiteWithdrawForm(props: {
       )}
       {history.isError && <ErrorState onRetry={() => void history.refetch()} />}
       <ul className='flex flex-col gap-2'>
-        {(history.data ?? []).map((row) => (
-          <li
-            key={row.id}
-            className='flex flex-wrap items-center justify-between gap-2 text-sm tabular-nums'
-          >
-            <span>
-              {row.site_id && (
-                <>
-                  {t('Site')} #{row.site_id} ·{' '}
-                </>
+        {(history.data ?? []).map((row) => {
+          const txId = row.tx_id?.trim() ?? ''
+          const proofNote = row.proof_note?.trim() ?? ''
+          const isProofImage = proofNote.startsWith('/api/referral-assets/')
+          const showPayoutProof =
+            row.status === 'paid' && (txId !== '' || proofNote !== '')
+          return (
+            <li
+              key={row.id}
+              className='flex flex-col gap-1.5 text-sm tabular-nums'
+            >
+              <div className='flex flex-wrap items-center justify-between gap-2'>
+                <span>
+                  {row.site_id && (
+                    <>
+                      {t('Site')} #{row.site_id} ·{' '}
+                    </>
+                  )}
+                  {row.amount_usd} USD · {t(methodLabel(row.method))}
+                  {row.method === 'alipay' &&
+                    (row.account_name || row.account_no) &&
+                    ` (${[row.account_name, row.account_no].filter(Boolean).join(' · ')})`}
+                  {' · '}
+                  {t(statusLabel(row.status))}
+                  {row.payout_amount !== '' &&
+                    ` · ${row.payout_amount} ${row.payout_currency}`}
+                  {row.reject_reason !== '' && ` · ${row.reject_reason}`}
+                </span>
+                <WithdrawalCancellation
+                  state={row}
+                  busy={cancel.isPending}
+                  onCancel={() => cancel.mutate(row.id)}
+                />
+              </div>
+              {showPayoutProof && (
+                <div className='flex flex-wrap items-center gap-2 text-xs'>
+                  {txId !== '' && (
+                    <div className='text-muted-foreground flex items-center gap-1'>
+                      <span>
+                        {row.method === 'usdt'
+                          ? t('Transaction hash')
+                          : t('Transfer reference')}
+                        :
+                      </span>
+                      <code className='text-foreground font-mono break-all'>
+                        {txId}
+                      </code>
+                      <CopyButton
+                        value={txId}
+                        size='icon'
+                        aria-label={t('Copy')}
+                      />
+                    </div>
+                  )}
+                  {proofNote !== '' &&
+                    (isProofImage ? (
+                      <button
+                        type='button'
+                        className='inline-flex cursor-zoom-in items-center gap-1.5 rounded-md border bg-white p-1 text-xs transition hover:opacity-80'
+                        aria-label={t('Preview payment proof')}
+                        onClick={() => setPreviewProofUrl(proofNote)}
+                      >
+                        <img
+                          src={proofNote}
+                          alt={t('Payment proof')}
+                          className='h-10 w-10 rounded object-contain'
+                        />
+                        <span className='text-foreground pr-1'>
+                          {t('Payment proof')}
+                        </span>
+                      </button>
+                    ) : (
+                      <span className='text-muted-foreground break-words'>
+                        {t('Payment proof')}: {proofNote}
+                      </span>
+                    ))}
+                </div>
               )}
-              {row.amount_usd} USD · {t(methodLabel(row.method))}
-              {row.method === 'alipay' &&
-                (row.account_name || row.account_no) &&
-                ` (${[row.account_name, row.account_no].filter(Boolean).join(' · ')})`}
-              {' · '}
-              {t(statusLabel(row.status))}
-              {row.payout_amount !== '' &&
-                ` · ${row.payout_amount} ${row.payout_currency}`}
-              {row.reject_reason !== '' && ` · ${row.reject_reason}`}
-            </span>
-            <WithdrawalCancellation
-              state={row}
-              busy={cancel.isPending}
-              onCancel={() => cancel.mutate(row.id)}
-            />
-          </li>
-        ))}
+            </li>
+          )
+        })}
       </ul>
+      <Dialog
+        open={previewProofUrl !== null}
+        onOpenChange={(open) => {
+          if (!open) setPreviewProofUrl(null)
+        }}
+        title={t('Payment proof')}
+        contentClassName='sm:max-w-md'
+        footer={
+          previewProofUrl ? (
+            <div className='flex w-full items-center justify-between gap-2'>
+              <a
+                href={previewProofUrl}
+                target='_blank'
+                rel='noopener noreferrer'
+                className='text-primary inline-flex items-center gap-1 text-sm underline'
+              >
+                <ExternalLink className='size-3.5' aria-hidden='true' />
+                {t('Open in new tab')}
+              </a>
+              <Button
+                variant='outline'
+                onClick={() => setPreviewProofUrl(null)}
+              >
+                {t('Close')}
+              </Button>
+            </div>
+          ) : undefined
+        }
+      >
+        {previewProofUrl && (
+          <div className='flex flex-col items-center gap-3'>
+            <img
+              src={previewProofUrl}
+              alt={t('Payment proof')}
+              className='max-h-[70vh] w-full max-w-sm rounded-lg border object-contain'
+            />
+          </div>
+        )}
+      </Dialog>
       <ConfirmDialog
         open={confirmation !== null}
         onOpenChange={(open) => {

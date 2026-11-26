@@ -121,6 +121,43 @@ const effectiveKey = computed(
 
 const apiBase = computed(() => brand.value.apiBase || 'https://api.adtyai.com')
 
+function escapeDoubleQuoted(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/[\r\n]+/g, ' ')
+}
+
+const providerName = computed(() => brand.value.name.trim() || 'ADTY')
+
+const providerSlug = computed(() => {
+  const fromName = brand.value.name
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32)
+    .replace(/-+$/g, '')
+  if (fromName) return fromName
+  if (brand.value.isSubsite) {
+    try {
+      const hostLabel = new URL(apiBase.value).hostname
+        .toLowerCase()
+        .replace(/^api[.-]/, '')
+        .split('.')[0]
+        ?.replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 32)
+        .replace(/-+$/g, '')
+      if (hostLabel) return hostLabel
+    } catch {
+      // Fall through to neutral subsite provider slug.
+    }
+    return 'custom'
+  }
+  return 'adty'
+})
+
 const guideHref = computed(() =>
   withBase(isZh.value ? activeOption.value.guideZh : activeOption.value.guideEn)
 )
@@ -160,6 +197,9 @@ const snippet = computed(() => {
   const base = apiBase.value
   const key = effectiveKey.value
   const unix = selectedOs.value === 'unix'
+  const slug = providerSlug.value
+  const displayName = providerName.value
+  const escapedDisplayName = escapeDoubleQuoted(displayName)
 
   switch (selectedClient.value) {
     case 'claude-code':
@@ -169,8 +209,8 @@ const snippet = computed(() => {
 
     case 'codex':
       return unix
-        ? `# ~/.codex/config.toml\nmodel_provider = "adty"\nmodel = "gpt-5.4"\n\n[model_providers.adty]\nname = "ADTY"\nbase_url = "${base}/v1"\nwire_api = "responses"\nrequires_openai_auth = true\n\n# ~/.codex/auth.json\n# { "OPENAI_API_KEY": "${key}" }`
-        : `# $HOME\\.codex\\config.toml\nmodel_provider = "adty"\nmodel = "gpt-5.4"\n\n[model_providers.adty]\nname = "ADTY"\nbase_url = "${base}/v1"\nwire_api = "responses"\nrequires_openai_auth = true\n\n# $HOME\\.codex\\auth.json\n# { "OPENAI_API_KEY": "${key}" }`
+        ? `# ~/.codex/config.toml\nmodel_provider = "${slug}"\nmodel = "gpt-5.4"\n\n[model_providers.${slug}]\nname = "${escapedDisplayName}"\nbase_url = "${base}/v1"\nwire_api = "responses"\nrequires_openai_auth = true\n\n# ~/.codex/auth.json\n# { "OPENAI_API_KEY": "${key}" }`
+        : `# $HOME\\.codex\\config.toml\nmodel_provider = "${slug}"\nmodel = "gpt-5.4"\n\n[model_providers.${slug}]\nname = "${escapedDisplayName}"\nbase_url = "${base}/v1"\nwire_api = "responses"\nrequires_openai_auth = true\n\n# $HOME\\.codex\\auth.json\n# { "OPENAI_API_KEY": "${key}" }`
 
     case 'kimi-code':
       return unix
@@ -183,15 +223,15 @@ const snippet = computed(() => {
         : `$env:XAI_BASE_URL="${base}/v1"\n$env:XAI_API_KEY="${key}"\ngrok`
 
     case 'opencode':
-      return `{\n  "$schema": "https://opencode.ai/config.json",\n  "provider": {\n    "adty": {\n      "npm": "@ai-sdk/openai-compatible",\n      "name": "${brand.value.name}",\n      "options": {\n        "baseURL": "${base}/v1",\n        "apiKey": "${key}"\n      }\n    }\n  }\n}`
+      return `{\n  "$schema": "https://opencode.ai/config.json",\n  "provider": {\n    "${slug}": {\n      "npm": "@ai-sdk/openai-compatible",\n      "name": "${escapedDisplayName}",\n      "options": {\n        "baseURL": "${base}/v1",\n        "apiKey": "${key}"\n      }\n    }\n  }\n}`
 
     case 'openclaw':
-      return `{\n  "models": {\n    "providers": {\n      "adty": {\n        "baseUrl": "${base}/v1",\n        "apiKey": "${key}",\n        "api": "openai-completions"\n      }\n    }\n  }\n}`
+      return `{\n  "models": {\n    "providers": {\n      "${slug}": {\n        "baseUrl": "${base}/v1",\n        "apiKey": "${key}",\n        "api": "openai-completions"\n      }\n    }\n  }\n}`
 
     case 'cherry-studio':
       return isZh.value
-        ? `提供商名称：${brand.value.name}\n接口类型：OpenAI（或 Anthropic / Gemini 按需选择）\nAPI 地址：${base}\nAPI 密钥：${key}\n\n提示：Cherry Studio 填写 OpenAI 类型时填 ${base} 即可自动补全 /v1；如客户端不自动补全，请填 ${base}/v1。`
-        : `Provider Name: ${brand.value.name}\nAPI Type: OpenAI (or Anthropic / Gemini as needed)\nAPI Host: ${base}\nAPI Key: ${key}\n\nNote: Cherry Studio appends /v1 automatically for OpenAI providers; if a client does not append it, use ${base}/v1.`
+        ? `提供商名称：${displayName}\n接口类型：OpenAI（或 Anthropic / Gemini 按需选择）\nAPI 地址：${base}\nAPI 密钥：${key}\n\n提示：Cherry Studio 填写 OpenAI 类型时填 ${base} 即可自动补全 /v1；如客户端不自动补全，请填 ${base}/v1。`
+        : `Provider Name: ${displayName}\nAPI Type: OpenAI (or Anthropic / Gemini as needed)\nAPI Host: ${base}\nAPI Key: ${key}\n\nNote: Cherry Studio appends /v1 automatically for OpenAI providers; if a client does not append it, use ${base}/v1.`
 
     case 'openai-sdk':
       return `from openai import OpenAI\n\nclient = OpenAI(\n    base_url="${base}/v1",\n    api_key="${key}",\n)\n\nresp = client.chat.completions.create(\n    model="gpt-5.4",\n    messages=[{"role": "user", "content": "Hello!"}],\n)\nprint(resp.choices[0].message.content)`

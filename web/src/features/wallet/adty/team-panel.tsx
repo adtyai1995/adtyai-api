@@ -403,21 +403,30 @@ export function TeamPanel(
       return requireServerSuccess(data).data
     },
   })
-  const pendingTradeNos = new Set(
-    (pendingOrders.data ?? []).map((item) => item.trade_no)
-  )
+  const rawPendingOrders = pendingOrders.data ?? []
   const hasAnyPendingTeamTopup =
-    pendingTradeNos.size > 0 ||
+    rawPendingOrders.length > 0 ||
     (teamTopups.data ?? []).some((item) => item.status === 'pending')
   const nowSec = useNowSeconds(hasAnyPendingTeamTopup)
+  const isOrderExpired = (order: TeamTopupRow) =>
+    (order.expire_at ?? 0) > 0 && order.expire_at <= nowSec
+  const activePendingOrders = rawPendingOrders.filter(
+    (order) => !isOrderExpired(order)
+  )
+  const activePendingTradeNos = new Set(
+    activePendingOrders.map((item) => item.trade_no)
+  )
   const resolveTeamTopupStatus = (order: TeamTopupRow): AdtyOrderStatus => {
     if (order.status && order.status in ORDER_STATUS_LABELS) {
+      if (order.status === 'pending' && isOrderExpired(order)) {
+        return 'expired'
+      }
       return order.status as AdtyOrderStatus
     }
-    if (pendingTradeNos.has(order.trade_no)) return 'pending'
+    if (activePendingTradeNos.has(order.trade_no)) return 'pending'
     if ((order.refunded_at ?? 0) > 0) return 'refunded'
     if (Number(order.paid_amount) > 0) return 'success'
-    if ((order.expire_at ?? 0) > 0 && order.expire_at <= nowSec) return 'expired'
+    if (isOrderExpired(order)) return 'expired'
     return 'canceled'
   }
   const returnedCheckout: AdtyOrderExt | null =
@@ -514,7 +523,7 @@ export function TeamPanel(
   }
 
   const resumeTeamOrder = (order: TeamTopupRow) => {
-    if (!team) return
+    if (!team || isOrderExpired(order)) return
     const hasCheckout = Boolean(
       order.pay_address || order.pay_url || order.qr_code || order.url_scheme
     )
@@ -558,7 +567,7 @@ export function TeamPanel(
             <EmptyState
               title={t('You are not in a team')}
               description={t(
-                'Only the platform Root administrator can create teams or issue team registration links.'
+                'Platform administrators and site owners can create teams or issue team registration links.'
               )}
             />
           )}
@@ -861,7 +870,7 @@ export function TeamPanel(
               {pendingOrders.isError && (
                 <ErrorState onRetry={() => void pendingOrders.refetch()} />
               )}
-              {pendingOrders.data?.map((order) => {
+              {activePendingOrders.map((order) => {
                 const hasCheckout = Boolean(
                   order.pay_address ||
                   order.pay_url ||

@@ -47,7 +47,6 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/models":                   accessTokenScopeRule("profile:read"),
 	"GET /api/status/test":              accessTokenScopeRule("log:read"),
 	"GET /api/pricing":                  accessTokenAnyRule,
-	"GET /api/rankings":                 accessTokenAnyRule,
 	"POST /api/oauth/email/bind/start":  accessTokenScopeRule("account_security:write"),
 	"POST /api/oauth/email/bind/resend": accessTokenScopeRule("account_security:write"),
 	"POST /api/oauth/email/bind":        accessTokenScopeRule("account_security:write"),

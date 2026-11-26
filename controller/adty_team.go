@@ -827,8 +827,12 @@ func PostAdtyMainTeamRegistration(c *gin.Context) {
 	if !ok {
 		return
 	}
-	issued, eventID, err := service.CreateAdtyMainTeamRegistrationWithAudit(c.GetInt("id"), ttl)
+	issued, eventID, err := service.CreateAdtyMainTeamRegistrationWithAudit(c.GetInt("id"), ttl, c.GetHeader("Idempotency-Key"))
 	if err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, err)
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -882,8 +886,12 @@ func PostAdtyOwnerSiteTeamRegistration(c *gin.Context) {
 	if !ok {
 		return
 	}
-	issued, eventID, err := service.CreateAdtyOwnerSiteTeamRegistrationWithAudit(c.GetInt("id"), site.Id, ttl)
+	issued, eventID, err := service.CreateAdtyOwnerSiteTeamRegistrationWithAudit(c.GetInt("id"), site.Id, ttl, c.GetHeader("Idempotency-Key"))
 	if err != nil {
+		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
+			common.ApiErrorStatus(c, http.StatusConflict, err)
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}

@@ -265,9 +265,11 @@ export type AnomalyDisposition = {
   status: string
   note: string
   operator_id: number
+  operator_username?: string
   site_id?: number
   team_id?: number
   account_id?: number
+  account_username?: string
   order_ref?: string
   difference?: string
   evidence?: string

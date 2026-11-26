@@ -36,6 +36,10 @@ interface AnnouncementDetailModalProps {
     title_en?: string
     content?: string
     content_en?: string
+    english?: string
+    source?: string
+    translation_status?: string
+    translation_notice?: string
     content_format?: string
     tag?: string
     publishDate?: string
@@ -54,6 +58,7 @@ export function AnnouncementDetailModal({
     title: displayTitle,
     content: rawContent,
     extra: displayExtra,
+    translationNotReady,
   } = resolveLocalizedAnnouncement(announcement, currentLanguage)
   const contentMode = isHtmlNotificationContent(
     rawContent,
@@ -79,10 +84,17 @@ export function AnnouncementDetailModal({
     >
       <ScrollArea className='max-h-[min(58vh,520px)] pr-4'>
         <div className='space-y-4'>
-          {safeContent && (
-            <div>
-              <h4 className='mb-2 font-medium'>{t('Content')}</h4>
-              <RichContent mode={contentMode} breaks content={safeContent} />
+          {(safeContent || translationNotReady) && (
+            <div className='space-y-2'>
+              <h4 className='font-medium'>{t('Content')}</h4>
+              {safeContent && (
+                <RichContent mode={contentMode} breaks content={safeContent} />
+              )}
+              {translationNotReady && (
+                <p className='text-muted-foreground text-xs'>
+                  {t('English is not ready')}
+                </p>
+              )}
             </div>
           )}
           {displayExtra && (

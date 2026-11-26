@@ -641,6 +641,27 @@ func UpdateOption(c *gin.Context) {
 			}
 		}
 		option.Value = rawURL
+	case "Logo":
+		rawLogo := strings.TrimSpace(option.Value.(string))
+		if rawLogo != "" {
+			if len(rawLogo) > 500 || strings.ContainsAny(rawLogo, " \t\r\n\x00") {
+				common.ApiError(c, common.NewMessage("Logo URL must be a valid http://, https://, or root-relative / path"))
+				return
+			}
+			if strings.HasPrefix(rawLogo, "/") {
+				if strings.HasPrefix(rawLogo, "//") || strings.Contains(rawLogo, "\\") {
+					common.ApiError(c, common.NewMessage("Logo URL must be a valid http://, https://, or root-relative / path"))
+					return
+				}
+			} else {
+				parsed, parseErr := url.Parse(rawLogo)
+				if parseErr != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || strings.TrimSpace(parsed.Host) == "" {
+					common.ApiError(c, common.NewMessage("Logo URL must be a valid http://, https://, or root-relative / path"))
+					return
+				}
+			}
+		}
+		option.Value = rawLogo
 	case "BEpusdtSecretConfigured":
 		common.ApiErrorT(c, "BEpusdt secret configuration status is read-only")
 		return

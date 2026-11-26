@@ -26,9 +26,9 @@ Card/wallet channels typically settle within seconds. On-chain USDT transfers cr
 
 ## Recharge Bonus
 
-When a site configures a **Recharge Bonus** for specific payment methods or top-up tiers:
+When a site configures **Recharge Bonus by payment method**:
 
-- The bonus percentage or tiered reward is **applied automatically** based on the payment channel you choose—no promo code is required.
+- The bonus percentage is **applied automatically** based on the payment method you choose—no promo code is required.
 - Eligible bonus amounts are previewed right on the top-up panel before you confirm payment.
 - Once the order completes, both the base top-up and the bonus credit are reflected in your wallet records.
 

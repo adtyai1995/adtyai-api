@@ -48,6 +48,7 @@ import {
   normalizeVoucherBatchResult,
   VOUCHER_BATCH_MAX_COUNT,
   VOUCHER_BATCH_MIN_COUNT,
+  VOUCHER_MAX_AMOUNT_USD,
   type NormalizedVoucherBatch,
 } from '@/features/adty-voucher/export'
 import { VoucherBatchResultDialog } from '@/features/adty-voucher/voucher-batch-result-dialog'
@@ -57,9 +58,11 @@ import { SettingsSection } from '@/features/system-settings/components/settings-
 
 import { getOwnerWallets, siteOwnerKeys } from '../api'
 import { useVerifiedOwnerMutation } from '../hooks/use-verified-owner-mutation'
-import { computeOwnerFundingPreview } from '../lib/funding-preview'
+import {
+  computeOwnerFundingPreview,
+  formatFundingUsd,
+} from '../lib/funding-preview'
 import { newIdempotencyKey } from '../lib/site-owner'
-import { OwnerFundingPreviewBox } from './owner-funding-preview'
 
 const PAGE_SIZE = 20
 
@@ -120,10 +123,18 @@ export function VoucherPanel(props: { siteId: number; closing?: boolean }) {
   })
 
   const walletRows = Array.isArray(wallets.data) ? wallets.data : []
+  const unitPreview = computeOwnerFundingPreview(walletRows, amount)
+  const effectiveBatchCount = batchSummary.validCount ? batchSummary.count : 1
+  const batchMaxAmount =
+    Math.max(1, effectiveBatchCount) * VOUCHER_MAX_AMOUNT_USD
   const previewAmount = batchSummary.valid
     ? batchSummary.totalAmountUsd
     : amount
-  const preview = computeOwnerFundingPreview(walletRows, previewAmount)
+  const preview = computeOwnerFundingPreview(
+    walletRows,
+    previewAmount,
+    unitPreview.exceedsMax ? VOUCHER_MAX_AMOUNT_USD : batchMaxAmount
+  )
 
   const invalidateVoucherQueries = () => {
     void queryClient.invalidateQueries({ queryKey: adtyVoucherKeys.all })
@@ -422,12 +433,47 @@ export function VoucherPanel(props: { siteId: number; closing?: boolean }) {
             )}
           </div>
 
-          <OwnerFundingPreviewBox wallets={walletRows} amount={previewAmount} />
+          <div className='bg-muted/40 border-border space-y-1 rounded-md border p-3 text-xs'>
+            <p className='text-muted-foreground'>
+              {t(
+                'Available earnings: ${{earnings}} · Usable excess margin (above ${{floor}} level floor): ${{margin}}',
+                {
+                  earnings: formatFundingUsd(preview.earningsAvailable),
+                  floor: formatFundingUsd(preview.marginFloor),
+                  margin: formatFundingUsd(preview.marginExcessAvailable),
+                }
+              )}
+            </p>
+            {(unitPreview.exceedsMax || preview.exceedsMax) && (
+              <p className='text-destructive font-medium'>
+                {t('Amount exceeds the maximum limit of 100,000 USD.')}
+              </p>
+            )}
+            {!unitPreview.exceedsMax && preview.valid && (
+              <p className='font-medium tabular-nums'>
+                {t(
+                  'Funding split: Earnings ${{earnings}} + Excess margin ${{margin}}',
+                  {
+                    earnings: formatFundingUsd(preview.fromEarnings),
+                    margin: formatFundingUsd(preview.fromMargin),
+                  }
+                )}
+              </p>
+            )}
+            {!unitPreview.exceedsMax && preview.valid && !preview.sufficient && (
+              <p className='text-destructive font-medium tabular-nums'>
+                {t('Shortfall: ${{shortfall}} USD (deposit floor is reserved)', {
+                  shortfall: formatFundingUsd(preview.shortfall),
+                })}
+              </p>
+            )}
+          </div>
 
           <div className='flex flex-col gap-1.5'>
             <Label htmlFor='voucher-reason'>{t('Reason')}</Label>
             <Input
               id='voucher-reason'
+              maxLength={200}
               placeholder={t('e.g. Customer campaign / offline top-up')}
               value={reason}
               disabled={closing}

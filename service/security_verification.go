@@ -897,6 +897,9 @@ func IssueSecurityEmailCode(identity AuthIdentity, scope string, site *model.Adt
 	})
 	if err := sendSecurityStepUpEmail(site, subject, email, content); err != nil {
 		_, _ = common.ConsumeVerificationCodeWithKey(key, code, common.SecurityStepUpPurpose)
+		if errors.Is(err, ErrAdtySiteMailNotConfigured) {
+			return err
+		}
 		return ErrSecurityEmailCodeDelivery
 	}
 	return nil

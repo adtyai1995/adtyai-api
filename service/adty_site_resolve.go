@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -25,14 +26,17 @@ import (
 // 11.8 的自定义域名表建好后，在 AdtyLoadCustomDomains 里挂上「已 active 的自定义域名 → 站点 id」。
 
 type adtySiteSnapshot struct {
-	byId       map[int]*model.AdtySite
-	byHost     map[string]*model.AdtySite // <子域名>.<根域名>
-	byCustom   map[string]*model.AdtySite // 已 active 的自定义域名
-	apiOnly    map[string]bool            // 用途是 base_url 的自定义域名：只放行 relay
-	defaultAPI map[int]string
-	loadedAt   time.Time
-	loadErr    error
+	byId         map[int]*model.AdtySite
+	byHost       map[string]*model.AdtySite // <子域名>.<根域名>
+	byCustom     map[string]*model.AdtySite // 已 active 的自定义域名
+	apiOnly      map[string]bool            // 用途是 base_url 的自定义域名：只放行 relay
+	defaultAPI   map[int]string
+	loadedAt     time.Time
+	redisVersion string
+	loadErr      error
 }
+
+const adtySiteCacheVersionRedisKey = "adty:site_cache:version"
 
 var (
 	adtySiteCacheMu sync.Mutex
@@ -71,11 +75,29 @@ func AdtySiteNames(siteIDs []int) (map[int]string, error) {
 	return names, nil
 }
 
-// InvalidateAdtySiteCache 在站点或自定义域名变更后调用，下次读取时重建。
+func currentAdtySiteCacheRedisVersion() string {
+	if !common.RedisEnabled || common.RDB == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	val, err := common.RDB.Get(ctx, adtySiteCacheVersionRedisKey).Result()
+	if err != nil {
+		return ""
+	}
+	return val
+}
+
+// InvalidateAdtySiteCache 在站点或自定义域名变更后调用，下次读取时重建并广播版本到其他实例。
 func InvalidateAdtySiteCache() {
 	adtySiteCacheMu.Lock()
 	adtySiteCache = nil
 	adtySiteCacheMu.Unlock()
+	if common.RedisEnabled && common.RDB != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = common.RDB.Incr(ctx, adtySiteCacheVersionRedisKey).Err()
+		cancel()
+	}
 }
 
 func adtySiteCacheTTL() time.Duration {
@@ -87,14 +109,17 @@ func adtySiteCacheTTL() time.Duration {
 }
 
 func loadAdtySiteSnapshot() *adtySiteSnapshot {
+	redisVer := currentAdtySiteCacheRedisVersion()
 	adtySiteCacheMu.Lock()
 	defer adtySiteCacheMu.Unlock()
-	if adtySiteCache != nil && time.Since(adtySiteCache.loadedAt) < adtySiteCacheTTL() {
+	if adtySiteCache != nil && time.Since(adtySiteCache.loadedAt) < adtySiteCacheTTL() &&
+		(redisVer == "" || adtySiteCache.redisVersion == redisVer) {
 		return adtySiteCache
 	}
 	snapshot := &adtySiteSnapshot{
 		byId: map[int]*model.AdtySite{}, byHost: map[string]*model.AdtySite{},
-		byCustom: map[string]*model.AdtySite{}, apiOnly: map[string]bool{}, defaultAPI: map[int]string{}, loadedAt: time.Now(),
+		byCustom: map[string]*model.AdtySite{}, apiOnly: map[string]bool{}, defaultAPI: map[int]string{},
+		loadedAt: time.Now(), redisVersion: redisVer,
 	}
 	var sites []model.AdtySite
 	if err := model.DB.Find(&sites).Error; err != nil {
@@ -361,6 +386,7 @@ func AdtySiteForHostWithError(host string) (*model.AdtySite, error) {
 	}
 	snapshot := loadAdtySiteSnapshot()
 	site := snapshot.byCustom[host]
+	fromCustom := site != nil
 	if site == nil {
 		site = snapshot.byHost[host]
 	}
@@ -383,6 +409,9 @@ func AdtySiteForHostWithError(host string) (*model.AdtySite, error) {
 	var binding model.AdtySiteDomain
 	if err := model.DB.Where("hostname = ?", host).Limit(1).Find(&binding).Error; err != nil {
 		return nil, err
+	}
+	if fromCustom && binding.Id == 0 {
+		return nil, nil
 	}
 	if binding.Id > 0 && (binding.SiteId != site.Id || binding.Status != model.AdtySiteDomainActive || binding.DesiredState == "removed" || (binding.Role == model.AdtySiteDomainRoleBaseURL) != snapshot.apiOnly[host]) {
 		return nil, nil

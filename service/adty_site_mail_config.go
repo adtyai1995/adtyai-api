@@ -565,6 +565,35 @@ func adtySubsiteFallbackDisplayName(site *model.AdtySite) string {
 	return strings.TrimSpace(site.Subdomain)
 }
 
+// EnsureAdtySiteMailConfigured enforces the R-41 #8A policy before enqueuing
+// asynchronous subsite emails or accepting subsite verification flows.
+func EnsureAdtySiteMailConfigured(site *model.AdtySite) error {
+	if site == nil || site.Id <= 0 {
+		return nil
+	}
+	cfg, found, err := loadAdtySiteMailConfig(site.Id)
+	if err != nil {
+		return err
+	}
+	if !found || cfg == nil {
+		return ErrAdtySiteMailNotConfigured
+	}
+	switch cfg.Provider {
+	case model.AdtySiteMailProviderSMTP:
+		if strings.TrimSpace(cfg.SMTPServer) == "" || strings.TrimSpace(cfg.SMTPFrom) == "" {
+			return ErrAdtySiteMailNotConfigured
+		}
+		return nil
+	case model.AdtySiteMailProviderResend:
+		if strings.TrimSpace(cfg.ResendApiKeyCipher) == "" || strings.TrimSpace(cfg.ResendFrom) == "" {
+			return ErrAdtySiteMailNotConfigured
+		}
+		return nil
+	default:
+		return ErrAdtySiteMailNotConfigured
+	}
+}
+
 // sendSubsiteConfiguredEmail delivers a subsite email using its configured
 // transport (custom SMTP or own Resend API key). Unconfigured subsites return
 // ErrAdtySiteMailNotConfigured (R-41 #8A); official site-closure migration
@@ -740,12 +769,11 @@ func TestAdtySiteMailConfig(ctx context.Context, ownerUserID int, toEmail string
 	}
 
 	brandName := adtySubsiteFallbackDisplayName(site)
-	subject := brandName + " - 测试邮件 / Test Email"
+	subject := brandName + " - Test Email"
 	content := AdtyRenderMail(site, AdtyMailMessage{
-		Title: "测试邮件 / Test Email",
-		Intro: "这是一封来自 " + brandName + " 的配置测试邮件。 / This is a test email from " + brandName + ".",
+		Title: "Test Email",
+		Intro: "This is a test email from " + brandName + ".",
 		Paragraphs: []string{
-			"您的分站邮件发信配置工作正常。",
 			"Your site email configuration is working properly.",
 		},
 	})

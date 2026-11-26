@@ -20,22 +20,38 @@ For commercial licensing, please contact support@quantumnous.com
 import { useRoute } from 'vitepress'
 import type { Theme } from 'vitepress'
 import DefaultTheme from 'vitepress/theme'
-import { nextTick, onMounted, watch } from 'vue'
+import { nextTick, onMounted, onUnmounted, watch } from 'vue'
 
 import { applyBrandToDOM, resolveSiteBrand, type SiteBrand } from './brand'
+import MainSiteOnly from './components/MainSiteOnly.vue'
+import PaymentMethodsList from './components/PaymentMethodsList.vue'
+import ReferralSummary from './components/ReferralSummary.vue'
+import SetupWizard from './components/SetupWizard.vue'
+import './style.css'
 
 export default {
   extends: DefaultTheme,
+  enhanceApp({ app }) {
+    app.component('SetupWizard', SetupWizard)
+    app.component('ReferralSummary', ReferralSummary)
+    app.component('PaymentMethodsList', PaymentMethodsList)
+    app.component('MainSiteOnly', MainSiteOnly)
+  },
   setup() {
     const route = useRoute()
     let activeBrand: SiteBrand | null = null
+    let applyTimer: number | null = null
 
     const runApply = () => {
       if (!activeBrand) return
       void nextTick(() => {
         if (!activeBrand) return
         applyBrandToDOM(activeBrand)
-        window.setTimeout(() => {
+        if (applyTimer !== null) {
+          window.clearTimeout(applyTimer)
+        }
+        applyTimer = window.setTimeout(() => {
+          applyTimer = null
           if (activeBrand) applyBrandToDOM(activeBrand)
         }, 120)
       })
@@ -43,15 +59,20 @@ export default {
 
     onMounted(async () => {
       activeBrand = await resolveSiteBrand()
-      if (activeBrand.isWhiteLabel) {
-        runApply()
+      runApply()
+    })
+
+    onUnmounted(() => {
+      if (applyTimer !== null) {
+        window.clearTimeout(applyTimer)
+        applyTimer = null
       }
     })
 
     watch(
       () => route.path,
       () => {
-        if (activeBrand?.isWhiteLabel) {
+        if (activeBrand) {
           runApply()
         }
       }

@@ -594,16 +594,34 @@ func adtyUpsertEdgeCertRow(ctx context.Context, certName, kind string, domainID 
 		return nil
 	}
 	updates := map[string]any{}
+	needsReissue := false
 	if existing.AliasFQDN != aliasFQDN {
 		updates["alias_fqdn"] = aliasFQDN
-		updates["next_run_at"] = 0
+		needsReissue = true
 	}
 	if existing.Kind != kind {
 		updates["kind"] = kind
 	}
 	if existing.DomainId != domainID {
 		updates["domain_id"] = domainID
+		needsReissue = true
+	}
+	if existing.Environment != env {
+		updates["environment"] = env
+		needsReissue = true
+	}
+	if needsReissue {
+		updates["status"] = model.AdtyEdgeCertStatusWaitingDNS
+		updates["cert_pem"] = ""
+		updates["key_encrypted"] = ""
+		updates["not_before"] = 0
+		updates["not_after"] = 0
+		updates["last_error"] = ""
+		updates["attempts"] = 0
 		updates["next_run_at"] = 0
+		existing.Status = model.AdtyEdgeCertStatusWaitingDNS
+		existing.LastError = ""
+		existing.NotAfter = 0
 	}
 	if len(updates) > 0 {
 		if err := model.DB.WithContext(ctx).Model(&model.AdtyEdgeCert{}).Where("id = ?", existing.Id).Updates(updates).Error; err != nil {

@@ -75,6 +75,7 @@ interface AnnouncementItem {
   english?: string
   source?: string
   translation_status?: string
+  translation_notice?: string
   extra?: string
   publishDate?: string | Date
   title?: string
@@ -195,7 +196,11 @@ function AnnouncementDetailButton(props: { readKey: string }) {
     enabled: open,
   })
   const detailData = detail.data
-  const { title: resolvedDetailTitle, content } = resolveLocalizedAnnouncement(
+  const {
+    title: resolvedDetailTitle,
+    content,
+    translationNotReady,
+  } = resolveLocalizedAnnouncement(
     detailData
       ? {
           id:
@@ -228,6 +233,10 @@ function AnnouncementDetailButton(props: { readKey: string }) {
           translation_status:
             typeof detailData.translation_status === 'string'
               ? detailData.translation_status
+              : undefined,
+          translation_notice:
+            typeof detailData.translation_notice === 'string'
+              ? detailData.translation_notice
               : undefined,
           content_format:
             typeof detailData.content_format === 'string'
@@ -267,7 +276,16 @@ function AnnouncementDetailButton(props: { readKey: string }) {
             <ErrorState onRetry={() => void detail.refetch()} />
           )}
           {detail.isSuccess && (
-            <RichContent mode={detailMode} breaks content={safeContent} />
+            <div className='space-y-2'>
+              {safeContent && (
+                <RichContent mode={detailMode} breaks content={safeContent} />
+              )}
+              {translationNotReady && (
+                <p className='text-muted-foreground text-xs'>
+                  {t('English is not ready')}
+                </p>
+              )}
+            </div>
           )}
         </DialogContent>
       </Dialog>
@@ -401,6 +419,7 @@ function AnnouncementsContent({
             title: displayTitle,
             content: displayContent,
             extra: displayExtra,
+            translationNotReady,
           } = resolveLocalizedAnnouncement(item, language)
           const contentMode = isHtmlNotificationContent(
             displayContent,
@@ -432,13 +451,20 @@ function AnnouncementsContent({
                         {t('Recipients')}: {recipientSummary}
                       </div>
                     )}
-                    <div className='text-sm'>
-                      <RichContent
-                        mode={contentMode}
-                        breaks
-                        content={safeDisplayContent}
-                      />
-                    </div>
+                    {safeDisplayContent && (
+                      <div className='text-sm'>
+                        <RichContent
+                          mode={contentMode}
+                          breaks
+                          content={safeDisplayContent}
+                        />
+                      </div>
+                    )}
+                    {translationNotReady && (
+                      <p className='text-muted-foreground text-xs'>
+                        {t('English is not ready')}
+                      </p>
+                    )}
 
                     {item.ticket_path &&
                       /^\/(profile|support|admin-tickets|site-admin\/tickets|site-owner\/tickets|site-staff)#case-\d+(?:-team)?$/.test(

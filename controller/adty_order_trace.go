@@ -319,11 +319,9 @@ func getAdtyOrderTrace(c *gin.Context, ownerSiteID *int, selfUserID ...int) {
 		common.ApiError(c, err)
 		return
 	}
-	hideOrphanSections := isSelf || (isAdmin && c.GetInt("role") < common.RoleRootUser && (order.SiteId == nil || *order.SiteId != 0))
-	sections := []string{"payments", "wallet", "funds", "refunds", "exceptions", "reviews"}
-	if isSelf {
-		sections = []string{"payments", "wallet", "funds", "refunds"}
-	} else if isAdmin {
+	hideOrphanSections := isSelf || ownerSiteID != nil || (isAdmin && c.GetInt("role") < common.RoleRootUser && (order.SiteId == nil || *order.SiteId != 0))
+	sections := []string{"payments", "wallet", "funds", "refunds"}
+	if isAdmin {
 		if hideOrphanSections {
 			sections = []string{"payments", "wallet", "funds", "refunds", "site_wallet", "commissions", "commission_movements"}
 		} else {
@@ -463,13 +461,13 @@ func adtyOrderTraceQuery(section string, order rechargeAuditOrder, ownerSiteID *
 		}
 		return q, "id, 'Site wallet movement' AS kind, wallet_kind AS source, type AS status, ref_id AS reference, delta AS amount, balance_before, balance_after, reason AS note, operator_id, created_at", true
 	case "exceptions":
-		if isSelf {
+		if isSelf || ownerSiteID != nil {
 			return nil, "", false
 		}
 		return model.DB.Model(&model.PaymentOrphanEvent{}).Where("reference_id = ? AND provider = ?", order.TradeNo, order.PaymentProvider),
 			"id, 'Reconciliation event' AS kind, event_type AS source, status, event_id AS reference, create_time AS created_at", true
 	case "reviews":
-		if isSelf {
+		if isSelf || ownerSiteID != nil {
 			return nil, "", false
 		}
 		return model.DB.Model(&model.PaymentOrphanReview{}).Where("trade_no = ? AND provider = ?", order.TradeNo, order.PaymentProvider),

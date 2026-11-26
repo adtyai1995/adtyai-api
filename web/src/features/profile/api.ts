@@ -117,7 +117,11 @@ export function sendAccountDeletionCode(
   signal?: AbortSignal
 ): Promise<AccountSecurityResult> {
   return authResult(
-    api.post('/api/user/self/deletion-code', {}, { signal }),
+    api.post(
+      '/api/user/self/deletion-code',
+      {},
+      { ...authRequestOptions, signal }
+    ),
     'Failed to send email'
   )
 }

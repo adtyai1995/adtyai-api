@@ -144,7 +144,7 @@ func QueryAdtyTopUp(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 8*time.Second)
 		err := service.RecoverAdtyHostedPaymentForActor(ctx, ext, c.GetInt("id"), c.GetInt("role"), isAccessTokenRequest(c))
 		cancel()
-		if errors.Is(err, model.ErrAdtyOwnerTopupReview) {
+		if errors.Is(err, model.ErrAdtyOwnerTopupReview) || errors.Is(err, model.ErrTopUpStatusInvalid) {
 			common.ApiErrorT(c, "Payment verified and queued for review. No balance was credited.")
 			return
 		}
@@ -417,14 +417,34 @@ func ManualCompleteAdtyTopUp(c *gin.Context) {
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var err error
 		alreadyDone, credited, topUp, ext, err = model.CompleteAdtyTopUpTx(tx, tradeNo, facts)
-		if err != nil || alreadyDone {
+		if err != nil {
 			return err
 		}
-		// 实付没有网关数据，记成应付，币种照下单时。
-		return tx.Model(&model.AdtyTopupOrder{}).Where("id = ?", ext.Id).Updates(map[string]any{
-			"paid_amount":   ext.PayAmount,
-			"paid_currency": ext.PayCurrency,
-		}).Error
+		if !alreadyDone {
+			// 实付没有网关数据，记成应付，币种照下单时。
+			if err := tx.Model(&model.AdtyTopupOrder{}).Where("id = ?", ext.Id).Updates(map[string]any{
+				"paid_amount":   ext.PayAmount,
+				"paid_currency": ext.PayCurrency,
+			}).Error; err != nil {
+				return err
+			}
+		}
+		if ext != nil {
+			now := common.GetTimestamp()
+			if err := tx.Model(&model.PaymentOrphanEvent{}).
+				Where("reference_id = ? AND provider = ? AND status = ?", tradeNo, ext.Provider, model.PaymentOrphanStatusPendingReview).
+				Updates(map[string]any{
+					"status":          model.PaymentOrphanStatusCredited,
+					"resolution":      model.PaymentOrphanStatusCredited,
+					"resolution_note": body.Note,
+					"resolved_by":     c.GetInt("id"),
+					"resolved_at":     now,
+					"update_time":     now,
+				}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		writeAdtyFinanceError(c, err)

@@ -48,7 +48,7 @@ func PrepareImageBillingForRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 		}
 		unitDec := common.QuotaPerUnitDecimal()
 		if snap.QuotaPerUnit != 0 && snap.QuotaPerUnit != float64(common.FixedQuotaPerUnit) {
-			unitDec = decimal.NewFromFloat(snap.QuotaPerUnit)
+			common.SysError(common.LogText("ignoring non-standard image billing snapshot quota_per_unit=%v; enforcing fixed %d", snap.QuotaPerUnit, common.FixedQuotaPerUnit))
 		}
 		beforeGroupDec := trace.CostDec.Div(decimal.NewFromInt(1_000_000)).Mul(unitDec)
 		if trace.BillingUnit != billingexpr.BillingUnitRequest && snap.PreConsumeMultiplier != 0 {

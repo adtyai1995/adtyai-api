@@ -31,6 +31,8 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { TitledCard } from '@/components/ui/titled-card'
 import { useProfile } from '@/features/profile/hooks/use-profile'
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { AccessTokensCard } from './components/access-tokens-card'
 import { AccountActionCard } from './components/account-action-card'
@@ -42,6 +44,7 @@ import { TwoFACard } from './components/two-fa-card'
 export function Security() {
   const { t } = useTranslation()
   const { profile, loading, refreshProfile, fetchProfile } = useProfile()
+  const authUser = useAuthStore((s) => s.auth.user)
 
   let content: ReactNode
   if (loading) {
@@ -71,6 +74,13 @@ export function Security() {
       </Empty>
     )
   } else {
+    const profileSiteOwner = (profile as { adty_site_owner?: boolean })
+      .adty_site_owner
+    const isSiteOwner = Boolean(profileSiteOwner ?? authUser?.adty_site_owner)
+    const showAccountDeleteCard =
+      profile.role < ROLE.SUPER_ADMIN && !isSiteOwner
+    const showPrivacyCard = !(isSiteOwner && profile.role < ROLE.ADMIN)
+
     content = (
       <div className='grid gap-6 sm:gap-8 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.46fr)] xl:items-start'>
         <div className='min-w-0 space-y-8'>
@@ -112,15 +122,17 @@ export function Security() {
             <LoginSessionsCard />
             <AccessTokensCard />
           </section>
-          <section aria-labelledby='security-account' className='space-y-4'>
-            <h3
-              id='security-account'
-              className='text-[15px] leading-snug font-semibold tracking-tight'
-            >
-              {t('Account Actions')}
-            </h3>
-            <AccountActionCard action='delete' username={profile.username} />
-          </section>
+          {showAccountDeleteCard && (
+            <section aria-labelledby='security-account' className='space-y-4'>
+              <h3
+                id='security-account'
+                className='text-[15px] leading-snug font-semibold tracking-tight'
+              >
+                {t('Account Actions')}
+              </h3>
+              <AccountActionCard action='delete' username={profile.username} />
+            </section>
+          )}
         </div>
         <aside
           aria-labelledby='security-verification'
@@ -135,15 +147,17 @@ export function Security() {
             </h3>
             <TwoFACard loading={loading} />
           </div>
-          <section aria-labelledby='security-privacy' className='space-y-4'>
-            <h3
-              id='security-privacy'
-              className='text-[15px] leading-snug font-semibold tracking-tight'
-            >
-              {t('Privacy')}
-            </h3>
-            <PrivacyCard profile={profile} onUpdate={refreshProfile} />
-          </section>
+          {showPrivacyCard && (
+            <section aria-labelledby='security-privacy' className='space-y-4'>
+              <h3
+                id='security-privacy'
+                className='text-[15px] leading-snug font-semibold tracking-tight'
+              >
+                {t('Privacy')}
+              </h3>
+              <PrivacyCard profile={profile} onUpdate={refreshProfile} />
+            </section>
+          )}
         </aside>
       </div>
     )

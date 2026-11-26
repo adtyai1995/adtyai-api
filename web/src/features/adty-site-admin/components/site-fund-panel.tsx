@@ -34,6 +34,7 @@ import { SiteWalletLedger } from '@/features/adty-ledger/site-wallet-ledger'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { SettingsSection } from '@/features/system-settings/components/settings-section'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
+import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
@@ -425,7 +426,11 @@ export function FundReviewPanel(props: { siteId: number }) {
                       {t('Team')} #{row.team_id}
                     </span>
                   ) : null}
-                  {row.account_id ? <span>{row.account_id}</span> : null}
+                  {row.account_id ? (
+                    <span className='tabular-nums'>
+                      {formatUserIdentity(row.account_id, row.account_username)}
+                    </span>
+                  ) : null}
                   {row.order_ref ? (
                     <span className='font-mono text-xs'>{row.order_ref}</span>
                   ) : null}

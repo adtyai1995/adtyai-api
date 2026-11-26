@@ -1,40 +1,47 @@
 package controller
 
 import (
+	"math"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 )
 
-func GetSubscription(c *gin.Context) {
-	var remainQuota int
-	var usedQuota int
-	var err error
-	var token *model.Token
-	var expiredTime int64
-	if common.GetDisplayTokenStatEnabled() {
-		tokenId := c.GetInt("token_id")
-		token, err = model.GetTokenById(tokenId)
-		if err != nil {
-			common.SysError(common.LogText("GetSubscription failed to load token %d: %s", tokenId, err.Error()))
-			openAIError := types.OpenAIError{
-				Message: "Failed to retrieve billing subscription",
-				Type:    "upstream_error",
-			}
-			c.JSON(200, gin.H{
-				"error": openAIError,
-			})
-			return
-		}
-		expiredTime = token.ExpiredTime
-		remainQuota, usedQuota = model.TokenQuotaForBilling(token)
-	} else {
-		userId := c.GetInt("id")
-		remainQuota, usedQuota, err = model.UserQuotaForBilling(userId)
+func resolveBillingQuotaForToken(c *gin.Context) (remainQuota int, usedQuota int, token *model.Token, expiredTime int64, err error) {
+	tokenId := c.GetInt("token_id")
+	token, err = model.GetTokenById(tokenId)
+	if err != nil {
+		return 0, 0, nil, 0, err
 	}
+	if token.OwnerSelfUseSiteId > 0 {
+		return 0, 0, token, 0, common.NewMessage("Billing query is not available for this key")
+	}
+	expiredTime = token.ExpiredTime
+	if common.GetDisplayTokenStatEnabled() || !token.AllowUserQuotaQuery {
+		remainQuota, usedQuota = model.TokenQuotaForBilling(token)
+		return remainQuota, usedQuota, token, expiredTime, nil
+	}
+	teamQuota, isTeamKey, teamErr := service.AdtyTeamSharedQuotaForToken(token.Id)
+	if teamErr != nil {
+		return 0, 0, token, expiredTime, teamErr
+	}
+	if isTeamKey {
+		remainQuota = int(min(max(teamQuota, int64(0)), int64(math.MaxInt)))
+		usedQuota = token.UsedQuota
+		return remainQuota, usedQuota, token, expiredTime, nil
+	}
+	userId := c.GetInt("id")
+	remainQuota, usedQuota, err = model.UserQuotaForBilling(userId)
+	return remainQuota, usedQuota, token, expiredTime, err
+}
+
+func GetSubscription(c *gin.Context) {
+	remainQuota, usedQuota, token, expiredTime, err := resolveBillingQuotaForToken(c)
 	if expiredTime <= 0 {
 		expiredTime = 0
 	}
@@ -80,28 +87,7 @@ func GetSubscription(c *gin.Context) {
 }
 
 func GetUsage(c *gin.Context) {
-	var quota int
-	var err error
-	var token *model.Token
-	if common.GetDisplayTokenStatEnabled() {
-		tokenId := c.GetInt("token_id")
-		token, err = model.GetTokenById(tokenId)
-		if err != nil {
-			common.SysError(common.LogText("GetUsage failed to load token %d: %s", tokenId, err.Error()))
-			openAIError := types.OpenAIError{
-				Message: "Failed to retrieve billing usage",
-				Type:    "adtyai_error",
-			}
-			c.JSON(200, gin.H{
-				"error": openAIError,
-			})
-			return
-		}
-		_, quota = model.TokenQuotaForBilling(token)
-	} else {
-		userId := c.GetInt("id")
-		_, quota, err = model.UserQuotaForBilling(userId)
-	}
+	_, quota, _, _, err := resolveBillingQuotaForToken(c)
 	if err != nil {
 		common.SysError(common.LogText("GetUsage failed to load quota: %s", err.Error()))
 		openAIError := types.OpenAIError{

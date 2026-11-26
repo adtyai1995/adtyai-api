@@ -1483,32 +1483,35 @@ func validateReferralWithdrawSettingsTx(tx *gorm.DB, values map[string]string, w
 		}
 		values[adty_setting.ReferralKeyWithdrawMethods] = string(encoded)
 	}
-	hasSetDecimal := func(key string) (bool, error) {
+	readSetDecimal := func(key string, allowZero bool) (decimal.Decimal, bool, error) {
 		raw, ok, err := readOpt(key)
 		if err != nil {
-			return false, err
+			return decimal.Zero, false, err
 		}
 		trimmed := strings.TrimSpace(raw)
 		if !ok || trimmed == "" || strings.EqualFold(trimmed, "null") {
-			return false, nil
+			return decimal.Zero, false, nil
 		}
 		val, err := common.ParseBoundedDecimalString(trimmed, 12, 8)
-		if err != nil || val.IsNegative() {
-			return false, common.NewMessage("Invalid parameters")
+		if err != nil || val.IsNegative() || (!allowZero && !val.IsPositive()) {
+			return decimal.Zero, false, common.NewMessage("Invalid parameters")
 		}
-		return true, nil
+		return val, true, nil
 	}
-	minSet, err := hasSetDecimal(minKey)
+	minVal, minSet, err := readSetDecimal(minKey, false)
 	if err != nil {
 		return err
 	}
 	if slices.Contains(methods, adty_setting.ReferralWithdrawMethodUSDT) {
-		feeSet, err := hasSetDecimal(feeKey)
+		feeVal, feeSet, err := readSetDecimal(feeKey, true)
 		if err != nil {
 			return err
 		}
 		if !minSet || !feeSet {
 			return common.NewMessage("Set the minimum withdrawal and USDT fee before enabling USDT withdrawals")
+		}
+		if !minVal.GreaterThan(feeVal) {
+			return common.NewMessage("Minimum withdrawal must be greater than the USDT fee")
 		}
 		rawNets, hasNetsOpt, err := readOpt(adty_setting.ReferralKeyWithdrawUSDTNetworks)
 		if err != nil {

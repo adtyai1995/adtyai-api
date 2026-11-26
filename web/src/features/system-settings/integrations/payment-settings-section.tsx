@@ -279,7 +279,7 @@ export function PaymentSettingsSection({
           <div className='overflow-x-auto pb-1'>
             <TabsList className='grid min-w-[24rem] grid-cols-3'>
               <TabsTrigger value='general'>{t('General')}</TabsTrigger>
-              <TabsTrigger value='epay'>Epay</TabsTrigger>
+              <TabsTrigger value='epay'>{t('Epay')}</TabsTrigger>
               <TabsTrigger value='usdt'>USDT</TabsTrigger>
             </TabsList>
           </div>

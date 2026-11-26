@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
@@ -64,6 +65,12 @@ export function OwnerCreateTeamForm(props: { closing?: boolean }) {
   const lookup = useMutation({
     mutationFn: (q: string) => lookupOwnerCustomer(q),
     onSuccess: (customer) => {
+      if (customer.status !== 1) {
+        toast.error(
+          t('This customer is disabled and cannot be set as team leader.')
+        )
+        return
+      }
       setLookedUp(customer)
       setLeader(String(customer.id))
     },

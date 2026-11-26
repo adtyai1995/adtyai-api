@@ -285,6 +285,11 @@ func SendEmailVerification(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Please try again later"))
 		return
 	}
+	reqSite := service.AdtySiteForRequest(c)
+	if err := service.EnsureAdtySiteMailConfigured(reqSite); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	// 二开：已注册的邮箱不发验证码，改发一封提醒，响应和正常情况完全一样（任务 7.3）
 	siteID := service.AdtyRequestSiteID(c)
 	if model.IsEmailAlreadyTaken(email, siteID) {
@@ -299,7 +304,7 @@ func SendEmailVerification(c *gin.Context) {
 		return
 	}
 	// Registration happens before an account exists; use the request site.
-	site := service.AdtySiteForRequest(c)
+	site := reqSite
 	subject := service.AdtyBrandFor(site).Name + " email verification"
 	content := service.AdtyRenderMail(site, service.AdtyMailMessage{
 		Title:    "Verify your email address",
@@ -326,11 +331,18 @@ func SendPasswordResetEmail(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Please try again later"))
 		return
 	}
+	if err := service.EnsureAdtySiteMailConfigured(service.AdtySiteForRequest(c)); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	username := strings.TrimSpace(c.Query("username"))
 	user, err := model.ResolveUserForEmailChallenge(email, username, service.AdtyRequestSiteID(c))
 	switch {
 	case err == nil:
-		_ = sendPasswordResetInstructions(c, user)
+		if sendErr := sendPasswordResetInstructions(c, user); errors.Is(sendErr, service.ErrAdtySiteMailNotConfigured) {
+			common.ApiError(c, sendErr)
+			return
+		}
 	case errors.Is(err, model.ErrEmailAmbiguous):
 		common.ApiErrorStatus(c, http.StatusOK, common.NewMessage(model.EmailAmbiguousPrompt), gin.H{"code": model.EmailAmbiguousCode})
 		return
@@ -362,6 +374,9 @@ func sendPasswordResetInstructions(c *gin.Context, user *model.User) error {
 	}
 	if current.SiteId > 0 && !service.AdtySiteServesCustomers(site) {
 		return common.NewMessage("Site not found")
+	}
+	if err := service.EnsureAdtySiteMailConfigured(site); err != nil {
+		return err
 	}
 	code := common.GenerateVerificationCode(0)
 	if err := common.RegisterVerificationCodeWithKey(model.PasswordResetCodeKey(current), code, common.PasswordResetPurpose); err != nil {

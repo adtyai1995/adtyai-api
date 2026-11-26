@@ -91,6 +91,9 @@ func StartEmailBinding(identity AuthIdentity, authorization *model.AuthFlowAutho
 	if err := sendEmailBindingCodes(state, codes); err != nil {
 		// A partially delivered pair must not leave a usable change request.
 		_, _ = model.ConsumeAuthFlow(token, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeEmailBinding, UserId: identity.UserID, SessionId: identity.SessionID})
+		if errors.Is(err, ErrAdtySiteMailNotConfigured) {
+			return nil, err
+		}
 		return nil, ErrEmailBindingDelivery
 	}
 	data := emailBindingData(token, flow, &state)
@@ -128,6 +131,9 @@ func ResendAccountEmailBinding(identity AuthIdentity, token string, _ string, or
 	}
 	if err := sendEmailBindingCodes(*state, codes); err != nil {
 		_, _ = model.ConsumeAuthFlow(token, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeEmailBinding, UserId: identity.UserID, SessionId: identity.SessionID})
+		if errors.Is(err, ErrAdtySiteMailNotConfigured) {
+			return nil, err
+		}
 		return nil, ErrEmailBindingDelivery
 	}
 	return emailBindingData(token, flow, state), nil

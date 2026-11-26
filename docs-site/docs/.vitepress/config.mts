@@ -150,7 +150,7 @@ export default defineConfig({
             collapsed: false,
             items: [
               { text: '快速上手与双域名规则', link: '/zh-cn/guides/overview' },
-              { text: '余额充值、赠金与兑换码', link: '/zh-cn/guides/wallet-and-vouchers' },
+              { text: '余额充值、充值赠送与额度兑换码', link: '/zh-cn/guides/wallet-and-vouchers' },
               { text: '账号安全与访问令牌', link: '/zh-cn/guides/security' },
               { text: '团队协作与共享钱包', link: '/zh-cn/guides/teams' },
               { text: '渠道可用性与分组选择', link: '/zh-cn/guides/channel-status' },

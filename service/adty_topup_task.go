@@ -134,6 +134,14 @@ func verifyExpiredOrdersUnpaidBeforeExpire(now int64) {
 		if latest.Id > 0 && latest.Outcome == "unpaid" && latest.CreatedAt >= ext.ExpireAt {
 			continue
 		}
+		if latest.Id > 0 && latest.Outcome == "rejected" {
+			var orphanCount int64
+			if cErr := model.DB.Model(&model.PaymentOrphanEvent{}).
+				Where("reference_id = ? AND provider = ? AND status <> ?", ext.TradeNo, ext.Provider, model.PaymentOrphanStatusDismissed).
+				Count(&orphanCount).Error; cErr == nil && orphanCount > 0 {
+				continue
+			}
+		}
 		_ = model.UpdateAdtyTopupOrderFields(ext.TradeNo, map[string]any{"last_query_at": now})
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		_ = RecoverAdtyHostedPayment(ctx, ext)

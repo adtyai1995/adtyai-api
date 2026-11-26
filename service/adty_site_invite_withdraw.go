@@ -542,7 +542,11 @@ func reviewSiteInviteWithdrawalWithAudit(ownerID, actorRole int, denyAdminTarget
 			return auditErr
 		}
 		if !platform {
-			return recordSiteReferralAuditTx(tx, row.SiteId, "withdrawal_reject", row.UserId, ownerID, strings.TrimSpace(reason), ip, ua, beforeSnap, map[string]any{"id": row.Id, "status": model.AdtySiteInviteWithdrawRejected})
+			siteAuditAction := "withdrawal_reject"
+			if row.Status == model.AdtySiteInviteWithdrawApproved {
+				siteAuditAction = "withdrawal_fail"
+			}
+			return recordSiteReferralAuditTx(tx, row.SiteId, siteAuditAction, row.UserId, ownerID, strings.TrimSpace(reason), ip, ua, beforeSnap, map[string]any{"id": row.Id, "status": model.AdtySiteInviteWithdrawRejected})
 		}
 		return recordReferralAuditTx(tx, referralAuditAction, row.UserId, 0, ownerID, strings.TrimSpace(reason), ip, ua, beforeSnap, map[string]any{"id": row.Id, "site_id": row.SiteId, "status": model.AdtySiteInviteWithdrawRejected})
 	})

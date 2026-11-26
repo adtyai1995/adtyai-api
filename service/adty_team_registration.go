@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,11 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"gorm.io/gorm"
+)
+
+const (
+	adtyTeamRegistrationMaxOutstanding = 50
+	adtyTeamRegistrationListLimit      = 200
 )
 
 var (
@@ -67,12 +73,12 @@ func adtyTeamRegistrationTTLValid(ttl time.Duration) bool {
 }
 
 // CreateAdtyMainTeamRegistration issues a main-site create-team link. Only Root may call this.
-func CreateAdtyMainTeamRegistration(actorId int, ttl time.Duration) (*AdtyTeamRegistrationIssue, error) {
-	issued, _, err := CreateAdtyMainTeamRegistrationWithAudit(actorId, ttl)
+func CreateAdtyMainTeamRegistration(actorId int, ttl time.Duration, keys ...string) (*AdtyTeamRegistrationIssue, error) {
+	issued, _, err := CreateAdtyMainTeamRegistrationWithAudit(actorId, ttl, keys...)
 	return issued, err
 }
 
-func CreateAdtyMainTeamRegistrationWithAudit(actorId int, ttl time.Duration) (*AdtyTeamRegistrationIssue, string, error) {
+func CreateAdtyMainTeamRegistrationWithAudit(actorId int, ttl time.Duration, keys ...string) (*AdtyTeamRegistrationIssue, string, error) {
 	if !adtyTeamRegistrationTTLValid(ttl) {
 		return nil, "", ErrAdtyTeamInvalid
 	}
@@ -86,35 +92,52 @@ func CreateAdtyMainTeamRegistrationWithAudit(actorId int, ttl time.Duration) (*A
 	if actor.Role != common.RoleRootUser {
 		return nil, "", ErrAdtyTeamForbidden
 	}
-	return issueAdtyTeamRegistrationWithAudit(actorId, 0, ttl)
+	return issueAdtyTeamRegistrationWithAudit(actorId, 0, ttl, keys...)
 }
 
 // CreateAdtyOwnerSiteTeamRegistration issues a one-time create-team link bound
 // to the owner's active subsite (R-41 #11).
-func CreateAdtyOwnerSiteTeamRegistration(ownerId, siteId int, ttl time.Duration) (*AdtyTeamRegistrationIssue, error) {
-	issued, _, err := CreateAdtyOwnerSiteTeamRegistrationWithAudit(ownerId, siteId, ttl)
+func CreateAdtyOwnerSiteTeamRegistration(ownerId, siteId int, ttl time.Duration, keys ...string) (*AdtyTeamRegistrationIssue, error) {
+	issued, _, err := CreateAdtyOwnerSiteTeamRegistrationWithAudit(ownerId, siteId, ttl, keys...)
 	return issued, err
 }
 
-func CreateAdtyOwnerSiteTeamRegistrationWithAudit(ownerId, siteId int, ttl time.Duration) (*AdtyTeamRegistrationIssue, string, error) {
+func CreateAdtyOwnerSiteTeamRegistrationWithAudit(ownerId, siteId int, ttl time.Duration, keys ...string) (*AdtyTeamRegistrationIssue, string, error) {
 	if ownerId <= 0 || siteId <= 0 {
 		return nil, "", ErrAdtyTeamForbidden
 	}
 	if !adtyTeamRegistrationTTLValid(ttl) {
 		return nil, "", ErrAdtyTeamInvalid
 	}
-	return issueAdtyTeamRegistrationWithAudit(ownerId, siteId, ttl)
+	return issueAdtyTeamRegistrationWithAudit(ownerId, siteId, ttl, keys...)
 }
 
-func issueAdtyTeamRegistrationWithAudit(actorId, siteId int, ttl time.Duration) (*AdtyTeamRegistrationIssue, string, error) {
+func issueAdtyTeamRegistrationWithAudit(actorId, siteId int, ttl time.Duration, keys ...string) (*AdtyTeamRegistrationIssue, string, error) {
+	key := ""
+	if len(keys) > 0 {
+		key = strings.TrimSpace(keys[0])
+	}
+	if len(key) > 64 {
+		return nil, "", ErrAdtyTeamIdempotencyKey
+	}
+	var createKey *string
+	var fingerprint string
+	if key != "" {
+		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d/%d/%s", actorId, siteId, key))))
+		createKey = &digest
+		fingerprint = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d/%d", siteId, int64(ttl.Seconds())))))
+	}
 	code, hash, err := newAdtyTeamRegistrationCode()
 	if err != nil {
 		return nil, "", err
 	}
+	now := time.Now()
 	link := model.AdtyTeamRegistrationLink{
-		SiteId: siteId, CodeHash: hash, CreatedBy: actorId, ExpiresAt: time.Now().Add(ttl).Unix(),
+		CreateKey: createKey, CreateFingerprint: fingerprint,
+		SiteId: siteId, CodeHash: hash, CreatedBy: actorId, ExpiresAt: now.Add(ttl).Unix(),
 	}
 	var auditEvent *model.AuditLog
+	replayed := false
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		if siteId > 0 {
 			var site model.AdtySite
@@ -134,6 +157,29 @@ func issueAdtyTeamRegistrationWithAudit(actorId, siteId int, ttl time.Duration) 
 				return ErrAdtyTeamForbidden
 			}
 		}
+		if createKey != nil {
+			var existing model.AdtyTeamRegistrationLink
+			if err := tx.Where("create_key = ?", *createKey).Limit(1).Find(&existing).Error; err != nil {
+				return err
+			}
+			if existing.Id > 0 {
+				if existing.CreateFingerprint != fingerprint {
+					return model.ErrAdtyIdempotencyConflict
+				}
+				link = existing
+				replayed = true
+				return nil
+			}
+		}
+		var activeCount int64
+		if err := tx.Model(&model.AdtyTeamRegistrationLink{}).
+			Where("site_id = ? AND used_at = 0 AND revoked_at = 0 AND expires_at >= ?", siteId, now.Unix()).
+			Count(&activeCount).Error; err != nil {
+			return err
+		}
+		if activeCount >= adtyTeamRegistrationMaxOutstanding {
+			return common.NewMessage("Too many active team registration links")
+		}
 		if err := tx.Create(&link).Error; err != nil {
 			return err
 		}
@@ -152,10 +198,16 @@ func issueAdtyTeamRegistrationWithAudit(actorId, siteId int, ttl time.Duration) 
 		eventID = auditEvent.EventId
 		deliverAdtyCommittedAudit(*auditEvent)
 	}
+	issuedCode := code
+	status := model.AdtyTeamRegistrationStatusOutstanding
+	if replayed {
+		issuedCode = ""
+		status = model.AdtyTeamRegistrationStatus(link, time.Now().Unix())
+	}
 	issued := &AdtyTeamRegistrationIssue{
-		Id: link.Id, Code: code, SiteId: link.SiteId, ExpiresAt: link.ExpiresAt,
+		Id: link.Id, Code: issuedCode, SiteId: link.SiteId, ExpiresAt: link.ExpiresAt,
 		CreatedBy: link.CreatedBy, CreatedAt: link.CreatedAt,
-		Status: model.AdtyTeamRegistrationStatusOutstanding,
+		Status: status,
 	}
 	return issued, eventID, nil
 }
@@ -341,7 +393,7 @@ func ListAdtyOwnerSiteTeamRegistrations(ownerId, siteId int) ([]AdtyTeamRegistra
 
 func listAdtyTeamRegistrations(siteId int) ([]AdtyTeamRegistrationView, error) {
 	var rows []model.AdtyTeamRegistrationLink
-	if err := model.DB.Where("site_id = ?", siteId).Order("id DESC").Find(&rows).Error; err != nil {
+	if err := model.DB.Where("site_id = ?", siteId).Order("id DESC").Limit(adtyTeamRegistrationListLimit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	now := time.Now().Unix()

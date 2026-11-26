@@ -3,20 +3,39 @@ package controller
 import (
 	"context"
 	"crypto/subtle"
+	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/gin-gonic/gin"
 )
+
+func isAllowedAdtyEdgeManifestIP(clientIP string) bool {
+	ip := net.ParseIP(strings.TrimSpace(clientIP))
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	normalized := ip.String()
+	return slices.Contains(adty_setting.GetResellerSetting().EffectiveEdgeNodeIPs(), normalized)
+}
 
 // GetAdtyEdgeManifest serves the signed-token internal manifest for mainland edge nodes.
 // Edge nodes authenticate with X-Adty-Edge-Token matching ADTY_EDGE_TOKEN and use ETag/304.
 func GetAdtyEdgeManifest(c *gin.Context) {
 	c.Header("Cache-Control", "private, no-store")
+	if !isAllowedAdtyEdgeManifestIP(c.ClientIP()) {
+		c.AbortWithStatus(http.StatusForbidden)
+		return
+	}
 	expected := strings.TrimSpace(os.Getenv("ADTY_EDGE_TOKEN"))
 	provided := strings.TrimSpace(c.GetHeader("X-Adty-Edge-Token"))
 	if expected == "" || len(provided) != len(expected) || subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {

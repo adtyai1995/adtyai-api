@@ -1183,6 +1183,7 @@ web/src/components/animate-in-view.tsx
 web/src/components/auto-group-order-item.tsx
 web/src/components/auto-skeleton.tsx
 web/src/components/coming-soon.tsx
+web/src/components/command-menu.tsx
 web/src/components/data-table/core/__tests__/column-header.test.tsx
 web/src/components/data-table/core/__tests__/pagination.test.tsx
 web/src/components/data-table/toolbar/__tests__/faceted-filter.test.tsx
@@ -1211,6 +1212,7 @@ web/src/components/multi-select/__tests__/option-icon.test.tsx
 web/src/components/multi-select/__tests__/selection.test.tsx
 web/src/components/react-icon-by-name.tsx
 web/src/components/risk-acknowledgement-dialog.tsx
+web/src/components/search.tsx
 web/src/components/theme-quick-switcher.tsx
 web/src/components/ui/__tests__/combobox.test.tsx
 web/src/components/ui/__tests__/dialog-layout.test.tsx
@@ -1234,6 +1236,7 @@ web/src/components/ui/resizable.tsx
 web/src/components/ui/slider.tsx
 web/src/context/__tests__/theme-boot-script.test.ts
 web/src/context/__tests__/theme-preferences.test.tsx
+web/src/context/search-provider.tsx
 web/src/features/admin-referral/__tests__/admin-referral.test.tsx
 web/src/features/admin-referral/__tests__/query-errors.test.tsx
 web/src/features/admin-referral/__tests__/records-panels-identity.test.tsx

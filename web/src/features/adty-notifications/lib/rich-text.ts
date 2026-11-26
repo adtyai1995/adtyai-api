@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import DOMPurify from 'dompurify'
 
 export const MAX_NOTIFICATION_PLAIN_LENGTH = 2000
+export const MAX_NOTIFICATION_RAW_BYTES = 32 * 1024
 
 export const NOTIFICATION_HEADINGS = ['p', 'h1', 'h2', 'h3'] as const
 export type NotificationHeadingTag = (typeof NOTIFICATION_HEADINGS)[number]
@@ -77,7 +78,7 @@ const FONT_SIZE_LEGACY_MAP: Record<string, NotificationFontSize> = {
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
 const RGB_COLOR_RE =
   /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/i
-const PX_SIZE_RE = /^(\d{1,2})px$/i
+const FONT_SIZE_RE = /^(\d+(?:\.\d+)?)(px|rem|em)$/i
 
 export function sanitizeCssColor(raw: string | null | undefined): string | null {
   const value = (raw ?? '').trim()
@@ -102,40 +103,52 @@ export function sanitizeCssFontSize(
 ): string | null {
   const value = (raw ?? '').trim().toLowerCase()
   if (!value) return null
-  const match = PX_SIZE_RE.exec(value)
+  const match = FONT_SIZE_RE.exec(value)
   if (!match) return null
-  const px = Number(match[1])
+  const num = Number(match[1])
+  if (!Number.isFinite(num)) return null
+  const unit = match[2]
+  const px = unit === 'rem' || unit === 'em' ? num * 16 : num
   if (px < 10 || px > 32) return null
-  return `${px}px`
+  return `${match[1]}${unit}`
 }
+
+const ALLOWED_FONT_WEIGHTS = new Set([
+  'normal',
+  'bold',
+  '400',
+  '500',
+  '600',
+  '700',
+])
 
 function sanitizeInlineStyle(styleValue: string): string {
   const declarations = styleValue.split(';')
-  const kept: string[] = []
+  const order: string[] = []
+  const values = new Map<string, string>()
   for (const decl of declarations) {
     const colonIndex = decl.indexOf(':')
     if (colonIndex <= 0) continue
     const prop = decl.slice(0, colonIndex).trim().toLowerCase()
     const rawVal = decl.slice(colonIndex + 1).trim()
+    let cleaned: string | null = null
     if (prop === 'color') {
-      const safeColor = sanitizeCssColor(rawVal)
-      if (safeColor) kept.push(`color: ${safeColor}`)
+      cleaned = sanitizeCssColor(rawVal)
     } else if (prop === 'font-size') {
-      const safeSize = sanitizeCssFontSize(rawVal)
-      if (safeSize) kept.push(`font-size: ${safeSize}`)
+      cleaned = sanitizeCssFontSize(rawVal)
     } else if (prop === 'font-weight') {
       const lower = rawVal.toLowerCase()
-      if (
-        lower === 'bold' ||
-        lower === 'normal' ||
-        lower === '600' ||
-        lower === '700'
-      ) {
-        kept.push(`font-weight: ${lower}`)
+      if (ALLOWED_FONT_WEIGHTS.has(lower)) {
+        cleaned = lower
       }
     }
+    if (!cleaned) continue
+    if (!values.has(prop)) {
+      order.push(prop)
+    }
+    values.set(prop, cleaned)
   }
-  return kept.join('; ')
+  return order.map((prop) => `${prop}: ${values.get(prop)}`).join('; ')
 }
 
 export function extractPlainText(html: string): string {

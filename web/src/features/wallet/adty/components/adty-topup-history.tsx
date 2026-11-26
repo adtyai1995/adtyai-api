@@ -31,6 +31,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { sceneBusinessLabels } from '@/features/adty-payment-scenes/schema'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestamp } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -285,10 +286,17 @@ export function AdtyTopupHistory(props: {
             {
               id: 'scene',
               header: t('Payment scene'),
-              cell: (row) =>
-                row.ext?.payment_scene
-                  ? `${t(row.ext.payment_scene_name || row.ext.payment_scene)} (${row.ext.payment_scene}) · v${row.ext.payment_scene_version}`
-                  : '—',
+              cell: (row) => {
+                const sceneKey = row.ext?.payment_scene
+                if (!sceneKey) return '—'
+                const rawName = row.ext?.payment_scene_name?.trim()
+                const labelKey =
+                  (rawName && sceneBusinessLabels[rawName]) ||
+                  rawName ||
+                  sceneBusinessLabels[sceneKey] ||
+                  sceneKey
+                return `${t(labelKey)} (${sceneKey}) · v${row.ext?.payment_scene_version}`
+              },
             },
             {
               id: 'face',

@@ -298,7 +298,8 @@ function TicketWorkspace(props: { workspace: TicketScope; userId?: number }) {
     messageId: number,
     visibility: string | undefined,
     targetScope: string,
-    encodedData: string
+    encodedData: string,
+    initial = false
   ) => {
     const hash = await hashTicketImageData(encodedData)
     const response = await api.post(
@@ -307,9 +308,13 @@ function TicketWorkspace(props: { workspace: TicketScope; userId?: number }) {
         data: encodedData,
         message_id: messageId,
         visibility: visibility || 'public',
+        ...(initial ? { initial: true } : {}),
       },
       {
-        params: { scope: targetScope },
+        params: {
+          scope: targetScope,
+          ...(initial ? { initial: '1' } : {}),
+        },
         headers: { 'Idempotency-Key': `image:${messageId}:${hash}` },
       }
     )
@@ -378,7 +383,8 @@ function TicketWorkspace(props: { workspace: TicketScope; userId?: number }) {
             firstMessageId,
             'public',
             targetScope,
-            encoded
+            encoded,
+            true
           )
         } catch (cause) {
           failedItems.push(item)

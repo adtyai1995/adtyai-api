@@ -150,6 +150,7 @@ export type OwnerSite = {
   root_domain: string
   host: string
   base_url: string
+  public_base_url?: string
   api_base_url?: string
   cost_factor: string
   custom_domain_enabled: boolean

@@ -22,6 +22,7 @@ import { z } from 'zod'
 import {
   getNotificationPlainLength,
   MAX_NOTIFICATION_PLAIN_LENGTH,
+  MAX_NOTIFICATION_RAW_BYTES,
 } from './rich-text'
 
 export const ROOT_TARGET_AUDIENCES = [
@@ -80,7 +81,12 @@ export type NotificationContentFormat =
 
 const baseNotificationObject = z.object({
   title: z.string().trim().max(120, 'Invalid parameters'),
-  content: z.string().max(60000, 'Invalid parameters'),
+  content: z
+    .string()
+    .refine(
+      (val) => new TextEncoder().encode(val).length <= MAX_NOTIFICATION_RAW_BYTES,
+      'Notification content exceeds 32KB limit'
+    ),
   content_format: z.enum(NOTIFICATION_CONTENT_FORMATS),
   kind: z.enum(['platform', 'system', 'maintenance', 'rules']),
   audience: z.enum(NOTIFICATION_AUDIENCES),

@@ -10,7 +10,7 @@ ADTY AI Subsite Partnership gives resellers, studios, developer communities, and
 
 ### Independent White-Label Identity
 
-- **Custom branding**: Configure your own site name, logo, favicon, homepage messaging, announcements, and brand color tone.
+- **Custom branding**: Configure your own site name, logo, favicon, homepage messaging, and announcements.
 - **Branded legal pages**: Publish your own User Agreement, Privacy Policy, and Refund Policy on your domain.
 - **Auto-branded documentation**: The `/docs/` portal mounted on your subsite dynamically inherits your brand name, logo, console URL, dedicated API domain, live payment channels, and referral rules automatically.
 
@@ -22,7 +22,7 @@ ADTY AI Subsite Partnership gives resellers, studios, developer communities, and
 ### Independent Retail Commercial Controls
 
 - **Retail pricing multiplier**: Set your own retail pricing multiplier and commercial margin independently of upstream supply settlement.
-- **Recharge Bonus campaigns**: Configure payment-method-specific or tiered Recharge Bonus promotions directly from your site admin panel.
+- **Recharge Bonus campaigns**: Configure Recharge Bonus by payment method directly from your site admin panel.
 - **Built-in Referral Program**: Toggle referrals on or off for your subsite, set your own commission percentage, observation period, and supported withdrawal methods.
 
 ### Complete Operational Suite

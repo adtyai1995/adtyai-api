@@ -670,6 +670,7 @@ func PostAdtyTicketImage(c *gin.Context) {
 		// Visibility has no default: an upload must say whether the image
 		// belongs to a public reply or an internal note.
 		Visibility string `json:"visibility"`
+		Initial    bool   `json:"initial"`
 	}
 	// Base64 expansion and the metadata envelope use the same byte policy
 	// reported to the frontend. Limit the stream before reading the JSON.
@@ -690,8 +691,13 @@ func PostAdtyTicketImage(c *gin.Context) {
 		common.ApiErrorT(c, "Only images are accepted")
 		return
 	}
+	initialParam := strings.ToLower(strings.TrimSpace(c.Query("initial")))
+	silentInitial := body.Initial || initialParam == "1" || initialParam == "true"
 	userID := c.GetInt("id")
-	image, err := service.AttachAdtyTicketImageWithKey(userID, id, body.MessageID, body.Visibility, raw, c.GetHeader("Idempotency-Key"), adtyRequestedTicketScope(c))
+	image, err := service.AttachAdtyTicketImageWithOptions(userID, id, body.MessageID, body.Visibility, raw, service.AdtyTicketImageAttachOptions{
+		IdempotencyKey: c.GetHeader("Idempotency-Key"),
+		SilentInitial:  silentInitial,
+	}, adtyRequestedTicketScope(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return

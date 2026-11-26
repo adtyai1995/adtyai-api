@@ -82,6 +82,12 @@ func runAdtyEpayFollowUpQueries(now int64) {
 		if ext.ChannelId <= 0 {
 			continue
 		}
+		var orphanCount int64
+		if cErr := model.DB.Model(&model.PaymentOrphanEvent{}).
+			Where("reference_id = ? AND provider = ? AND status <> ?", ext.TradeNo, ext.Provider, model.PaymentOrphanStatusDismissed).
+			Count(&orphanCount).Error; cErr == nil && orphanCount > 0 {
+			continue
+		}
 		channel, chErr := model.GetAdtyEpayChannel(ext.ChannelId)
 		if chErr != nil || channel == nil || strings.TrimSpace(channel.GatewayURL) == "" {
 			continue

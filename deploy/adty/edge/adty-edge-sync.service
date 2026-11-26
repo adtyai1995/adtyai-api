@@ -7,6 +7,6 @@ Wants=network-online.target
 Type=oneshot
 EnvironmentFile=/etc/adtyai/edge.env
 ExecStart=/usr/bin/python3 /opt/adtyai-edge/sync-edge.py
-TimeoutStartSec=45s
+TimeoutStartSec=180s
 NoNewPrivileges=yes
 PrivateTmp=yes

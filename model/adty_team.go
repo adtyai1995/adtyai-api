@@ -124,8 +124,10 @@ const (
 // team and its unique leader. SiteId is fixed at issuance. The plaintext code
 // is not stored.
 type AdtyTeamRegistrationLink struct {
-	Id        int64  `json:"id"`
-	SiteId    int    `json:"site_id" gorm:"index;not null"`
+	CreateKey         *string `json:"-" gorm:"uniqueIndex;type:varchar(64)"`
+	CreateFingerprint string  `json:"-" gorm:"type:varchar(64)"`
+	Id                int64   `json:"id"`
+	SiteId            int     `json:"site_id" gorm:"index;not null"`
 	CodeHash  string `json:"-" gorm:"uniqueIndex;type:varchar(64);not null"`
 	CreatedBy int    `json:"created_by"`
 	ExpiresAt int64  `json:"expires_at" gorm:"index"`

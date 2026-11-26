@@ -26,6 +26,21 @@ import (
 
 const adtyTelegramReply = "此机器人仅用于通知，请前往网站操作\n\nThis bot only sends notifications. Please use the website."
 const adtyTelegramStaged = "已收到绑定请求，请回到网站确认。\n\nBinding request received. Confirm it on the website."
+const adtyTranslationNotReadyEn = "English is not ready"
+
+func adtyEnsureTelegramBilingualFallback(body string) string {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return ""
+	}
+	if strings.Contains(strings.ToLower(body), strings.ToLower(adtyTranslationNotReadyEn)) {
+		return body
+	}
+	if !strings.Contains(body, "\n\n") || strings.Contains(body, AdtyTranslationNotReady) {
+		return body + "\n\n" + adtyTranslationNotReadyEn
+	}
+	return body
+}
 
 var (
 	ErrAdtyTelegramInvalid    = common.NewMessage("Invalid parameters")
@@ -743,9 +758,7 @@ func QueueAdtyTelegramNotice(userId int, purpose, body, eventKey string) error {
 	if userId <= 0 || strings.TrimSpace(eventKey) == "" || body == "" || adtyTextHasOutboundSecret(body) {
 		return ErrAdtyTelegramInvalid
 	}
-	if !strings.Contains(body, "\n\n") {
-		body += "\n\nEnglish is not ready"
-	}
+	body = adtyEnsureTelegramBilingualFallback(body)
 	return model.DB.Transaction(func(tx *gorm.DB) error {
 		var existing model.AdtyTelegramDelivery
 		lookup := tx.Where("event_key = ?", eventKey).Limit(1).Find(&existing)
@@ -830,7 +843,7 @@ func queueAdtyPublicTelegramTx(tx *gorm.DB, channel, purpose, body, eventKey str
 	if adtyTelegramPrivateWords.MatchString(body) {
 		return ErrAdtyTelegramPrivate
 	}
-	body = redactAdtySecrets(body)
+	body = adtyEnsureTelegramBilingualFallback(redactAdtySecrets(body))
 	if strings.TrimSpace(eventKey) == "" {
 		// EventKey 必须把 channel 算进去：同一段文字发到两个频道是两条投递，
 		// 只哈希 body 会让第二条被唯一索引当成重复丢掉。
@@ -919,7 +932,7 @@ func adtyAuthorizeTelegramEventAccess(row *model.AdtyTelegramDelivery, user *mod
 		if pub.Status != "published" {
 			return false, nil
 		}
-		return adtyUserCanReadPublication(user, &pub), nil
+		return adtyUserCanReadPublicationWithErr(user, &pub)
 	}
 	return true, nil
 }

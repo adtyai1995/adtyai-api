@@ -32,7 +32,7 @@ func SetAdtyRouter(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/internal/flush-batch", "session", "")
 	apiRouter.POST("/adty/internal/flush-batch", controller.FlushAdtyBatchUpdates)
 	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/internal/edge/manifest", "session", "")
-	apiRouter.GET("/adty/internal/edge/manifest", controller.GetAdtyEdgeManifest)
+	apiRouter.GET("/adty/internal/edge/manifest", middleware.GlobalAPIRateLimit(), controller.GetAdtyEdgeManifest)
 	registerAdtyEpayRoutes(apiRouter)
 	registerAdtyReferralRoutes(apiRouter)
 	registerAdtySiteRoutes(apiRouter)
@@ -561,11 +561,11 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/teams/:id", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeam}},
 		{http.MethodGet, "/teams/:id/ledgers", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeamLedger}},
 		{http.MethodPost, "/teams/:id/balance", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-team-balance"), controller.PostAdtyOwnerSiteTeamBalance}},
-		{http.MethodPost, "/teams", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteTeam}},
-		{http.MethodPost, "/team-registrations", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteTeamRegistration}},
+		{http.MethodPost, "/teams", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-team-create"), controller.PostAdtyOwnerSiteTeam}},
+		{http.MethodPost, "/team-registrations", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-team-reg-issue"), controller.PostAdtyOwnerSiteTeamRegistration}},
 		{http.MethodGet, "/team-registrations", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteTeamRegistrations}},
-		{http.MethodPost, "/team-registrations/:id/revoke", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteTeamRegistrationRevoke}},
-		{http.MethodPut, "/teams/:id/discount", ownerSetWrite, []gin.HandlerFunc{controller.PutAdtyOwnerSiteTeamDiscount}},
+		{http.MethodPost, "/team-registrations/:id/revoke", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-team-reg-revoke"), controller.PostAdtyOwnerSiteTeamRegistrationRevoke}},
+		{http.MethodPut, "/teams/:id/discount", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-team-discount"), controller.PutAdtyOwnerSiteTeamDiscount}},
 		{http.MethodGet, "/referral", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteReferral}},
 		{http.MethodPut, "/referral", ownerSetWrite, []gin.HandlerFunc{controller.PutAdtyOwnerSiteReferral}},
 		{http.MethodPut, "/referral/enabled", ownerSetWrite, []gin.HandlerFunc{controller.PutAdtyOwnerSiteReferralEnabled}},

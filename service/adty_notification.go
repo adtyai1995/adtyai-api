@@ -72,11 +72,10 @@ var (
 	adtySubsiteTargetAudiences = []string{"site_users", "site_teams"}
 	adtyNewTargetAudiences     = []string{"main_users", "all_site_owners", "site_users", "main_teams", "site_teams"}
 
-	adtyNotificationFontSizeRegex   = regexp.MustCompile(`^(\d+(?:\.\d+)?)(px|rem|em)$`)
-	adtyNotificationHexColorRegex   = regexp.MustCompile(`^#[0-9a-fA-F]{3,6}$`)
-	adtyNotificationRGBColorRegex   = regexp.MustCompile(`(?i)^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$`)
-	adtyNotificationFontWeightRegex = regexp.MustCompile(`^\d{3}$`)
-	adtyNotificationMultiNewlines   = regexp.MustCompile(`\n{3,}`)
+	adtyNotificationFontSizeRegex = regexp.MustCompile(`^(\d+(?:\.\d+)?)(px|rem|em)$`)
+	adtyNotificationHexColorRegex = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
+	adtyNotificationRGBColorRegex = regexp.MustCompile(`(?i)^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$`)
+	adtyNotificationMultiNewlines = regexp.MustCompile(`\n{3,}`)
 )
 
 func isAdtyNotificationAllowedHTMLTag(tag string) bool {
@@ -131,13 +130,13 @@ func sanitizeAdtyNotificationStyle(raw string) string {
 			if unit == "rem" || unit == "em" {
 				px = num * 16
 			}
-			if px < 10 || px > 48 {
+			if !(px >= 10 && px <= 32) {
 				continue
 			}
 			cleaned = m[1] + unit
 		case "color":
 			if adtyNotificationHexColorRegex.MatchString(val) {
-				cleaned = val
+				cleaned = strings.ToLower(val)
 			} else if m := adtyNotificationRGBColorRegex.FindStringSubmatch(val); m != nil {
 				r, errR := strconv.Atoi(m[1])
 				g, errG := strconv.Atoi(m[2])
@@ -151,15 +150,10 @@ func sanitizeAdtyNotificationStyle(raw string) string {
 			}
 		case "font-weight":
 			lowerVal := strings.ToLower(val)
-			if lowerVal == "bold" {
-				cleaned = "bold"
-			} else if adtyNotificationFontWeightRegex.MatchString(lowerVal) {
-				w, err := strconv.Atoi(lowerVal)
-				if err != nil || w < 400 || w > 700 {
-					continue
-				}
+			switch lowerVal {
+			case "normal", "bold", "400", "500", "600", "700":
 				cleaned = lowerVal
-			} else {
+			default:
 				continue
 			}
 		default:
@@ -913,7 +907,7 @@ func stripAdtyNotificationTranslationSuffix(content, english string) string {
 	if content == "" {
 		return ""
 	}
-	candidates := []string{AdtyTranslationNotReady}
+	candidates := []string{AdtyTranslationNotReady, adtyTranslationNotReadyEn}
 	if eng := strings.TrimSpace(english); eng != "" {
 		candidates = append(candidates, eng)
 		if sanitized := SanitizeAdtyNotificationHTML(eng); sanitized != "" && sanitized != eng {
@@ -1053,6 +1047,9 @@ func applyAdtyNotificationTranslation(row *model.AdtyNotificationPublication, so
 		} else {
 			if !strings.Contains(bilingual, AdtyTranslationNotReady) {
 				bilingual = sourceContent + "\n\n" + AdtyTranslationNotReady
+			}
+			if !strings.Contains(strings.ToLower(bilingual), strings.ToLower(adtyTranslationNotReadyEn)) {
+				bilingual += "\n\n" + adtyTranslationNotReadyEn
 			}
 		}
 		if bilingual != pub.Content {
@@ -1392,12 +1389,9 @@ func queueAdtyPrivatePublicationTelegramTx(tx *gorm.DB, row *model.AdtyNotificat
 	if err != nil {
 		return err
 	}
-	body := strings.TrimSpace(redactAdtySecrets(announceTelegramBodyWithDB(tx, *row)))
+	body := adtyEnsureTelegramBilingualFallback(redactAdtySecrets(announceTelegramBodyWithDB(tx, *row)))
 	if body == "" {
 		return nil
-	}
-	if !strings.Contains(body, "\n\n") {
-		body += "\n\nEnglish is not ready"
 	}
 	enqueueGroup := func(purpose string, eventPrefix string, recipientIDs []int) error {
 		for _, uid := range recipientIDs {
@@ -1686,7 +1680,7 @@ func announceTelegramBodyWithDB(db *gorm.DB, row model.AdtyNotificationPublicati
 	}
 	title := strings.TrimSpace(row.Title)
 	if title == "" {
-		return content
+		return adtyEnsureTelegramBilingualFallback(content)
 	}
 	if row.Id > 0 && db != nil && db.Migrator().HasTable(&model.AdtyTranslationHead{}) {
 		var titleHead model.AdtyTranslationHead
@@ -1699,7 +1693,7 @@ func announceTelegramBodyWithDB(db *gorm.DB, row model.AdtyNotificationPublicati
 			}
 		}
 	}
-	return title + "\n\n" + content
+	return adtyEnsureTelegramBilingualFallback(title + "\n\n" + content)
 }
 
 func resolveAdtyNotificationDisplayContent(row model.AdtyNotificationPublication) string {
@@ -1884,85 +1878,112 @@ func adtyUserInActiveTeamOnSiteWithDB(db *gorm.DB, userID, siteID int) (bool, er
 }
 
 func adtyUserCanReadPublication(user *model.User, pub *model.AdtyNotificationPublication) bool {
+	ok, err := adtyUserCanReadPublicationWithErr(user, pub)
+	return err == nil && ok
+}
+
+func adtyUserCanReadPublicationWithErr(user *model.User, pub *model.AdtyNotificationPublication) (bool, error) {
 	if user == nil || pub == nil || user.Id <= 0 || user.Status != common.UserStatusEnabled || pub.Status != "published" {
-		return false
+		return false, nil
 	}
 	if audiences := pub.ParsedTargetAudiences(); len(audiences) > 0 {
 		isStaff, err := adtyUserIsStaffWithDB(model.DB, user)
 		if err != nil {
-			return false
+			return false, err
 		}
 		isSiteOwner, err := adtyUserOwnsOpenSiteWithDB(model.DB, user.Id)
 		if err != nil {
-			return false
+			return false, err
 		}
+		var firstErr error
 		for _, aud := range audiences {
 			switch aud {
 			case "main_users":
 				if user.SiteId == 0 && !isSiteOwner && !isStaff {
-					return true
+					return true, nil
 				}
 			case "all_site_owners":
 				if isSiteOwner {
-					return true
+					return true, nil
 				}
 			case "site_users":
 				if !isStaff && user.SiteId > 0 && slices.Contains(pub.EffectiveTargetSiteIDs(), user.SiteId) {
-					return true
+					return true, nil
 				}
 			case "main_teams":
 				if !isStaff && user.SiteId == 0 {
 					inTeam, err := adtyUserInActiveTeamOnSiteWithDB(model.DB, user.Id, 0)
-					if err == nil && inTeam {
-						return true
+					if err != nil {
+						if firstErr == nil {
+							firstErr = err
+						}
+						continue
+					}
+					if inTeam {
+						return true, nil
 					}
 				}
 			case "site_teams":
 				if !isStaff && user.SiteId > 0 && slices.Contains(pub.EffectiveTargetSiteIDs(), user.SiteId) {
 					inTeam, err := adtyUserInActiveTeamOnSiteWithDB(model.DB, user.Id, user.SiteId)
-					if err == nil && inTeam {
-						return true
+					if err != nil {
+						if firstErr == nil {
+							firstErr = err
+						}
+						continue
+					}
+					if inTeam {
+						return true, nil
 					}
 				}
 			}
 		}
-		return false
+		if firstErr != nil {
+			return false, firstErr
+		}
+		return false, nil
 	}
 	switch pub.Audience {
 	case "all_sites", "all_users", "all":
-		return true
+		return true, nil
 	case "site":
-		return user.SiteId == pub.TargetSiteId && pub.TargetSiteId > 0
+		return user.SiteId == pub.TargetSiteId && pub.TargetSiteId > 0, nil
 	case "user":
 		if user.StaffSiteId != 0 || pub.TargetSiteName != fmt.Sprintf("user:%d", user.Id) {
-			return false
+			return false, nil
 		}
 		if pub.IssuerSiteId > 0 && pub.TargetSiteId != pub.IssuerSiteId {
-			return false
+			return false, nil
 		}
 		isStaff, err := adtyUserIsStaffWithDB(model.DB, user)
-		if err != nil || isStaff {
-			return false
+		if err != nil {
+			return false, err
+		}
+		if isStaff {
+			return false, nil
 		}
 		if user.SiteId == pub.TargetSiteId {
-			return true
+			return true, nil
 		}
 		if pub.IssuerSiteId == 0 && pub.TargetSiteId > 0 && user.SiteId == 0 {
 			owned, err := adtyUserOwnsSpecificOpenSiteWithDB(model.DB, user.Id, pub.TargetSiteId)
-			return err == nil && owned
+			if err != nil {
+				return false, err
+			}
+			return owned, nil
 		}
-		return false
+		return false, nil
 	case "team":
 		if user.StaffSiteId != 0 || user.SiteId != pub.TargetSiteId {
-			return false
+			return false, nil
 		}
 		targets, err := adtyUserActiveTeamTargets(user.Id, pub.TargetSiteId)
 		if err != nil {
-			return false
+			return false, err
 		}
-		return slices.Contains(targets, pub.TargetSiteName)
+		return slices.Contains(targets, pub.TargetSiteName), nil
 	default:
-		return false
+		return false, nil
 	}
 }
 

@@ -167,6 +167,8 @@ function siteAuditActionLabel(t: TFunction, action: string): string {
       return t('Rejected withdrawal')
     case 'withdrawal_pay':
       return t('Marked withdrawal paid')
+    case 'withdrawal_fail':
+      return t('Recorded failed withdrawal')
     case 'rate':
       return t('Changed affiliate rate')
     case 'disable':

@@ -20,7 +20,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useRoute } from 'vitepress'
 import type { Theme } from 'vitepress'
 import DefaultTheme from 'vitepress/theme'
-import { nextTick, onMounted, watch } from 'vue'
+import { nextTick, onMounted, onUnmounted, watch } from 'vue'
 
 import { applyBrandToDOM, resolveSiteBrand, type SiteBrand } from './brand'
 import MainSiteOnly from './components/MainSiteOnly.vue'
@@ -40,13 +40,18 @@ export default {
   setup() {
     const route = useRoute()
     let activeBrand: SiteBrand | null = null
+    let applyTimer: number | null = null
 
     const runApply = () => {
       if (!activeBrand) return
       void nextTick(() => {
         if (!activeBrand) return
         applyBrandToDOM(activeBrand)
-        window.setTimeout(() => {
+        if (applyTimer !== null) {
+          window.clearTimeout(applyTimer)
+        }
+        applyTimer = window.setTimeout(() => {
+          applyTimer = null
           if (activeBrand) applyBrandToDOM(activeBrand)
         }, 120)
       })
@@ -55,6 +60,13 @@ export default {
     onMounted(async () => {
       activeBrand = await resolveSiteBrand()
       runApply()
+    })
+
+    onUnmounted(() => {
+      if (applyTimer !== null) {
+        window.clearTimeout(applyTimer)
+        applyTimer = null
+      }
     })
 
     watch(

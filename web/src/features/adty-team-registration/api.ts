@@ -88,13 +88,26 @@ export async function listTeamRegistrations(
   return requireServerSuccess(res.data).data?.items ?? []
 }
 
+function newTeamRegistrationIdempotencyKey(): string {
+  if (
+    typeof crypto !== 'undefined' &&
+    typeof crypto.randomUUID === 'function'
+  ) {
+    return crypto.randomUUID()
+  }
+  return `team-reg-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 export async function issueTeamRegistration(
   actor: TeamRegistrationActor,
-  ttlSeconds: number = defaultTeamRegistrationTtlSeconds()
+  ttlSeconds: number = defaultTeamRegistrationTtlSeconds(),
+  idempotencyKey?: string
 ): Promise<TeamRegistrationIssue> {
+  const key = idempotencyKey?.trim() || newTeamRegistrationIdempotencyKey()
   const res = await api.post<ApiResponse<TeamRegistrationIssue>>(
     teamRegistrationCollectionPath(actor),
-    { ttl_seconds: ttlSeconds }
+    { ttl_seconds: ttlSeconds },
+    { headers: { 'Idempotency-Key': key } }
   )
   const issued = requireServerSuccess(res.data).data
   if (!issued?.code) {

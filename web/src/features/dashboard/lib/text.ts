@@ -73,6 +73,7 @@ export interface LocalizedAnnouncementFields {
   english?: string
   source?: string
   translation_status?: string
+  translation_notice?: string
   content_format?: string
   extra?: string
 }
@@ -639,21 +640,29 @@ export function resolveLocalizedAnnouncement(
   title: string
   content: string
   extra: string
+  translationNotReady: boolean
 } {
   if (!item) {
-    return { title: '', content: '', extra: '' }
+    return { title: '', content: '', extra: '', translationNotReady: false }
   }
   const isEnglish = isEnglishLanguage(language)
   const titleZh = item.title?.trim() ?? ''
   const rawTitleEn = item.title_en?.trim() ?? ''
-  const titleEn = isTranslationNotReadyMarker(rawTitleEn) ? '' : rawTitleEn
+  const titleHasNotReadyMarker = isTranslationNotReadyMarker(rawTitleEn)
+  const titleEn = titleHasNotReadyMarker ? '' : rawTitleEn
   const title = isEnglish ? titleEn || titleZh : titleZh || titleEn
 
   const rawContent = item.content?.trim() ?? ''
   const rawContentEn = item.content_en?.trim() || item.english?.trim() || ''
-  const contentEn = isTranslationNotReadyMarker(rawContentEn)
-    ? ''
-    : rawContentEn
+  const contentEnHasNotReadyMarker = isTranslationNotReadyMarker(rawContentEn)
+  const contentEn = contentEnHasNotReadyMarker ? '' : rawContentEn
+  const rawContentNormalized = rawContent
+    .replaceAll('\r\n', '\n')
+    .replaceAll('\r', '\n')
+  const contentHadNotReadyMarker =
+    rawContentNormalized !== '' &&
+    stripTranslationNotReadyMarkers(rawContentNormalized) !==
+      rawContentNormalized
   const extractedChinese = extractChineseAnnouncementContent(
     rawContent,
     contentEn
@@ -673,6 +682,21 @@ export function resolveLocalizedAnnouncement(
     ? contentEn || chineseContent
     : chineseContent
 
+  const translationStatus = item.translation_status?.trim().toLowerCase() ?? ''
+  const hasUnreadyStatus =
+    translationStatus !== '' && translationStatus !== 'ready'
+  const hasNotReadyNotice = isTranslationNotReadyMarker(
+    item.translation_notice
+  )
+  const translationNotReady =
+    isEnglish &&
+    ((contentEn === '' &&
+      (contentEnHasNotReadyMarker ||
+        contentHadNotReadyMarker ||
+        hasUnreadyStatus ||
+        hasNotReadyNotice)) ||
+      (titleHasNotReadyMarker && titleEn === ''))
+
   const rawExtra = item.extra?.trim() ?? ''
   const bilingualTitle = titleZh && titleEn ? `${titleZh} / ${titleEn}` : ''
   const isDuplicateTitleExtra =
@@ -683,7 +707,7 @@ export function resolveLocalizedAnnouncement(
       (bilingualTitle !== '' && rawExtra === bilingualTitle))
   const extra = isDuplicateTitleExtra ? '' : rawExtra
 
-  return { title, content, extra }
+  return { title, content, extra, translationNotReady }
 }
 
 /**

@@ -170,7 +170,7 @@ func GetAdtyOwnerSite(c *gin.Context) {
 	cfg := adty_setting.GetResellerSetting()
 	resp := gin.H{
 		"id": site.Id, "status": site.Status, "subdomain": site.Subdomain, "root_domain": site.RootDomain,
-		"host": service.AdtySiteDisplayHost(site), "base_url": service.AdtySiteBaseURL(site), "api_base_url": service.AdtySiteAPIBaseURL(site),
+		"host": service.AdtySiteDisplayHost(site), "base_url": service.AdtySiteBaseURL(site), "public_base_url": service.AdtySitePublicBaseURL(site), "api_base_url": service.AdtySiteAPIBaseURL(site),
 		"cost_factor":           d.String(),
 		"custom_domain_enabled": cfg.CustomDomainEnabled,
 		"sender_domain_enabled": false, "brand": brand, "home_page_content": site.HomePageContent,

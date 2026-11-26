@@ -383,12 +383,18 @@ func applyHeaderOverrideToRequest(req *http.Request, headerOverride map[string]s
 }
 
 func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+	if c == nil || c.Request == nil {
+		return nil, errors.New("client request is missing")
+	}
+	if err := c.Request.Context().Err(); err != nil {
+		return nil, types.NewError(err, types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry(), types.ErrOptionWithHideErrMsg("client closed request"))
+	}
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
 	logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
-	req, err := newClientAPIRequest(c, fullRequestURL, requestBody)
+	req, cancel, err := newAPIRequestForMode(c, info, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", sanitizeDoRequestError(err))
 	}
@@ -396,16 +402,32 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	headers := req.Header
 	err = a.SetupRequestHeader(c, &headers, info)
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
 	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
 	// 这样可以覆盖默认的 Authorization header 设置
 	if err = ApplyHeaderOverride(info, c, req); err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return nil, err
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return nil, fmt.Errorf("do request failed: %w", err)
+	}
+	if cancel != nil {
+		if resp != nil && resp.Body != nil {
+			resp.Body = &taskSubmitCancelBody{ReadCloser: resp.Body, cancel: cancel}
+		} else {
+			cancel()
+		}
 	}
 	return resp, nil
 }
@@ -493,12 +515,18 @@ func ResolveUpstreamErrorStatus(resp *http.Response, candidates ...any) int {
 }
 
 func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+	if c == nil || c.Request == nil {
+		return nil, errors.New("client request is missing")
+	}
+	if err := c.Request.Context().Err(); err != nil {
+		return nil, types.NewError(err, types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry(), types.ErrOptionWithHideErrMsg("client closed request"))
+	}
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
 	logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
-	req, err := newClientAPIRequest(c, fullRequestURL, requestBody)
+	req, cancel, err := newAPIRequestForMode(c, info, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", sanitizeDoRequestError(err))
 	}
@@ -513,6 +541,9 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	headers := req.Header
 	err = a.SetupRequestHeader(c, &headers, info)
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
 	// SetupApiRequestHeader copies c.Request.Header.Get("Content-Type") for
@@ -524,11 +555,24 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
 	// 这样可以覆盖默认的 Authorization header 设置
 	if err = ApplyHeaderOverride(info, c, req); err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return nil, err
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return nil, fmt.Errorf("do request failed: %w", err)
+	}
+	if cancel != nil {
+		if resp != nil && resp.Body != nil {
+			resp.Body = &taskSubmitCancelBody{ReadCloser: resp.Body, cancel: cancel}
+		} else {
+			cancel()
+		}
 	}
 	return resp, nil
 }
@@ -771,6 +815,45 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 		cancel()
 	}
 	return resp, nil
+}
+
+// newAPIRequestForMode keeps streaming requests bound to the client disconnect
+// context while detaching non-streaming requests after dispatch (R-36 #5) so a
+// mid-response client disconnect cannot abort upstream response reading and
+// trigger a 100% pre-consume refund for an already-billed upstream call.
+func newAPIRequestForMode(c *gin.Context, info *common.RelayInfo, fullRequestURL string, requestBody io.Reader) (*http.Request, context.CancelFunc, error) {
+	if c == nil || c.Request == nil {
+		return nil, nil, errors.New("client request is missing")
+	}
+	if info == nil || info.IsStream {
+		req, err := newClientAPIRequest(c, fullRequestURL, requestBody)
+		return req, nil, err
+	}
+	baseCtx := c.Request.Context()
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	timeout := 300 * time.Second
+	if common2.RelayTimeout > 0 {
+		if configured := time.Duration(common2.RelayTimeout) * time.Second; configured > timeout {
+			timeout = configured
+		}
+	}
+	if deadline, ok := baseCtx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > timeout {
+			timeout = remaining
+		}
+	}
+	if detacher, ok := info.Billing.(interface{ DetachReservationHeartbeat(time.Duration) }); ok {
+		detacher.DetachReservationHeartbeat(timeout + 2*time.Minute)
+	}
+	upstreamCtx, cancel := context.WithTimeout(context.WithoutCancel(baseCtx), timeout)
+	req, err := http.NewRequestWithContext(upstreamCtx, c.Request.Method, fullRequestURL, requestBody)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return req, cancel, nil
 }
 
 func newClientAPIRequest(c *gin.Context, fullRequestURL string, requestBody io.Reader) (*http.Request, error) {
