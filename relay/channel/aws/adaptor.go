@@ -172,10 +172,11 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 		}
 		resp, err := channel.DoRequest(c, req, info)
 		if err != nil {
+			invokeErr := newAwsInvokeError(req.Context(), err, "Mantle Messages")
 			if cancel != nil {
 				cancel()
 			}
-			return nil, newAwsInvokeError(req.Context(), err, "Mantle Messages")
+			return nil, invokeErr
 		}
 		if cancel != nil {
 			if resp != nil && resp.Body != nil {

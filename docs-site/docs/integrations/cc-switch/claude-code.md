@@ -82,7 +82,7 @@ Inside the interactive session:
 
 1. Run `/status` to verify Claude Code sees `https://api.adtyai.com` as its API base URL and reports no authentication warnings.
 2. Send a short test prompt (for example: `Reply with OK and the model you are running.`).
-3. Visit [https://www.adtyai.com/logs](https://www.adtyai.com/logs) to confirm the request logged under your API key with token usage details.
+3. Visit [https://www.adtyai.com/usage-logs](https://www.adtyai.com/usage-logs) to confirm the request logged under your API key with token usage details.
 
 ## Switching Between Multiple Profiles
 

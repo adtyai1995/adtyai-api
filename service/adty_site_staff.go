@@ -181,7 +181,9 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 		}
 	}
 	var staff model.AdtySiteStaff
+	var ticketAudits []model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		ticketAudits = nil
 		// R7-16: Strict global lock order AdtySite -> AdtySiteStaff -> User (id ASC).
 		site, err := adtyStaffLockSiteTx(tx, ownerID, siteID, action == AdtySiteOwnerActionStaffDelete || action == AdtySiteOwnerActionStaffUpdate)
 		if err != nil {
@@ -303,15 +305,25 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 			return ErrAdtyStaffConflict
 		}
 		if staff.Status != "enabled" || !slices.Contains(AdtyStaffViewOf(staff).Permissions, AdtyStaffTicketManage) {
-			if err := releaseStaffTicketsTx(tx, staff, ownerID); err != nil {
+			reason := "staff_ticket_permission_revoked"
+			switch {
+			case action == AdtySiteOwnerActionStaffDelete || staff.Status == "deleted":
+				reason = "staff_delete"
+			case staff.Status == "disabled":
+				reason = "staff_disable"
+			}
+			audits, err := releaseStaffTicketsWithAuditsTx(tx, &staff, ownerID, reason)
+			if err != nil {
 				return err
 			}
+			ticketAudits = audits
 		}
 		return recordSiteAuditTx(tx, siteID, action, ownerID, before, AdtyStaffViewOf(staff), "")
 	})
 	if err != nil {
 		return nil, err
 	}
+	DeliverAdtyCommittedAudits(ticketAudits)
 	if err := model.PublishUserAuthCache(staff.UserId); err != nil {
 		common.SysError("Failed to publish staff auth cache")
 	}

@@ -1483,15 +1483,15 @@ func validateReferralWithdrawSettingsTx(tx *gorm.DB, values map[string]string, w
 	if err != nil {
 		return err
 	}
-	if minSet && feeSet && !minVal.GreaterThan(feeVal) {
-		return common.NewMessage("Minimum withdrawal must be greater than the USDT fee")
-	}
 	rawMethods, hasMethodsOpt, err := readOpt(adty_setting.ReferralKeyWithdrawMethods)
 	if err != nil {
 		return err
 	}
 	trimmedMethods := strings.TrimSpace(rawMethods)
 	if !hasMethodsOpt || trimmedMethods == "" || strings.EqualFold(trimmedMethods, "null") {
+		if minSet && feeSet && !minVal.GreaterThan(feeVal) {
+			return common.NewMessage("Minimum withdrawal must be greater than the USDT fee")
+		}
 		return nil
 	}
 	var parsedMethods []string

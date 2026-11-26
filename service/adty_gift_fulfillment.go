@@ -809,22 +809,11 @@ func confirmTopUpUnpaidBeforeExpireTx(tx *gorm.DB, _ *model.TopUp, ext *model.Ad
 	if !requiresRemote {
 		return true, nil
 	}
-	var latest model.AdtyOrderPaymentEvent
-	err = tx.Where("trade_no = ? AND source = ?", ext.TradeNo, model.AdtyPaymentSourceQuery).
-		Order("id desc").Limit(1).Find(&latest).Error
-	if err != nil {
-		return false, err
-	}
-	if latest.Id > 0 && (latest.Outcome == "confirming" || latest.Outcome == "paid") {
-		// Active on-chain confirmation or detected payment must never be
-		// expired/released even past the remote-failure max-age cap.
-		return false, nil
-	}
 	// Under R-41 #1, post-expiry late callbacks or conflicting recovery queries
 	// are permanently barred from auto-credit and queued in PaymentOrphanEvent for
-	// manual reconciliation. Once any active (non-dismissed, non-reversal)
-	// payment-verification orphan exists, allow expiration so the order and site
-	// gift guarantee do not stay locked in pending forever.
+	// manual reconciliation. Check this BEFORE stale query confirming/paid states so
+	// an order that moved from confirming -> post-expiry callback orphan still
+	// expires and releases site gift guarantees instead of locking forever.
 	if tx.Migrator().HasTable(&model.PaymentOrphanEvent{}) {
 		var orphanCount int64
 		if err := tx.Model(&model.PaymentOrphanEvent{}).
@@ -837,15 +826,19 @@ func confirmTopUpUnpaidBeforeExpireTx(tx *gorm.DB, _ *model.TopUp, ext *model.Ad
 			return true, nil
 		}
 	}
-	if latest.Id > 0 {
-		switch latest.Outcome {
-		case "rejected":
-			return false, nil
-		case "unpaid":
-			if latest.CreatedAt >= ext.ExpireAt {
-				return true, nil
-			}
-		}
+	var latest model.AdtyOrderPaymentEvent
+	err = tx.Where("trade_no = ? AND source = ?", ext.TradeNo, model.AdtyPaymentSourceQuery).
+		Order("id desc").Limit(1).Find(&latest).Error
+	if err != nil {
+		return false, err
+	}
+	if latest.Id > 0 && (latest.Outcome == "confirming" || latest.Outcome == "paid") {
+		// Active on-chain confirmation or detected payment (with no orphan yet)
+		// must never be expired/released even past the remote-failure max-age cap.
+		return false, nil
+	}
+	if latest.Id > 0 && latest.Outcome == "unpaid" && latest.CreatedAt >= ext.ExpireAt {
+		return true, nil
 	}
 	// Bounded max-age cap so orders on persistently dead/unqueryable remote
 	// gateways do not remain trapped in pending forever.

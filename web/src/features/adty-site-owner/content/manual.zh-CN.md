@@ -190,14 +190,16 @@
 | 业务操作 | 需二次验证 | 绑定参数摘要 | 是否允许 PAT |
 |---|:---:|:---:|:---:|
 | 保存全站零售倍率（`定价与倍率`） | 是 | 否 | 允许（`site_owner_setting:write`） |
-| 保存支付方式充值赠送（`充值赠送`） | 是 | 否 | 允许（`site_owner_setting:write`） |
+| 保存支付方式充值赠送（`充值赠送`） | 是 | 否 | 允许（`site_owner_order:write`） |
+| 保存邮件配置（`邮件配置`） | 是 | 否 | 允许（`site_owner_setting:write`） |
 | 删除活跃或历史自定义域名 | 是 | 否 | 允许（`site_owner_setting:write`） |
-| 发放 / 冻结 / 作废客户兑换码 | 是 | 否 | 允许（`site_owner_order:write`） |
+| 冻结 / 作废客户兑换码 | 是 | 否 | 允许（`site_owner_order:write`） |
 | 重置客户密码 | 是 | 否 | 允许（`site_owner_customer:write`） |
+| 发放客户兑换码 | 是 | **是** | 允许（`site_owner_order:write`） |
 | 提交 USDT 收益提现 | 是 | **是** | 允许（`site_owner_order:write`） |
 | 发起 / 推进客户订单人工退款 | 是 | **是** | 允许（`site_owner_order:write`） |
 | 创建 / 修改 / 改密 / 删除员工账号 | 是 | **是** | **禁止（仅浏览器实时会话）** |
-| 品牌/首页/法律/邮件/SEO/推广设置/团队倍率/收益转保证金/公告/工单/申请关站 | **否** | — | 允许（对应 `site_owner_*` 权限） |
+| 品牌/首页/法律/SEO/推广设置/团队倍率/收益转保证金/公告/工单/申请关站 | **否** | — | 允许（对应 `site_owner_*` 权限） |
 
 ---
 

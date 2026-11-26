@@ -1572,7 +1572,7 @@ func DeleteUser(c *gin.Context) {
 	if authorization == nil {
 		return
 	}
-	revokedAccessTokens, err := model.HardDeleteUserByIdForActor(id, myRole, isAccessTokenRequest(c))
+	revokedAccessTokens, err := model.HardDeleteUserByIdForActorWithID(id, c.GetInt("id"), myRole, isAccessTokenRequest(c))
 	if err != nil {
 		if errors.Is(err, model.ErrAdminTargetSessionRequired) {
 			denyAdtyAdminAction(c)
@@ -1917,7 +1917,7 @@ func ManageUser(c *gin.Context) {
 		if authorization == nil {
 			return
 		}
-		revokedAccessTokens, err := user.DeleteForActor(myRole, isAccessTokenRequest(c))
+		revokedAccessTokens, err := user.DeleteForActorWithID(c.GetInt("id"), myRole, isAccessTokenRequest(c))
 		if err != nil {
 			if errors.Is(err, model.ErrAdminTargetSessionRequired) {
 				denyAdtyAdminAction(c)

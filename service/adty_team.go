@@ -2555,7 +2555,7 @@ func preLockAdtyTeamForUserDelete(tx *gorm.DB, userId int) error {
 	return model.AdtyLockForUpdate(tx.Unscoped()).Select("id").Where("id IN ?", tokenIDs).Order("id ASC").Find(&lockedTokens).Error
 }
 
-func closeAdtyTeamForDeletedLeader(tx *gorm.DB, userId int) (model.AdtyUserDeletePostEffects, error) {
+func closeAdtyTeamForDeletedLeader(tx *gorm.DB, userId, actorId int, reason string) (model.AdtyUserDeletePostEffects, error) {
 	var effects model.AdtyUserDeletePostEffects
 	if adtyTeamTableReadyFor(tx, &model.AdtyTeam{}) {
 		var team model.AdtyTeam
@@ -2614,7 +2614,11 @@ func closeAdtyTeamForDeletedLeader(tx *gorm.DB, userId int) (model.AdtyUserDelet
 		effects.AuthzCleared = true
 	}
 	if adtyTeamTableReadyFor(tx, &model.AdtyTicket{}) {
-		_, ticketAudits, err := ReleaseAssigneeOpenTicketsWithAuditsTx(tx, userId, 0, "admin_delete")
+		releaseReason := strings.TrimSpace(reason)
+		if releaseReason == "" {
+			releaseReason = "admin_delete"
+		}
+		_, ticketAudits, err := ReleaseAssigneeOpenTicketsWithAuditsTx(tx, userId, actorId, releaseReason)
 		if err != nil {
 			return effects, err
 		}

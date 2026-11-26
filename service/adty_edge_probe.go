@@ -157,44 +157,112 @@ func resetAdtyEdgeAutoFailoverState(ips []string, manualFailover bool, now time.
 }
 
 func adtySelectEdgeProbeTarget(ctx context.Context, cfg *adty_setting.ResellerSetting) (host string, expectedSiteID int, expectedRole string, err error) {
-	var dom model.AdtySiteDomain
-	res := model.DB.WithContext(ctx).
+	return adtySelectEdgeProbeTargetAt(ctx, cfg, time.Now())
+}
+
+func adtySelectEdgeProbeTargetAt(ctx context.Context, cfg *adty_setting.ResellerSetting, now time.Time) (host string, expectedSiteID int, expectedRole string, err error) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	env := adtyEdgeACMEEnvironment(cfg)
+	nowUnix := now.Unix()
+	roots := adtyEdgeRootDomains(cfg)
+
+	certReady := func(kind, certName string) (bool, error) {
+		var count int64
+		err := model.DB.WithContext(ctx).Model(&model.AdtyEdgeCert{}).
+			Where("kind = ? AND cert_name = ? AND status = ? AND environment = ? AND not_after > ? AND cert_pem <> '' AND key_encrypted <> ''",
+				kind, certName, model.AdtyEdgeCertStatusReady, env, nowUnix).
+			Count(&count).Error
+		return count > 0, err
+	}
+
+	type probeSiteDomain struct {
+		Hostname   string
+		SiteId     int
+		Role       string
+		RootDomain string
+	}
+	var doms []probeSiteDomain
+	if err := model.DB.WithContext(ctx).
+		Table("adty_site_domains").
+		Select("adty_site_domains.hostname, adty_site_domains.site_id, adty_site_domains.role, adty_sites.root_domain").
 		Joins("JOIN adty_sites ON adty_sites.id = adty_site_domains.site_id").
 		Where("adty_site_domains.managed_by = ? AND adty_site_domains.role = ? AND adty_site_domains.status = ? AND adty_site_domains.desired_state IN ? AND adty_sites.status IN ?",
 			"platform", model.AdtySiteDomainRoleSite, model.AdtySiteDomainActive, []string{"", "serve"}, []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}).
-		Order("adty_site_domains.id ASC").Limit(1).Find(&dom)
-	if res.Error != nil {
-		return "", 0, "", res.Error
+		Order("adty_site_domains.id ASC").Find(&doms).Error; err != nil {
+		return "", 0, "", err
 	}
-	if res.RowsAffected > 0 && strings.TrimSpace(dom.Hostname) != "" {
-		return strings.ToLower(strings.TrimSpace(dom.Hostname)), dom.SiteId, dom.Role, nil
+
+	wildcardReadyCache := make(map[string]bool, len(roots))
+	isWildcardReady := func(root string) (bool, error) {
+		r := strings.ToLower(strings.TrimSpace(root))
+		if r == "" {
+			return false, nil
+		}
+		if ready, ok := wildcardReadyCache[r]; ok {
+			return ready, nil
+		}
+		ready, err := certReady(model.AdtyEdgeCertKindWildcard, "*."+r)
+		if err != nil {
+			return false, err
+		}
+		wildcardReadyCache[r] = ready
+		return ready, nil
 	}
-	roots := adtyEdgeRootDomains(cfg)
+
+	for _, dom := range doms {
+		h := strings.ToLower(strings.TrimSpace(dom.Hostname))
+		if h == "" {
+			continue
+		}
+		root := strings.ToLower(strings.TrimSpace(dom.RootDomain))
+		if root == "" {
+			for _, candidate := range roots {
+				if strings.HasSuffix(h, "."+candidate) {
+					root = candidate
+					break
+				}
+			}
+		}
+		ready, err := isWildcardReady(root)
+		if err != nil {
+			return "", 0, "", err
+		}
+		if ready {
+			return h, dom.SiteId, dom.Role, nil
+		}
+	}
+
 	mainHost := adtyEdgeMainSiteHost(cfg)
 	if mainHost != "" {
-		if len(roots) == 0 {
-			return mainHost, 0, "", nil
-		}
-		var mainReady int64
-		if err := model.DB.WithContext(ctx).Model(&model.AdtyEdgeCert{}).
-			Where("kind = ? AND cert_name = ? AND status = ? AND cert_pem <> ''",
-				model.AdtyEdgeCertKindMain, mainHost, model.AdtyEdgeCertStatusReady).
-			Count(&mainReady).Error; err != nil {
+		mainReady, err := certReady(model.AdtyEdgeCertKindMain, mainHost)
+		if err != nil {
 			return "", 0, "", err
 		}
-		if mainReady > 0 {
+		if mainReady {
 			return mainHost, 0, "", nil
 		}
-		var wildcardReady int64
-		if err := model.DB.WithContext(ctx).Model(&model.AdtyEdgeCert{}).
-			Where("kind = ? AND cert_name = ? AND status = ? AND cert_pem <> ''",
-				model.AdtyEdgeCertKindWildcard, "*."+roots[0], model.AdtyEdgeCertStatusReady).
-			Count(&wildcardReady).Error; err != nil {
+	}
+
+	for _, root := range roots {
+		ready, err := isWildcardReady(root)
+		if err != nil {
 			return "", 0, "", err
 		}
-		if wildcardReady == 0 {
-			return mainHost, 0, "", nil
+		if ready {
+			return "adty-edge-probe." + root, 0, "", nil
 		}
+	}
+
+	// Fallback before any certificate is ready: preserve prior deterministic target selection.
+	for _, dom := range doms {
+		if h := strings.ToLower(strings.TrimSpace(dom.Hostname)); h != "" {
+			return h, dom.SiteId, dom.Role, nil
+		}
+	}
+	if mainHost != "" {
+		return mainHost, 0, "", nil
 	}
 	if len(roots) == 0 {
 		return "", 0, "", common.NewMessage("Configure at least one root domain before probing the edge node")
@@ -327,7 +395,7 @@ func RunAdtyEdgeProbeOnce(ctx context.Context, now time.Time, force bool) (*Adty
 			return nil, common.NewMessage("Edge node IP {{ip}} must be a valid public IPv4 address", map[string]any{"ip": ip})
 		}
 	}
-	probeHost, expectedSiteID, expectedRole, err := adtySelectEdgeProbeTarget(ctx, cfg)
+	probeHost, expectedSiteID, expectedRole, err := adtySelectEdgeProbeTargetAt(ctx, cfg, now)
 	if err != nil {
 		return nil, err
 	}

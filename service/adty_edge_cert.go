@@ -602,7 +602,9 @@ func adtyUpsertEdgeCertRow(ctx context.Context, certName, kind string, domainID 
 	if existing.AliasFQDN != aliasFQDN {
 		updates["alias_fqdn"] = aliasFQDN
 		updates["next_run_at"] = 0
-		if existing.Status != model.AdtyEdgeCertStatusReady || strings.TrimSpace(existing.CertPEM) == "" || strings.TrimSpace(existing.KeyEncrypted) == "" {
+		if kind == model.AdtyEdgeCertKindCustom && adtyEdgeAliasFirstLabel(existing.AliasFQDN) != adtyEdgeAliasFirstLabel(aliasFQDN) {
+			needsReissue = true
+		} else if existing.Status != model.AdtyEdgeCertStatusReady || strings.TrimSpace(existing.CertPEM) == "" || strings.TrimSpace(existing.KeyEncrypted) == "" {
 			updates["status"] = model.AdtyEdgeCertStatusWaitingDNS
 			updates["last_error"] = ""
 			updates["attempts"] = 0
@@ -654,6 +656,14 @@ func adtyUpsertEdgeCertRow(ctx context.Context, certName, kind string, domainID 
 			}).Error
 	}
 	return nil
+}
+
+func adtyEdgeAliasFirstLabel(fqdn string) string {
+	clean := strings.ToLower(strings.TrimSpace(fqdn))
+	if idx := strings.IndexByte(clean, '.'); idx >= 0 {
+		return clean[:idx]
+	}
+	return clean
 }
 
 func adtySyncDomainEdgeCertColumns(ctx context.Context, domainID int, status, lastError string, notAfter int64) {

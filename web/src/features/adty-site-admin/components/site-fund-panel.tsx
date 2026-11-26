@@ -77,6 +77,8 @@ function fundAnomalyKindLabel(
       return t('Closed team top-up')
     case 'team_principal_review':
       return t('Team principal review required')
+    case 'batch_register':
+      return t('Batch registration anomaly')
     default:
       return kind
   }
@@ -437,6 +439,11 @@ export function FundReviewPanel(props: { siteId: number }) {
                   {row.evidence ? (
                     <span className='text-dim text-xs break-all'>
                       {row.evidence}
+                    </span>
+                  ) : null}
+                  {row.note?.trim() ? (
+                    <span className='text-dim text-xs break-words'>
+                      {t('Note')}: {row.note.trim()}
                     </span>
                   ) : null}
                 </div>

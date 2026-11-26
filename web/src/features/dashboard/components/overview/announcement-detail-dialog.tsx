@@ -32,8 +32,10 @@ interface AnnouncementDetailModalProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   announcement: {
+    id?: number | string
     title?: string
     title_en?: string
+    title_translation_status?: string
     content?: string
     content_en?: string
     english?: string

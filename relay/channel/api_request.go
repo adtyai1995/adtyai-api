@@ -396,6 +396,10 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
 	req, cancel, err := newAPIRequestForMode(c, info, fullRequestURL, requestBody)
 	if err != nil {
+		var apiErr *types.NewAPIError
+		if errors.As(err, &apiErr) {
+			return nil, apiErr
+		}
 		return nil, fmt.Errorf("new request failed: %w", sanitizeDoRequestError(err))
 	}
 	ApplyUpstreamBodyMetadata(req, requestBody)
@@ -528,6 +532,10 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
 	req, cancel, err := newAPIRequestForMode(c, info, fullRequestURL, requestBody)
 	if err != nil {
+		var apiErr *types.NewAPIError
+		if errors.As(err, &apiErr) {
+			return nil, apiErr
+		}
 		return nil, fmt.Errorf("new request failed: %w", sanitizeDoRequestError(err))
 	}
 	ApplyUpstreamBodyMetadata(req, requestBody)
@@ -867,7 +875,7 @@ func newAPIRequestForMode(c *gin.Context, info *common.RelayInfo, fullRequestURL
 	}
 	upstreamCtx, cancel, apiErr := DetachedNonStreamContext(c, info, 300*time.Second)
 	if apiErr != nil {
-		return nil, nil, apiErr.Err
+		return nil, nil, apiErr
 	}
 	req, err := http.NewRequestWithContext(upstreamCtx, c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {

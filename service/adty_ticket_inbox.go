@@ -87,8 +87,14 @@ const ticketInboxColumns = "adty_ticket_notices.*, (SELECT t.user_id FROM adty_t
 
 func formatTicketInboxNotice(row model.AdtyTicketNotice, handlerScope string) map[string]any {
 	if row.ExpiredAt > 0 {
-		return map[string]any{"id": fmt.Sprintf("ticket-notice:%d", row.Id), "read_key": row.ReadKey, "title": fmt.Sprintf("工单 #%d / Ticket #%d", row.TicketId, row.TicketId),
-			"content": "工单正文和附件已到期清理。\n\nThe ticket and its attachments have expired.", "publishDate": time.Unix(row.CreatedAt, 0).UTC().Format(time.RFC3339)}
+		return map[string]any{
+			"id":          fmt.Sprintf("ticket-notice:%d", row.Id),
+			"read_key":    row.ReadKey,
+			"source":      "ticket_notice",
+			"title":       fmt.Sprintf("工单 #%d / Ticket #%d", row.TicketId, row.TicketId),
+			"content":     "工单正文和附件已到期清理。\n\nThe ticket and its attachments have expired.",
+			"publishDate": time.Unix(row.CreatedAt, 0).UTC().Format(time.RFC3339),
+		}
 	}
 	path := "/support"
 	if row.Purpose == model.AdtyTelegramPurposeAdmin || (row.Purpose == "" && row.UserId != row.TicketOwnerID) {
@@ -105,6 +111,13 @@ func formatTicketInboxNotice(row model.AdtyTicketNotice, handlerScope string) ma
 	if path == "/support" && row.TicketTeamShared {
 		link += "-team"
 	}
-	return map[string]any{"id": fmt.Sprintf("ticket-notice:%d", row.Id), "read_key": row.ReadKey, "title": row.Title, "content": row.Content,
-		"ticket_path": link, "publishDate": time.Unix(row.CreatedAt, 0).UTC().Format(time.RFC3339)}
+	return map[string]any{
+		"id":          fmt.Sprintf("ticket-notice:%d", row.Id),
+		"read_key":    row.ReadKey,
+		"source":      "ticket_notice",
+		"title":       row.Title,
+		"content":     row.Content,
+		"ticket_path": link,
+		"publishDate": time.Unix(row.CreatedAt, 0).UTC().Format(time.RFC3339),
+	}
 }

@@ -659,11 +659,15 @@ func HardDeleteUserById(id int) (int64, error) {
 }
 
 func HardDeleteUserByIdForActor(id int, actorRole int, denyAdminTarget bool) (int64, error) {
+	return HardDeleteUserByIdForActorWithID(id, 0, actorRole, denyAdminTarget)
+}
+
+func HardDeleteUserByIdForActorWithID(id int, actorID int, actorRole int, denyAdminTarget bool) (int64, error) {
 	if id == 0 {
 		return 0, common.NewMessage("ID is empty!")
 	}
 	user := User{Id: id}
-	return user.hardDelete(actorRole, denyAdminTarget)
+	return user.hardDelete(actorID, actorRole, denyAdminTarget, "admin_delete")
 }
 
 func ensureRegistrableSiteTx(tx *gorm.DB, siteID int) error {
@@ -1380,7 +1384,7 @@ func (user *User) Delete() (int64, error) {
 
 func DeleteUserForSession(identity AuthSessionIdentity) (int64, error) {
 	user := User{Id: identity.UserID}
-	return user.delete(&identity)
+	return user.deleteWithOptions(&identity, identity.UserID, 0, false, "user_self_delete")
 }
 
 // deletedUserUsername frees the original username. The tombstone stays unique
@@ -1667,14 +1671,24 @@ func LookupLoginCandidateUserID(identifier string, siteID int) (int, bool) {
 }
 
 func (user *User) DeleteForActor(actorRole int, denyAdminTarget bool) (int64, error) {
-	return user.deleteWithOptions(nil, actorRole, denyAdminTarget)
+	return user.DeleteForActorWithID(0, actorRole, denyAdminTarget)
+}
+
+func (user *User) DeleteForActorWithID(actorID int, actorRole int, denyAdminTarget bool) (int64, error) {
+	return user.deleteWithOptions(nil, actorID, actorRole, denyAdminTarget, "admin_delete")
 }
 
 func (user *User) delete(identity *AuthSessionIdentity) (int64, error) {
-	return user.deleteWithOptions(identity, 0, false)
+	actorID := 0
+	reason := "admin_delete"
+	if identity != nil {
+		actorID = identity.UserID
+		reason = "user_self_delete"
+	}
+	return user.deleteWithOptions(identity, actorID, 0, false, reason)
 }
 
-func (user *User) deleteWithOptions(identity *AuthSessionIdentity, actorRole int, denyAdminTarget bool) (int64, error) {
+func (user *User) deleteWithOptions(identity *AuthSessionIdentity, actorID int, actorRole int, denyAdminTarget bool, reason string) (int64, error) {
 	if user.Id == 0 {
 		return 0, common.NewMessage("ID is empty!")
 	}
@@ -1718,7 +1732,7 @@ func (user *User) deleteWithOptions(identity *AuthSessionIdentity, actorRole int
 			return err
 		}
 		if AdtyBeforeUserDeleteHook != nil {
-			effects, err := AdtyBeforeUserDeleteHook(tx, user.Id)
+			effects, err := AdtyBeforeUserDeleteHook(tx, user.Id, actorID, reason)
 			if err != nil {
 				return err
 			}
@@ -1799,10 +1813,10 @@ func applyAdtyUserDeletePostEffects(deletedUserID int, effects AdtyUserDeletePos
 }
 
 func (user *User) HardDelete() (int64, error) {
-	return user.hardDelete(common.RoleRootUser, false)
+	return user.hardDelete(0, common.RoleRootUser, false, "admin_delete")
 }
 
-func (user *User) hardDelete(actorRole int, denyAdminTarget bool) (int64, error) {
+func (user *User) hardDelete(actorID int, actorRole int, denyAdminTarget bool, reason string) (int64, error) {
 	if user.Id == 0 {
 		return 0, common.NewMessage("ID is empty!")
 	}
@@ -1842,7 +1856,7 @@ func (user *User) hardDelete(actorRole int, denyAdminTarget bool) (int64, error)
 			return err
 		}
 		if AdtyBeforeUserDeleteHook != nil {
-			effects, err := AdtyBeforeUserDeleteHook(tx, user.Id)
+			effects, err := AdtyBeforeUserDeleteHook(tx, user.Id, actorID, reason)
 			if err != nil {
 				return err
 			}

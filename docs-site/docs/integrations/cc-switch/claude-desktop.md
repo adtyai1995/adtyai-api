@@ -59,7 +59,7 @@ Desktop Electron apps read local environment and settings files when spawning ne
 
 1. Start a new local coding session in Claude Desktop (or open a fresh session after restart).
 2. Send a lightweight prompt to confirm a normal reply.
-3. Open [https://www.adtyai.com/logs](https://www.adtyai.com/logs) and verify the request appears with your expected API key and model name.
+3. Open [https://www.adtyai.com/usage-logs](https://www.adtyai.com/usage-logs) and verify the request appears with your expected API key and model name.
 
 ## Switching Profiles Cleanly
 

@@ -6,7 +6,7 @@
 
 ADTY AI 网页控制台提供完整的计费明细与实时余额：
 
-- **调用日志与 Token 明细**：访问 [https://www.adtyai.com/logs](https://www.adtyai.com/logs)，查看每次请求的模型、输入/输出/缓存 Token 数量、耗时与精确扣费。
+- **调用日志与 Token 明细**：访问 [https://www.adtyai.com/usage-logs](https://www.adtyai.com/usage-logs)，查看每次请求的模型、输入/输出/缓存 Token 数量、耗时与精确扣费。
 - **钱包余额与赠金明细**：访问 [https://www.adtyai.com/wallet](https://www.adtyai.com/wallet)，查看可用现金余额、赠金余额、充值记录与兑换码记录（详见 [余额充值、赠金与兑换码](/zh-cn/guides/wallet-and-vouchers)）。
 - **团队共享钱包**：若使用的是团队 API Key，可在团队面板查看共享额度与成员使用明细（详见 [团队协作与共享钱包](/zh-cn/guides/teams)）。
 

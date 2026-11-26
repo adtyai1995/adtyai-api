@@ -16,10 +16,10 @@
 
 详情可参阅[快速上手与双域名规则](/zh-cn/guides/overview)。
 
-## `401`、`402`、`429`、`5xx` 分别代表什么？
+## `401`、`403`、`429`、`5xx` 分别代表什么？
 
-- **`401 Unauthorized`**：API Key 缺失、复制不完整、已过期、已被禁用，或所属团队成员已被移出团队。请核对 `sk-...` 密钥以及对应协议所需的请求头（`Authorization: Bearer` / `x-api-key` / `x-goog-api-key`）。
-- **`402` / 额度不足**：账户个人钱包或团队共享钱包余额不足，或者当前 API Key 已达到你为它设置的单 Key 美元上限。请前往**钱包**充值或在**令牌**页面提高该 Key 限额。
+- **`401 Unauthorized`**：API Key 缺失、复制不完整、已过期、已被禁用，或所属团队成员已被停用或移出团队。请核对 `sk-...` 密钥以及对应协议所需的请求头（`Authorization: Bearer` / `x-api-key` / `x-goog-api-key`）。
+- **`403 Forbidden`（`insufficient_user_quota` / 额度不足）**：当账户个人钱包或团队共享钱包余额不足，或者当前 API Key 达到设置的单 Key 美元上限时，ADTY AI 网关会返回 HTTP `403`（错误码 `insufficient_user_quota`）。请前往**钱包**充值或在**令牌**页面提高该 Key 限额。（其他 `403` 还包括 `api_domain_required` 或模型/IP 权限限制；若响应出现 HTTP `402`，仅可能来自上游服务商透传，并非 ADTY AI 余额不足状态码。）
 - **`429 Too Many Requests`**：触发了每分钟请求数（RPM）、每分钟 Token 数（TPM）或并发限制。请控制批量并发速度并实施指数退避重试。
 - **`500` / `502` / `503` / `504`**：上游模型提供方或中转链路发生瞬时错误或超时。可稍候重试，并前往[渠道可用性与分组选择](/zh-cn/guides/channel-status)确认对应线路的实时健康度。
 

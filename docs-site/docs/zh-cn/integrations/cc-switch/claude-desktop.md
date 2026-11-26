@@ -59,7 +59,7 @@ Electron 桌面应用在启动子进程或初始化环境时会缓存配置。�
 
 1. 重启后在 Claude Desktop 中开启一个新的本地编程会话。
 2. 发送一条简短测试消息，确认可以正常收到响应。
-3. 打开 [https://www.adtyai.com/logs](https://www.adtyai.com/logs)，检查是否已记录对应的 API Key 与模型调用日志。
+3. 打开 [https://www.adtyai.com/usage-logs](https://www.adtyai.com/usage-logs)，检查是否已记录对应的 API Key 与模型调用日志。
 
 ## 干净地切换多个配置档案
 

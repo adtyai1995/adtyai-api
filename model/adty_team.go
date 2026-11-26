@@ -355,7 +355,7 @@ type AdtyUserDeletePostEffects struct {
 
 // AdtyBeforeUserDeleteHook closes a team when its leader is deleted and returns
 // separated post-commit cache/session invalidation targets (R2-010 / R5-15).
-var AdtyBeforeUserDeleteHook func(tx *gorm.DB, userId int) (AdtyUserDeletePostEffects, error)
+var AdtyBeforeUserDeleteHook func(tx *gorm.DB, userId, actorId int, reason string) (AdtyUserDeletePostEffects, error)
 
 // AdtyAfterUserDeleteHook delivers service-level post-commit effects (such as
 // committed ticket release audits and Casbin policy reload) after user deletion.

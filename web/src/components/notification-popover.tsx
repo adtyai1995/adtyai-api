@@ -80,6 +80,7 @@ interface AnnouncementItem {
   publishDate?: string | Date
   title?: string
   title_en?: string
+  title_translation_status?: string
   publisher_name?: string
   kind?: keyof typeof notificationKindLabels
   audience?: string
@@ -186,6 +187,17 @@ function AnnouncementDot({ type }: { type?: string }) {
   )
 }
 
+function readStringField(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function readIdField(value: unknown): string | number | undefined {
+  if (typeof value === 'string' || typeof value === 'number') {
+    return value
+  }
+  return undefined
+}
+
 function AnnouncementDetailButton(props: { readKey: string }) {
   const { t, i18n } = useTranslation()
   const currentLanguage = i18n.resolvedLanguage || i18n.language
@@ -196,56 +208,28 @@ function AnnouncementDetailButton(props: { readKey: string }) {
     enabled: open,
   })
   const detailData = detail.data
+  const detailLocalizedInput = detailData
+    ? {
+        id: readIdField(detailData.id),
+        title: readStringField(detailData.title),
+        title_en: readStringField(detailData.title_en),
+        title_translation_status: readStringField(
+          detailData.title_translation_status
+        ),
+        content: readStringField(detailData.content),
+        content_en: readStringField(detailData.content_en),
+        english: readStringField(detailData.english),
+        source: readStringField(detailData.source),
+        translation_status: readStringField(detailData.translation_status),
+        translation_notice: readStringField(detailData.translation_notice),
+        content_format: readStringField(detailData.content_format),
+      }
+    : null
   const {
     title: resolvedDetailTitle,
     content,
     translationNotReady,
-  } = resolveLocalizedAnnouncement(
-    detailData
-      ? {
-          id:
-            typeof detailData.id === 'string' ||
-            typeof detailData.id === 'number'
-              ? detailData.id
-              : undefined,
-          title:
-            typeof detailData.title === 'string' ? detailData.title : undefined,
-          title_en:
-            typeof detailData.title_en === 'string'
-              ? detailData.title_en
-              : undefined,
-          content:
-            typeof detailData.content === 'string'
-              ? detailData.content
-              : undefined,
-          content_en:
-            typeof detailData.content_en === 'string'
-              ? detailData.content_en
-              : undefined,
-          english:
-            typeof detailData.english === 'string'
-              ? detailData.english
-              : undefined,
-          source:
-            typeof detailData.source === 'string'
-              ? detailData.source
-              : undefined,
-          translation_status:
-            typeof detailData.translation_status === 'string'
-              ? detailData.translation_status
-              : undefined,
-          translation_notice:
-            typeof detailData.translation_notice === 'string'
-              ? detailData.translation_notice
-              : undefined,
-          content_format:
-            typeof detailData.content_format === 'string'
-              ? detailData.content_format
-              : undefined,
-        }
-      : null,
-    currentLanguage
-  )
+  } = resolveLocalizedAnnouncement(detailLocalizedInput, currentLanguage)
   const detailTitle = resolvedDetailTitle || t('Details')
   const detailFormat =
     typeof detailData?.content_format === 'string'

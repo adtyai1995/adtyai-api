@@ -64,7 +64,9 @@ function MarginVoucherRedeemCard() {
       void invalidateSidebarBadges(queryClient)
     },
     onError: (cause) => {
-      setError(getServerErrorMessage(cause, t('Voucher code is invalid')))
+      setError(
+        getServerErrorMessage(cause, t('Margin recharge code is invalid'))
+      )
       handleServerError(cause)
     },
   })

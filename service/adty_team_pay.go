@@ -570,15 +570,21 @@ func refreshTeamEpaySubmitURLIfNeeded(ext *model.AdtyTopupOrder, clientIP, devic
 		return nil
 	}
 	channel, err := model.GetAdtyEpayChannel(ext.ChannelId)
-	if err != nil || channel == nil {
-		return nil
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrAdtyEpayChosenChannelUnavailable
+		}
+		return err
 	}
-	if !channel.IsRSA() || channel.OrderMode != model.AdtyEpayOrderModeSubmit {
-		return nil
+	if channel == nil {
+		return ErrAdtyEpayChosenChannelUnavailable
 	}
 	method := channel.MethodFor(ext.Method)
 	if method == nil || channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() {
 		return ErrAdtyEpayChosenChannelUnavailable
+	}
+	if !channel.IsRSA() || channel.OrderMode != model.AdtyEpayOrderModeSubmit {
+		return nil
 	}
 	callback := strings.TrimRight(GetCallbackAddress(), "/") + "/api/user/"
 	newURL, refreshed, err := RefreshAdtyEpaySubmitURL(channel, method, AdtyEpayCreateRequest{
@@ -623,6 +629,16 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 	}
 	if adtyTeamOrderExpired(ext, time.Now().Unix()) {
 		return nil, common.NewMessage("Order expired")
+	}
+	var precheckTeam model.AdtyTeam
+	if err := model.DB.First(&precheckTeam, teamID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrAdtyTeamForbidden
+		}
+		return nil, err
+	}
+	if precheckTeam.LeaderUserId != leaderID || precheckTeam.Status != model.AdtyTeamStatusActive {
+		return nil, ErrAdtyTeamForbidden
 	}
 	if teamCheckoutReady(ext) {
 		if err := refreshTeamEpaySubmitURLIfNeeded(ext, clientIP, dev); err != nil {
@@ -672,10 +688,6 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 		if adtyTeamOrderExpired(ext, time.Now().Unix()) {
 			return common.NewMessage("Order expired")
 		}
-		if teamCheckoutReady(ext) {
-			alreadyDone = true
-			return nil
-		}
 		var team model.AdtyTeam
 		if err := tx.First(&team, teamID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -685,6 +697,10 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 		}
 		if team.LeaderUserId != leaderID || team.Status != model.AdtyTeamStatusActive {
 			return ErrAdtyTeamForbidden
+		}
+		if teamCheckoutReady(ext) {
+			alreadyDone = true
+			return nil
 		}
 		if ext.Provider == model.PaymentProviderAdtyEpay && IsAdtyEpayMethod(ext.Method) {
 			ch := &model.AdtyEpayChannel{}

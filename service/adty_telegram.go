@@ -38,15 +38,48 @@ func adtyContainsASCIILatin(text string) bool {
 	return false
 }
 
+func adtyIsURLToken(token string) bool {
+	trimmed := strings.Trim(token, "()[]{}<>\"'`,.;:!?")
+	lower := strings.ToLower(trimmed)
+	return strings.HasPrefix(lower, "http://") ||
+		strings.HasPrefix(lower, "https://") ||
+		strings.HasPrefix(lower, "www.") ||
+		strings.HasPrefix(lower, "ftp://") ||
+		strings.HasPrefix(lower, "mailto:")
+}
+
+func adtyIsASCIIEnglishWord(token string) bool {
+	if token == "" || adtyIsURLToken(token) {
+		return false
+	}
+	hasLetter := false
+	for i := 0; i < len(token); i++ {
+		c := token[i]
+		if c > 127 {
+			return false
+		}
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+			hasLetter = true
+		}
+	}
+	return hasLetter
+}
+
 func adtyHasStandaloneEnglishParagraph(body string) bool {
 	normalized := strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\r", "\n")
 	for _, para := range strings.Split(normalized, "\n\n") {
 		para = strings.TrimSpace(para)
-		if para == "" {
+		if para == "" || adtyContainsChinese(para) {
 			continue
 		}
-		if !adtyContainsChinese(para) && adtyContainsASCIILatin(para) {
-			return true
+		englishWords := 0
+		for _, token := range strings.Fields(para) {
+			if adtyIsASCIIEnglishWord(token) {
+				englishWords++
+				if englishWords >= 2 {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -205,6 +238,7 @@ func adtyCanUseAdminTelegram(tx *gorm.DB, user *model.User) bool {
 	ok, _ := adtyTelegramAdminAccess(tx, user)
 	return ok
 }
+
 // CheckAdtyTelegramAdminAccess verifies whether userID (Root, platform ticket
 // admin, site owner, or ticket-handling site staff) may bind the Admin Bot (R2-054).
 func CheckAdtyTelegramAdminAccess(userID int) error {

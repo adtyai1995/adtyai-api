@@ -1,10 +1,12 @@
 package jimeng
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relay/channel"
@@ -106,23 +108,77 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	return nil, errors.New("not implemented")
 }
 
+type jimengCancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *jimengCancelBody) Close() error {
+	err := b.ReadCloser.Close()
+	if b.cancel != nil {
+		b.cancel()
+	}
+	return err
+}
+
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
+	if c == nil || c.Request == nil {
+		return nil, errors.New("client request is missing")
+	}
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	upstreamCtx, cancel, cancelErr := channel.DetachedNonStreamContext(c, info, 0)
+	if cancelErr != nil {
+		return nil, cancelErr
+	}
+	req, err := http.NewRequestWithContext(upstreamCtx, c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
 	channel.ApplyUpstreamBodyMetadata(req, requestBody)
+	headerOverride, err := channel.ResolveHeaderOverride(info, c)
+	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
+		return nil, err
+	}
+	for key, value := range headerOverride {
+		// Sign computes Volcengine HMAC-SHA256 against req.URL.Host and sets
+		// Host, X-Date, X-Content-Sha256, and Authorization itself. Apply overrides
+		// before Sign (skipping Host so req.Host cannot diverge from the signed host)
+		// so custom headers including Content-Type take effect without breaking signing.
+		if strings.EqualFold(key, "Host") {
+			continue
+		}
+		req.Header.Set(key, value)
+	}
 	err = Sign(c, req, info.ApiKey)
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
 	resp, err := channel.DoRequest(c, req, info)
 	if err != nil {
-		return nil, fmt.Errorf("do request failed: %w", err)
+		doErr := fmt.Errorf("do request failed: %w", err)
+		if cancel != nil {
+			cancel()
+		}
+		return nil, doErr
+	}
+	if cancel != nil {
+		if resp != nil && resp.Body != nil {
+			resp.Body = &jimengCancelBody{ReadCloser: resp.Body, cancel: cancel}
+		} else {
+			cancel()
+		}
 	}
 	return resp, nil
 }

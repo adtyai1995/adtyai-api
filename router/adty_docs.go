@@ -150,7 +150,7 @@ func AdtyStaticDocs() gin.HandlerFunc {
 			if strings.HasPrefix(relClean, "assets/") {
 				c.Header("Cache-Control", "public, max-age=2592000, immutable")
 			} else {
-				c.Header("Cache-Control", "public, max-age=0, must-revalidate")
+				c.Header("Cache-Control", "public, max-age=0, s-maxage=300, must-revalidate")
 			}
 			http.ServeContent(c.Writer, c.Request, serveName, info.ModTime(), file)
 			c.Abort()

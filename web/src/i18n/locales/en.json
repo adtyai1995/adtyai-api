@@ -11813,6 +11813,12 @@
     "Issuance limit cannot be lower than already held and redeemed codes": "Issuance limit cannot be lower than already held and redeemed codes",
     "Site margin recharge code": "Site margin recharge code",
     "This registration link was already created. The plaintext link is shown only once; if you did not copy it, revoke it in the list below and issue a new one.": "This registration link was already created. The plaintext link is shown only once; if you did not copy it, revoke it in the list below and issue a new one.",
-    "Voucher issuance limit exceeded": "Voucher issuance limit exceeded"
+    "Voucher issuance limit exceeded": "Voucher issuance limit exceeded",
+    "Batch registration anomaly": "Batch registration anomaly",
+    "Voucher funding": "Voucher funding",
+    "Commission paid": "Commission paid",
+    "Commission clawback return": "Commission clawback return",
+    "Margin top-up": "Margin top-up",
+    "Margin recharge code is invalid": "Margin recharge code is invalid"
   }
 }

@@ -53,7 +53,7 @@ requires_openai_auth = true
 1. 重新打开 **Codex 桌面应用**。
 2. 确认应用直接以 API Key 模式进入工作区，不再强制要求通过网页登录个人消费者账号。
 3. 在项目会话中发送一条简单指令（例如：`列出当前仓库根目录的主要文件`）。
-4. 访问 [https://www.adtyai.com/logs](https://www.adtyai.com/logs)，确认对应 API Key 下出现本次调用记录且模型名称无误。
+4. 访问 [https://www.adtyai.com/usage-logs](https://www.adtyai.com/usage-logs)，确认对应 API Key 下出现本次调用记录且模型名称无误。
 
 ::: tip 后续切换档案提醒
 日后在 CC Switch 中切换个人 Key / 团队 Key 或更改默认模型后，请同样对 Codex 桌面应用执行一次**完全退出并重启**，以确保所有后台代理线程同步切换到新的 `~/.codex/` 配置。

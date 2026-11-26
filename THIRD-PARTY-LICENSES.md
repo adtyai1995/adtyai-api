@@ -3,7 +3,7 @@
 This file summarizes direct third-party dependencies used by distributed builds of this project.
 It is an engineering compliance artifact and should be kept with Docker images, standalone binaries, and frontend bundles.
 
-Scope: direct dependencies from `go.mod` (including the in-repo `relaykit` and `tokenkit` modules) and `web/package.json`.
+Scope: direct dependencies from `go.mod` (including the in-repo `relaykit` and `tokenkit` modules), `web/package.json`, and `docs-site/package.json` (built into `/app/docs` in Docker images).
 Versions below are the resolved versions for the checked-in manifests and lockfiles. Go module versions are listed separately when the standalone modules resolve different versions. Transitive dependencies should be audited before a final external release.
 
 ## Dependency Inventory
@@ -139,6 +139,8 @@ Versions below are the resolved versions for the checked-in manifests and lockfi
 | web      | development | npm       | `oxfmt`                                                 | `0.72.0`                             | MIT                     |
 | web      | development | npm       | `oxlint`                                                | `1.74.0`                             | MIT                     |
 | web      | development | npm       | `vitest`                                                | `5.0.4`                              | MIT                     |
+| docs-site | development | npm       | `vitepress`                                             | `1.6.4`                              | MIT                     |
+| docs-site | development | npm       | `vue`                                                   | `3.5.13`                             | MIT                     |
 
 ## License Texts
 

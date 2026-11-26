@@ -82,7 +82,7 @@ claude
 
 1. 输入 `/status`，确认当前 API Base URL 显示为 `https://api.adtyai.com` 且无鉴权异常提示。
 2. 发送一条简短测试消息（例如：`回复 OK 并说明你当前使用的模型`）。
-3. 前往 [https://www.adtyai.com/logs](https://www.adtyai.com/logs)，确认对应 API Key 下已正常记录请求与 Token 消耗。
+3. 前往 [https://www.adtyai.com/usage-logs](https://www.adtyai.com/usage-logs)，确认对应 API Key 下已正常记录请求与 Token 消耗。
 
 ## 在多个 ADTY AI 档案间切换
 

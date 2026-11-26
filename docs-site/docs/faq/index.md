@@ -16,10 +16,10 @@ You are sending model API requests to the web console domain (`https://www.adtya
 
 See [Quick Start & Dual Domains](/guides/overview) for details.
 
-## What do `401`, `402`, `429`, and `5xx` errors mean?
+## What do `401`, `403`, `429`, and `5xx` errors mean?
 
-- **`401 Unauthorized`**: Your API key is missing, mistyped, expired, disabled, or revoked (including if a team member was removed from a team). Verify the exact `sk-...` key in **API Keys** and check that you are sending the right header (`Authorization: Bearer` vs `x-api-key` vs `x-goog-api-key`).
-- **`402` / Insufficient Quota**: Either your wallet balance (or shared team wallet balance) is too low to cover the request, or the specific API key hit its configured USD quota limit. Top up in **Wallet** or raise the key's quota cap.
+- **`401 Unauthorized`**: Your API key is missing, mistyped, expired, disabled, or revoked (including if a team employee was disabled or removed from a team). Verify the exact `sk-...` key in **API Keys** and check that you are sending the right header (`Authorization: Bearer` vs `x-api-key` vs `x-goog-api-key`).
+- **`403 Forbidden` (`insufficient_user_quota` / Insufficient Quota)**: ADTY AI returns HTTP `403` (error code `insufficient_user_quota`) when your wallet balance (or shared team wallet balance) is too low to cover the request, or when the specific API key reaches its configured USD quota limit. Top up in **Wallet** or raise the key's quota cap. *(Other `403` responses include `api_domain_required` or model/IP allowlist denials. If HTTP `402` appears, it can only come from an upstream provider passthrough rather than ADTY AI's balance check.)*
 - **`429 Too Many Requests`**: Request-per-minute (RPM), token-per-minute (TPM), or concurrent-request capacity was temporarily exceeded. Slow down parallel bursts and retry using exponential backoff.
 - **`500` / `502` / `503` / `504`**: A transient upstream provider error or timeout occurred. Retry after a short delay, and inspect [Channel Availability](/guides/channel-status) to check whether the upstream route is experiencing an incident.
 

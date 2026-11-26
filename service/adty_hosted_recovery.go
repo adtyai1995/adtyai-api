@@ -165,6 +165,7 @@ func RecoverAdtyHostedPaymentForActor(ctx context.Context, ext *model.AdtyTopupO
 		// R5-23: Only queue a durable PaymentOrphanEvent when payment was actually
 		// verified by the gateway and credit failed with a permanent business rejection,
 		// carrying the serialized facts payload. Transient query/DB errors stay retriable.
+		outcome := "failed"
 		if isPermanentAdtyTopUpCreditReject(err) {
 			payload, marshalErr := common.Marshal(facts)
 			if marshalErr != nil {
@@ -180,8 +181,9 @@ func RecoverAdtyHostedPaymentForActor(ctx context.Context, ext *model.AdtyTopupO
 			}); reviewErr != nil {
 				return reviewErr
 			}
+			outcome = "rejected"
 		}
-		if recordErr := recordAdtyHostedPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, "rejected", operatorID); recordErr != nil {
+		if recordErr := recordAdtyHostedPaymentAttempt(ext.TradeNo, ext.Provider, model.AdtyPaymentSourceQuery, outcome, operatorID); recordErr != nil {
 			return recordErr
 		}
 	}

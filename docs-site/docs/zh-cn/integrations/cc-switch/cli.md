@@ -169,7 +169,7 @@ claude --version
 codex --version
 ```
 
-发送一条测试指令后，前往 [https://www.adtyai.com/logs](https://www.adtyai.com/logs) 确认请求已正常落入对应 API Key 的调用日志。
+发送一条测试指令后，前往 [https://www.adtyai.com/usage-logs](https://www.adtyai.com/usage-logs) 确认请求已正常落入对应 API Key 的调用日志。
 
 ## 相关文档
 

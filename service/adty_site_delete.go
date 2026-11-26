@@ -615,7 +615,7 @@ func adtySiteHasBusinessDataTx(tx *gorm.DB, siteID int) (bool, error) {
 		{&model.AdtyOrderPaymentEvent{}, "site_id = ?", []any{siteID}, false},
 		{&model.AdtySiteEarningEvent{}, "site_id = ?", []any{siteID}, false},
 		{&model.AdtyCommissionRecovery{}, "site_id = ?", []any{siteID}, false},
-		{&model.AdtyAnomalyDisposition{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyAnomalyDisposition{}, "site_id = ? OR (site_id = 0 AND team_id = 0 AND kind = ? AND ref = ?)", []any{siteID, "batch_register", strconv.Itoa(siteID)}, false},
 		{&model.AdtyStaffBalanceRequest{}, "site_id = ?", []any{siteID}, false},
 		{&model.AdtyPriceRevision{}, "site_id = ?", []any{siteID}, false},
 		{&model.AdtySiteCloseMailBatch{}, "site_id = ?", []any{siteID}, false},

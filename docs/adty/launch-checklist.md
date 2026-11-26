@@ -33,7 +33,7 @@
 - [ ] API 地址：核对站点设置里的 API 地址（`adty_site_setting.api_base_url`）已填好（原内容设置里的 API 信息面板 `console_setting.api_info*` 已退役）。
 - [ ] 站点设置里填客服邮箱、Telegram、tawk.to 的 property id 和 widget id。
 - [ ] tawk.to 挂件核对：前端 `web/src/features/adty-support/tawk-widget.tsx` 会按当前正式界面语言自动切换挂件语言（`en` / `zh_cn`，切换语言时重新挂载挂件），tawk.to 后台仅需保留默认配置即可。填好 id 后用国内网络打开首页，看挂件的加载速度与中英文切换；打开支付窗时挂件应该隐藏，关掉后重新出现。
-- [ ] 顶栏导航关掉 Console、Rankings、About。
+- [ ] 顶栏导航关掉 Console、About（Rankings 排行榜已随 `[R-41] #5` 退役下线）。
 - [ ] docs_link 保持为空（8.9 已把默认值改成空，顶栏的「文档」指向 /docs）。
 
 ### 注册和登录
@@ -76,7 +76,7 @@
 
 ### 运营
 
-- [ ] Telegram：在「系统设置 → 运营 → Telegram bots」保存两个机器人的 Token 并启用，确保已配置 `ADTY_TELEGRAM_ALLOW_NETWORK=1`，再于个人页（`/profile`）绑定用户机器人；Root 仅在「系统设置 → 运营 → Telegram bots」下方绑定管理机器人，非 Root 且具有工单权限的主站管理员在个人页（`/profile`）绑定管理机器人（站长在站长中心 → 公告页绑定管理机器人），最后点「发送测试」确认收到测试通知。
+- [ ] Telegram：在「系统设置 → 运营 → Telegram bots」保存两个机器人的 Token 并启用，确保已配置 `ADTY_TELEGRAM_ALLOW_NETWORK=1`，再于个人页（`/profile`）绑定用户机器人；Root 仅在「系统设置 → 运营 → Telegram bots」下方绑定管理机器人，非 Root 且具有工单权限的主站管理员在个人页（`/profile`）绑定管理机器人（站长中心公告页原绑定入口已按 `[R-41] #9` 移除），最后点「发送测试」确认收到测试通知。
 - [ ] 系统翻译：在「系统设置 → 运营 → System translation」选平台模型或独立接口并保存，点「测试连接」通过；按需设每日调用上限。
 - [ ] 模型探活：在「系统设置 → 内容 → 服务监控 / 模型探活」确认内置轻量模型/图片探活引擎的探活间隔（`console_setting.model_probe_interval_minutes`、`image_probe_interval_minutes`）与超时（`model_probe_timeout_seconds`），并执行一次手动探活确认渠道状态页（`/model-status`）与控制台概览展示正常（模型广场 `/pricing` 不展示连通性，不再轮询外部 Uptime Kuma）。原「系统设置 → 运营 → 分组健康」已退役，不再配置。
 
@@ -89,7 +89,7 @@
 ## 6. 支付实测
 
 - [ ] BEpusdt：金额匹配用 has_prefix、订单有效期 15 分钟、确认区块数设好、回调地址公网可达。
-- [ ] BEpusdt：每条链小额实付一次，其中一次让回调在本地订单超时之后才到，确认照样入账。
+- [ ] BEpusdt：每条链小额实付一次，其中一次让回调在本地订单超时之后才到，确认不会自动入账而是进入 `/recharge-audit` 异常支付队列（`payment-orphans`）待人工核实凭证后处理（`[R-41] #1`）。
 - [ ] 易支付：每个通道测试下单、实付 ¥1、回调验签、补查、维护切换和恢复。
 
 ## 7. 推广和后台权限实测
@@ -133,7 +133,7 @@
 - [ ] 按方案任务 11.0 实测四项，结果记下来，任何一项不通先改代码再上线：
   - [ ] Cloudflare 自定义主机名：用 API 建一个（`ssl.method=http`），另一个域名的子域名 CNAME 过来，等 `status` 和 `ssl.status` 都是 active，curl 确认证书有效，记下用了多久。
   - [ ] Turnstile：把这个自定义域名加进 widget 的 domains，在这个域名上能过验证，后端校验通过、返回的 hostname 对。
-  - [ ] 分站发件配置：在「站长中心 → 邮件配置」（`/site-owner/mail`）验证平台默认发件，以及分站自有 Resend API Key 或自定义 SMTP（`PUT /api/adty/site/mail-config`、`POST /api/adty/site/mail-config/test`），发一封测试邮件确认送达且 SPF、DKIM 通过。原托管 Resend 发件域名（`sender_domain_enabled` / `POST /api/adty/site/sender-domain`）与营销联系人/Broadcast 均已退役。
+  - [ ] 分站发件配置：在「站长中心 → 邮件配置」（`/site-owner/mail`）验证分站自有 Resend API Key 或自定义 SMTP（`PUT /api/adty/site/mail-config`、`POST /api/adty/site/mail-config/test`，原平台默认发件模式已按 `[R-41] #8` 退役），发一封测试邮件确认送达且 SPF、DKIM 通过。原托管 Resend 发件域名（`sender_domain_enabled` / `POST /api/adty/site/sender-domain`）与营销联系人/Broadcast 均已退役。
   - [ ] SSE：自定义域名下跑首字延迟 100 秒和 150 秒的流式请求，开 30 秒 ping 时都不断，关了 ping 时 150 秒那个报 524。
 
 ### 设置

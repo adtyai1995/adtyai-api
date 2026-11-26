@@ -244,7 +244,9 @@ func GetAuditLogs(filter AuditLogFilter, start, limit, viewerRole int) ([]*Audit
 			"output_format_json_quote_64bit_integers":   0,
 		})))
 	}
-	if viewerRole < common.RoleRootUser {
+	if viewerRole < common.RoleAdminUser {
+		query = query.Where("actor_role = ?", common.RoleCommonUser)
+	} else if viewerRole < common.RoleRootUser {
 		query = query.Where("actor_role IN ?", []int{common.RoleCommonUser, common.RoleAdminUser})
 	}
 	if filter.UserId > 0 {

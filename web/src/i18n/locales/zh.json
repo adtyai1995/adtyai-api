@@ -11813,6 +11813,12 @@
     "Issuance limit cannot be lower than already held and redeemed codes": "发行上限不能低于当前已冻结与已核销的总额",
     "Site margin recharge code": "分站保证金充值码",
     "This registration link was already created. The plaintext link is shown only once; if you did not copy it, revoke it in the list below and issue a new one.": "该注册链接已创建，明文链接仅展示一次；如未复制，可在下方列表中撤销后重新签发。",
-    "Voucher issuance limit exceeded": "兑换码发行上限不足"
+    "Voucher issuance limit exceeded": "兑换码发行上限不足",
+    "Batch registration anomaly": "批量注册异常",
+    "Voucher funding": "兑换码实际出资",
+    "Commission paid": "佣金实付",
+    "Commission clawback return": "佣金追回返还",
+    "Margin top-up": "保证金充值",
+    "Margin recharge code is invalid": "保证金充值码无效"
   }
 }

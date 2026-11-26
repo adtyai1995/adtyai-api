@@ -77,8 +77,14 @@ export function TodoItemCard(props: {
   const { t, i18n } = useTranslation()
   const item = props.item
   const currentLanguage = i18n.resolvedLanguage || i18n.language
+  const normalizedSource =
+    item.source?.trim() ||
+    (item.key.startsWith('watcher:') ? 'channel_watcher' : undefined)
   const { title, content, translationNotReady } = resolveLocalizedAnnouncement(
-    item,
+    {
+      ...item,
+      source: normalizedSource,
+    },
     currentLanguage
   )
   const displayTitle = sanitizeTodoPlainText(title) || item.key

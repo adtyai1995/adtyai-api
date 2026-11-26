@@ -98,7 +98,7 @@ codex exec "请回复 OK，并输出当前所在目录名称。"
 
 - Codex CLI 直接进入工作状态，不会弹出浏览器账号登录引导。
 - 模型顺利返回回复。
-- 前往 [https://www.adtyai.com/logs](https://www.adtyai.com/logs) 可以看到该次调用的完整日志与 Token 计费详情。
+- 前往 [https://www.adtyai.com/usage-logs](https://www.adtyai.com/usage-logs) 可以看到该次调用的完整日志与 Token 计费详情。
 
 ## 常见问题速查
 

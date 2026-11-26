@@ -6,7 +6,7 @@ Keeping an eye on token consumption and remaining quota helps you avoid sudden i
 
 The ADTY AI web console is always the authoritative source of truth for billing, bonus credits, and request-level details:
 
-- **Request Logs & Token Breakdown**: Visit [https://www.adtyai.com/logs](https://www.adtyai.com/logs) to inspect every API call, model ID, prompt/completion/cache token counts, latency, and exact cost per request.
+- **Request Logs & Token Breakdown**: Visit [https://www.adtyai.com/usage-logs](https://www.adtyai.com/usage-logs) to inspect every API call, model ID, prompt/completion/cache token counts, latency, and exact cost per request.
 - **Wallet Balance & Credits**: Visit [https://www.adtyai.com/wallet](https://www.adtyai.com/wallet) to view your remaining cash balance, bonus balance, top-up history, and voucher redemptions (see [Wallet, Bonus & Vouchers](/guides/wallet-and-vouchers)).
 - **Team Shared Wallet**: If your API key belongs to a team workspace, view shared consumption under the team panel (see [Team Collaboration](/guides/teams)).
 

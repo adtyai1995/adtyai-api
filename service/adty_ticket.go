@@ -1193,17 +1193,52 @@ func releaseInvalidTicketAssigneeTx(tx *gorm.DB, ticket *model.AdtyTicket, actor
 	return releaseTicketAssigneeTx(tx, ticket, actorID)
 }
 
-func releaseStaffTicketsTx(tx *gorm.DB, staff model.AdtySiteStaff, ownerID int) error {
+func releaseStaffTicketsWithAuditsTx(tx *gorm.DB, staff *model.AdtySiteStaff, actorID int, reason string) ([]model.AuditLog, error) {
+	if tx == nil || staff == nil || staff.UserId <= 0 || !tx.Migrator().HasTable(&model.AdtyTicket{}) {
+		return nil, nil
+	}
 	var tickets []model.AdtyTicket
 	if err := model.AdtyLockForUpdate(tx).Where("assignee_id=? AND COALESCE(handling_site_id,site_id)=? AND status NOT IN ?", staff.UserId, staff.SiteId, []string{model.AdtyTicketClosed, model.AdtyTicketResolved}).Order("id").Find(&tickets).Error; err != nil {
-		return err
+		return nil, err
 	}
+	if len(tickets) == 0 {
+		return nil, nil
+	}
+	reason = strings.TrimSpace(reason)
+	audits := make([]model.AuditLog, 0, len(tickets))
 	for i := range tickets {
-		if err := releaseTicketAssigneeTx(tx, &tickets[i], ownerID); err != nil {
-			return err
+		previousStatus := tickets[i].Status
+		previousAssignee := tickets[i].AssigneeId
+		if err := releaseTicketAssigneeTx(tx, &tickets[i], actorID); err != nil {
+			return audits, err
+		}
+		beforeSnap := map[string]any{
+			"ticket_id":   tickets[i].Id,
+			"status":      previousStatus,
+			"assignee_id": previousAssignee,
+			"site_id":     tickets[i].SiteId,
+		}
+		afterSnap := map[string]any{
+			"ticket_id":   tickets[i].Id,
+			"status":      tickets[i].Status,
+			"assignee_id": 0,
+			"site_id":     tickets[i].SiteId,
+			"event":       "transfer",
+		}
+		auditEntry, err := appendAdtyOfficialAuditTx(tx, actorID, tickets[i].SiteId, "ticket", strconv.FormatInt(tickets[i].Id, 10), "adty.ticket.status", reason, "", beforeSnap, afterSnap, model.AuditResultSuccess)
+		if err != nil {
+			return audits, err
+		}
+		if auditEntry != nil {
+			audits = append(audits, *auditEntry)
 		}
 	}
-	return nil
+	return audits, nil
+}
+
+func releaseStaffTicketsTx(tx *gorm.DB, staff model.AdtySiteStaff, ownerID int) error {
+	_, err := releaseStaffTicketsWithAuditsTx(tx, &staff, ownerID, "staff_ticket_release")
+	return err
 }
 
 // ReleaseAssigneeOpenTicketsTx releases all open (non-resolved, non-closed)

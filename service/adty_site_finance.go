@@ -563,8 +563,14 @@ func ReviewAdtyAnomalyDispositionWithAudit(id int64, operatorID int, status, not
 		if err := notifyAdtyAnomalyDispositionTx(tx, row, operatorID, status, note); err != nil {
 			return err
 		}
+		auditSiteID := row.SiteId
+		if auditSiteID == 0 && row.TeamId == 0 && row.Kind == "batch_register" {
+			if parsed, parseErr := strconv.Atoi(strings.TrimSpace(row.Ref)); parseErr == nil && parsed > 0 {
+				auditSiteID = parsed
+			}
+		}
 		var auditErr error
-		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, operatorID, row.SiteId, "anomaly_disposition", strconv.FormatInt(row.Id, 10),
+		auditEvent, auditErr = appendAdtyOfficialAuditTx(tx, operatorID, auditSiteID, "anomaly_disposition", strconv.FormatInt(row.Id, 10),
 			"adty.anomaly_disposition.review", note, "",
 			map[string]any{"status": beforeStatus, "note": beforeNote},
 			map[string]any{"status": status, "note": note, "kind": row.Kind, "order_ref": row.OrderRef},

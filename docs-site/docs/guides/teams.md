@@ -7,8 +7,8 @@ ADTY AI Teams let organizations, labs, and engineering groups share a single USD
 Instead of reimbursing individual developers or sharing one personal `sk-...` key across an entire company:
 
 - The **Team Owner** funds the **Team Shared Wallet** inside the team workspace.
-- Team members issue their own **team-bound API keys** that deduct directly from the shared team balance.
-- Personal wallets and personal API keys remain strictly separated from team billing.
+- Team-bound API keys issued for the owner or independent team employees deduct directly from the shared team balance.
+- The Team Owner's personal wallet and personal API keys remain strictly separated from team billing.
 
 ::: tip Zero Key Sharing
 Every engineer should use their own team-bound key rather than copying a teammate's key. Separate keys make cost attribution effortless and let owners revoke access for one person without breaking anyone else's workflow.
@@ -16,37 +16,38 @@ Every engineer should use their own team-bound key rather than copying a teammat
 
 ## Role Model
 
-ADTY AI supports three distinct identities inside a team workspace:
+ADTY AI supports two distinct roles inside a team workspace:
 
-| Identity | Who It Is For | Wallet & Billing | Lifecycle Control |
+| Role | Who It Is For | Wallet & Billing | Lifecycle Control |
 | :--- | :--- | :--- | :--- |
-| **Team Owner** | Organization lead or billing admin | Funds and manages the shared team wallet | Controls team membership, sub-accounts, keys, and workspace policies |
-| **Team Member** | Existing platform user invited to the team | Team-bound keys bill the shared team wallet; personal keys remain separate | Owner can adjust access or remove the member from the team at any time |
-| **Standalone Team Staff Sub-Account** | Dedicated staff account provisioned directly by the team | Operates under team workspace billing without needing external personal registration | Provisioned, disabled, or revoked directly by the team owner |
+| **Team Owner (Owner)** | Organization lead or billing admin | Funds and manages the shared team wallet; personal wallet and personal keys remain separate | Creates and manages employee sub-accounts, issues one-time invite links, manages team keys, and audits all team usage |
+| **Independent Team Employee** | Dedicated employee sub-account belonging exclusively to the team | Operates solely within the team workspace and bills the shared team wallet (no personal wallet or personal workspace switching) | Created directly by the owner or registered via a one-time invite link; enabled, disabled, reset, or removed directly by the owner |
 
-### When to Choose Team Members vs. Staff Sub-Accounts
+### Onboarding Team Employees
 
-- **Invite as Team Member** when collaborators already have their own ADTY AI accounts and want to switch cleanly between personal and team workspaces.
-- **Create a Standalone Team Staff Sub-Account** when onboarding employees or contractors under centralized company-owned credentials whose login lifecycle should begin and end entirely inside your team.
+Existing personal accounts are not merged into or switched across team workspaces. Instead, every team employee uses a dedicated **Independent Team Employee** sub-account provisioned in one of two ways:
+
+- **Direct creation by the Team Owner**: Provision the independent team employee sub-account directly inside the team console when onboarding employees or contractors under centralized company-owned credentials.
+- **One-time invitation link**: Issue a one-time invitation link so the employee can register their own independent team employee sub-account directly under your team.
 
 ## Creating Team-Bound API Keys
 
-1. Switch to your team workspace in the console at [https://www.adtyai.com](https://www.adtyai.com) (or select the team billing scope when creating a key).
+1. Open your team workspace in the console at [https://www.adtyai.com](https://www.adtyai.com) (Team Owners can switch to the team workspace or select the team billing scope when creating a key; Independent Team Employees sign in directly to the team workspace).
 2. Choose a concrete model group matching the models your project requires (see [Channel Availability](/guides/channel-status)).
 3. Configure optional safeguards: a per-key USD quota cap, model allowlist, IP allowlist, and expiration date.
-4. Distribute or configure the generated `sk-...` key in the member's CLI, IDE, or service.
+4. Distribute or configure the generated `sk-...` key in the employee's CLI, IDE, or service.
 
 All requests authenticated with that key automatically deduct from the **Team Shared Wallet** and appear under the team's usage ledger.
 
 ## Usage Visibility & Cost Auditing
 
-- **Team Owners** get workspace-wide visibility across every team member, staff sub-account, and team-bound API key—making it easy to spot unexpected spikes, review model mix, and reconcile internal budgets.
-- **Team Members** can inspect usage logs for their own team keys to debug requests, verify prompt caching, and obtain Request IDs without exposing other members' traffic.
+- **Team Owners** get workspace-wide visibility across every independent team employee and team-bound API key—making it easy to spot unexpected spikes, review model mix, and reconcile internal budgets.
+- **Independent Team Employees** can inspect usage logs for their own team keys to debug requests, verify prompt caching, and obtain Request IDs without exposing other employees' traffic.
 
 ## Immediate Revocation on Member Removal
 
 Offboarding is instant and enforced at the gateway level:
 
-- Removing a **Team Member** from the team or disabling a **Standalone Team Staff Sub-Account** immediately blocks all team-bound API keys associated with that user from executing further model requests.
-- Active team keys belonging to other members remain unaffected.
+- Disabling or removing an **Independent Team Employee** sub-account immediately blocks all team-bound API keys associated with that account from executing further model requests.
+- Active team keys belonging to other team employees remain unaffected.
 - Historical usage records are preserved in the team ledger for accounting and compliance.

@@ -558,6 +558,11 @@ export type SettlementSheet = {
   gift_reserve_usd: string
   gift_funding_usd: string
   gift_release_usd: string
+  voucher_funding_usd?: string
+  earning_to_margin_usd?: string
+  margin_topup_usd?: string
+  commission_paid_usd?: string
+  commission_clawback_return_usd?: string
   trial_expense_usd: string
   commission_usd: string
   pending_coverage_unverified?: boolean

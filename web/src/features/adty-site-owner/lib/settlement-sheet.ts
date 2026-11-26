@@ -217,14 +217,27 @@ export function buildSettlementSections(
     usd('reserve', t('Gift reserve'), sheet.gift_reserve_usd),
     usd('funding', t('Gift funding'), sheet.gift_funding_usd),
     usd('release', t('Gift release'), sheet.gift_release_usd),
+    usd('voucher-funding', t('Voucher funding'), sheet.voucher_funding_usd),
     usd('trial', t('Trial expense'), sheet.trial_expense_usd),
     usd('commission', t('Commission'), sheet.commission_usd),
+    usd('commission-paid', t('Commission paid'), sheet.commission_paid_usd),
+    usd(
+      'commission-clawback-return',
+      t('Commission clawback return'),
+      sheet.commission_clawback_return_usd
+    ),
     pendingCoverageLine,
   ]
 
   const anomalyCount = sheet.anomaly_count ?? 0
   const walletAndWithdrawals: SettlementLine[] = [
     usd('margin', t('Margin change'), sheet.margin_delta_usd),
+    usd('margin-topup', t('Margin top-up'), sheet.margin_topup_usd),
+    usd(
+      'earning-to-margin',
+      t('Earnings moved to margin'),
+      sheet.earning_to_margin_usd
+    ),
     usd('earnings', t('Earnings change'), sheet.earnings_delta_usd),
     usd('available', t('Available change'), sheet.earnings_available_delta_usd),
     usd('frozen', t('Frozen change'), sheet.earnings_frozen_delta_usd),

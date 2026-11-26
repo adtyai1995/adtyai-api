@@ -345,8 +345,8 @@ curl -sS "https://api.adtyai.com/v1beta/models/gemini-2.5-pro:generateContent" \
 | :--- | :--- | :--- |
 | `400 Bad Request` | 请求体格式或参数不合法 | 检查 JSON 格式、必填字段（如 Anthropic 必填 `max_tokens`）、模型支持的参数及请求体大小，勿原样重试。 |
 | `401 Unauthorized` | API Key 无效、缺失或已撤销 | 核对 `sk-...` 密钥是否有多余空格/换行，并在控制台确认密钥未被禁用或过期。 |
-| `402 Payment Required` | 余额不足或令牌触达限额 | 为个人/团队钱包充值，或在**令牌**页面调高该 Key 的美元消费上限（部分场景下余额不足也可能以 `402` 或带额度不足说明的 `403` 返回）。 |
-| `403 Forbidden` | `api_domain_required` 或权限受限 | 1) 若错误码为 `api_domain_required`，请将地址从 `https://www.adtyai.com` 改为 `https://api.adtyai.com`；2) 否则请检查分组可用模型、令牌模型白名单、IP 白名单或团队成员状态。 |
+| `402 Payment Required` | 仅可能来自上游服务商透传 | ADTY AI 余额不足或令牌额度耗尽不会返回 `402`（而是返回 `403` / `insufficient_user_quota`）。若出现 `402`，仅可能来自上游服务商透传；请查看[渠道可用性与分组选择](/zh-cn/guides/channel-status)或携带 Request ID 联系支持。 |
+| `403 Forbidden` | `insufficient_user_quota`、`api_domain_required` 或权限受限 | 1) 若错误码为 `insufficient_user_quota`，表示个人/团队钱包余额不足或当前令牌触达美元限额，请前往**钱包**充值或在**令牌**页面提高该 Key 限额；2) 若错误码为 `api_domain_required`，请将地址从 `https://www.adtyai.com` 改为 `https://api.adtyai.com`；3) 否则请检查分组可用模型、令牌模型白名单、IP 白名单或团队成员状态。 |
 | `404 Not Found` | 路径错误或模型不存在 | 检查路径是否多拼了 `/v1/v1` 或漏写了 `/v1`，并通过 `GET /v1/models` 核实准确的模型 ID。 |
 | `429 Too Many Requests` | 触发 RPM / TPM / 并发限流 | 降低瞬时并发，读取 `Retry-After`（如有）并采用指数退避重试。 |
 | `500` / `502` / `503` / `504` | 上游服务或网关瞬时异常 | 进行带抖动的指数退避重试；若持续报错请查看[渠道可用性与分组选择](/zh-cn/guides/channel-status)。 |

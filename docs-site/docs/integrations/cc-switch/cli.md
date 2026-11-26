@@ -171,7 +171,7 @@ claude --version
 codex --version
 ```
 
-Then run a short prompt and confirm the call shows up in [https://www.adtyai.com/logs](https://www.adtyai.com/logs).
+Then run a short prompt and confirm the call shows up in [https://www.adtyai.com/usage-logs](https://www.adtyai.com/usage-logs).
 
 ## Related Guides
 

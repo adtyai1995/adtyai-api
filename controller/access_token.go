@@ -391,6 +391,18 @@ func GetAuditLogs(c *gin.Context) {
 		ObjectUsername string `json:"object_username,omitempty"`
 		ObjectUserId   int    `json:"object_user_id,omitempty"`
 	}
+	selfRestricted := filter.SelfView && viewerRole < common.RoleAdminUser
+	selfID := c.GetInt("id")
+	var ownedSiteIDs map[int]bool
+	if selfRestricted && selfID > 0 {
+		var siteIDs []int
+		if err := model.DB.Model(&model.AdtySite{}).Where("owner_user_id = ?", selfID).Pluck("id", &siteIDs).Error; err == nil && len(siteIDs) > 0 {
+			ownedSiteIDs = make(map[int]bool, len(siteIDs))
+			for _, sid := range siteIDs {
+				ownedSiteIDs[sid] = true
+			}
+		}
+	}
 	lookupIDs := make([]int, 0, len(logs))
 	lookupStaffIDs := make([]int, 0)
 	objectUserIDs := make([]int, len(logs))
@@ -399,13 +411,31 @@ func GetAuditLogs(c *gin.Context) {
 		if entry == nil {
 			continue
 		}
+		entrySiteID := 0
+		if entry.SiteId != nil {
+			entrySiteID = *entry.SiteId
+		}
 		switch strings.ToLower(strings.TrimSpace(entry.ObjectType)) {
-		case "user", "admin.user", "adty.user", "adty.admin_permissions", "customer", "site_customer":
+		case "admin.user", "adty.admin_permissions":
+			if selfRestricted {
+				continue
+			}
 			if uid, parseErr := strconv.Atoi(strings.TrimSpace(entry.ObjectId)); parseErr == nil && uid > 0 {
 				objectUserIDs[i] = uid
 				lookupIDs = append(lookupIDs, uid)
 			}
+		case "user", "adty.user", "customer", "site_customer":
+			if uid, parseErr := strconv.Atoi(strings.TrimSpace(entry.ObjectId)); parseErr == nil && uid > 0 {
+				if selfRestricted && uid != selfID && !(entrySiteID > 0 && ownedSiteIDs[entrySiteID]) {
+					continue
+				}
+				objectUserIDs[i] = uid
+				lookupIDs = append(lookupIDs, uid)
+			}
 		case "staff", "site_staff", "site.staff":
+			if selfRestricted && !(entrySiteID > 0 && ownedSiteIDs[entrySiteID]) {
+				continue
+			}
 			if sid, parseErr := strconv.Atoi(strings.TrimSpace(entry.ObjectId)); parseErr == nil && sid > 0 {
 				staffRecordIDs[i] = sid
 				lookupStaffIDs = append(lookupStaffIDs, sid)
@@ -417,6 +447,9 @@ func GetAuditLogs(c *gin.Context) {
 		var staffRows []model.AdtySiteStaff
 		if err := model.DB.Where("id IN ?", lookupStaffIDs).Find(&staffRows).Error; err == nil {
 			for _, st := range staffRows {
+				if selfRestricted && !ownedSiteIDs[st.SiteId] {
+					continue
+				}
 				staffByID[st.Id] = st
 				if st.UserId > 0 {
 					lookupIDs = append(lookupIDs, st.UserId)

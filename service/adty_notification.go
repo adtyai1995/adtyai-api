@@ -1746,13 +1746,34 @@ func announceTelegramBodyWithDB(db *gorm.DB, row model.AdtyNotificationPublicati
 			}
 		}
 	}
+	rawContent := strings.TrimSpace(row.Content)
+	bodySrc := stripAdtyNotificationTranslationSuffix(rawContent, "")
+	bodyReady := false
+	isHTML := strings.EqualFold(strings.TrimSpace(row.ContentFormat), "html")
+	if bodyHead != nil {
+		candidateSrc := stripAdtyNotificationTranslationSuffix(rawContent, bodyHead.English)
+		if adtyTranslationHeadMatchesSource(*bodyHead, candidateSrc) {
+			bodySrc = candidateSrc
+			eng := strings.TrimSpace(bodyHead.English)
+			if isHTML {
+				eng = strings.TrimSpace(adtyNotificationHTMLToTelegramText(SanitizeAdtyNotificationHTML(eng)))
+			}
+			if bodyHead.Status == model.AdtyTranslationReady && eng != "" && !isAdtyTranslationNotReadyText(eng) {
+				bodyReady = true
+			}
+		}
+	}
 	content := resolveAdtyNotificationDisplayContentWithHead(row, bodyHead)
-	if strings.EqualFold(strings.TrimSpace(row.ContentFormat), "html") {
+	if isHTML {
 		content = adtyNotificationHTMLToTelegramText(content)
 	}
 	content = adtyEnsureTelegramBilingualFallback(content)
+	bodyNeedsNotReady := adtyContainsChinese(bodySrc) && !bodyReady
 	rawTitle := strings.TrimSpace(row.Title)
 	if rawTitle == "" {
+		if content != "" && bodyNeedsNotReady && !strings.Contains(strings.ToLower(content), strings.ToLower(adtyTranslationNotReadyEn)) {
+			content += "\n\n" + adtyTranslationNotReadyEn
+		}
 		return content
 	}
 	title := rawTitle
@@ -1767,7 +1788,8 @@ func announceTelegramBodyWithDB(db *gorm.DB, row model.AdtyNotificationPublicati
 		}
 	}
 	body := adtyEnsureTelegramBilingualFallback(title + "\n\n" + content)
-	if body != "" && adtyContainsChinese(rawTitle) && !titleReady && !adtyTitleHasBilingualEnglish(rawTitle) {
+	titleNeedsNotReady := adtyContainsChinese(rawTitle) && !titleReady && !adtyTitleHasBilingualEnglish(rawTitle)
+	if body != "" && (bodyNeedsNotReady || titleNeedsNotReady) {
 		if !strings.Contains(strings.ToLower(body), strings.ToLower(adtyTranslationNotReadyEn)) {
 			body += "\n\n" + adtyTranslationNotReadyEn
 		}
@@ -2605,7 +2627,9 @@ func formatAdtyNotificationItemForViewer(row model.AdtyNotificationPublication, 
 			}
 		}
 		item["title_translation_status"] = titleStatus
-		if curStatus, ok := item["translation_status"].(string); !ok || strings.TrimSpace(curStatus) == "" {
+		curStatus, _ := item["translation_status"].(string)
+		curStatus = strings.TrimSpace(curStatus)
+		if curStatus == "" || curStatus == model.AdtyTranslationReady || (curStatus == model.AdtyTranslationPending && titleStatus == model.AdtyTranslationFailed) {
 			item["translation_status"] = titleStatus
 			item["translation_notice"] = AdtyTranslationNotReady
 		}

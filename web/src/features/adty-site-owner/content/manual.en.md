@@ -190,14 +190,16 @@ Manage password, email binding, active sessions, 2FA, and scoped Personal Access
 | Action | Step-Up Required | Digest-Bound | PAT Allowed |
 |---|:---:|:---:|:---:|
 | Save retail multiplier (`Pricing & Multiplier`) | Yes | No | Yes (`site_owner_setting:write`) |
-| Save recharge bonus (`Recharge Bonus`) | Yes | No | Yes (`site_owner_setting:write`) |
+| Save recharge bonus (`Recharge Bonus`) | Yes | No | Yes (`site_owner_order:write`) |
+| Save email configuration (`Email configuration`) | Yes | No | Yes (`site_owner_setting:write`) |
 | Delete active or archived custom domain | Yes | No | Yes (`site_owner_setting:write`) |
-| Issue / freeze / cancel customer vouchers | Yes | No | Yes (`site_owner_order:write`) |
+| Freeze / cancel customer vouchers | Yes | No | Yes (`site_owner_order:write`) |
 | Reset customer password | Yes | No | Yes (`site_owner_customer:write`) |
+| Issue customer vouchers | Yes | **Yes** | Yes (`site_owner_order:write`) |
 | Submit USDT earnings withdrawal | Yes | **Yes** | Yes (`site_owner_order:write`) |
 | Initiate / advance customer manual refund | Yes | **Yes** | Yes (`site_owner_order:write`) |
 | Create / edit / reset / delete staff account | Yes | **Yes** | **No (live browser session only)** |
-| Brand, homepage, legal, email, SEO, referral settings, team multiplier, earnings-to-margin, notices, tickets, closure request | **No** | — | Yes (matching `site_owner_*` scope) |
+| Brand, homepage, legal, SEO, referral settings, team multiplier, earnings-to-margin, notices, tickets, closure request | **No** | — | Yes (matching `site_owner_*` scope) |
 
 ---
 

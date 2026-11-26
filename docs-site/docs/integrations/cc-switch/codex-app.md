@@ -53,7 +53,7 @@ Closing the desktop window is usually **not** enough—desktop apps often keep b
 1. Launch **Codex Desktop App**.
 2. Confirm that it opens directly into workspace / API-key mode without forcing a consumer browser login flow.
 3. Open a workspace thread and send a quick prompt (for example, `List the top-level files in this repository.`).
-4. Open [https://www.adtyai.com/logs](https://www.adtyai.com/logs) in your browser and verify that the request appears under your ADTY AI API key with the expected model name.
+4. Open [https://www.adtyai.com/usage-logs](https://www.adtyai.com/usage-logs) in your browser and verify that the request appears under your ADTY AI API key with the expected model name.
 
 ::: tip Switching Profiles Later
 Whenever you switch between personal and team ADTY AI profiles (or change the default model) in CC Switch, perform a full quit and relaunch of Codex Desktop App so all background agent sessions pick up the new `~/.codex/` files.

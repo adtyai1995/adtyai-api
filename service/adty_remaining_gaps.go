@@ -235,6 +235,7 @@ type AdtyTodoItem struct {
 	SiteId            int    `json:"site_id" gorm:"not null;default:0;index"`
 	Key               string `json:"key" gorm:"type:varchar(128);not null;uniqueIndex:idx_adty_todo_user_key,priority:2;index"`
 	PublicationId     int    `json:"publication_id" gorm:"not null;default:0;index"`
+	Source            string `json:"source,omitempty" gorm:"-"`
 	Title             string `json:"title" gorm:"type:varchar(200);not null;default:''"`
 	TitleEn           string `json:"title_en,omitempty" gorm:"-"`
 	Content           string `json:"content" gorm:"type:text"`
@@ -1259,7 +1260,9 @@ func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeComplet
 			}
 		} else {
 			item.Content = sanitizeAdtyTodoStoredContent(item.Content)
-			if (adtyContainsChinese(item.Title) && strings.TrimSpace(item.TitleEn) == "") ||
+			if _, isWatcher := watcherNotifyByKey[item.Key]; isWatcher {
+				item.Source = "channel_watcher"
+			} else if (adtyContainsChinese(item.Title) && strings.TrimSpace(item.TitleEn) == "") ||
 				(adtyContainsChinese(item.Content) && strings.TrimSpace(item.ContentEn) == "") {
 				item.TranslationStatus = model.AdtyTranslationPending
 				item.TranslationNotice = AdtyTranslationNotReady
@@ -1684,19 +1687,36 @@ func refuseSiteInviteBatchTx(tx *gorm.DB, siteID, inviterID int, ipHash string) 
 
 // recordSiteInviteBatchAnomaly commits the review fact after the refused bind rolls back.
 func recordSiteInviteBatchAnomaly(siteID, inviterID int) error {
-	ref := strconv.Itoa(siteID)
-	note := "inviter " + strconv.Itoa(inviterID)
+	const kind = "batch_register"
+	ref := fmt.Sprintf("site:%d:inviter:%d", siteID, inviterID)
+	note := fmt.Sprintf("inviter %d", inviterID)
+	evidence := mustAnomalyEvidence(map[string]any{
+		"site_id":    siteID,
+		"inviter_id": inviterID,
+	})
 	return model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockAdtyOpenAnomalyDisposition(tx, kind, ref); err != nil {
+			return err
+		}
 		var existing int64
 		if err := tx.Model(&model.AdtyAnomalyDisposition{}).
-			Where("kind = ? AND ref = ? AND status = ? AND note = ?", "batch_register", ref, "open", note).
+			Where("kind = ? AND status IN ? AND ((site_id = ? AND account_id = ?) OR ref = ? OR (ref = ? AND note = ?))",
+				kind, []string{"open", "reviewing"}, siteID, inviterID, ref, strconv.Itoa(siteID), note).
 			Count(&existing).Error; err != nil {
 			return err
 		}
 		if existing > 0 {
 			return nil
 		}
-		return tx.Create(&model.AdtyAnomalyDisposition{Kind: "batch_register", Ref: ref, Status: "open", Note: note}).Error
+		return tx.Create(&model.AdtyAnomalyDisposition{
+			Kind:      kind,
+			Ref:       ref,
+			SiteId:    siteID,
+			AccountId: inviterID,
+			Evidence:  evidence,
+			Status:    "open",
+			Note:      note,
+		}).Error
 	})
 }
 

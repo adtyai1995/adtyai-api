@@ -25,8 +25,12 @@ const TRANSLATION_NOT_READY_MARKER_SET = new Set(
   TRANSLATION_NOT_READY_MARKERS.map((marker) => marker.toLowerCase())
 )
 
-const NON_TEXT_NOTIFICATION_SOURCES = new Set(['channel_watcher'])
+const NON_TEXT_NOTIFICATION_SOURCES = new Set([
+  'channel_watcher',
+  'ticket_notice',
+])
 const HAN_CHAR_REGEX = /\p{Script=Han}/u
+const ASCII_LATIN_REGEX = /[A-Za-z]/
 
 const WRAPPER_TAGS = new Set(['p', 'div', 'span', 'small', 'em', 'i'])
 const CONTAINER_TAGS = new Set(['p', 'div'])
@@ -611,7 +615,19 @@ function isNonTextNotification(item: LocalizedAnnouncementFields): boolean {
     return true
   }
   const idStr = item.id !== undefined && item.id !== null ? String(item.id) : ''
-  return idStr.startsWith('watcher:')
+  return idStr.startsWith('watcher:') || idStr.startsWith('ticket-notice:')
+}
+
+function titleHasBilingualEnglish(title: string): boolean {
+  const sepIndex = title.indexOf(' / ')
+  if (sepIndex < 0) return false
+  const after = title.slice(sepIndex + 3).trim()
+  return (
+    after !== '' &&
+    !HAN_CHAR_REGEX.test(after) &&
+    ASCII_LATIN_REGEX.test(after) &&
+    !isTranslationNotReadyMarker(after)
+  )
 }
 
 function resolveChineseSourceText(
@@ -699,7 +715,10 @@ export function resolveLocalizedAnnouncement(
   const hasNotReadyNotice =
     (item.translation_notice?.trim() ?? '') !== '' ||
     isTranslationNotReadyMarker(item.translation_notice)
-  const titleHasChinese = titleZh !== '' && HAN_CHAR_REGEX.test(titleZh)
+  const titleHasChinese =
+    titleZh !== '' &&
+    HAN_CHAR_REGEX.test(titleZh) &&
+    !titleHasBilingualEnglish(titleZh)
   const titleNotReady =
     titleEn === '' &&
     (titleHasNotReadyMarker ||

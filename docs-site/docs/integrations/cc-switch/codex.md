@@ -98,7 +98,7 @@ If everything is configured properly:
 
 - Codex CLI starts immediately without asking you to sign in via a browser.
 - The response completes cleanly using your selected model.
-- The request appears in [https://www.adtyai.com/logs](https://www.adtyai.com/logs) under your API key.
+- The request appears in [https://www.adtyai.com/usage-logs](https://www.adtyai.com/usage-logs) under your API key.
 
 ## Common Issues
 
