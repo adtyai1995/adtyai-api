@@ -24,7 +24,8 @@ Even while you are already signed in to the console, high-impact operations requ
 - Revealing the full plaintext value of an existing API key
 - Changing your account password
 - Modifying or disabling 2FA settings
-- Submitting external referral cash withdrawals
+- Creating, updating, or revoking Personal Access Tokens (PAT)
+- Deleting your account
 
 This short-lived verification window protects your account if a browser session is temporarily left unlocked.
 

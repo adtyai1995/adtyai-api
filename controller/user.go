@@ -2041,6 +2041,14 @@ func ManageUser(c *gin.Context) {
 			authz.NotifyPolicyChanged()
 		}
 	} else if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var staffUserIDs []int
+		if req.Action == "disable" {
+			var lockErr error
+			staffUserIDs, lockErr = service.PreLockSiteOwnerStaffForDisableTx(tx, user.Id)
+			if lockErr != nil {
+				return lockErr
+			}
+		}
 		var txErr error
 		changed, txErr = model.ApplyManagedUserAccessForActorTx(tx, &delta, myRole, isAccessTokenRequest(c))
 		if txErr != nil {
@@ -2048,14 +2056,9 @@ func ManageUser(c *gin.Context) {
 		}
 		if req.Action == "disable" {
 			var audits []model.AuditLog
-			_, audits, txErr = service.ReleaseAssigneeOpenTicketsWithAuditsTx(tx, user.Id, c.GetInt("id"), "admin_disable")
+			audits, txErr = service.ReleaseAssigneesOpenTicketsWithAuditsTx(tx, user.Id, staffUserIDs, c.GetInt("id"), "admin_disable", "site_owner_disabled")
 			if txErr == nil {
 				ticketAudits = append(ticketAudits, audits...)
-				var staffAudits []model.AuditLog
-				staffAudits, txErr = service.ReleaseSiteOwnerStaffOpenTicketsWithAuditsTx(tx, user.Id, c.GetInt("id"), "site_owner_disabled")
-				if txErr == nil {
-					ticketAudits = append(ticketAudits, staffAudits...)
-				}
 			}
 		}
 		return txErr

@@ -324,6 +324,10 @@ func checkIfChatComplete(ctx context.Context, a *Adaptor, c *gin.Context, info *
 	}
 	defer resp.Body.Close() // 确保响应体被关闭
 
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("coze chat retrieve failed with status %d", resp.StatusCode), false
+	}
+
 	// 解析 resp 到 CozeChatResponse
 	var cozeResponse CozeChatResponse
 	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
@@ -333,6 +337,9 @@ func checkIfChatComplete(ctx context.Context, a *Adaptor, c *gin.Context, info *
 	err = common.Unmarshal(responseBody, &cozeResponse)
 	if err != nil {
 		return fmt.Errorf("unmarshal response body failed: %w", err), false
+	}
+	if cozeResponse.Code != 0 {
+		return fmt.Errorf("coze chat retrieve error code %d", cozeResponse.Code), false
 	}
 	if cozeResponse.Data.Status == "completed" {
 		// 在上下文设置 usage

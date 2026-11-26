@@ -127,7 +127,8 @@ func AdtyPublicAnnouncementsForRequest(c *gin.Context) []AdtyPublicAnnouncement 
 		}
 		bodyStaticBilingual := !hasBodyHead && adtyBodyHasBilingualEnglish(bodySrc, isHTML)
 		bodyNeedsEn := adtyContainsChinese(bodySrc) && strings.TrimSpace(contentEn) == "" && !bodyStaticBilingual
-		titleNeedsEn := adtyContainsChinese(title) && strings.TrimSpace(titleEn) == "" && !adtyTitleHasBilingualEnglish(title)
+		titleStaticBilingual := !hasTitleHead && adtyTitleHasBilingualEnglish(title)
+		titleNeedsEn := adtyContainsChinese(title) && strings.TrimSpace(titleEn) == "" && !titleStaticBilingual
 		translationStatus := ""
 		translationNotice := ""
 		if bodyNeedsEn || titleNeedsEn {

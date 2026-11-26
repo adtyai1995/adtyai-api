@@ -11,6 +11,10 @@ import (
 )
 
 func newConvertRequestFailedError(c *gin.Context, info *relaycommon.RelayInfo, err error) *types.NewAPIError {
+	var apiErr *types.NewAPIError
+	if errors.As(err, &apiErr) && apiErr != nil {
+		return apiErr
+	}
 	var loss *types.ConversionLossError
 	if errors.As(err, &loss) {
 		info.RecordConversionDiagnostics(c, loss.Diagnostics)

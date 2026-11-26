@@ -551,13 +551,29 @@ func getHeaderOverrideMap(info *RelayInfo) map[string]any {
 	return info.ChannelMeta.HeadersOverride
 }
 
+func normalizeHeaderOverrideKey(key string) string {
+	trimmed := strings.TrimSpace(key)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	switch {
+	case strings.HasPrefix(lower, "re:"):
+		return "re:" + strings.TrimSpace(trimmed[len("re:"):])
+	case strings.HasPrefix(lower, "regex:"):
+		return "regex:" + strings.TrimSpace(trimmed[len("regex:"):])
+	default:
+		return lower
+	}
+}
+
 func sanitizeHeaderOverrideMap(source map[string]any) map[string]any {
 	if len(source) == 0 {
 		return map[string]any{}
 	}
 	target := make(map[string]any, len(source))
 	for key, value := range source {
-		normalizedKey := normalizeHeaderContextKey(key)
+		normalizedKey := normalizeHeaderOverrideKey(key)
 		if normalizedKey == "" {
 			continue
 		}

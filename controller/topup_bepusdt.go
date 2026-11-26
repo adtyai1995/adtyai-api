@@ -120,6 +120,7 @@ func RequestBEpusdtPay(c *gin.Context) {
 		"expire_at":        order.ExpireAt,
 		"gateway_trade_id": order.TradeId,
 		"pay_url":          order.PaymentURL,
+		"checkout_gateway": strings.TrimRight(strings.TrimSpace(setting.GetBEpusdtSetting().BaseURL), "/"),
 	})
 	if err != nil {
 		if order.TradeId != "" {

@@ -566,6 +566,7 @@ var mjPassthroughSkipHeaderNamesLower = map[string]struct{}{
 	// Additional headers that should not be forwarded by name-matching passthrough rules.
 	"host":            {},
 	"content-length":  {},
+	"content-type":    {},
 	"accept-encoding": {},
 
 	// Do not passthrough credentials by wildcard/regex.
@@ -580,6 +581,8 @@ var mjPassthroughSkipHeaderNamesLower = map[string]struct{}{
 	"sec-websocket-extensions": {},
 }
 
+const mjMaxHeaderPassthroughRegexLen = 512
+
 var mjHeaderPassthroughRegexCache sync.Map // map[string]*regexp.Regexp
 
 func getMidjourneyHeaderPassthroughRegex(pattern string) (*regexp.Regexp, error) {
@@ -587,13 +590,19 @@ func getMidjourneyHeaderPassthroughRegex(pattern string) (*regexp.Regexp, error)
 	if pattern == "" {
 		return nil, errors.New("empty regex pattern")
 	}
+	if len(pattern) > mjMaxHeaderPassthroughRegexLen {
+		return nil, fmt.Errorf("regex pattern too long (max %d)", mjMaxHeaderPassthroughRegexLen)
+	}
 	if v, ok := mjHeaderPassthroughRegexCache.Load(pattern); ok {
 		if re, ok := v.(*regexp.Regexp); ok {
 			return re, nil
 		}
 		mjHeaderPassthroughRegexCache.Delete(pattern)
 	}
-	compiled, err := regexp.Compile(pattern)
+	if _, err := regexp.Compile(pattern); err != nil {
+		return nil, err
+	}
+	compiled, err := regexp.Compile("(?i:" + pattern + ")")
 	if err != nil {
 		return nil, err
 	}
@@ -687,20 +696,21 @@ func applyMidjourneyHeaderOverride(c *gin.Context, req *http.Request, apiKey str
 	var passthroughRegex []*regexp.Regexp
 	if hasClientRequest {
 		for k := range headerOverrideSource {
-			key := strings.TrimSpace(strings.ToLower(k))
-			if key == "" {
+			trimmedK := strings.TrimSpace(k)
+			if trimmedK == "" {
 				continue
 			}
-			if key == mjHeaderPassthroughAllKey {
+			if trimmedK == mjHeaderPassthroughAllKey {
 				passAll = true
 				continue
 			}
+			lowerK := strings.ToLower(trimmedK)
 			var pattern string
 			switch {
-			case strings.HasPrefix(key, mjHeaderPassthroughRegexPrefix):
-				pattern = strings.TrimSpace(key[len(mjHeaderPassthroughRegexPrefix):])
-			case strings.HasPrefix(key, mjHeaderPassthroughRegexPrefix2):
-				pattern = strings.TrimSpace(key[len(mjHeaderPassthroughRegexPrefix2):])
+			case strings.HasPrefix(lowerK, mjHeaderPassthroughRegexPrefix):
+				pattern = strings.TrimSpace(trimmedK[len(mjHeaderPassthroughRegexPrefix):])
+			case strings.HasPrefix(lowerK, mjHeaderPassthroughRegexPrefix2):
+				pattern = strings.TrimSpace(trimmedK[len(mjHeaderPassthroughRegexPrefix2):])
 			default:
 				continue
 			}

@@ -1775,7 +1775,8 @@ func announceTelegramBodyWithDB(db *gorm.DB, row model.AdtyNotificationPublicati
 		content = adtyNotificationHTMLToTelegramText(content)
 	}
 	content = adtyEnsureTelegramBilingualFallback(content)
-	bodyNeedsNotReady := adtyContainsChinese(bodySrc) && !bodyReady && !adtyBodyHasBilingualEnglish(bodySrc, isHTML)
+	bodyStaticBilingual := bodyHead == nil && adtyBodyHasBilingualEnglish(bodySrc, isHTML)
+	bodyNeedsNotReady := adtyContainsChinese(bodySrc) && !bodyReady && !bodyStaticBilingual
 	rawTitle := strings.TrimSpace(row.Title)
 	if rawTitle == "" {
 		if content != "" && bodyNeedsNotReady && !strings.Contains(strings.ToLower(content), strings.ToLower(adtyTranslationNotReadyEn)) {
@@ -1795,7 +1796,8 @@ func announceTelegramBodyWithDB(db *gorm.DB, row model.AdtyNotificationPublicati
 		}
 	}
 	body := adtyEnsureTelegramBilingualFallback(title + "\n\n" + content)
-	titleNeedsNotReady := adtyContainsChinese(rawTitle) && !titleReady && !adtyTitleHasBilingualEnglish(rawTitle)
+	titleStaticBilingual := titleHead == nil && adtyTitleHasBilingualEnglish(rawTitle)
+	titleNeedsNotReady := adtyContainsChinese(rawTitle) && !titleReady && !titleStaticBilingual
 	if body != "" && (bodyNeedsNotReady || titleNeedsNotReady) {
 		if !strings.Contains(strings.ToLower(body), strings.ToLower(adtyTranslationNotReadyEn)) {
 			body += "\n\n" + adtyTranslationNotReadyEn
@@ -2627,7 +2629,8 @@ func formatAdtyNotificationItemForViewer(row model.AdtyNotificationPublication, 
 			titleReady = true
 		}
 	}
-	titleNeedsEn := adtyContainsChinese(title) && !adtyTitleHasBilingualEnglish(title)
+	titleStaticBilingual := titleHead == nil && adtyTitleHasBilingualEnglish(title)
+	titleNeedsEn := adtyContainsChinese(title) && !titleStaticBilingual
 	if titleNeedsEn && !titleReady {
 		titleStatus := model.AdtyTranslationPending
 		if titleHead != nil && (titleMatched || (strings.TrimSpace(titleHead.SourceHash) == "" && strings.TrimSpace(titleHead.Source) == "")) {

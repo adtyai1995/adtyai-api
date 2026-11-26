@@ -11819,6 +11819,8 @@
     "Commission paid": "Commission paid",
     "Commission clawback return": "Commission clawback return",
     "Margin top-up": "Margin top-up",
-    "Margin recharge code is invalid": "Margin recharge code is invalid"
+    "Margin recharge code is invalid": "Margin recharge code is invalid",
+    "This payment channel or payment link is currently unavailable. Please cancel this order and choose another payment method to place a new order.": "This payment channel or payment link is currently unavailable. Please cancel this order and choose another payment method to place a new order.",
+    "This USDT payment channel or receiving address is currently unavailable. Please cancel this order and create a new one.": "This USDT payment channel or receiving address is currently unavailable. Please cancel this order and create a new one."
   }
 }

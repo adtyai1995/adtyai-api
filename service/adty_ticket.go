@@ -856,6 +856,7 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 	if assigneeId < 0 || len(workspace) > 1 {
 		return ErrAdtyTicketInvalid
 	}
+	status = strings.TrimSpace(status)
 	var err error
 	if err := ensureAdtyTicketNoticeSchema(); err != nil {
 		return err
@@ -881,7 +882,7 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 			// MutateAdtyStaff (AdtySiteStaff -> AdtyTicket) cannot race a deactivated staff
 			// member into an in_progress reopened ticket.
 			preReadAssigneeID := reopenAssigneeHint
-			if strings.TrimSpace(status) == "reopen" && assigneeId == 0 && preReadAssigneeID == 0 {
+			if status == "reopen" && assigneeId == 0 && preReadAssigneeID == 0 {
 				var preTicket model.AdtyTicket
 				if err := tx.Select("assignee_id").Where("id = ?", ticketId).Limit(1).Find(&preTicket).Error; err != nil {
 					return err
@@ -902,7 +903,7 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 				slices.Sort(staffUserIDs)
 				staffUserIDs = slices.Compact(staffUserIDs)
 				var memberships []model.AdtySiteStaff
-				if err := model.AdtyLockForUpdate(tx).Select("id").Where("user_id IN ?", staffUserIDs).Order("user_id ASC, id ASC").Find(&memberships).Error; err != nil {
+				if err := model.AdtyLockForUpdate(tx).Select("id").Where("user_id IN ?", staffUserIDs).Order("id ASC").Find(&memberships).Error; err != nil {
 					return err
 				}
 			}
@@ -914,7 +915,7 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 			if err := scopedAdtyTickets(model.AdtyLockForUpdate(tx), actor).First(&ticket, ticketId).Error; err != nil {
 				return err
 			}
-			if strings.TrimSpace(status) == "reopen" && assigneeId == 0 && ticket.AssigneeId > 0 && !slices.Contains(staffUserIDs, ticket.AssigneeId) {
+			if status == "reopen" && assigneeId == 0 && ticket.AssigneeId > 0 && !slices.Contains(staffUserIDs, ticket.AssigneeId) {
 				reopenAssigneeHint = ticket.AssigneeId
 				return errRetryAssigneeLock
 			}
@@ -977,7 +978,7 @@ func SetAdtyTicketStatusWithKey(userId int, ticketId int64, status, priority str
 				}
 			}
 			action := "status"
-			next, err := nextAdtyTicketStatus(tx, actor, ticket, current, strings.TrimSpace(status), nextAssignee)
+			next, err := nextAdtyTicketStatus(tx, actor, ticket, current, status, nextAssignee)
 			if err != nil {
 				return err
 			}
@@ -1308,10 +1309,120 @@ func ReleaseAssigneeSubsiteOpenTicketsWithAuditsTx(tx *gorm.DB, assigneeID int, 
 	return releaseAssigneeOpenTicketsByScopeTx(tx, assigneeID, actorID, reason, true)
 }
 
+// PreLockSiteOwnerStaffForDisableTx locks all AdtySiteStaff rows associated with
+// targetUserID (either as staff or as site owner) in deterministic id ASC order
+// before User / AdtyTicket locks are acquired, and returns the deduplicated
+// staff user IDs owned by targetUserID (excluding targetUserID itself).
+func PreLockSiteOwnerStaffForDisableTx(tx *gorm.DB, targetUserID int) ([]int, error) {
+	if tx == nil || targetUserID <= 0 || !tx.Migrator().HasTable(&model.AdtySiteStaff{}) {
+		return nil, nil
+	}
+	var rows []model.AdtySiteStaff
+	if err := model.AdtyLockForUpdate(tx).
+		Select("id", "user_id", "owner_user_id").
+		Where("user_id = ? OR owner_user_id = ?", targetUserID, targetUserID).
+		Order("id ASC").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	seen := make(map[int]struct{}, len(rows))
+	staffUserIDs := make([]int, 0, len(rows))
+	for _, row := range rows {
+		if row.OwnerUserId != targetUserID || row.UserId <= 0 || row.UserId == targetUserID {
+			continue
+		}
+		if _, exists := seen[row.UserId]; exists {
+			continue
+		}
+		seen[row.UserId] = struct{}{}
+		staffUserIDs = append(staffUserIDs, row.UserId)
+	}
+	return staffUserIDs, nil
+}
+
+// ReleaseAssigneesOpenTicketsWithAuditsTx locks all open tickets assigned to
+// ownerUserID and staffUserIDs in a single id ASC pass, releases each ticket,
+// and returns the recorded official audit logs for post-commit delivery.
+func ReleaseAssigneesOpenTicketsWithAuditsTx(tx *gorm.DB, ownerUserID int, staffUserIDs []int, actorID int, ownerReason, staffReason string) ([]model.AuditLog, error) {
+	if tx == nil {
+		return nil, nil
+	}
+	seen := make(map[int]struct{}, len(staffUserIDs)+1)
+	assigneeIDs := make([]int, 0, len(staffUserIDs)+1)
+	if ownerUserID > 0 {
+		seen[ownerUserID] = struct{}{}
+		assigneeIDs = append(assigneeIDs, ownerUserID)
+	}
+	for _, id := range staffUserIDs {
+		if id <= 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		assigneeIDs = append(assigneeIDs, id)
+	}
+	if len(assigneeIDs) == 0 || !tx.Migrator().HasTable(&model.AdtyTicket{}) {
+		return nil, nil
+	}
+	slices.Sort(assigneeIDs)
+	var tickets []model.AdtyTicket
+	if err := model.AdtyLockForUpdate(tx).
+		Where("assignee_id IN ? AND status NOT IN ?", assigneeIDs, []string{model.AdtyTicketClosed, model.AdtyTicketResolved}).
+		Order("id ASC").
+		Find(&tickets).Error; err != nil {
+		return nil, err
+	}
+	if len(tickets) == 0 {
+		return nil, nil
+	}
+	ownerReason = strings.TrimSpace(ownerReason)
+	staffReason = strings.TrimSpace(staffReason)
+	audits := make([]model.AuditLog, 0, len(tickets))
+	for i := range tickets {
+		previousStatus := tickets[i].Status
+		previousAssignee := tickets[i].AssigneeId
+		if err := releaseTicketAssigneeTx(tx, &tickets[i], actorID); err != nil {
+			return audits, err
+		}
+		reason := staffReason
+		if ownerUserID > 0 && previousAssignee == ownerUserID {
+			reason = ownerReason
+		}
+		auditEntry, err := appendAdtyOfficialAuditTx(tx, actorID, tickets[i].SiteId, "ticket", strconv.FormatInt(tickets[i].Id, 10), "adty.ticket.status", reason, "",
+			map[string]any{
+				"ticket_id":   tickets[i].Id,
+				"status":      previousStatus,
+				"assignee_id": previousAssignee,
+				"site_id":     tickets[i].SiteId,
+			},
+			map[string]any{
+				"ticket_id":   tickets[i].Id,
+				"status":      tickets[i].Status,
+				"assignee_id": 0,
+				"site_id":     tickets[i].SiteId,
+				"event":       "transfer",
+			},
+			model.AuditResultSuccess)
+		if err != nil {
+			return audits, err
+		}
+		if auditEntry != nil {
+			audits = append(audits, *auditEntry)
+		}
+	}
+	return audits, nil
+}
+
 // ReleaseSiteOwnerStaffOpenTicketsWithAuditsTx locks all staff rows owned by
-// ownerUserID in deterministic order and releases every open ticket assigned
-// to those staff members (excluding ownerUserID itself), returning the
-// recorded official audit logs for post-commit delivery.
+// ownerUserID in deterministic id ASC order and releases every open ticket
+// assigned to those staff members (excluding ownerUserID itself) in a single
+// id ASC lock pass, returning the recorded official audit logs for post-commit
+// delivery.
 func ReleaseSiteOwnerStaffOpenTicketsWithAuditsTx(tx *gorm.DB, ownerUserID, actorID int, reason string) ([]model.AuditLog, error) {
 	if tx == nil || ownerUserID <= 0 || !tx.Migrator().HasTable(&model.AdtySiteStaff{}) {
 		return nil, nil
@@ -1320,7 +1431,7 @@ func ReleaseSiteOwnerStaffOpenTicketsWithAuditsTx(tx *gorm.DB, ownerUserID, acto
 	if err := model.AdtyLockForUpdate(tx).
 		Select("id", "user_id").
 		Where("owner_user_id = ? AND user_id > 0", ownerUserID).
-		Order("user_id ASC, id ASC").
+		Order("id ASC").
 		Find(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -1328,7 +1439,7 @@ func ReleaseSiteOwnerStaffOpenTicketsWithAuditsTx(tx *gorm.DB, ownerUserID, acto
 		return nil, nil
 	}
 	seen := make(map[int]struct{}, len(rows))
-	var audits []model.AuditLog
+	staffIDs := make([]int, 0, len(rows))
 	for _, row := range rows {
 		staffUserID := row.UserId
 		if staffUserID <= 0 || staffUserID == ownerUserID {
@@ -1338,15 +1449,9 @@ func ReleaseSiteOwnerStaffOpenTicketsWithAuditsTx(tx *gorm.DB, ownerUserID, acto
 			continue
 		}
 		seen[staffUserID] = struct{}{}
-		_, releasedAudits, err := ReleaseAssigneeOpenTicketsWithAuditsTx(tx, staffUserID, actorID, reason)
-		if err != nil {
-			return audits, err
-		}
-		if len(releasedAudits) > 0 {
-			audits = append(audits, releasedAudits...)
-		}
+		staffIDs = append(staffIDs, staffUserID)
 	}
-	return audits, nil
+	return ReleaseAssigneesOpenTicketsWithAuditsTx(tx, 0, staffIDs, actorID, "", reason)
 }
 
 // DeliverAdtyCommittedAudits delivers a batch of committed official audit
@@ -2165,7 +2270,7 @@ func loadAdtyTicketWorkspace(tx *gorm.DB, userId int, requested ...string) (adty
 	if (workspace == "staff" || len(requested) == 0) && tx != model.DB {
 		// A staff grant update locks this row before replacing permissions.
 		var membership model.AdtySiteStaff
-		if err := model.AdtyLockForUpdate(tx).Select("id").Where("user_id = ?", userId).Limit(1).Find(&membership).Error; err != nil {
+		if err := model.AdtyLockForUpdate(tx).Select("id").Where("user_id = ?", userId).Order("id ASC").Limit(1).Find(&membership).Error; err != nil {
 			return adtyTicketActor{}, err
 		}
 	}

@@ -59,11 +59,11 @@ type OfficialAuditWrite struct {
 const (
 	auditSecretPEMExpr = `-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:(?:\r?\n|\\r?\\n)[A-Za-z0-9+/=]{16,})*`
 
-	auditSecretEnKeyNamesExpr = `password|passwd|passphrase|secret|token|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|bot[_-]?token|telegram[_-]?bot[_-]?token|telegram[_-]?token|authorization|private[_-]?key|client[_-]?secret|verification[_-]?code|verify[_-]?code|otp|session[_-]?token|payment[_-]?secret|payment[_-]?key|epay[_-]?key|bepusdt[_-]?token|bepusdt[_-]?api[_-]?token|merchant[_-]?key|merchant[_-]?private[_-]?key|webhook[_-]?secret|refresh[_-]?token|bearer|backup[_-]?codes?|smtp[_-]?token|smtp[_-]?password|mail[_-]?password|resend[_-]?api[_-]?key|gotify[_-]?token|generated[_-]?password|new[_-]?password|old[_-]?password|original[_-]?password|totp[_-]?secret|recovery[_-]?codes?|reset[_-]?token|email[_-]?code|cf[_-]?api[_-]?token|cloudflare[_-]?api[_-]?token|alidns[_-]?access[_-]?key[_-]?secret|aliyun[_-]?access[_-]?key[_-]?secret|aliyun[_-]?access[_-]?key[_-]?id|access[_-]?key[_-]?secret|epay[_-]?private[_-]?key|signing[_-]?secret|secret[_-]?key|key[_-]?secret|voucher[_-]?code|redemption[_-]?code|bark[_-]?url|turnstile[_-]?secret[_-]?key|turnstile[_-]?widget[_-]?secret|worker[_-]?valid[_-]?key|edge[_-]?token|key[_-]?pem|acme[_-]?key|acme[_-]?account[_-]?key`
-	auditSecretZhKeyNamesExpr = `验证码|密码|口令|密钥|令牌|兑换码|充值码|支付密钥|商户私钥|私钥|发信密钥|接口密钥`
+	auditSecretEnKeyNamesExpr = `password|passwd|passphrase|passcode|secret|token|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|bot[_-]?token|telegram[_-]?bot[_-]?token|telegram[_-]?token|authorization|private[_-]?key|client[_-]?secret|verification[_ -]?code|verify[_ -]?code|otp|one[_ -]?time[_ -]?(?:code|password|passcode)|security[_ -]?code|auth[_ -]?code|login[_ -]?code|reset[_ -]?code|session[_-]?token|session[_-]?secret|crypto[_-]?secret|postgres[_-]?password|redis[_-]?password|db[_-]?password|payment[_-]?secret|payment[_-]?key|epay[_-]?key|bepusdt[_-]?token|bepusdt[_-]?api[_-]?token|merchant[_-]?key|merchant[_-]?private[_-]?key|webhook[_-]?secret|refresh[_-]?token|bearer|backup[_ -]?codes?|smtp[_-]?token|smtp[_-]?password|mail[_-]?password|resend[_-]?api[_-]?key|gotify[_-]?token|generated[_-]?password|new[_-]?password|old[_-]?password|original[_-]?password|totp[_-]?secret|recovery[_ -]?codes?|reset[_-]?token|email[_ -]?code|cf[_-]?api[_-]?token|cloudflare[_-]?api[_-]?token|alidns[_-]?access[_-]?key[_-]?secret|aliyun[_-]?access[_-]?key[_-]?secret|aliyun[_-]?access[_-]?key[_-]?id|access[_-]?key[_-]?secret|epay[_-]?private[_-]?key|signing[_-]?secret|secret[_-]?key|key[_-]?secret|voucher[_-]?code|redemption[_-]?code|bark[_-]?url|turnstile[_-]?secret[_-]?key|turnstile[_-]?widget[_-]?secret|worker[_-]?valid[_-]?key|adty[_-]?flush[_-]?token|flush[_-]?token|adty[_-]?edge[_-]?token|edge[_-]?token|key[_-]?pem|acme[_-]?key|acme[_-]?account[_-]?key`
+	auditSecretZhKeyNamesExpr = `验证码|恢复码|备份码|访问令牌|刷新令牌|密码|口令|支付密钥|商户私钥|私钥|发信密钥|接口密钥|密钥|令牌|兑换码|充值码`
 
 	auditSecretTokenExpr = `sk-[A-Za-z0-9_\-]{8,}|nap_[A-Za-z0-9_\-]{12,}|pat-[A-Za-z0-9_\-]{10,}|re_[A-Za-z0-9_]{16,}|bot\d{6,}:[A-Za-z0-9_\-]{10,}|\d{6,12}:[A-Za-z0-9_\-]{20,}|Bearer\s+[A-Za-z0-9._\-]{16,}|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{8,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9\-]{10,}`
-	auditSecretKVValExpr = `(?:\\"(?:[^"\\]|\\\\\\"|\\[^"\\]|\\\\)*\\"|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\[[^\]\r\n]*\]|(?:(?:Bearer|Basic)\s+)?[^\s,}\]'"]+)`
+	auditSecretKVValExpr = `(?:\\"(?:[^"\\]|\\\\\\"|\\[^"\\]|\\\\)*\\"|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\[[^\]\r\n]*\]|\\"(?:[^"\\\r\n]|\\.)*|"(?:[^"\\\r\n]|\\.)*|'(?:[^'\\\r\n]|\\.)*|\[[^\]\r\n]*|(?:(?:Bearer|Basic)\s+)?[^\s,}\]'"]+)`
 	auditSecretEnKVExpr  = `(?:` + auditSecretEnKeyNamesExpr + `)(?:\\"|["'])?\s*[:：=＝]\s*(` + auditSecretKVValExpr + `)`
 	auditSecretZhKVExpr  = `(?:` + auditSecretZhKeyNamesExpr + `)(?:\\"|["'])?\s*[:：=＝]\s*(` + auditSecretKVValExpr + `)`
 
@@ -85,6 +85,7 @@ var auditSecretKeyNames = map[string]struct{}{
 	"password":                 {},
 	"passwd":                   {},
 	"passphrase":               {},
+	"passcode":                 {},
 	"secret":                   {},
 	"token":                    {},
 	"api_key":                  {},
@@ -100,7 +101,19 @@ var auditSecretKeyNames = map[string]struct{}{
 	"verification_code":        {},
 	"verify_code":              {},
 	"otp":                      {},
+	"one_time_code":            {},
+	"one_time_password":        {},
+	"one_time_passcode":        {},
+	"security_code":            {},
+	"auth_code":                {},
+	"login_code":               {},
+	"reset_code":               {},
 	"session_token":            {},
+	"session_secret":           {},
+	"crypto_secret":            {},
+	"postgres_password":        {},
+	"redis_password":           {},
+	"db_password":              {},
 	"payment_secret":           {},
 	"payment_key":              {},
 	"epay_key":                 {},
@@ -144,11 +157,18 @@ var auditSecretKeyNames = map[string]struct{}{
 	"turnstile_secret_key":     {},
 	"turnstile_widget_secret":  {},
 	"worker_valid_key":         {},
+	"adty_flush_token":         {},
+	"flush_token":              {},
+	"adty_edge_token":          {},
 	"edge_token":               {},
 	"key_pem":                  {},
 	"acme_key":                 {},
 	"acme_account_key":         {},
 	"验证码":                      {},
+	"恢复码":                      {},
+	"备份码":                      {},
+	"访问令牌":                     {},
+	"刷新令牌":                     {},
 	"密码":                       {},
 	"口令":                       {},
 	"密钥":                       {},
@@ -732,7 +752,7 @@ func normalizeOfficialAuditKey(key string) string {
 	var b strings.Builder
 	b.Grow(len(trimmed) + 4)
 	for i, r := range runes {
-		if r == '-' {
+		if r == '-' || r == ' ' {
 			b.WriteByte('_')
 			continue
 		}

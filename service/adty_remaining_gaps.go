@@ -1248,7 +1248,8 @@ func ListAdtyTodosForUserOnSite(userID int, site *model.AdtySite, includeComplet
 			if titleCheck == "" {
 				titleCheck = strings.TrimSpace(item.Title)
 			}
-			titleNeedsEn := (adtyContainsChinese(titleSrc) || adtyContainsChinese(item.Title)) && strings.TrimSpace(item.TitleEn) == "" && !adtyTitleHasBilingualEnglish(titleCheck)
+			titleStaticBilingual := !hasTitleHead && adtyTitleHasBilingualEnglish(titleCheck)
+			titleNeedsEn := (adtyContainsChinese(titleSrc) || adtyContainsChinese(item.Title)) && strings.TrimSpace(item.TitleEn) == "" && !titleStaticBilingual
 			if bodyNeedsEn || titleNeedsEn {
 				var bodyHeadPtr, titleHeadPtr *model.AdtyTranslationHead
 				if hasBodyHead {

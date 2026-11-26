@@ -69,7 +69,6 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
   const { t } = useTranslation()
   const device = props.device ?? detectPayDevice()
   const [tradeNo, setTradeNo] = useState<string | undefined>(props.tradeNo)
-  const [blocked, setBlocked] = useState(false)
   const setPaymentDialogOpen = useAdtyUiStore(
     (state) => state.setPaymentDialogOpen
   )
@@ -149,12 +148,11 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
     ) {
       return
     }
-    jumpedRef.current = ext.trade_no
     const target = mobileTarget(ext)
     if (!target) {
-      setBlocked(!qrContent(ext))
       return
     }
+    jumpedRef.current = ext.trade_no
     if (navigate) {
       navigate(target)
       return
@@ -190,18 +188,19 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
   const payLink = ext ? safePaymentLink(ext) : ''
   const qr = ext ? qrContent(ext) : ''
   const target = ext ? mobileTarget(ext) : ''
+  const isActivePending = status === 'pending' && !expired
+  const hasRawPaymentLink = Boolean(
+    ext?.qr_code?.trim() || ext?.pay_url?.trim() || ext?.url_scheme?.trim()
+  )
+  const hasSafePaymentAction = Boolean(directQr || payLink || qr || target)
   const desktopOpenLinkMode =
     device === 'pc' && !directQr && Boolean(payLink)
-  const unsafeLink =
-    blocked ||
-    (device === 'pc' &&
-      status === 'pending' &&
-      !expired &&
-      directQr === '' &&
-      payLink === '' &&
-      qr === '' &&
-      Boolean(ext?.qr_code || ext?.pay_url || ext?.url_scheme))
-  const isActivePending = status === 'pending' && !expired
+  const checkoutUnavailable = Boolean(
+    ext && isActivePending && !hasRawPaymentLink
+  )
+  const unsafeLink = Boolean(
+    ext && isActivePending && hasRawPaymentLink && !hasSafePaymentAction
+  )
 
   const openMobilePaymentApp = () => {
     if (!target) return
@@ -332,6 +331,15 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
           </AlertDescription>
         </Alert>
       )}
+      {checkoutUnavailable && (
+        <Alert variant='destructive'>
+          <AlertDescription>
+            {t(
+              'This payment channel or payment link is currently unavailable. Please cancel this order and choose another payment method to place a new order.'
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
       {ext && isActivePending && (
         <div className='flex flex-col items-center gap-3'>
           <p className='text-2xl font-semibold' data-testid='epay-amount'>
@@ -374,7 +382,7 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
                 </p>
               </>
             )}
-          {device === 'mobile' && target && !blocked && (
+          {device === 'mobile' && target && (
             <div className='flex flex-col items-center gap-2'>
               <p className='text-center text-sm'>
                 {props.gatewayReturn

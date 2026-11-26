@@ -291,16 +291,20 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 
 	availableQuota := int64(userQuota)
 	isTeamKey := false
+	teamLeaderID := 0
+	teamSiteID := 0
 	var op *model.BillingOperation
 	if session, ok := relayInfo.Billing.(*BillingSession); ok && session.operationKey != "" {
 		if loadedOp, opErr := model.GetBillingOperation(session.operationKey); opErr == nil && loadedOp != nil {
 			op = loadedOp
 			if op.PayerKind == model.BillingPayerTeam && op.PayerTeamId > 0 {
 				var team model.AdtyTeam
-				if err := model.DB.Select("id", "shared_quota").First(&team, op.PayerTeamId).Error; err != nil {
+				if err := model.DB.Select("id", "shared_quota", "site_id", "leader_user_id").First(&team, op.PayerTeamId).Error; err != nil {
 					return err
 				}
 				availableQuota = team.SharedQuota
+				teamLeaderID = team.LeaderUserId
+				teamSiteID = team.SiteId
 				isTeamKey = true
 			}
 		}
@@ -313,13 +317,27 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 		if teamBound {
 			availableQuota = teamQuota
 			isTeamKey = true
+			var teamRow struct {
+				SiteId       int
+				LeaderUserId int
+			}
+			if err := model.DB.Table("adty_team_keys").
+				Select("adty_teams.site_id, adty_teams.leader_user_id").
+				Joins("JOIN adty_teams ON adty_teams.id = adty_team_keys.team_id").
+				Where("adty_team_keys.token_id = ? AND adty_team_keys.revoked_at = 0", relayInfo.TokenId).
+				Limit(1).Scan(&teamRow).Error; err == nil {
+				teamSiteID = teamRow.SiteId
+				teamLeaderID = teamRow.LeaderUserId
+			}
 		}
 	}
 	if relayInfo.Billing != nil && quota > 0 && relayInfo.UserId > 0 {
-		siteID := 0
+		siteID := teamSiteID
 		orderRef := ""
 		if op != nil {
-			siteID = op.SiteId
+			if siteID == 0 {
+				siteID = op.SiteId
+			}
 			orderRef = op.OperationKey
 		}
 		if siteID == 0 && ctx != nil {
@@ -342,6 +360,15 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 			OrderRef:  orderRef,
 		}); err != nil {
 			return relaytypes.NewErrorWithStatusCode(err, relaytypes.ErrorCodeAccessDenied, http.StatusForbidden, relaytypes.ErrOptionWithSkipRetry())
+		}
+		if isTeamKey && teamLeaderID > 0 && teamLeaderID != relayInfo.UserId {
+			if err := model.RejectRestrictedAdtyFundWrite(model.DB, model.AdtyFundWrite{
+				SiteID:    siteID,
+				AccountID: teamLeaderID,
+				OrderRef:  orderRef,
+			}); err != nil {
+				return relaytypes.NewErrorWithStatusCode(err, relaytypes.ErrorCodeAccessDenied, http.StatusForbidden, relaytypes.ErrOptionWithSkipRetry())
+			}
 		}
 	}
 	if !isTeamKey {

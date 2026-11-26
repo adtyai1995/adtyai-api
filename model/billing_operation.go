@@ -391,6 +391,42 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 				return err
 			}
 		}
+		if inserted.RowsAffected == 1 || target > result.ReservedQuota {
+			if result.PayerKind == BillingPayerTeam && result.PayerTeamId > 0 {
+				var team AdtyTeam
+				if err := tx.Select("id", "site_id", "leader_user_id").First(&team, result.PayerTeamId).Error; err != nil {
+					return err
+				}
+				siteID := team.SiteId
+				if siteID == 0 {
+					siteID = result.SiteId
+				}
+				if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{
+					SiteID:    siteID,
+					AccountID: result.UserId,
+					OrderRef:  result.OperationKey,
+				}); err != nil {
+					return err
+				}
+				if team.LeaderUserId > 0 && team.LeaderUserId != result.UserId {
+					if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{
+						SiteID:    siteID,
+						AccountID: team.LeaderUserId,
+						OrderRef:  result.OperationKey,
+					}); err != nil {
+						return err
+					}
+				}
+			} else {
+				if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{
+					SiteID:    result.SiteId,
+					AccountID: result.UserId,
+					OrderRef:  result.OperationKey,
+				}); err != nil {
+					return err
+				}
+			}
+		}
 		if target <= result.ReservedQuota {
 			if err := freezeBillingEarningRiskTx(tx, &result); err != nil {
 				return err
@@ -455,13 +491,6 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 				}
 			}
 			return tx.Save(&result).Error
-		}
-		if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{
-			SiteID:    result.SiteId,
-			AccountID: result.UserId,
-			OrderRef:  result.OperationKey,
-		}); err != nil {
-			return err
 		}
 		var user User
 		if err := lockForUpdate(tx).First(&user, result.UserId).Error; err != nil {

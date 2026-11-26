@@ -40,7 +40,7 @@ Converted funds enter your USD wallet balance immediately and can be spent on an
 When the current site has external cash withdrawals enabled (see the **Cash Withdrawal Methods** card at the top of this page):
 
 - Supported payout rails (such as USDT on configured networks or Alipay), minimum withdrawal amount, and any fixed network/processing fees follow the live rules shown above and in your console.
-- Submitting a withdrawal request requires account security verification (see [Account Security & PAT](/guides/security)) and passes through review before payout dispatch.
+- External withdrawal requests go through risk and manual review before payout dispatch.
 - Double-check your payout address and selected blockchain network carefully—on-chain transfers sent to an incorrect address or mismatched network cannot be reversed.
 
 ## Anti-Fraud & Fair Play Rules

@@ -69,7 +69,7 @@ func adtyHasStandaloneEnglishParagraph(body string) bool {
 	normalized := strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\r", "\n")
 	for _, para := range strings.Split(normalized, "\n\n") {
 		para = strings.TrimSpace(para)
-		if para == "" || adtyContainsChinese(para) {
+		if para == "" || adtyContainsChinese(para) || isAdtyTranslationNotReadyText(para) {
 			continue
 		}
 		englishWords := 0

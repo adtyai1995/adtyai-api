@@ -797,10 +797,12 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 		}
 		return nil, recoverErr
 	}
-	// Tx 2: Re-lock and persist checkout fields only if still pending, unready,
-	// and the team remains active under the same leader.
+	// Tx 2: Re-lock and persist checkout fields only if still pending, unexpired,
+	// unready, and the team remains active under the same leader and site.
 	var (
 		discarded         bool
+		expired           bool
+		alreadyReady      bool
 		teamForbidden     bool
 		terminalStatus    string
 		curGatewayTradeID string
@@ -820,19 +822,28 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 			terminalStatus = top.Status
 			return nil
 		}
-		if teamCheckoutReady(&cur) {
+		if adtyTeamOrderExpired(&cur, time.Now().Unix()) {
 			discarded = true
+			expired = true
+			alreadyReady = teamCheckoutReady(&cur)
 			return nil
 		}
 		var team model.AdtyTeam
 		if err := tx.First(&team, teamID).Error; err != nil {
 			discarded = true
 			teamForbidden = true
+			alreadyReady = teamCheckoutReady(&cur)
 			return nil
 		}
 		if team.LeaderUserId != leaderID || team.Status != model.AdtyTeamStatusActive || cur.SiteId != team.SiteId {
 			discarded = true
 			teamForbidden = true
+			alreadyReady = teamCheckoutReady(&cur)
+			return nil
+		}
+		if teamCheckoutReady(&cur) {
+			discarded = true
+			alreadyReady = true
 			return nil
 		}
 		if extSnapshot.Provider == model.PaymentProviderAdtyBEpusdt {
@@ -863,13 +874,29 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 			return nil, err
 		}
 		if teamForbidden {
-			if !isReplay {
+			if !isReplay && !alreadyReady {
 				_ = model.FailPendingAdtyTopUp(tradeNo, extSnapshot.Provider)
 			}
 			return nil, ErrAdtyTeamForbidden
 		}
 		if terminalStatus != "" {
 			return nil, adtyTeamTopupTerminalStatusError(terminalStatus)
+		}
+		if expired {
+			return nil, common.NewMessage("Order expired")
+		}
+		if alreadyReady {
+			latest, loadErr := model.GetAdtyTopupOrder(tradeNo)
+			if loadErr != nil || latest == nil {
+				return latest, loadErr
+			}
+			if valErr := validateReadyTeamTopupCheckout(latest); valErr != nil {
+				return nil, valErr
+			}
+			if refErr := refreshTeamEpaySubmitURLIfNeeded(latest, clientIP, dev); refErr != nil {
+				return nil, refErr
+			}
+			return latest, nil
 		}
 	}
 	return model.GetAdtyTopupOrder(tradeNo)

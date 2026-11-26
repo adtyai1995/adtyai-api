@@ -506,12 +506,24 @@ func uploadFileFromForm(c *gin.Context, info *relaycommon.RelayInfo, fieldCandid
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		opts := []types.NewAPIErrorOptions{
+			types.ErrOptionWithHideErrMsg("replicate file upload failed"),
+		}
+		if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < http.StatusInternalServerError {
+			opts = append(opts, types.ErrOptionWithSkipRetry())
+		}
+		return "", types.NewErrorWithStatusCode(
+			fmt.Errorf("replicate adaptor: upload image failed with status %d", resp.StatusCode),
+			types.ErrorCodeBadResponseStatusCode,
+			resp.StatusCode,
+			opts...,
+		)
+	}
+
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return "", fmt.Errorf("replicate adaptor: read upload response failed: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("replicate adaptor: upload image failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
 	var uploadResp FileUploadResponse

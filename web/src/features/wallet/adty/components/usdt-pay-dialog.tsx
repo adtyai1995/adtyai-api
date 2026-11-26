@@ -150,6 +150,8 @@ export function UsdtPayDialog(props: UsdtPayDialogProps) {
     status === 'expired' ||
     (ext ? ext.expire_at > 0 && now >= ext.expire_at && status === 'pending' : false)
   const isActivePending = status === 'pending' && !expired
+  const payAddress = ext?.pay_address?.trim() ?? ''
+  const hasPayAddress = Boolean(payAddress)
 
   return (
     <Dialog
@@ -262,14 +264,23 @@ export function UsdtPayDialog(props: UsdtPayDialogProps) {
           {t('This order was replaced by a newer order.')}
         </p>
       )}
-      {ext && isActivePending && (
+      {ext && isActivePending && !hasPayAddress && (
+        <Alert variant='destructive'>
+          <AlertDescription>
+            {t(
+              'This USDT payment channel or receiving address is currently unavailable. Please cancel this order and create a new one.'
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+      {ext && isActivePending && hasPayAddress && (
         <div className='flex flex-col items-center gap-4'>
           <div className='bg-muted/50 inline-flex items-center gap-2.5 rounded-full border px-3.5 py-1.5 text-sm font-medium'>
             <ChainIcon method={props.chain} className='size-6' />
             <span>USDT · {chainName}</span>
           </div>
           <div className='rounded-lg bg-white p-3'>
-            <QRCodeSVG value={ext.pay_address} size={180} />
+            <QRCodeSVG value={payAddress} size={180} />
           </div>
           <div className='w-full space-y-1'>
             <p className='text-muted-foreground text-xs'>
@@ -280,10 +291,10 @@ export function UsdtPayDialog(props: UsdtPayDialogProps) {
                 className='font-mono text-xs break-all'
                 data-testid='usdt-address'
               >
-                {ext.pay_address}
+                {payAddress}
               </code>
               <CopyButton
-                value={ext.pay_address}
+                value={payAddress}
                 aria-label={t('Copy address')}
               />
             </div>

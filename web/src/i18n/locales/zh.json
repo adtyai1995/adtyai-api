@@ -11819,6 +11819,8 @@
     "Commission paid": "佣金实付",
     "Commission clawback return": "佣金追回返还",
     "Margin top-up": "保证金充值",
-    "Margin recharge code is invalid": "保证金充值码无效"
+    "Margin recharge code is invalid": "保证金充值码无效",
+    "This payment channel or payment link is currently unavailable. Please cancel this order and choose another payment method to place a new order.": "当前支付通道或支付链接暂时不可用，请取消此订单并选择其他支付方式重新下单。",
+    "This USDT payment channel or receiving address is currently unavailable. Please cancel this order and create a new one.": "当前 USDT 支付通道或收款地址暂时不可用，请取消此订单并重新下单。"
   }
 }

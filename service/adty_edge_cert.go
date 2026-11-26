@@ -27,11 +27,12 @@ import (
 )
 
 const (
-	adtyLetsEncryptStagingURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
-	adtyEdgeCertLeaseTTL      = 5 * time.Minute
-	adtyEdgeCertWaitingRetry  = 2 * time.Minute
-	adtyEdgeCertBatchLimit    = 10
-	adtyEdgeCertCleanupGrace  = 7 * 24 * time.Hour
+	adtyLetsEncryptStagingURL      = "https://acme-staging-v02.api.letsencrypt.org/directory"
+	adtyEdgeCertLeaseTTL           = 5 * time.Minute
+	adtyEdgeCertWaitingRetry       = 2 * time.Minute
+	adtyEdgeCertBatchLimit         = 10
+	adtyEdgeCertCleanupGrace       = 7 * 24 * time.Hour
+	adtyEdgeStateKeyStaleCertSince = "stale_cert_since"
 )
 
 var (
@@ -455,10 +456,21 @@ func adtyIssueEdgeCert(ctx context.Context, cfg *adty_setting.ResellerSetting, c
 	}, nil
 }
 
-func adtyEnsureEdgeCertRows(ctx context.Context, cfg *adty_setting.ResellerSetting, env string, now time.Time) error {
+func adtyEnsureEdgeCertRows(ctx context.Context, cfg *adty_setting.ResellerSetting, env string, now time.Time) ([]string, error) {
 	suffix := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(cfg.EdgeACMEAliasSuffix)), ".")
 	if suffix == "" {
-		return nil
+		return nil, nil
+	}
+
+	activeCertSet := make(map[string]bool)
+	activeCertNames := make([]string, 0)
+	recordActive := func(name string) {
+		n := strings.ToLower(strings.TrimSpace(name))
+		if n == "" || activeCertSet[n] {
+			return
+		}
+		activeCertSet[n] = true
+		activeCertNames = append(activeCertNames, n)
 	}
 
 	roots := adtyEdgeRootDomains(cfg)
@@ -466,15 +478,17 @@ func adtyEnsureEdgeCertRows(ctx context.Context, cfg *adty_setting.ResellerSetti
 		certName := "*." + root
 		aliasFQDN := adtyEdgeWildcardAlias(root, i == 0, suffix)
 		if err := adtyUpsertEdgeCertRow(ctx, certName, model.AdtyEdgeCertKindWildcard, 0, aliasFQDN, env); err != nil {
-			return err
+			return nil, err
 		}
+		recordActive(certName)
 	}
 
 	mainHost := adtyEdgeMainSiteHost(cfg)
 	if mainHost != "" {
 		if err := adtyUpsertEdgeCertRow(ctx, mainHost, model.AdtyEdgeCertKindMain, 0, adtyEdgeMainSiteAlias(suffix), env); err != nil {
-			return err
+			return nil, err
 		}
+		recordActive(mainHost)
 	}
 
 	var domains []model.AdtySiteDomain
@@ -483,7 +497,7 @@ func adtyEnsureEdgeCertRows(ctx context.Context, cfg *adty_setting.ResellerSetti
 		Where("adty_site_domains.managed_by <> ? AND adty_site_domains.role = ? AND adty_site_domains.status = ? AND adty_site_domains.desired_state IN ? AND adty_sites.status <> ?",
 			"platform", model.AdtySiteDomainRoleSite, model.AdtySiteDomainActive, []string{"", "serve", "redirect_only"}, model.AdtySiteStatusDeleting).
 		Order("adty_site_domains.id ASC").Find(&domains).Error; err != nil {
-		return err
+		return nil, err
 	}
 
 	activeDomainIDs := make(map[int]bool, len(domains))
@@ -498,13 +512,13 @@ func adtyEnsureEdgeCertRows(ctx context.Context, cfg *adty_setting.ResellerSetti
 		if alias == "" {
 			generated, err := adtyGenerateEdgeACMEAlias(dom.Id)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			res := model.DB.WithContext(ctx).Model(&model.AdtySiteDomain{}).
 				Where("id = ? AND edge_acme_alias = ?", dom.Id, "").
 				Update("edge_acme_alias", generated)
 			if res.Error != nil {
-				return res.Error
+				return nil, res.Error
 			}
 			if res.RowsAffected > 0 {
 				alias = generated
@@ -520,51 +534,98 @@ func adtyEnsureEdgeCertRows(ctx context.Context, cfg *adty_setting.ResellerSetti
 		}
 		aliasFQDN := strings.ToLower(alias) + "." + suffix
 		if err := adtyUpsertEdgeCertRow(ctx, host, model.AdtyEdgeCertKindCustom, dom.Id, aliasFQDN, env); err != nil {
-			return err
+			return nil, err
+		}
+		recordActive(host)
+	}
+
+	// Clean up stale wildcard/main cert rows only after a true 7-day grace window
+	// measured from when each cert first became inactive (persisted in adty_edge_states),
+	// so temporarily toggling settings never deletes an existing valid cert immediately.
+	nowUnix := now.Unix()
+	cutoff := now.Add(-adtyEdgeCertCleanupGrace).Unix()
+	graceSecs := int64(adtyEdgeCertCleanupGrace.Seconds())
+	hasStateTable := model.DB.WithContext(ctx).Migrator().HasTable(&model.AdtyEdgeState{})
+	staleSince := make(map[string]int64)
+	stateDirty := false
+	if hasStateTable {
+		var st model.AdtyEdgeState
+		res := model.DB.WithContext(ctx).Where("state_key = ?", adtyEdgeStateKeyStaleCertSince).Limit(1).Find(&st)
+		if res.Error != nil {
+			return nil, res.Error
+		}
+		if res.RowsAffected > 0 && strings.TrimSpace(st.Value) != "" {
+			_ = common.Unmarshal([]byte(st.Value), &staleSince)
+		}
+		for k := range staleSince {
+			if activeCertSet[k] {
+				delete(staleSince, k)
+				stateDirty = true
+			}
 		}
 	}
 
-	// Clean up stale wildcard/main/custom cert rows removed more than 7 days ago.
-	cutoff := now.Add(-adtyEdgeCertCleanupGrace).Unix()
-	activeWildcards := make(map[string]bool, len(roots))
-	for _, root := range roots {
-		if r := strings.ToLower(strings.TrimSpace(root)); r != "" {
-			activeWildcards["*."+r] = true
-		}
-	}
-	var staleWildcardCerts []model.AdtyEdgeCert
+	var managedCerts []model.AdtyEdgeCert
 	if err := model.DB.WithContext(ctx).
-		Where("kind = ? AND updated_at > 0 AND updated_at <= ?", model.AdtyEdgeCertKindWildcard, cutoff).
-		Find(&staleWildcardCerts).Error; err != nil {
-		return err
+		Where("kind IN ?", []string{model.AdtyEdgeCertKindWildcard, model.AdtyEdgeCertKindMain}).
+		Find(&managedCerts).Error; err != nil {
+		return nil, err
 	}
-	for _, cert := range staleWildcardCerts {
-		if activeWildcards[strings.ToLower(strings.TrimSpace(cert.CertName))] {
+	inactiveManaged := make(map[string]bool)
+	for _, cert := range managedCerts {
+		key := strings.ToLower(strings.TrimSpace(cert.CertName))
+		if activeCertSet[key] {
 			continue
 		}
-		if err := model.DB.WithContext(ctx).Delete(&model.AdtyEdgeCert{}, cert.Id).Error; err != nil {
-			return err
+		inactiveManaged[key] = true
+		if hasStateTable {
+			since := staleSince[key]
+			if since <= 0 {
+				staleSince[key] = nowUnix
+				stateDirty = true
+				continue
+			}
+			if nowUnix-since < graceSecs {
+				continue
+			}
+			if err := model.DB.WithContext(ctx).Delete(&model.AdtyEdgeCert{}, cert.Id).Error; err != nil {
+				return nil, err
+			}
+			delete(staleSince, key)
+			stateDirty = true
+		} else if cert.UpdatedAt > 0 && cert.UpdatedAt <= cutoff {
+			if err := model.DB.WithContext(ctx).Delete(&model.AdtyEdgeCert{}, cert.Id).Error; err != nil {
+				return nil, err
+			}
 		}
 	}
-	var staleMainCerts []model.AdtyEdgeCert
-	if err := model.DB.WithContext(ctx).
-		Where("kind = ? AND updated_at > 0 AND updated_at <= ?", model.AdtyEdgeCertKindMain, cutoff).
-		Find(&staleMainCerts).Error; err != nil {
-		return err
-	}
-	for _, cert := range staleMainCerts {
-		if mainHost != "" && strings.EqualFold(cert.CertName, mainHost) {
-			continue
+	if hasStateTable {
+		for k := range staleSince {
+			if !inactiveManaged[k] {
+				delete(staleSince, k)
+				stateDirty = true
+			}
 		}
-		if err := model.DB.WithContext(ctx).Delete(&model.AdtyEdgeCert{}, cert.Id).Error; err != nil {
-			return err
+		if stateDirty {
+			row := model.AdtyEdgeState{
+				StateKey:  adtyEdgeStateKeyStaleCertSince,
+				Value:     common.GetJsonString(staleSince),
+				UpdatedAt: nowUnix,
+			}
+			if err := model.DB.WithContext(ctx).Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "state_key"}},
+				DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
+			}).Create(&row).Error; err != nil {
+				return nil, err
+			}
 		}
 	}
+
 	var customCerts []model.AdtyEdgeCert
 	if err := model.DB.WithContext(ctx).
 		Where("kind = ? AND updated_at > 0 AND updated_at <= ?", model.AdtyEdgeCertKindCustom, cutoff).
 		Find(&customCerts).Error; err != nil {
-		return err
+		return nil, err
 	}
 	for _, cert := range customCerts {
 		if cert.DomainId > 0 && activeDomainIDs[cert.DomainId] {
@@ -573,15 +634,15 @@ func adtyEnsureEdgeCertRows(ctx context.Context, cfg *adty_setting.ResellerSetti
 		var dom model.AdtySiteDomain
 		res := model.DB.WithContext(ctx).Select("id", "status", "updated_at").Where("id = ?", cert.DomainId).Limit(1).Find(&dom)
 		if res.Error != nil {
-			return res.Error
+			return nil, res.Error
 		}
 		if res.RowsAffected == 0 || (dom.Status == model.AdtySiteDomainRemoved && dom.UpdatedAt <= cutoff) {
 			if err := model.DB.WithContext(ctx).Delete(&model.AdtyEdgeCert{}, cert.Id).Error; err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
-	return nil
+	return activeCertNames, nil
 }
 
 func adtyUpsertEdgeCertRow(ctx context.Context, certName, kind string, domainID int, aliasFQDN, env string) error {
@@ -707,14 +768,19 @@ func RunAdtyEdgeCertOnce(ctx context.Context, now time.Time) error {
 		return nil
 	}
 	env := adtyEdgeACMEEnvironment(cfg)
-	if err := adtyEnsureEdgeCertRows(ctx, cfg, env, now); err != nil {
+	activeCertNames, err := adtyEnsureEdgeCertRows(ctx, cfg, env, now)
+	if err != nil {
 		return err
+	}
+	if len(activeCertNames) == 0 {
+		return nil
 	}
 
 	renewCutoff := now.Add(adtyEdgeRenewBefore).Unix()
 	nowUnix := now.Unix()
 	var candidates []model.AdtyEdgeCert
 	if err := model.DB.WithContext(ctx).
+		Where("cert_name IN ?", activeCertNames).
 		Where("next_run_at <= ? AND lease_until <= ?", nowUnix, nowUnix).
 		Where("status <> ? OR cert_pem = ? OR key_encrypted = ? OR environment <> ? OR not_after <= ?",
 			model.AdtyEdgeCertStatusReady, "", "", env, renewCutoff).
@@ -890,7 +956,7 @@ func RetryAdtyEdgeCert(certName string) error {
 		return res.Error
 	}
 	if res.RowsAffected == 0 {
-		if err := adtyEnsureEdgeCertRows(context.Background(), cfg, adtyEdgeACMEEnvironment(cfg), time.Now()); err != nil {
+		if _, err := adtyEnsureEdgeCertRows(context.Background(), cfg, adtyEdgeACMEEnvironment(cfg), time.Now()); err != nil {
 			return err
 		}
 		res = model.DB.Where("cert_name = ?", target).Limit(1).Find(&existing)

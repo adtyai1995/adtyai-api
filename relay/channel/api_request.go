@@ -148,6 +148,7 @@ var passthroughSkipHeaderNamesLower = map[string]struct{}{
 	// Additional headers that should not be forwarded by name-matching passthrough rules.
 	"host":            {},
 	"content-length":  {},
+	"content-type":    {},
 	"accept-encoding": {},
 
 	// Do not passthrough credentials by wildcard/regex.
@@ -161,6 +162,8 @@ var passthroughSkipHeaderNamesLower = map[string]struct{}{
 	"sec-websocket-extensions": {},
 }
 
+const maxHeaderPassthroughRegexLen = 512
+
 var headerPassthroughRegexCache sync.Map // map[string]*regexp.Regexp
 
 func getHeaderPassthroughRegex(pattern string) (*regexp.Regexp, error) {
@@ -168,13 +171,19 @@ func getHeaderPassthroughRegex(pattern string) (*regexp.Regexp, error) {
 	if pattern == "" {
 		return nil, errors.New("empty regex pattern")
 	}
+	if len(pattern) > maxHeaderPassthroughRegexLen {
+		return nil, fmt.Errorf("regex pattern too long (max %d)", maxHeaderPassthroughRegexLen)
+	}
 	if v, ok := headerPassthroughRegexCache.Load(pattern); ok {
 		if re, ok := v.(*regexp.Regexp); ok {
 			return re, nil
 		}
 		headerPassthroughRegexCache.Delete(pattern)
 	}
-	compiled, err := regexp.Compile(pattern)
+	if _, err := regexp.Compile(pattern); err != nil {
+		return nil, err
+	}
+	compiled, err := regexp.Compile("(?i:" + pattern + ")")
 	if err != nil {
 		return nil, err
 	}
@@ -269,21 +278,22 @@ func processHeaderOverride(info *common.RelayInfo, c *gin.Context) (map[string]s
 	var passthroughRegex []*regexp.Regexp
 	if hasClientRequest {
 		for k := range headerOverrideSource {
-			key := strings.TrimSpace(strings.ToLower(k))
-			if key == "" {
+			trimmedK := strings.TrimSpace(k)
+			if trimmedK == "" {
 				continue
 			}
-			if key == headerPassthroughAllKey {
+			if trimmedK == headerPassthroughAllKey {
 				passAll = true
 				continue
 			}
+			lowerK := strings.ToLower(trimmedK)
 
 			var pattern string
 			switch {
-			case strings.HasPrefix(key, headerPassthroughRegexPrefix):
-				pattern = strings.TrimSpace(key[len(headerPassthroughRegexPrefix):])
-			case strings.HasPrefix(key, headerPassthroughRegexPrefixV2):
-				pattern = strings.TrimSpace(key[len(headerPassthroughRegexPrefixV2):])
+			case strings.HasPrefix(lowerK, headerPassthroughRegexPrefix):
+				pattern = strings.TrimSpace(trimmedK[len(headerPassthroughRegexPrefix):])
+			case strings.HasPrefix(lowerK, headerPassthroughRegexPrefixV2):
+				pattern = strings.TrimSpace(trimmedK[len(headerPassthroughRegexPrefixV2):])
 			default:
 				continue
 			}
