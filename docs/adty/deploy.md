@@ -291,15 +291,16 @@ sudo docker compose ps adtyai-api                 # 等到 healthy
 ### 路由与证书机制
 
 - 阿里云解析分线路：`role=site` 平台网站域名写 `default -> edge.adtyaicf.top`（Cloudflare）+ `internal -> cn.adtyaicf.top`（大陆边缘加速目标）；`role=base_url` 平台 API 域名仅写 `default -> edge.adtyaicf.top`，不走边缘节点。
-- 源站主节点进程内通过 ACME DNS-01（`*.acme.adtyaicf.top` 别名委托，复用 Cloudflare API Token）自动签发与续期泛域名证书（`*.adtyai-fz.top`）及已配置 CNAME 委托的站长自定义网站域名证书；私钥用 `CRYPTO_SECRET` 加密存库（`adty_edge_certs`）。
-- 香港节点通过 `deploy/adty/edge/sync-edge.py` 每分钟拉取 `GET /api/adty/internal/edge/manifest`（带 `X-Adty-Edge-Token` 与 `ETag`/`If-None-Match`），写入证书并生成 Nginx 配置，`nginx -t` 通过才热重载，失败自动回滚。
+- 源站主节点进程内通过 ACME DNS-01（`*.acme.adtyaicf.top` 别名委托，复用 Cloudflare API Token）自动签发与续期泛域名证书（`*.adtyai-fz.top`）、可选主站网站域名证书（开启 `edge_main_site_enabled` 并填写 `edge_main_site_host` 如 `www.adtyai.com`，别名 `main.acme.adtyaicf.top`，支持可选 `edge_main_site_origin_sni` 覆盖回源 TLS SNI；裸域建议保留 Cloudflare 301 跳转至 `www`，切勿配置 API 域名）及已配置 CNAME 委托的站长自定义网站域名证书；私钥用 `CRYPTO_SECRET` 加密存库（`adty_edge_certs`）。
+- 香港节点无持久化状态，推荐直接使用独立公开镜像 `ghcr.io/adtyai1995/adtyai-edge:latest`（仓库 `adtyai1995/adtyai-edge`）一键 Docker 部署，也可使用 `deploy/adty/edge/sync-edge.py` 宿主机部署；节点每分钟拉取 `GET /api/adty/internal/edge/manifest`（带 `X-Adty-Edge-Token` 与 `ETag`/`If-None-Match`），写入证书并生成 Nginx 配置，`nginx -t` 通过才热重载，失败自动回滚。
 
 ### 步骤 A：Cloudflare 权限与初始 DNS
 
 1. 复用后台已填的 Cloudflare API Token，在原 `SSL and Certificates: Edit` 基础上补充该 Zone（如 `adtyaicf.top`）的 **`Zone:DNS:Edit`** 权限。
 2. 在阿里云解析的平台根域名（如 `adtyai-fz.top`）添加一次泛域名验证委托（**默认线路**）：
    - `_acme-challenge.adtyai-fz.top` `CNAME` `wild.acme.adtyaicf.top`
-3. 后台「分站管理 → 域名设置 → 中国大陆首页加速」中确认默认参数（大陆 CNAME 目标 `cn.adtyaicf.top`、ACME 验证别名后缀 `acme.adtyaicf.top`），填写一个或多个香港 VPS 公网 IPv4（每行一个，填 1 个为单节点，填多个自动 DNS 轮询），按需开启源站每分钟探活与「自动摘除故障节点与全挂回切」并保存（首次联调可先勾选 Let's Encrypt 测试环境，确认跑通后再切回生产环境）。
+3. （可选，加速主站网站域名）在后台「中国大陆首页加速」勾选「启用主站网站域名加速」并填写 `edge_main_site_host`（例如 `www.adtyai.com`；若源站主站站点未使用 `origin.adtyaicf.top` 证书，可在「主站回源 SNI（可选）」填写 `www.adtyai.com`）。先在主站 DNS 默认线路添加 `_acme-challenge.www.adtyai.com` `CNAME` `main.acme.adtyaicf.top`，待状态卡片显示「证书已就绪」后，再将主站大陆线路 `www` `CNAME` 指向 `cn.adtyaicf.top`。
+4. 后台「分站管理 → 域名设置 → 中国大陆首页加速」中确认默认参数（大陆 CNAME 目标 `cn.adtyaicf.top`、ACME 验证别名后缀 `acme.adtyaicf.top`），填写一个或多个香港 VPS 公网 IPv4（每行一个，填 1 个为单节点，填多个自动 DNS 轮询），按需开启源站每分钟探活与「自动摘除故障节点与全挂回切」并保存（首次联调可先勾选 Let's Encrypt 测试环境，确认跑通后再切回生产环境）。
 
 ### 步骤 B：源站放行香港节点
 

@@ -88,21 +88,25 @@ type AdtyEdgeCertCounts struct {
 
 // AdtyEdgeStatusSummary is returned to admin settings for mainland edge observability and control.
 type AdtyEdgeStatusSummary struct {
-	EdgeMainlandEnabled  bool                       `json:"edge_mainland_enabled"`
-	EdgeACMEStaging      bool                       `json:"edge_acme_staging"`
-	EdgeNodeIP           string                     `json:"edge_node_ip"`
-	EdgeNodeIPs          []string                   `json:"edge_node_ips"`
-	EdgeFailoverToCF     bool                       `json:"edge_failover_to_cf"`
-	EdgeProbeEnabled     bool                       `json:"edge_probe_enabled"`
-	EdgeAutoFailover     bool                       `json:"edge_auto_failover"`
-	EdgeTokenConfigured  bool                       `json:"edge_token_configured"`
-	DomainMainlandTarget string                     `json:"domain_mainland_target"`
-	EdgeACMEAliasSuffix  string                     `json:"edge_acme_alias_suffix"`
-	WildcardCert         *AdtyEdgeWildcardCertView  `json:"wildcard_cert"`
-	CustomCertCounts     AdtyEdgeCertCounts         `json:"custom_cert_counts"`
-	ManifestPull         *AdtyEdgeManifestPullState `json:"manifest_pull"`
-	DNSSync              *AdtyEdgeDNSSyncState      `json:"dns_sync"`
-	Probe                *AdtyEdgeProbeState        `json:"probe"`
+	EdgeMainlandEnabled   bool                       `json:"edge_mainland_enabled"`
+	EdgeACMEStaging       bool                       `json:"edge_acme_staging"`
+	EdgeNodeIP            string                     `json:"edge_node_ip"`
+	EdgeNodeIPs           []string                   `json:"edge_node_ips"`
+	EdgeFailoverToCF      bool                       `json:"edge_failover_to_cf"`
+	EdgeProbeEnabled      bool                       `json:"edge_probe_enabled"`
+	EdgeAutoFailover      bool                       `json:"edge_auto_failover"`
+	EdgeMainSiteEnabled   bool                       `json:"edge_main_site_enabled"`
+	EdgeMainSiteHost      string                     `json:"edge_main_site_host"`
+	EdgeMainSiteOriginSNI string                     `json:"edge_main_site_origin_sni"`
+	EdgeTokenConfigured   bool                       `json:"edge_token_configured"`
+	DomainMainlandTarget  string                     `json:"domain_mainland_target"`
+	EdgeACMEAliasSuffix   string                     `json:"edge_acme_alias_suffix"`
+	WildcardCert          *AdtyEdgeWildcardCertView  `json:"wildcard_cert"`
+	MainSiteCert          *AdtyEdgeWildcardCertView  `json:"main_site_cert"`
+	CustomCertCounts      AdtyEdgeCertCounts         `json:"custom_cert_counts"`
+	ManifestPull          *AdtyEdgeManifestPullState `json:"manifest_pull"`
+	DNSSync               *AdtyEdgeDNSSyncState      `json:"dns_sync"`
+	Probe                 *AdtyEdgeProbeState        `json:"probe"`
 }
 
 var (
@@ -167,6 +171,9 @@ func adtySelectEdgeProbeTarget(ctx context.Context, cfg *adty_setting.ResellerSe
 	}
 	roots := adtyEdgeRootDomains(cfg)
 	if len(roots) == 0 {
+		if mainHost := adtyEdgeMainSiteHost(cfg); mainHost != "" {
+			return mainHost, 0, "", nil
+		}
 		return "", 0, "", common.NewMessage("Configure at least one root domain before probing the edge node")
 	}
 	return "adty-edge-probe." + roots[0], 0, "", nil
@@ -509,16 +516,19 @@ func GetAdtyEdgeStatus() (*AdtyEdgeStatusSummary, error) {
 		firstIP = ips[0]
 	}
 	summary := &AdtyEdgeStatusSummary{
-		EdgeMainlandEnabled:  cfg.EdgeMainlandEnabled,
-		EdgeACMEStaging:      cfg.EdgeACMEStaging,
-		EdgeNodeIP:           firstIP,
-		EdgeNodeIPs:          ips,
-		EdgeFailoverToCF:     cfg.EdgeFailoverToCF,
-		EdgeProbeEnabled:     cfg.EdgeProbeEnabled,
-		EdgeAutoFailover:     cfg.EdgeAutoFailover,
-		EdgeTokenConfigured:  strings.TrimSpace(os.Getenv("ADTY_EDGE_TOKEN")) != "",
-		DomainMainlandTarget: strings.TrimSpace(cfg.DomainMainlandTarget),
-		EdgeACMEAliasSuffix:  strings.TrimSpace(cfg.EdgeACMEAliasSuffix),
+		EdgeMainlandEnabled:   cfg.EdgeMainlandEnabled,
+		EdgeACMEStaging:       cfg.EdgeACMEStaging,
+		EdgeNodeIP:            firstIP,
+		EdgeNodeIPs:           ips,
+		EdgeFailoverToCF:      cfg.EdgeFailoverToCF,
+		EdgeProbeEnabled:      cfg.EdgeProbeEnabled,
+		EdgeAutoFailover:      cfg.EdgeAutoFailover,
+		EdgeMainSiteEnabled:   cfg.EdgeMainSiteEnabled,
+		EdgeMainSiteHost:      strings.TrimSuffix(strings.ToLower(strings.TrimSpace(cfg.EdgeMainSiteHost)), "."),
+		EdgeMainSiteOriginSNI: strings.TrimSuffix(strings.ToLower(strings.TrimSpace(cfg.EdgeMainSiteOriginSNI)), "."),
+		EdgeTokenConfigured:   strings.TrimSpace(os.Getenv("ADTY_EDGE_TOKEN")) != "",
+		DomainMainlandTarget:  strings.TrimSpace(cfg.DomainMainlandTarget),
+		EdgeACMEAliasSuffix:   strings.TrimSpace(cfg.EdgeACMEAliasSuffix),
 	}
 
 	roots := adtyEdgeRootDomains(cfg)
@@ -548,6 +558,28 @@ func GetAdtyEdgeStatus() (*AdtyEdgeStatusSummary, error) {
 			wc.Attempts = row.Attempts
 		}
 		summary.WildcardCert = wc
+	}
+
+	if mainHost := adtyEdgeMainSiteHost(cfg); mainHost != "" {
+		mc := &AdtyEdgeWildcardCertView{
+			CertName:      mainHost,
+			ChallengeHost: adtyEdgeChallengeHost(mainHost),
+			AliasFQDN:     adtyEdgeMainSiteAlias(cfg.EdgeACMEAliasSuffix),
+			Environment:   adtyEdgeACMEEnvironment(cfg),
+			Status:        model.AdtyEdgeCertStatusWaitingDNS,
+		}
+		if row, err := GetAdtyEdgeMainSiteCert(cfg); err != nil {
+			return nil, err
+		} else if row != nil {
+			mc.AliasFQDN = row.AliasFQDN
+			mc.Environment = row.Environment
+			mc.Status = row.Status
+			mc.NotAfter = row.NotAfter
+			mc.LastError = row.LastError
+			mc.LastIssuedAt = row.LastIssuedAt
+			mc.Attempts = row.Attempts
+		}
+		summary.MainSiteCert = mc
 	}
 
 	var customStatusRows []struct {

@@ -95,6 +95,25 @@ func adtyEdgeWildcardAlias(root string, primary bool, suffix string) string {
 	return "wild-" + hex.EncodeToString(sum[:4]) + "." + suffix
 }
 
+func adtyEdgeMainSiteHost(cfg *adty_setting.ResellerSetting) string {
+	if cfg == nil || !cfg.EdgeMainSiteEnabled {
+		return ""
+	}
+	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(cfg.EdgeMainSiteHost)), ".")
+	if host == "" || AdtyIsMainAPIHost(host) || AdtyIsApiOnlyHost(host) {
+		return ""
+	}
+	return host
+}
+
+func adtyEdgeMainSiteAlias(suffix string) string {
+	suffix = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(suffix)), ".")
+	if suffix == "" {
+		return ""
+	}
+	return "main." + suffix
+}
+
 func adtyEdgeChallengeHost(certName string) string {
 	base := strings.TrimPrefix(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(certName)), "."), "*.")
 	return "_acme-challenge." + base
@@ -451,6 +470,13 @@ func adtyEnsureEdgeCertRows(ctx context.Context, cfg *adty_setting.ResellerSetti
 		}
 	}
 
+	mainHost := adtyEdgeMainSiteHost(cfg)
+	if mainHost != "" {
+		if err := adtyUpsertEdgeCertRow(ctx, mainHost, model.AdtyEdgeCertKindMain, 0, adtyEdgeMainSiteAlias(suffix), env); err != nil {
+			return err
+		}
+	}
+
 	var domains []model.AdtySiteDomain
 	if err := model.DB.WithContext(ctx).
 		Joins("JOIN adty_sites ON adty_sites.id = adty_site_domains.site_id").
@@ -464,6 +490,10 @@ func adtyEnsureEdgeCertRows(ctx context.Context, cfg *adty_setting.ResellerSetti
 	for i := range domains {
 		dom := &domains[i]
 		activeDomainIDs[dom.Id] = true
+		host := strings.ToLower(strings.TrimSpace(dom.Hostname))
+		if host == "" || (mainHost != "" && host == mainHost) {
+			continue
+		}
 		alias := strings.TrimSpace(dom.EdgeACMEAlias)
 		if alias == "" {
 			generated, err := adtyGenerateEdgeACMEAlias(dom.Id)
@@ -489,13 +519,27 @@ func adtyEnsureEdgeCertRows(ctx context.Context, cfg *adty_setting.ResellerSetti
 			continue
 		}
 		aliasFQDN := strings.ToLower(alias) + "." + suffix
-		if err := adtyUpsertEdgeCertRow(ctx, strings.ToLower(strings.TrimSpace(dom.Hostname)), model.AdtyEdgeCertKindCustom, dom.Id, aliasFQDN, env); err != nil {
+		if err := adtyUpsertEdgeCertRow(ctx, host, model.AdtyEdgeCertKindCustom, dom.Id, aliasFQDN, env); err != nil {
 			return err
 		}
 	}
 
-	// Clean up stale custom cert rows whose domain was removed more than 7 days ago.
+	// Clean up stale custom/main cert rows removed more than 7 days ago.
 	cutoff := now.Add(-adtyEdgeCertCleanupGrace).Unix()
+	var staleMainCerts []model.AdtyEdgeCert
+	if err := model.DB.WithContext(ctx).
+		Where("kind = ? AND updated_at > 0 AND updated_at <= ?", model.AdtyEdgeCertKindMain, cutoff).
+		Find(&staleMainCerts).Error; err != nil {
+		return err
+	}
+	for _, cert := range staleMainCerts {
+		if mainHost != "" && strings.EqualFold(cert.CertName, mainHost) {
+			continue
+		}
+		if err := model.DB.WithContext(ctx).Delete(&model.AdtyEdgeCert{}, cert.Id).Error; err != nil {
+			return err
+		}
+	}
 	var customCerts []model.AdtyEdgeCert
 	if err := model.DB.WithContext(ctx).
 		Where("kind = ? AND updated_at > 0 AND updated_at <= ?", model.AdtyEdgeCertKindCustom, cutoff).
@@ -621,6 +665,12 @@ func RunAdtyEdgeCertOnce(ctx context.Context, now time.Time) error {
 			return errors.Join(append(failures, err)...)
 		}
 		row := &candidates[i]
+		// Skip main site certs if main site acceleration is disabled or switched to another hostname.
+		if row.Kind == model.AdtyEdgeCertKindMain {
+			if mainHost := adtyEdgeMainSiteHost(cfg); mainHost == "" || !strings.EqualFold(row.CertName, mainHost) {
+				continue
+			}
+		}
 		// Skip custom certs whose domain is no longer active/serve/redirect_only.
 		if row.Kind == model.AdtyEdgeCertKindCustom {
 			var activeCount int64
@@ -794,6 +844,23 @@ func GetAdtyEdgeWildcardCert(cfg *adty_setting.ResellerSetting) (*model.AdtyEdge
 	certName := "*." + roots[0]
 	var row model.AdtyEdgeCert
 	res := model.DB.Where("cert_name = ?", certName).Limit(1).Find(&row)
+	if res.Error != nil {
+		return nil, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return nil, nil
+	}
+	return &row, nil
+}
+
+// GetAdtyEdgeMainSiteCert returns the main site certificate row if enabled and present.
+func GetAdtyEdgeMainSiteCert(cfg *adty_setting.ResellerSetting) (*model.AdtyEdgeCert, error) {
+	mainHost := adtyEdgeMainSiteHost(cfg)
+	if mainHost == "" {
+		return nil, nil
+	}
+	var row model.AdtyEdgeCert
+	res := model.DB.Where("cert_name = ?", mainHost).Limit(1).Find(&row)
 	if res.Error != nil {
 		return nil, res.Error
 	}

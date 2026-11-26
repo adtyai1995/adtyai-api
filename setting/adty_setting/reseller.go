@@ -68,14 +68,17 @@ type ResellerSetting struct {
 	TurnstileWidgetSecret map[string]string         `json:"turnstile_widget_secret"` // widget id → secret
 
 	// 大陆边缘加速节点（自建香港 Nginx + 进程内 ACME 证书 + Cloudflare DNS 故障切换）。
-	EdgeMainlandEnabled bool     `json:"edge_mainland_enabled"`
-	EdgeACMEAliasSuffix string   `json:"edge_acme_alias_suffix"`
-	EdgeACMEStaging     bool     `json:"edge_acme_staging"`
-	EdgeNodeIP          string   `json:"edge_node_ip"`
-	EdgeNodeIPs         []string `json:"edge_node_ips"`
-	EdgeFailoverToCF    bool     `json:"edge_failover_to_cf"`
-	EdgeProbeEnabled    bool     `json:"edge_probe_enabled"`
-	EdgeAutoFailover    bool     `json:"edge_auto_failover"`
+	EdgeMainlandEnabled   bool     `json:"edge_mainland_enabled"`
+	EdgeACMEAliasSuffix   string   `json:"edge_acme_alias_suffix"`
+	EdgeACMEStaging       bool     `json:"edge_acme_staging"`
+	EdgeNodeIP            string   `json:"edge_node_ip"`
+	EdgeNodeIPs           []string `json:"edge_node_ips"`
+	EdgeFailoverToCF      bool     `json:"edge_failover_to_cf"`
+	EdgeProbeEnabled      bool     `json:"edge_probe_enabled"`
+	EdgeAutoFailover      bool     `json:"edge_auto_failover"`
+	EdgeMainSiteEnabled   bool     `json:"edge_main_site_enabled"`
+	EdgeMainSiteHost      string   `json:"edge_main_site_host"`
+	EdgeMainSiteOriginSNI string   `json:"edge_main_site_origin_sni"`
 }
 
 // ResellerCostTier 是按站点上月客户消费额分档的 d。
@@ -364,6 +367,23 @@ func ValidateResellerPatch(s *ResellerSetting, resendConfigured bool, changed ma
 	if touches("edge_mainland_enabled", "cloudflare_apiToken", "cloudflare_zone_id", "cname_target", "domain_mainland_target", "edge_acme_alias_suffix") && s.EdgeMainlandEnabled {
 		if !s.CloudflareConfigured() || !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.DomainMainlandTarget))) || !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.EdgeACMEAliasSuffix))) {
 			return common.NewMessage("Configure Cloudflare, the mainland CNAME target, and the ACME verification alias suffix before enabling mainland acceleration")
+		}
+	}
+	if touches("edge_main_site_host") && strings.TrimSpace(s.EdgeMainSiteHost) != "" && !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.EdgeMainSiteHost))) {
+		return common.NewMessage("Invalid value for {{key}}", map[string]any{"key": "edge_main_site_host"})
+	}
+	if touches("edge_main_site_origin_sni") && strings.TrimSpace(s.EdgeMainSiteOriginSNI) != "" && !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.EdgeMainSiteOriginSNI))) {
+		return common.NewMessage("Invalid value for {{key}}", map[string]any{"key": "edge_main_site_origin_sni"})
+	}
+	if touches("edge_main_site_enabled", "edge_main_site_host", "cname_target", "fallback_origin", "domain_mainland_target") && s.EdgeMainSiteEnabled {
+		mainHost := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s.EdgeMainSiteHost)), ".")
+		if !resellerDomainPattern.MatchString(mainHost) {
+			return common.NewMessage("Configure a valid main site hostname before enabling main site edge acceleration")
+		}
+		if mainHost == strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s.CnameTarget)), ".") ||
+			mainHost == strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s.FallbackOrigin)), ".") ||
+			mainHost == strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s.DomainMainlandTarget)), ".") {
+			return common.NewMessage("Main site edge hostname cannot be the same as the CNAME target, fallback origin, or mainland target")
 		}
 	}
 	for _, domain := range s.RootDomains {

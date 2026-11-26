@@ -931,6 +931,9 @@ type adtyResellerSettingsView struct {
 	EdgeFailoverToCF           bool                                   `json:"edge_failover_to_cf"`
 	EdgeProbeEnabled           bool                                   `json:"edge_probe_enabled"`
 	EdgeAutoFailover           bool                                   `json:"edge_auto_failover"`
+	EdgeMainSiteEnabled        bool                                   `json:"edge_main_site_enabled"`
+	EdgeMainSiteHost           string                                 `json:"edge_main_site_host"`
+	EdgeMainSiteOriginSNI      string                                 `json:"edge_main_site_origin_sni"`
 	TurnstileWidgets           []adty_setting.ResellerTurnstileWidget `json:"turnstile_widgets"`
 	TurnstileWidgetSecret      map[string]string                      `json:"turnstile_widget_secret"`
 	CloudflareTokenConfigured  bool                                   `json:"cloudflare_token_configured"`
@@ -1103,6 +1106,9 @@ func GetAdtyResellerSettings(c *gin.Context) {
 		EdgeFailoverToCF:           cfg.EdgeFailoverToCF,
 		EdgeProbeEnabled:           cfg.EdgeProbeEnabled,
 		EdgeAutoFailover:           cfg.EdgeAutoFailover,
+		EdgeMainSiteEnabled:        cfg.EdgeMainSiteEnabled,
+		EdgeMainSiteHost:           cfg.EdgeMainSiteHost,
+		EdgeMainSiteOriginSNI:      cfg.EdgeMainSiteOriginSNI,
 		TurnstileWidgets:           cfg.TurnstileWidgets,
 		CloudflareTokenConfigured:  strings.TrimSpace(cfg.CloudflareApiToken) != "",
 		WidgetSecretConfigured:     map[string]bool{},
@@ -1154,7 +1160,7 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		return
 	}
 	if c.GetInt("role") < common.RoleRootUser {
-		for _, key := range []string{adty_setting.ResellerKeyCloudflareTok, adty_setting.ResellerKeyWidgetSecret, "turnstile_widgets", "aliyun_access_key_id", "aliyun_access_key_Secret", "domain_automation_enabled", "aliyun_domain", "domain_mainland_target", "cloudflare_zone_id", "cloudflare_account_id", "cname_target", "fallback_origin", "edge_mainland_enabled", "edge_acme_alias_suffix", "edge_acme_staging", "edge_node_ip", "edge_node_ips", "edge_failover_to_cf", "edge_probe_enabled", "edge_auto_failover", "clear_secrets"} {
+		for _, key := range []string{adty_setting.ResellerKeyCloudflareTok, adty_setting.ResellerKeyWidgetSecret, "turnstile_widgets", "aliyun_access_key_id", "aliyun_access_key_Secret", "domain_automation_enabled", "aliyun_domain", "domain_mainland_target", "cloudflare_zone_id", "cloudflare_account_id", "cname_target", "fallback_origin", "edge_mainland_enabled", "edge_acme_alias_suffix", "edge_acme_staging", "edge_node_ip", "edge_node_ips", "edge_failover_to_cf", "edge_probe_enabled", "edge_auto_failover", "edge_main_site_enabled", "edge_main_site_host", "edge_main_site_origin_sni", "clear_secrets"} {
 			if _, present := body[key]; present {
 				denyAdtyAdminAction(c)
 				return
@@ -1275,6 +1281,8 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		next.CnameTarget = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(next.CnameTarget)), ".")
 		next.FallbackOrigin = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(next.FallbackOrigin)), ".")
 		next.EdgeACMEAliasSuffix = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(next.EdgeACMEAliasSuffix)), ".")
+		next.EdgeMainSiteHost = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(next.EdgeMainSiteHost)), ".")
+		next.EdgeMainSiteOriginSNI = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(next.EdgeMainSiteOriginSNI)), ".")
 		_, touchedEdgeIPsInTx := values["edge_node_ips"]
 		_, touchedEdgeIPInTx := values["edge_node_ip"]
 		if touchedEdgeIPsInTx {
@@ -1297,6 +1305,11 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		}
 		if err := adty_setting.ValidateResellerPatch(&next, adtyResendConfigured(), values); err != nil {
 			return err
+		}
+		if next.EdgeMainSiteEnabled && next.EdgeMainSiteHost != "" {
+			if service.AdtyIsMainAPIHost(next.EdgeMainSiteHost) || service.AdtyIsApiOnlyHost(next.EdgeMainSiteHost) {
+				return common.NewMessage("Main site edge hostname cannot be an API domain")
+			}
 		}
 		if next.Enabled {
 			hasTier, err := service.HasReadyAdtySiteTier(tx)

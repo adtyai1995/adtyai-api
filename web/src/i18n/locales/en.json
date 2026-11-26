@@ -11739,6 +11739,16 @@
     "Enter an API token before enabling USDT payments": "Enter an API token before enabling USDT payments",
     "Enter a whole number between 3 and 60 minutes": "Enter a whole number between 3 and 60 minutes",
     "Enter your BEpusdt API token": "Enter your BEpusdt API token",
-    "Amount exceeds the maximum limit of 100,000 USD.": "Amount exceeds the maximum limit of 100,000 USD."
+    "Amount exceeds the maximum limit of 100,000 USD.": "Amount exceeds the maximum limit of 100,000 USD.",
+    "Configure a valid main site hostname before enabling main site edge acceleration": "Configure a valid main site hostname before enabling main site edge acceleration",
+    "Main site edge hostname cannot be the same as the CNAME target, fallback origin, or mainland target": "Main site edge hostname cannot be the same as the CNAME target, fallback origin, or mainland target",
+    "Main site edge hostname cannot be an API domain": "Main site edge hostname cannot be an API domain",
+    "Accelerate main site website domain": "Accelerate main site website domain",
+    "Main site edge hostname": "Main site edge hostname",
+    "Main site origin SNI (optional)": "Main site origin SNI (optional)",
+    "Enter the main site website hostname first (for example www.adtyai.com). Keep the apex domain on Cloudflare 301 redirect and never put an API domain here.": "Enter the main site website hostname first (for example www.adtyai.com). Keep the apex domain on Cloudflare 301 redirect and never put an API domain here.",
+    "Issue a dedicated edge certificate for the main site website domain and include it in the edge node manifest (leave origin SNI blank to reuse fallback origin).": "Issue a dedicated edge certificate for the main site website domain and include it in the edge node manifest (leave origin SNI blank to reuse fallback origin).",
+    "Main site certificate": "Main site certificate",
+    "Point Mainland China DNS line to:": "Point Mainland China DNS line to:"
   }
 }

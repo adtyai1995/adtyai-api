@@ -11739,6 +11739,16 @@
     "Enter an API token before enabling USDT payments": "启用 USDT 支付前请先填写 API 密钥",
     "Enter a whole number between 3 and 60 minutes": "请输入 3 到 60 之间的整数分钟数",
     "Enter your BEpusdt API token": "请输入 BEpusdt API 密钥",
-    "Amount exceeds the maximum limit of 100,000 USD.": "金额超过单笔最高限额 100,000 USD。"
+    "Amount exceeds the maximum limit of 100,000 USD.": "金额超过单笔最高限额 100,000 USD。",
+    "Configure a valid main site hostname before enabling main site edge acceleration": "请先填写有效的主站加速域名，再开启主站首页加速",
+    "Main site edge hostname cannot be the same as the CNAME target, fallback origin, or mainland target": "主站加速域名不能与 CNAME 目标、回源主机名或大陆目标相同",
+    "Main site edge hostname cannot be an API domain": "主站加速域名不能使用 API 域名",
+    "Accelerate main site website domain": "启用主站网站域名加速",
+    "Main site edge hostname": "主站加速域名",
+    "Main site origin SNI (optional)": "主站回源 SNI（可选）",
+    "Enter the main site website hostname first (for example www.adtyai.com). Keep the apex domain on Cloudflare 301 redirect and never put an API domain here.": "请先填写主站网站域名（例如 www.adtyai.com）。裸域建议保留 Cloudflare 301 跳转，切勿填写 API 域名。",
+    "Issue a dedicated edge certificate for the main site website domain and include it in the edge node manifest (leave origin SNI blank to reuse fallback origin).": "为主站网站域名自动签发边缘证书并纳入边缘节点清单（回源 SNI 留空则复用回源主机名）。",
+    "Main site certificate": "主站网站证书",
+    "Point Mainland China DNS line to:": "大陆线路 CNAME 指向："
   }
 }

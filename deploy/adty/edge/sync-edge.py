@@ -225,12 +225,15 @@ def render_configs(
             raise SyncError(f"Invalid custom domain action {action!r} for {host}")
         cert_pem = str(item.get("cert_pem") or "").strip()
         key_pem = str(item.get("key_pem") or "").strip()
+        raw_origin_sni = str(item.get("origin_sni") or "").strip()
+        origin_sni = validate_hostname(raw_origin_sni) if raw_origin_sni else fallback_origin
         if action == "terminate" and (not cert_pem or not key_pem):
             action = "passthrough_cf"
         custom_domains.append(
             {
                 "hostname": host,
                 "action": action,
+                "origin_sni": origin_sni,
                 "cert_pem": cert_pem + "\n" if cert_pem else "",
                 "key_pem": key_pem + "\n" if key_pem else "",
             }
@@ -301,7 +304,7 @@ def render_configs(
                     "    ssl_protocols       TLSv1.2 TLSv1.3;\n"
                     "    ssl_session_cache   shared:ADTY_SSL:16m;\n"
                     "    ssl_session_timeout 1d;\n"
-                    f"    set $adty_origin_sni \"{fallback_origin}\";\n"
+                    f"    set $adty_origin_sni \"{dom['origin_sni']}\";\n"
                     f"    include {cfg.conf_dir / 'origin-proxy.conf'};\n"
                     "}\n"
                 )

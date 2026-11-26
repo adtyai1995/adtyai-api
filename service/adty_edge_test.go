@@ -1169,3 +1169,142 @@ func TestAdtyMultiNodeProbeAutoEjectAndRecovery(t *testing.T) {
 	assert.ElementsMatch(t, []string{ip1, ip2}, liveIPs)
 	assert.False(t, liveProxied)
 }
+
+func TestAdtyEdgeMainSiteCertManifestAndValidation(t *testing.T) {
+	// Settings validation for main site edge fields.
+	cfg := adty_setting.DefaultResellerSetting()
+	cfg.EdgeMainSiteEnabled = true
+	cfg.EdgeMainSiteHost = ""
+	require.Error(t, adty_setting.ValidateResellerPatch(&cfg, false, map[string]string{"edge_main_site_enabled": "true"}))
+
+	cfg.EdgeMainSiteHost = "not a host"
+	require.Error(t, adty_setting.ValidateResellerPatch(&cfg, false, map[string]string{"edge_main_site_host": "not a host"}))
+
+	cfg.EdgeMainSiteHost = cfg.DomainMainlandTarget
+	require.Error(t, adty_setting.ValidateResellerPatch(&cfg, false, map[string]string{"edge_main_site_enabled": "true", "edge_main_site_host": cfg.DomainMainlandTarget}))
+
+	cfg.EdgeMainSiteHost = "www.adtyai.com"
+	cfg.EdgeMainSiteOriginSNI = "bad host"
+	require.Error(t, adty_setting.ValidateResellerPatch(&cfg, false, map[string]string{"edge_main_site_origin_sni": "bad host"}))
+
+	cfg.EdgeMainSiteOriginSNI = "www.adtyai.com"
+	require.NoError(t, adty_setting.ValidateResellerPatch(&cfg, false, map[string]string{
+		"edge_main_site_enabled":    "true",
+		"edge_main_site_host":       "www.adtyai.com",
+		"edge_main_site_origin_sni": "www.adtyai.com",
+	}))
+
+	// End-to-end ACME issuance + manifest + status for main site website domain.
+	db := setupEdgeTestEnv(t, func(rs *adty_setting.ResellerSetting) {
+		rs.EdgeMainSiteEnabled = true
+		rs.EdgeMainSiteHost = "www.adtyai.com"
+		rs.EdgeMainSiteOriginSNI = "www.adtyai.com"
+	})
+	acmeSrv := newMockACMEServer(t)
+	adtyEdgeACMEDirectoryURL = func(bool) string { return acmeSrv.server.URL + "/directory" }
+	adtyEdgeACMEHTTPClient = acmeSrv.server.Client()
+
+	var cfMu sync.Mutex
+	cfTXTs := map[string]AdtyCloudflareDNSRecord{}
+	cfCreatedCount := 0
+	cfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cfMu.Lock()
+		defer cfMu.Unlock()
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-adtyaicf":
+			writeJSON(w, map[string]any{"success": true, "result": map[string]string{"id": "zone-adtyaicf", "name": "adtyaicf.top"}})
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-adtyaicf/dns_records":
+			var body AdtyCloudflareDNSRecord
+			_ = common.DecodeJson(r.Body, &body)
+			cfCreatedCount++
+			body.Id = fmt.Sprintf("txt-%d", cfCreatedCount)
+			cfTXTs[body.Id] = body
+			writeJSON(w, map[string]any{"success": true, "result": body})
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/zones/zone-adtyaicf/dns_records/"):
+			id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			delete(cfTXTs, id)
+			writeJSON(w, map[string]any{"success": true, "result": map[string]string{"id": id}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(cfSrv.Close)
+	AdtyCloudflare = &AdtyCloudflareClient{
+		BaseURL: cfSrv.URL,
+		HTTP:    cfSrv.Client(),
+		Token:   func() string { return "cf-test-token" },
+	}
+
+	cnameMap := map[string]string{}
+	adtyEdgeLookupCNAME = func(_ context.Context, name string) (string, error) {
+		if target, ok := cnameMap[strings.ToLower(name)]; ok {
+			return target + ".", nil
+		}
+		return "", &net.DNSError{IsNotFound: true}
+	}
+	adtyEdgeLookupTXT = func(_ context.Context, name string) ([]string, error) {
+		cfMu.Lock()
+		defer cfMu.Unlock()
+		var out []string
+		for _, rec := range cfTXTs {
+			if rec.Name == name {
+				out = append(out, rec.Content)
+			}
+		}
+		return out, nil
+	}
+
+	now := time.Now()
+	// Before CNAME is set, manifest includes www.adtyai.com as passthrough_cf with custom origin_sni.
+	require.NoError(t, RunAdtyEdgeCertOnce(context.Background(), now))
+	mBefore, err := BuildAdtyEdgeManifest(context.Background(), now)
+	require.NoError(t, err)
+	require.Len(t, mBefore.CustomDomains, 1)
+	assert.Equal(t, "www.adtyai.com", mBefore.CustomDomains[0].Hostname)
+	assert.Equal(t, "passthrough_cf", mBefore.CustomDomains[0].Action)
+	assert.Equal(t, "www.adtyai.com", mBefore.CustomDomains[0].OriginSNI)
+
+	statusBefore, err := GetAdtyEdgeStatus()
+	require.NoError(t, err)
+	require.NotNil(t, statusBefore.MainSiteCert)
+	assert.Equal(t, "www.adtyai.com", statusBefore.MainSiteCert.CertName)
+	assert.Equal(t, "_acme-challenge.www.adtyai.com", statusBefore.MainSiteCert.ChallengeHost)
+	assert.Equal(t, "main.acme.adtyaicf.top", statusBefore.MainSiteCert.AliasFQDN)
+	assert.Equal(t, model.AdtyEdgeCertStatusWaitingDNS, statusBefore.MainSiteCert.Status)
+
+	// Add _acme-challenge.www.adtyai.com -> main.acme.adtyaicf.top and trigger retry + issue.
+	cnameMap["_acme-challenge.www.adtyai.com"] = "main.acme.adtyaicf.top"
+	require.NoError(t, RetryAdtyEdgeCert("www.adtyai.com"))
+	require.NoError(t, RunAdtyEdgeCertOnce(context.Background(), now.Add(3*time.Minute)))
+
+	var mainRow model.AdtyEdgeCert
+	require.NoError(t, db.Where("cert_name = ?", "www.adtyai.com").First(&mainRow).Error)
+	assert.Equal(t, model.AdtyEdgeCertKindMain, mainRow.Kind)
+	assert.Equal(t, model.AdtyEdgeCertStatusReady, mainRow.Status)
+
+	mAfter, err := BuildAdtyEdgeManifest(context.Background(), now.Add(4*time.Minute))
+	require.NoError(t, err)
+	require.Len(t, mAfter.CustomDomains, 1)
+	assert.Equal(t, "www.adtyai.com", mAfter.CustomDomains[0].Hostname)
+	assert.Equal(t, "terminate", mAfter.CustomDomains[0].Action)
+	assert.Equal(t, "www.adtyai.com", mAfter.CustomDomains[0].OriginSNI)
+	assert.NotEmpty(t, mAfter.CustomDomains[0].CertPEM)
+	assert.NotEmpty(t, mAfter.CustomDomains[0].KeyPEM)
+
+	statusAfter, err := GetAdtyEdgeStatus()
+	require.NoError(t, err)
+	require.NotNil(t, statusAfter.MainSiteCert)
+	assert.Equal(t, model.AdtyEdgeCertStatusReady, statusAfter.MainSiteCert.Status)
+
+	// Disabling edge_main_site_enabled removes main site from manifest and status summary.
+	rsPtr := config.GlobalConfig.Get(adty_setting.ResellerSettingModule).(*adty_setting.ResellerSetting)
+	common.OptionMapRWMutex.Lock()
+	rsPtr.EdgeMainSiteEnabled = false
+	common.OptionMapRWMutex.Unlock()
+	mDisabled, err := BuildAdtyEdgeManifest(context.Background(), now.Add(5*time.Minute))
+	require.NoError(t, err)
+	assert.Empty(t, mDisabled.CustomDomains)
+	statusDisabled, err := GetAdtyEdgeStatus()
+	require.NoError(t, err)
+	assert.Nil(t, statusDisabled.MainSiteCert)
+}

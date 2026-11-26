@@ -128,6 +128,12 @@ function resellerFieldLabel(key: string, t: (k: string) => string): string {
       return t('Enable origin HTTPS health probe')
     case 'edge_auto_failover':
       return t('Automatic node failover')
+    case 'edge_main_site_enabled':
+      return t('Accelerate main site website domain')
+    case 'edge_main_site_host':
+      return t('Main site edge hostname')
+    case 'edge_main_site_origin_sni':
+      return t('Main site origin SNI (optional)')
     case 'turnstile_widgets':
       return t('Turnstile widgets')
     case 'turnstile_widget_secret':
@@ -256,6 +262,9 @@ export function SettingsPanel(props: {
         delete permitted.edge_failover_to_cf
         delete permitted.edge_probe_enabled
         delete permitted.edge_auto_failover
+        delete permitted.edge_main_site_enabled
+        delete permitted.edge_main_site_host
+        delete permitted.edge_main_site_origin_sni
         delete permitted.turnstile_widgets
         delete permitted.turnstile_widget_secret
         delete permitted.clear_secrets
@@ -789,6 +798,45 @@ export function SettingsPanel(props: {
                     : t('Enable origin HTTPS health probe first.')
                 }
                 onCheckedChange={(value) => set('edge_auto_failover', value)}
+              />
+            </div>
+            <div className='border-border grid gap-4 border-t pt-4 sm:col-span-2 sm:grid-cols-2'>
+              <div className='sm:col-span-2'>
+                <SwitchRow
+                  label={t('Accelerate main site website domain')}
+                  checked={drafts.edge_main_site_enabled}
+                  disabled={
+                    secretsDisabled ||
+                    (!drafts.edge_main_site_host.trim() &&
+                      !drafts.edge_main_site_enabled)
+                  }
+                  hint={
+                    drafts.edge_main_site_host.trim()
+                      ? t(
+                          'Issue a dedicated edge certificate for the main site website domain and include it in the edge node manifest (leave origin SNI blank to reuse fallback origin).'
+                        )
+                      : t(
+                          'Enter the main site website hostname first (for example www.adtyai.com). Keep the apex domain on Cloudflare 301 redirect and never put an API domain here.'
+                        )
+                  }
+                  onCheckedChange={(value) =>
+                    set('edge_main_site_enabled', value)
+                  }
+                />
+              </div>
+              <TextField
+                label={t('Main site edge hostname')}
+                placeholder='www.adtyai.com'
+                value={drafts.edge_main_site_host}
+                disabled={secretsDisabled}
+                onChange={(value) => set('edge_main_site_host', value)}
+              />
+              <TextField
+                label={t('Main site origin SNI (optional)')}
+                placeholder='www.adtyai.com'
+                value={drafts.edge_main_site_origin_sni}
+                disabled={secretsDisabled}
+                onChange={(value) => set('edge_main_site_origin_sni', value)}
               />
             </div>
             <EdgeStatusCard

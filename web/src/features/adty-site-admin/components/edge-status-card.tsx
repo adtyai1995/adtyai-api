@@ -153,8 +153,8 @@ export function EdgeStatusCard(props: { canManage: boolean }) {
     onError: (err) => handleServerError(err),
   })
 
-  const retryWildcard = useMutation({
-    mutationFn: () => retryResellerEdgeCert(''),
+  const retryCert = useMutation({
+    mutationFn: (certName: string) => retryResellerEdgeCert(certName),
     onSuccess: () => {
       toast.success(t('Certificate check queued'))
       refreshStatus()
@@ -167,6 +167,7 @@ export function EdgeStatusCard(props: { canManage: boolean }) {
   }
 
   const wc = status.wildcard_cert
+  const mc = status.main_site_cert
   const pull = status.manifest_pull
   const dns = status.dns_sync
   const probe = status.probe
@@ -292,14 +293,85 @@ export function EdgeStatusCard(props: { canManage: boolean }) {
                 type='button'
                 size='sm'
                 variant='outline'
-                disabled={retryWildcard.isPending}
-                onClick={() => retryWildcard.mutate()}
+                disabled={retryCert.isPending}
+                onClick={() => retryCert.mutate('')}
               >
                 {t('Retry certificate')}
               </Button>
             </div>
           )}
         </div>
+
+        {mc && (
+          <div className='bg-muted/30 flex flex-col gap-2 rounded-lg border p-3.5 text-xs'>
+            <div className='flex flex-wrap items-center justify-between gap-2'>
+              <span className='font-medium'>{t('Main site certificate')}</span>
+              <div className='flex items-center gap-1.5'>
+                <Badge variant='outline'>
+                  {mc.environment === 'staging'
+                    ? t('Staging')
+                    : t('Production')}
+                </Badge>
+                <StatusBadge
+                  variant={certStatusVariant(mc.status)}
+                  label={certStatusLabel(t, mc.status)}
+                />
+              </div>
+            </div>
+            <p className='font-mono'>{mc.cert_name}</p>
+            {mc.not_after > 0 && (
+              <p className='text-muted-foreground'>
+                {t('Expires {{date}}', {
+                  date: formatTimestampToDate(mc.not_after),
+                })}
+              </p>
+            )}
+            {mc.status !== 'ready' && mc.alias_fqdn && (
+              <div className='bg-background space-y-1 rounded border p-2'>
+                <p className='text-muted-foreground'>
+                  {t('Add CNAME on default line:')}
+                </p>
+                <div className='flex items-center justify-between gap-1.5'>
+                  <span className='truncate font-mono'>{mc.challenge_host}</span>
+                  <CopyButton value={mc.challenge_host} />
+                </div>
+                <div className='flex items-center justify-between gap-1.5'>
+                  <span className='truncate font-mono'>{mc.alias_fqdn}</span>
+                  <CopyButton value={mc.alias_fqdn} />
+                </div>
+              </div>
+            )}
+            {mc.status === 'ready' && status.domain_mainland_target && (
+              <div className='bg-background space-y-1 rounded border p-2'>
+                <p className='text-muted-foreground'>
+                  {t('Point Mainland China DNS line to:')}
+                </p>
+                <div className='flex items-center justify-between gap-1.5'>
+                  <span className='truncate font-mono'>
+                    {status.domain_mainland_target}
+                  </span>
+                  <CopyButton value={status.domain_mainland_target} />
+                </div>
+              </div>
+            )}
+            {mc.last_error && (
+              <p className='text-destructive break-all'>{mc.last_error}</p>
+            )}
+            {props.canManage && (
+              <div className='pt-1'>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={retryCert.isPending}
+                  onClick={() => retryCert.mutate(mc.cert_name)}
+                >
+                  {t('Retry certificate')}
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className='bg-muted/30 flex flex-col gap-2 rounded-lg border p-3.5 text-xs'>
           <div className='flex flex-wrap items-center justify-between gap-2'>

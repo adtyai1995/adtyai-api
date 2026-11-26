@@ -121,9 +121,15 @@ describe('adty-site-admin/lib/sites', () => {
 
     drafts.edge_node_ips = '47.242.10.20, 47.242.10.21\n47.242.10.20'
     drafts.edge_auto_failover = true
+    drafts.edge_main_site_enabled = true
+    drafts.edge_main_site_host = ' www.adtyai.com '
+    drafts.edge_main_site_origin_sni = ' www.adtyai.com '
     expect(buildResellerUpdate(base, drafts)).toEqual({
       edge_node_ips: ['47.242.10.20', '47.242.10.21'],
       edge_auto_failover: true,
+      edge_main_site_enabled: true,
+      edge_main_site_host: 'www.adtyai.com',
+      edge_main_site_origin_sni: 'www.adtyai.com',
     })
   })
 })

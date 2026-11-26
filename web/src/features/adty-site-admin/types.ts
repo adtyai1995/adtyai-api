@@ -267,6 +267,9 @@ export type ResellerSettings = {
   edge_failover_to_cf?: boolean
   edge_probe_enabled?: boolean
   edge_auto_failover?: boolean
+  edge_main_site_enabled?: boolean
+  edge_main_site_host?: string
+  edge_main_site_origin_sni?: string
   turnstile_widgets: TurnstileWidget[] | null
   turnstile_widget_secret: Record<string, string> | null
   cloudflare_token_configured: boolean
@@ -358,10 +361,14 @@ export type ResellerEdgeStatus = {
   edge_failover_to_cf: boolean
   edge_probe_enabled: boolean
   edge_auto_failover?: boolean
+  edge_main_site_enabled?: boolean
+  edge_main_site_host?: string
+  edge_main_site_origin_sni?: string
   edge_token_configured: boolean
   domain_mainland_target: string
   edge_acme_alias_suffix: string
   wildcard_cert: ResellerEdgeWildcardCert | null
+  main_site_cert?: ResellerEdgeWildcardCert | null
   custom_cert_counts: {
     total: number
     ready: number

@@ -27,12 +27,13 @@ type AdtyEdgeManifestWildcardCert struct {
 
 // AdtyEdgeManifestCustomDomain describes how an edge node routes one custom website domain.
 type AdtyEdgeManifestCustomDomain struct {
-	Hostname string `json:"hostname"`
-	Mode     string `json:"mode"`   // serve | redirect_only
-	Action   string `json:"action"` // terminate | passthrough_cf
-	CertPEM  string `json:"cert_pem,omitempty"`
-	KeyPEM   string `json:"key_pem,omitempty"`
-	NotAfter int64  `json:"not_after,omitempty"`
+	Hostname  string `json:"hostname"`
+	Mode      string `json:"mode"`                 // serve | redirect_only
+	Action    string `json:"action"`               // terminate | passthrough_cf
+	OriginSNI string `json:"origin_sni,omitempty"` // optional upstream TLS SNI override (defaults to fallback_origin)
+	CertPEM   string `json:"cert_pem,omitempty"`
+	KeyPEM    string `json:"key_pem,omitempty"`
+	NotAfter  int64  `json:"not_after,omitempty"`
 }
 
 // AdtyEdgeManifest is the canonical state consumed by mainland edge nodes.
@@ -279,6 +280,7 @@ func BuildAdtyEdgeManifest(ctx context.Context, now time.Time) (*AdtyEdgeManifes
 		}
 	}
 
+	seenCustom := make(map[string]bool, len(domRows)+1)
 	for _, r := range domRows {
 		h := strings.ToLower(strings.TrimSpace(r.Hostname))
 		if h == "" {
@@ -287,6 +289,7 @@ func BuildAdtyEdgeManifest(ctx context.Context, now time.Time) (*AdtyEdgeManifes
 		if r.SiteStatus == model.AdtySiteStatusClosed && r.DesiredState != "redirect_only" {
 			continue
 		}
+		seenCustom[h] = true
 		mode := "serve"
 		if r.DesiredState == "redirect_only" || r.SiteStatus == model.AdtySiteStatusClosed {
 			mode = "redirect_only"
@@ -308,6 +311,41 @@ func BuildAdtyEdgeManifest(ctx context.Context, now time.Time) (*AdtyEdgeManifes
 			}
 		}
 		manifest.CustomDomains = append(manifest.CustomDomains, entry)
+	}
+
+	if mainHost := adtyEdgeMainSiteHost(cfg); mainHost != "" && !seenCustom[mainHost] {
+		entry := AdtyEdgeManifestCustomDomain{
+			Hostname: mainHost,
+			Mode:     "serve",
+			Action:   "passthrough_cf",
+		}
+		originSNI := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(cfg.EdgeMainSiteOriginSNI)), ".")
+		if originSNI != "" && originSNI != manifest.FallbackOrigin {
+			entry.OriginSNI = originSNI
+		}
+		var mainCert model.AdtyEdgeCert
+		res := model.DB.WithContext(ctx).
+			Where("kind = ? AND cert_name = ? AND status = ? AND environment = ? AND not_after > ? AND cert_pem <> ? AND key_encrypted <> ?",
+				model.AdtyEdgeCertKindMain, mainHost, model.AdtyEdgeCertStatusReady, env, nowUnix, "", "").
+			Limit(1).Find(&mainCert)
+		if res.Error != nil {
+			return nil, res.Error
+		}
+		if res.RowsAffected > 0 {
+			keyPEM, err := model.OpenAdtyPurposeSecret(adtyEdgeCertKeyPurpose(mainCert.CertName), mainCert.KeyEncrypted)
+			if err == nil && strings.TrimSpace(keyPEM) != "" {
+				entry.Action = "terminate"
+				entry.CertPEM = mainCert.CertPEM
+				entry.KeyPEM = keyPEM
+				entry.NotAfter = mainCert.NotAfter
+			} else {
+				common.SysError(common.LogText("open edge main site cert key failed for %s", mainCert.CertName))
+			}
+		}
+		manifest.CustomDomains = append(manifest.CustomDomains, entry)
+		slices.SortFunc(manifest.CustomDomains, func(a, b AdtyEdgeManifestCustomDomain) int {
+			return strings.Compare(a.Hostname, b.Hostname)
+		})
 	}
 
 	canonical, err := common.Marshal(manifest)

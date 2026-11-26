@@ -5,6 +5,7 @@ package model
 
 const (
 	AdtyEdgeCertKindWildcard = "wildcard"
+	AdtyEdgeCertKindMain     = "main"
 	AdtyEdgeCertKindCustom   = "custom"
 
 	AdtyEdgeACMEEnvProduction = "production"
@@ -15,7 +16,7 @@ const (
 	AdtyEdgeStateKeyProbe        = "probe"
 )
 
-// AdtyEdgeCert 保存边缘节点用的一张 TLS 证书（平台泛域名或站长网站域名）。
+// AdtyEdgeCert 保存边缘节点用的一张 TLS 证书（平台泛域名、主站网站域名或站长网站域名）。
 type AdtyEdgeCert struct {
 	Id           int    `json:"id" gorm:"primaryKey"`
 	CertName     string `json:"cert_name" gorm:"uniqueIndex;type:varchar(253);not null"`

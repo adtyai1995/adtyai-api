@@ -50,6 +50,8 @@ export const CLOUDFLARE_KEYS = [
   'aliyun_domain',
   'domain_mainland_target',
   'edge_acme_alias_suffix',
+  'edge_main_site_host',
+  'edge_main_site_origin_sni',
 ] as const
 export type CloudflareKey = (typeof CLOUDFLARE_KEYS)[number]
 
@@ -87,6 +89,7 @@ export type ResellerDrafts = Record<RuleKey, string> &
     edge_acme_staging: boolean
     edge_probe_enabled: boolean
     edge_auto_failover: boolean
+    edge_main_site_enabled: boolean
     /** One IPv4 per line (or comma-separated). */
     edge_node_ips: string
     aliyun_id: string
@@ -149,6 +152,7 @@ export function toResellerDrafts(saved: ResellerSettings): ResellerDrafts {
     edge_acme_staging: saved.edge_acme_staging ?? false,
     edge_probe_enabled: saved.edge_probe_enabled ?? false,
     edge_auto_failover: saved.edge_auto_failover ?? false,
+    edge_main_site_enabled: saved.edge_main_site_enabled ?? false,
     edge_node_ips: savedEdgeNodeIPs(saved).join('\n'),
     aliyun_id: '',
     aliyun_secret: '',
@@ -232,6 +236,11 @@ export function buildResellerUpdate(
   }
   if (drafts.edge_auto_failover !== (saved.edge_auto_failover ?? false)) {
     body.edge_auto_failover = drafts.edge_auto_failover
+  }
+  if (
+    drafts.edge_main_site_enabled !== (saved.edge_main_site_enabled ?? false)
+  ) {
+    body.edge_main_site_enabled = drafts.edge_main_site_enabled
   }
   const edgeIPs = uniqueLines(drafts.edge_node_ips)
   if (!sameList(edgeIPs, savedEdgeNodeIPs(saved))) {
