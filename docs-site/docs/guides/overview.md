@@ -25,7 +25,7 @@ ADTY AI intentionally separates web console traffic from high-throughput model A
 ::: danger Why `www` Rejects API Requests
 Sending model requests to `https://www.adtyai.com/v1/...` or `https://www.adtyai.com/v1beta/...` will always fail with HTTP `403` and error code `api_domain_required`.
 
-This isolation protects API latency and streaming stability from web frontend traffic and CDN rules. Always configure `https://api.adtyai.com` as your client's base URL.
+This isolation protects API latency and streaming stability from web frontend and static asset traffic. Always configure `https://api.adtyai.com` as your client's base URL.
 :::
 
 ### Quick Base URL Cheat Sheet

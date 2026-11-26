@@ -31,13 +31,13 @@ After receiving your owner account and default domains, complete these steps in 
 
 ## 3. Feature-by-Feature Operations Guide
 
-### 3.1 Site Overview (`/site-owner/overview`)
+### 3.1 Site Overview
 
 - Track key date-range metrics: new customers, paying customers, active customers, customer spend, platform supply cost, owner spread earnings, bonus spend, refunds, and daily trends.
 - Displays current site status (`active` or `closing` countdown), website URL, API URL, and active supply cost factor (`cost_factor`).
 - Any `skipped_usd` figure indicates usage temporarily flagged for platform risk review, not missing funds.
 
-### 3.2 Customers (`/site-owner/customers`)
+### 3.2 Customers
 
 - **Customer List**: Paginated by sign-up time (20 per page), automatically excluding subsite staff accounts and standalone team staff sub-accounts.
 - **Visibility Controls**: Visibility of email addresses (masked by default, e.g. `a***@example.com`), balances, top-ups, usage, request logs, and API key lists is governed by platform policy. Request logs strip customer IPs and internal channel IDs; full plaintext API keys are **never shown**.
@@ -46,7 +46,7 @@ After receiving your owner account and default domains, complete these steps in 
 - **Report Customer**: Submit suspected abuse or policy violations (≤ 1000 chars) to platform risk control.
 - **Important**: Direct manual balance credits by site owners are retired. Always issue customer quota via **Redemption Codes** (`vouchers`).
 
-### 3.3 Team Management (`/site-owner/teams`)
+### 3.3 Team Management
 
 Provides three tabs (`Teams`, `Create team`, `Team registration links`) matching the main site's team management capabilities:
 
@@ -56,13 +56,13 @@ Provides three tabs (`Teams`, `Create team`, `Team registration links`) matching
 4. **Adjust Active Team Supply Multiplier**: Valid range **`1.0` – `10.0`** (up to 4 decimals). Billing formula: `Team Price = Subsite Supply Cost × Team Multiplier` (cannot go below `1.0x`). Changes affect only future requests.
 5. **Boundary**: Manual team balance top-ups remain permanently disabled; team leaders recharge online.
 
-### 3.4 Orders & Customer Refunds (`/site-owner/orders`)
+### 3.4 Orders & Customer Refunds
 
 - Filter unified subsite orders by `trade_no`, username, `tx_hash`, order type, status, and payment method.
 - **Manual Refunds**: Initiate partial or full refunds on your **customer orders** through the 7-step state machine: `Initiate → Approve → Reclaim Quota → Handle Bonus → Clawback Commission → Record Payout Proof → Complete` (or `Terminate`).
 - Every step requires **digest-bound step-up verification**. You cannot refund owner margin top-up orders.
 
-### 3.5 Pricing & Multiplier (`/site-owner/pricing`)
+### 3.5 Pricing & Multiplier
 
 - **Single Unified Retail Multiplier**: Configure one site-wide multiplier `M` between **`1.0` and `10.0`** (up to 4 decimals; default `1.0`).
 - **Profit Formula**:
@@ -73,7 +73,7 @@ Provides three tabs (`Teams`, `Create team`, `Team registration links`) matching
   - Changes take effect **immediately** after **step-up verification**.
   - **Every time you increase `M`, the system automatically emails all customers with verified emails on your subsite.** Double-check decimal digits before saving to avoid frequent price-hike notices.
 
-### 3.6 Recharge Bonus (`/site-owner/bonus`)
+### 3.6 Recharge Bonus
 
 - Configure per enabled payment method (`Alipay`, `WeChat Pay`, `USDT` — all USDT chains share one rule) from `0%` to `100%`. Applies only to regular customer online wallet top-ups (not team top-ups or owner margin top-ups). Requires **step-up verification**.
 - **Funding Pre-Freeze Warning**:
@@ -81,7 +81,7 @@ Provides three tabs (`Teams`, `Create team`, `Team registration links`) matching
   - **If available funds cannot cover the bonus, customer checkout fails immediately.**
   - Canceled/expired orders release the pre-freeze; refunds only claw back the unconsumed bonus proportion.
 
-### 3.7 Promotion Management (`/site-owner/commissions`)
+### 3.7 Promotion Management
 
 Includes summary KPIs, a **Cover Pending Commissions** button, and 5 tabs (`Withdrawals`, `Affiliates`, `Commissions`, `Audit Logs`, `Settings`).
 
@@ -96,24 +96,24 @@ Includes summary KPIs, a **Cover Pending Commissions** button, and 5 tabs (`With
   - **External Cash Withdrawal**: Optionally enable **USDT** (`TRC20 / BEP20 / POLYGON / XLAYER`) and/or **Alipay** (with CNY rate). WeChat Pay is not supported. After approving a withdrawal, **you transfer funds offline** and record the `TxID` or upload payout proof (≤ 5 MB).
 - **Automatic Docs Sync**: Changes to your referral switch, default commission rate, observation days, and cash withdrawal methods automatically sync to your subsite's `/docs/` Referral Program guide (and hide the sidebar entry when disabled).
 
-### 3.8 Earnings Details & Exports (`/site-owner/earnings`)
+### 3.8 Earnings Details & Exports
 
 - Inspect per-request model, group, customer ID, request ID, customer spend, and owner spread earnings (50 rows/page).
 - Export CSV reports (`Earnings Ledger`, `Operations Report`, `Customer Summary`) up to 100,000 rows per export with CSV-formula sanitization and masked customer emails.
 
-### 3.9 Earnings Withdrawals (`/site-owner/withdrawals`)
+### 3.9 Earnings Withdrawals
 
 - **USDT Only (4 Networks)**: `TRC20` (starts with `T`) and `BEP20 / POLYGON / XLAYER` (starts with `0x`). Alipay is not supported for owner withdrawals.
 - Live minimum amount, fee, and exchange rate are displayed on the withdrawal form. Submission requires **digest-bound step-up verification**.
 - Confirmed spread earnings credit to available earnings in real time. If a daily reconciliation hold appears, contact platform support.
 - Pending requests can be self-canceled until platform admins mark them `paying`.
 
-### 3.10 Settlement Sheets (`/site-owner/settlements`)
+### 3.10 Settlement Sheets
 
 - Generated daily for the previous business day (default `Asia/Shanghai`). Post-settlement refunds or adjustments create versioned revisions you can compare side by side.
 - Supports one-click **Export CSV** and clean A4 **Save as PDF**.
 
-### 3.11 Owner Wallets, Margin Pools & Site Tiers (`/site-owner/wallets`)
+### 3.11 Owner Wallets, Margin Pools & Site Tiers
 
 Displays your **Earnings Wallet (`earnings`)** and **Margin Wallet (`margin`)** alongside full transaction ledgers.
 
@@ -127,7 +127,7 @@ Displays your **Earnings Wallet (`earnings`)** and **Margin Wallet (`margin`)** 
 - **Funding Margin**: Online margin top-up, instant earnings-to-margin transfer (no step-up needed, starts a new cycle immediately), or redeeming a platform-issued `site_margin` voucher.
 - **Site Tiers**: Evaluated automatically based on cumulative net valid customer recharge principal (owner top-ups, margin deposits, and team top-ups do not count). Refer to your Site Owner Center or contact platform support for tier and supply discount details.
 
-### 3.12 Redemption Codes (`/site-owner/vouchers`)
+### 3.12 Redemption Codes
 
 - Issue customer quota vouchers (`site_customer`): denomination `> 0` and `≤ $100,000` (up to 2 decimals), batch size `1 – 100`, with a required reason.
 - Funded by **available earnings first, then excess margin**.
@@ -136,12 +136,12 @@ Displays your **Earnings Wallet (`earnings`)** and **Margin Wallet (`margin`)** 
   2. **Freeze is irreversible (no Unfreeze button)**: Freezing blocks redemption without returning funds. To reclaim locked funds, you must **Cancel (Invalidate)** the voucher.
 - Issue, freeze, and cancel all require **step-up verification**.
 
-### 3.13 Notifications & Announcements (`/site-owner/notices`)
+### 3.13 Notifications & Announcements
 
 - Publish targeted announcements to your subsite's regular users and/or team users (title ≤ 120 chars, Markdown/rich text sanitized up to 2000 plain-text chars).
 - Published announcements **cannot return to draft**; they can only be recalled (archived read-only).
 
-### 3.14 Staff Accounts (`/site-owner/staff`)
+### 3.14 Staff Accounts
 
 - **Browser-Only Security**: Strictly requires a live browser session (**PAT access is prohibited**). Create, edit, password reset, and delete all require **digest-bound step-up verification**.
 - Username ≤ 20 chars (no `@`, globally unique); **staff passwords must be 15–128 characters**.
@@ -149,12 +149,12 @@ Displays your **Earnings Wallet (`earnings`)** and **Margin Wallet (`margin`)** 
 - Staff never see owner wallets/earnings/withdrawals, unmasked customer emails, or API keys, and cannot reset customer passwords.
 - Editing, resetting password, disabling, or deleting staff **immediately revokes their active sessions**; disabling or removing `tickets.manage` automatically unassigns their open tickets.
 
-### 3.15 Ticket Management (`/site-owner/tickets`)
+### 3.15 Ticket Management
 
 - Handle subsite customer tickets with queue/status/priority/assignee filters, JSON export, public replies, internal staff notes, and assignment to owner or eligible staff.
 - Image attachments: ≤ 5 MB each, ≤ 6 per ticket, ≤ 20 MB total; API-key-like strings are automatically redacted.
 
-### 3.16 Email Configuration (`/site-owner/mail`)
+### 3.16 Email Configuration
 
 Choose one of two mutually exclusive outbound mail modes (secrets are stored encrypted and never displayed back):
 1. **Custom SMTP (`smtp`)**: Configure host, port, encryption (`None` / `SSL/TLS` / `STARTTLS`), credentials, and sender address. `localhost` and private/internal IPs are blocked (SSRF protection).
@@ -163,7 +163,7 @@ Choose one of two mutually exclusive outbound mail modes (secrets are stored enc
 - **Unconfigured Policy**: There is no platform default transport for subsites. Until valid SMTP or Resend credentials are saved, subsite operational mail sends return an error asking you to configure SMTP or Resend first (official site-closure migration emails continue to be delivered by the platform).
 - Always click **Save** before clicking **Send test email**.
 
-### 3.17 Site Settings (`/site-owner/settings`)
+### 3.17 Site Settings
 
 1. **Brand**: Name, website title, announcement, wallet notice, support contact, optional custom external docs URL (leave blank to use the built-in white-label `/docs/`), Tawk.to IDs, and Logo / Favicon (PNG/JPEG/WebP ≤ 200 KB; **click Save brand after uploading**).
 2. **Custom Homepage**: Markdown, HTML, or iframe URL; clear to restore the default homepage.
@@ -175,11 +175,11 @@ Choose one of two mutually exclusive outbound mail modes (secrets are stored enc
 5. **Search Engine Indexing**: Toggle indexing for your website domain (API domain is always `noindex`).
 6. **Request Site Closure**: Submit a reason for platform review and scheduled notice period.
 
-### 3.18 Historical Site Accounts (`/site-owner/history`)
+### 3.18 Historical Site Accounts
 
 For closed or transferred subsites previously owned by your account: inspect historical earnings, submit and track remaining USDT withdrawals, export past settlement sheets, and remove archived website domains.
 
-### 3.19 Security & Access (`/security`)
+### 3.19 Security & Access
 
 Manage password, email binding, active sessions, 2FA, and scoped Personal Access Tokens (`site_owner_*` scopes; staff management endpoints reject PATs).
 

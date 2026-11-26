@@ -14,10 +14,10 @@ ADTY AI Subsite Partnership gives resellers, studios, developer communities, and
 - **Branded legal pages**: Publish your own User Agreement, Privacy Policy, and Refund Policy on your domain.
 - **Auto-branded documentation**: The `/docs/` portal mounted on your subsite dynamically inherits your brand name, logo, console URL, dedicated API domain, live payment channels, and referral rules automatically.
 
-### Custom Dual Domains & Optional Acceleration
+### Custom Dual-Domain Architecture
 
-- **Dedicated dual-domain architecture**: Bind both your custom console domain (for example, `www.example.com`) and dedicated API gateway domain (for example, `api.example.com`) with TLS managed cleanly.
-- **Optional mainland China homepage acceleration**: Optionally enable acceleration for your web console and documentation homepage to improve load speed and checkout conversion for mainland China users while keeping API gateway routing clean.
+- **Dedicated dual-domain setup**: Bind both your custom console domain (for example, `www.example.com`) and dedicated API gateway domain (for example, `api.example.com`) with TLS managed cleanly.
+- **Clean traffic separation**: Your website domain serves the branded console and documentation portal while your dedicated API domain handles high-concurrency model relay traffic without interference.
 
 ### Independent Retail Commercial Controls
 

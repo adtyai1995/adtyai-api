@@ -25,7 +25,7 @@ ADTY AI 将网页控制台域名与模型接口网关域名明确分离，各自
 ::: danger 为什么 `www` 域名会拦截 API 请求？
 向 `https://www.adtyai.com/v1/...` 或 `https://www.adtyai.com/v1beta/...` 发送模型调用请求时，网关会直接返回 HTTP `403` 及错误码 `api_domain_required`。
 
-将 API 流量与网页前端、静态资源及加速策略隔离，可显著提升长连接 SSE 流式响应的稳定性。配置任何客户端或代码时，请务必填写 `https://api.adtyai.com`。
+将 API 流量与网页前端及静态资源隔离，可显著提升长连接 SSE 流式响应的稳定性。配置任何客户端或代码时，请务必填写 `https://api.adtyai.com`。
 :::
 
 ### 常见客户端 Base URL 速查
