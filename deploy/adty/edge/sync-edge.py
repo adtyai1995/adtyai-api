@@ -10,11 +10,14 @@ and reloads Nginx only when valid changes were applied.
 
 from __future__ import annotations
 
+import argparse
+import hashlib
 import http.client
 import json
 import os
 import pathlib
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -50,6 +53,16 @@ class EdgeConfig:
     min_drop_ratio: float = 0.5
     allow_mass_drop: bool = False
     http_timeout: int = 20
+    apex_redirect_host: str = ""
+    apex_redirect_target: str = ""
+    apex_acme_email: str = ""
+    apex_acme_staging: bool = False
+    apex_webroot: pathlib.Path = pathlib.Path("/var/www/adty-acme")
+    apex_cert_root: pathlib.Path = pathlib.Path("/etc/letsencrypt/live")
+    apex_renew_within_seconds: int = 30 * 86400
+    apex_retry_backoff_seconds: int = 1800
+    certbot_bin: str = "certbot"
+    openssl_bin: str = "openssl"
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "EdgeConfig":
@@ -73,6 +86,25 @@ class EdgeConfig:
             min_drop_ratio=float(src.get("MIN_DROP_RATIO", "0.5")),
             allow_mass_drop=src.get("ALLOW_MASS_DROP", "").strip() in {"1", "true", "yes"},
             http_timeout=max(5, int(src.get("HTTP_TIMEOUT", "20"))),
+            apex_redirect_host=src.get("APEX_REDIRECT_HOST", "").strip(),
+            apex_redirect_target=src.get("APEX_REDIRECT_TARGET", "").strip(),
+            apex_acme_email=src.get("APEX_ACME_EMAIL", "").strip(),
+            apex_acme_staging=src.get("APEX_ACME_STAGING", "").strip() in {"1", "true", "yes"},
+            apex_webroot=pathlib.Path(
+                src.get("APEX_WEBROOT", "/var/www/adty-acme").strip() or "/var/www/adty-acme"
+            ),
+            apex_cert_root=pathlib.Path(
+                src.get("APEX_CERT_ROOT", "/etc/letsencrypt/live").strip()
+                or "/etc/letsencrypt/live"
+            ),
+            apex_renew_within_seconds=max(
+                86400, int(src.get("APEX_RENEW_WITHIN_SECONDS", str(30 * 86400)))
+            ),
+            apex_retry_backoff_seconds=max(
+                60, int(src.get("APEX_RETRY_BACKOFF_SECONDS", "1800"))
+            ),
+            certbot_bin=src.get("CERTBOT_BIN", "certbot").strip() or "certbot",
+            openssl_bin=src.get("OPENSSL_BIN", "openssl").strip() or "openssl",
         )
 
 
@@ -107,6 +139,218 @@ def escape_nginx_regex(text: str) -> str:
 def safe_file_slug(name: str) -> str:
     slug = re.sub(r"[^a-z0-9._-]", "_", name.lower())
     return slug.strip("._") or "cert"
+
+
+def normalize_apex_redirect(cfg: EdgeConfig) -> tuple[str, str]:
+    raw_host = cfg.apex_redirect_host.strip()
+    if not raw_host:
+        return "", ""
+    host = validate_hostname(raw_host)
+    raw_target = cfg.apex_redirect_target.strip()
+    if not raw_target:
+        if host.startswith("www."):
+            raise SyncError(
+                "APEX_REDIRECT_TARGET is required when APEX_REDIRECT_HOST starts with www."
+            )
+        return host, f"https://www.{host}"
+    parsed = urllib.parse.urlparse(raw_target)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise SyncError(f"APEX_REDIRECT_TARGET must be an https://<hostname> URL: {raw_target!r}")
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment or parsed.username or parsed.password:
+        raise SyncError(
+            f"APEX_REDIRECT_TARGET must only specify scheme and host (no path/query): {raw_target!r}"
+        )
+    target_host = validate_hostname(parsed.hostname)
+    if target_host == host:
+        raise SyncError(f"APEX_REDIRECT_TARGET host cannot equal APEX_REDIRECT_HOST ({host})")
+    port_suffix = f":{parsed.port}" if parsed.port else ""
+    return host, f"https://{target_host}{port_suffix}"
+
+
+def apex_cert_paths(cfg: EdgeConfig, host: str) -> tuple[pathlib.Path, pathlib.Path]:
+    live_dir = cfg.apex_cert_root / host
+    return live_dir / "fullchain.pem", live_dir / "privkey.pem"
+
+
+def apex_cert_present(cfg: EdgeConfig, host: str) -> bool:
+    fullchain, privkey = apex_cert_paths(cfg, host)
+    try:
+        if not fullchain.is_file() or not privkey.is_file():
+            return False
+        cert_text = fullchain.read_text(encoding="utf-8", errors="ignore")
+        key_text = privkey.read_text(encoding="utf-8", errors="ignore")
+        return "BEGIN CERTIFICATE" in cert_text and "PRIVATE KEY" in key_text
+    except OSError:
+        return False
+
+
+def compute_apex_fingerprint(cfg: EdgeConfig) -> str:
+    host, target = normalize_apex_redirect(cfg)
+    if not host:
+        return ""
+    h = hashlib.sha256()
+    h.update(f"{host}\0{target}\0".encode("utf-8"))
+    if apex_cert_present(cfg, host):
+        fullchain, privkey = apex_cert_paths(cfg, host)
+        h.update(b"present\0")
+        h.update(fullchain.read_bytes())
+        h.update(b"\0")
+        h.update(privkey.read_bytes())
+    else:
+        h.update(b"missing")
+    return h.hexdigest()
+
+
+def apex_cert_needs_renewal(cfg: EdgeConfig, host: str) -> bool:
+    if not apex_cert_present(cfg, host):
+        return True
+    fullchain, _ = apex_cert_paths(cfg, host)
+    proc = subprocess.run(
+        [
+            cfg.openssl_bin,
+            "x509",
+            "-in",
+            str(fullchain),
+            "-noout",
+            "-checkend",
+            str(cfg.apex_renew_within_seconds),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode != 0
+
+
+def _http_get_no_redirect(connect_ip: str, host: str, path: str, timeout: float) -> tuple[int, str, str]:
+    conn = http.client.HTTPConnection(connect_ip, 80, timeout=timeout)
+    try:
+        conn.request("GET", path, headers={"Host": host, "User-Agent": "adty-edge-selfcheck/1.0"})
+        resp = conn.getresponse()
+        body = resp.read(256).decode("utf-8", errors="ignore").strip()
+        server = (resp.getheader("Server") or "").strip()
+        return resp.status, body, server
+    finally:
+        conn.close()
+
+
+def probe_apex_http01_readiness(cfg: EdgeConfig, host: str) -> tuple[bool, str]:
+    challenge_dir = cfg.apex_webroot / ".well-known" / "acme-challenge"
+    challenge_dir.mkdir(parents=True, exist_ok=True)
+    token_name = f"adty-selfcheck-{secrets.token_hex(8)}"
+    token_value = secrets.token_hex(16)
+    token_path = challenge_dir / token_name
+    req_path = f"/.well-known/acme-challenge/{token_name}"
+
+    token_path.write_text(token_value, encoding="utf-8", newline="\n")
+    os.chmod(token_path, 0o644)
+    try:
+        try:
+            local_status, local_body, _ = _http_get_no_redirect("127.0.0.1", host, req_path, 3.0)
+        except OSError as exc:
+            return False, f"local Nginx port 80 unreachable for {host}: {exc}"
+        if local_status != 200 or local_body != token_value:
+            return (
+                False,
+                f"local Nginx port 80 is not serving {host} ACME webroot (HTTP {local_status})",
+            )
+
+        try:
+            infos = socket.getaddrinfo(host, 80, socket.AF_INET, socket.SOCK_STREAM)
+        except OSError as exc:
+            return False, f"DNS lookup failed for {host}: {exc}"
+        resolved_ips = list(dict.fromkeys(str(info[4][0]) for info in infos))
+        if not resolved_ips:
+            return False, f"DNS has no IPv4 record for {host}"
+
+        probe_ip = resolved_ips[0]
+        try:
+            pub_status, pub_body, pub_server = _http_get_no_redirect(probe_ip, host, req_path, 4.0)
+        except OSError as exc:
+            return (
+                True,
+                f"local webroot ok; public self-probe to {probe_ip} timed out/errored ({exc}), attempting certbot",
+            )
+
+        if pub_status == 200 and pub_body == token_value:
+            return True, f"public HTTP-01 verified via {probe_ip}"
+        server_note = f", Server={pub_server}" if pub_server else ""
+        return (
+            False,
+            f"public HTTP-01 for {host} ({probe_ip}) returned HTTP {pub_status}{server_note}; DNS not yet routed to this node",
+        )
+    finally:
+        try:
+            token_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def ensure_apex_cert(cfg: EdgeConfig, now: float | None = None) -> bool:
+    host, _ = normalize_apex_redirect(cfg)
+    if not host:
+        return False
+    if not apex_cert_needs_renewal(cfg, host):
+        return False
+
+    now_ts = time.time() if now is None else now
+    apex_state_path = cfg.conf_dir / ".apex-cert-state.json"
+    apex_state = load_state(apex_state_path)
+    last_failed_at = float(apex_state.get("last_failed_at") or 0)
+    if last_failed_at > 0 and (now_ts - last_failed_at) < cfg.apex_retry_backoff_seconds:
+        return False
+
+    ready, reason = probe_apex_http01_readiness(cfg, host)
+    if not ready:
+        print(f"adty-edge-sync: apex cert skipped for {host}: {reason}", file=sys.stderr)
+        return False
+
+    cmd = [
+        cfg.certbot_bin,
+        "certonly",
+        "--non-interactive",
+        "--agree-tos",
+        "--keep-until-expiring",
+        "--cert-name",
+        host,
+        "--webroot",
+        "-w",
+        str(cfg.apex_webroot),
+        "-d",
+        host,
+    ]
+    if cfg.apex_acme_email:
+        cmd.extend(["--email", cfg.apex_acme_email])
+    else:
+        cmd.append("--register-unsafely-without-email")
+    if cfg.apex_acme_staging:
+        cmd.append("--staging")
+
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        err_msg = (proc.stderr or proc.stdout or "").strip()[-400:]
+        save_state(
+            apex_state_path,
+            {
+                "host": host,
+                "last_failed_at": int(now_ts),
+                "last_error": err_msg,
+            },
+        )
+        print(f"adty-edge-sync: apex certbot failed for {host}: {err_msg}", file=sys.stderr)
+        return False
+
+    save_state(
+        apex_state_path,
+        {
+            "host": host,
+            "last_failed_at": 0,
+            "last_issued_at": int(now_ts),
+            "last_error": "",
+        },
+    )
+    print(f"adty-edge-sync: apex certificate ready for {host} ({reason})")
+    return True
 
 
 class DirectHTTPSConnection(http.client.HTTPSConnection):
@@ -311,6 +555,57 @@ def render_configs(
             else:
                 stream_lines.append(f"    {host} 127.0.0.1:8445;")
 
+    apex_host, apex_target = normalize_apex_redirect(cfg)
+    http80_extra_configs: dict[str, str] = {}
+    if apex_host:
+        if apex_host in seen_custom:
+            print(
+                f"adty-edge-sync: skipping APEX_REDIRECT_HOST={apex_host} because it is already in manifest custom_domains",
+                file=sys.stderr,
+            )
+        else:
+            apex_slug = f"apex_{safe_file_slug(apex_host)}"
+            http80_extra_configs[f"http80-extra/{apex_slug}.conf"] = (
+                f"# Apex HTTP-01 challenge and direct 301 redirect for {apex_host}\n"
+                "server {\n"
+                "    listen 80;\n"
+                "    listen [::]:80;\n"
+                f"    server_name {apex_host};\n"
+                "\n"
+                "    location ^~ /.well-known/acme-challenge/ {\n"
+                f"        root {cfg.apex_webroot};\n"
+                "        default_type text/plain;\n"
+                "        try_files $uri =404;\n"
+                "    }\n"
+                "\n"
+                "    location / {\n"
+                f"        return 301 {apex_target}$request_uri;\n"
+                "    }\n"
+                "}\n"
+            )
+            if apex_cert_present(cfg, apex_host):
+                apex_cert, apex_key = apex_cert_paths(cfg, apex_host)
+                stream_lines.append(f"    {apex_host} 127.0.0.1:8443;")
+                site_configs[f"sites/{apex_slug}.conf"] = (
+                    f"# Apex HTTPS 301 redirect block for {apex_host}\n"
+                    "server {\n"
+                    "    listen 127.0.0.1:8443 ssl http2 proxy_protocol;\n"
+                    f"    server_name {apex_host};\n"
+                    f"    ssl_certificate     {apex_cert};\n"
+                    f"    ssl_certificate_key {apex_key};\n"
+                    "    ssl_protocols       TLSv1.2 TLSv1.3;\n"
+                    "    ssl_session_cache   shared:ADTY_SSL:16m;\n"
+                    "    ssl_session_timeout 1d;\n"
+                    "\n"
+                    "    if ($host != $ssl_server_name) {\n"
+                    "        return 421;\n"
+                    "    }\n"
+                    "\n"
+                    '    add_header Strict-Transport-Security "max-age=31536000" always;\n'
+                    f"    return 301 {apex_target}$request_uri;\n"
+                    "}\n"
+                )
+
     stream_lines.append("}")
     http80_lines.append("}")
 
@@ -328,6 +623,7 @@ def render_configs(
         "origin-upstream.conf": upstream_conf,
     }
     files.update(site_configs)
+    files.update(http80_extra_configs)
     active_count = len(wildcard_by_root) + len(custom_domains) if edge_enabled else 0
     return files, cert_files, active_count
 
@@ -392,12 +688,15 @@ def apply_and_reload(
     rendered_files: dict[str, str],
     cert_files: dict[str, tuple[str, str]],
     now: float | None = None,
+    reload_nginx: bool = True,
 ) -> None:
     now_ts = time.time() if now is None else now
     cfg.conf_dir.mkdir(parents=True, exist_ok=True)
     certs_dir = cfg.conf_dir / "certs"
     sites_dir = cfg.conf_dir / "sites"
+    http80_extra_dir = cfg.conf_dir / "http80-extra"
     sites_dir.mkdir(parents=True, exist_ok=True)
+    http80_extra_dir.mkdir(parents=True, exist_ok=True)
 
     for slug, (cert_pem, key_pem) in cert_files.items():
         write_cert_pair(certs_dir, slug, cert_pem, key_pem)
@@ -411,6 +710,7 @@ def apply_and_reload(
             if src.exists():
                 shutil.copy2(src, backup_dir / name)
         shutil.copytree(sites_dir, backup_dir / "sites")
+        shutil.copytree(http80_extra_dir, backup_dir / "http80-extra")
 
         # Write updated configs into place.
         for rel, content in rendered_files.items():
@@ -421,12 +721,19 @@ def apply_and_reload(
             os.chmod(tmp, 0o644)
             os.replace(tmp, dest)
 
-        # Remove stale site files not in the new manifest.
+        # Remove stale site and HTTP-80 extra files not in the new render.
         wanted_sites = {
             pathlib.Path(rel).name for rel in rendered_files if rel.startswith("sites/")
         }
         for existing in list(sites_dir.glob("*.conf")):
             if existing.name not in wanted_sites:
+                existing.unlink()
+
+        wanted_http80_extra = {
+            pathlib.Path(rel).name for rel in rendered_files if rel.startswith("http80-extra/")
+        }
+        for existing in list(http80_extra_dir.glob("*.conf")):
+            if existing.name not in wanted_http80_extra:
                 existing.unlink()
 
         test_proc = subprocess.run(
@@ -446,65 +753,108 @@ def apply_and_reload(
                     dest.unlink()
             shutil.rmtree(sites_dir, ignore_errors=True)
             shutil.copytree(backup_dir / "sites", sites_dir)
+            shutil.rmtree(http80_extra_dir, ignore_errors=True)
+            shutil.copytree(backup_dir / "http80-extra", http80_extra_dir)
             stderr = (test_proc.stderr or test_proc.stdout or "").strip()
             raise SyncError(f"nginx -t failed; rolled back previous config: {stderr}")
 
-        reload_proc = subprocess.run(
-            shlex.split(cfg.nginx_reload_cmd),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if reload_proc.returncode != 0:
-            stderr = (reload_proc.stderr or reload_proc.stdout or "").strip()
-            raise SyncError(f"nginx reload failed: {stderr}")
+        if reload_nginx:
+            reload_proc = subprocess.run(
+                shlex.split(cfg.nginx_reload_cmd),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if reload_proc.returncode != 0:
+                stderr = (reload_proc.stderr or reload_proc.stdout or "").strip()
+                raise SyncError(f"nginx reload failed: {stderr}")
 
         prune_expired_certs(certs_dir, set(cert_files.keys()), cfg.cert_retention_days, now_ts)
     finally:
         shutil.rmtree(backup_dir, ignore_errors=True)
 
 
-def run_sync(cfg: EdgeConfig) -> str:
+def run_sync(cfg: EdgeConfig, reload_nginx: bool = True) -> str:
     state_path = cfg.conf_dir / ".manifest-state.json"
     state = load_state(state_path)
     prev_etag = str(state.get("etag") or "")
     prev_count = int(state.get("domain_count") or 0)
+    prev_apex_fp = str(state.get("apex_fingerprint") or "")
+    apex_fp = compute_apex_fingerprint(cfg)
 
-    status, etag, manifest = fetch_manifest(cfg, etag=prev_etag)
-    if status == 304 or manifest is None:
-        return "unchanged"
+    fetch_etag = prev_etag if apex_fp == prev_apex_fp else ""
+    status, etag, manifest = fetch_manifest(cfg, etag=fetch_etag)
+    updated = False
+    active_count = prev_count
 
-    certs_dir = cfg.conf_dir / "certs"
-    rendered_files, cert_files, active_count = render_configs(manifest, cfg, certs_dir)
+    if status != 304 and manifest is not None:
+        certs_dir = cfg.conf_dir / "certs"
+        rendered_files, cert_files, active_count = render_configs(manifest, cfg, certs_dir)
 
-    edge_enabled = bool(manifest.get("edge_mainland_enabled", False))
-    if (
-        edge_enabled
-        and not cfg.allow_mass_drop
-        and prev_count >= 10
-        and active_count < int(prev_count * cfg.min_drop_ratio)
-    ):
-        raise SyncError(
-            f"Refusing mass domain drop from {prev_count} to {active_count}; set ALLOW_MASS_DROP=1 to override"
+        edge_enabled = bool(manifest.get("edge_mainland_enabled", False))
+        if (
+            edge_enabled
+            and not cfg.allow_mass_drop
+            and prev_count >= 10
+            and active_count < int(prev_count * cfg.min_drop_ratio)
+        ):
+            raise SyncError(
+                f"Refusing mass domain drop from {prev_count} to {active_count}; set ALLOW_MASS_DROP=1 to override"
+            )
+
+        apply_and_reload(cfg, rendered_files, cert_files, reload_nginx=reload_nginx)
+        save_state(
+            state_path,
+            {
+                "etag": etag or f'"{manifest.get("version", "")}"',
+                "version": str(manifest.get("version") or ""),
+                "domain_count": active_count,
+                "apex_fingerprint": apex_fp,
+                "synced_at": int(time.time()),
+            },
         )
+        updated = True
 
-    apply_and_reload(cfg, rendered_files, cert_files)
-    save_state(
-        state_path,
-        {
-            "etag": etag or f'"{manifest.get("version", "")}"',
-            "version": str(manifest.get("version") or ""),
-            "domain_count": active_count,
-            "synced_at": int(time.time()),
-        },
+    if reload_nginx and cfg.apex_redirect_host.strip():
+        try:
+            ensure_apex_cert(cfg)
+        except Exception as exc:
+            print(f"adty-edge-sync: apex cert check failed: {exc}", file=sys.stderr)
+        new_apex_fp = compute_apex_fingerprint(cfg)
+        if new_apex_fp != apex_fp:
+            if manifest is None:
+                status, etag, manifest = fetch_manifest(cfg, etag="")
+                if status == 304 or manifest is None:
+                    return "updated" if updated else "unchanged"
+            certs_dir = cfg.conf_dir / "certs"
+            rendered_files, cert_files, active_count = render_configs(manifest, cfg, certs_dir)
+            apply_and_reload(cfg, rendered_files, cert_files, reload_nginx=True)
+            save_state(
+                state_path,
+                {
+                    "etag": etag or f'"{manifest.get("version", "")}"',
+                    "version": str(manifest.get("version") or ""),
+                    "domain_count": active_count,
+                    "apex_fingerprint": new_apex_fp,
+                    "synced_at": int(time.time()),
+                },
+            )
+            updated = True
+
+    return "updated" if updated else "unchanged"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Sync ADTY AI edge Nginx manifest.")
+    parser.add_argument(
+        "--no-reload",
+        action="store_true",
+        help="Validate generated config with `nginx -t` without reloading a running Nginx master.",
     )
-    return "updated"
-
-
-def main() -> int:
+    args = parser.parse_args(argv)
     try:
         cfg = EdgeConfig.from_env()
-        result = run_sync(cfg)
+        result = run_sync(cfg, reload_nginx=not args.no_reload)
         print(f"adty-edge-sync: {result}")
         return 0
     except Exception as exc:

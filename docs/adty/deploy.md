@@ -299,7 +299,7 @@ sudo docker compose ps adtyai-api                 # 等到 healthy
 1. 复用后台已填的 Cloudflare API Token，在原 `SSL and Certificates: Edit` 基础上补充该 Zone（如 `adtyaicf.top`）的 **`Zone:DNS:Edit`** 权限。
 2. 在阿里云解析的平台根域名（如 `adtyai-fz.top`）添加一次泛域名验证委托（**默认线路**）：
    - `_acme-challenge.adtyai-fz.top` `CNAME` `wild.acme.adtyaicf.top`
-3. （可选，加速主站网站域名）在后台「中国大陆首页加速」勾选「启用主站网站域名加速」并填写 `edge_main_site_host`（例如 `www.adtyai.com`；若源站主站站点未使用 `origin.adtyaicf.top` 证书，可在「主站回源 SNI（可选）」填写 `www.adtyai.com`）。先在主站 DNS 默认线路添加 `_acme-challenge.www.adtyai.com` `CNAME` `main.acme.adtyaicf.top`，待状态卡片显示「证书已就绪」后，再将主站大陆线路 `www` `CNAME` 指向 `cn.adtyaicf.top`。
+3. （可选，加速主站网站域名）在后台「中国大陆首页加速」勾选「启用主站网站域名加速」并填写 `edge_main_site_host`（例如 `www.adtyai.com`；若源站主站站点未使用 `origin.adtyaicf.top` 证书，可在「主站回源 SNI（可选）」填写 `www.adtyai.com`）。先在主站 DNS 默认线路添加 `_acme-challenge.www.adtyai.com` `CNAME` `main.acme.adtyaicf.top`，待状态卡片显示「证书已就绪」后，再将主站大陆线路 `www` `CNAME` 指向 `cn.adtyaicf.top`。如需同时加速裸域（如 `adtyai.com -> https://www.adtyai.com`）301 跳转且保留 `api.adtyai.com` 的 Cloudflare 小云朵与 `MX` 邮箱，可在香港节点 `.env` 配置 `APEX_REDIRECT_HOST=adtyai.com` 与 `APEX_REDIRECT_TARGET=https://www.adtyai.com`，再将 Cloudflare 裸域 `@` 改为灰云 `CNAME -> cn.adtyaicf.top`（边缘节点自动通过 80 端口 HTTP-01 签发/续期证书，不触碰 Cloudflare `_acme-challenge`）。
 4. 后台「分站管理 → 域名设置 → 中国大陆首页加速」中确认默认参数（大陆 CNAME 目标 `cn.adtyaicf.top`、ACME 验证别名后缀 `acme.adtyaicf.top`），填写一个或多个香港 VPS 公网 IPv4（每行一个，填 1 个为单节点，填多个自动 DNS 轮询），按需开启源站每分钟探活与「自动摘除故障节点与全挂回切」并保存（首次联调可先勾选 Let's Encrypt 测试环境，确认跑通后再切回生产环境）。
 
 ### 步骤 B：源站放行香港节点
