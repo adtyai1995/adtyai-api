@@ -1,6 +1,7 @@
 package router
 
 import (
+	"embed"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/config"
@@ -387,4 +389,81 @@ func TestAdtyPublicReferralInfoForSite(t *testing.T) {
 	subOff := service.AdtyPublicReferralInfoForSite(site.Id)
 	assert.False(t, subOff.Enabled)
 	assert.Empty(t, subOff.DefaultRatePercent)
+}
+
+// TestAdtyStaticDocsNoRedirectLoopWithFullRouter guards against Gin's radix-tree
+// RedirectTrailingSlash bug triggered by the root-level /:mode/mj relay group:
+// without explicit static /docs routes, GET /docs/ gets 301-redirected to /docs
+// before middlewares/NoRoute run, colliding with AdtyStaticDocs's /docs -> /docs/
+// redirect and causing ERR_TOO_MANY_REDIRECTS in browsers.
+func TestAdtyStaticDocsNoRedirectLoopWithFullRouter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_ = setupAdtyDocsBrandDB(t)
+
+	docsDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(docsDir, "zh-cn"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(docsDir, "assets"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(docsDir, "index.html"), []byte("<html><title>ADTY Docs Home</title></html>"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(docsDir, "zh-cn", "index.html"), []byte("<html><title>ADTY 中文文档</title></html>"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(docsDir, "assets", "app.js"), []byte("console.log('docs')"), 0o644))
+	t.Setenv("ADTY_DOCS_DIR", docsDir)
+
+	engine := gin.New()
+	engine.Use(middleware.SecurityHeaders())
+	engine.Use(middleware.RequestId())
+	SetRelayRouter(engine)
+	SetWebRouter(engine, WebAssets{
+		BuildFS:   embed.FS{},
+		IndexPage: []byte("<html><body>SPA_INDEX</body></html>"),
+	}, func(c *gin.Context) {})
+
+	// 1. /docs/ must return 200 directly (never Gin TSR 301 -> /docs) and execute global middlewares.
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "https://www.adtyai.com/docs/", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "ADTY Docs Home")
+	assert.NotEmpty(t, rec.Header().Get("X-Oneapi-Request-Id"))
+	assert.Equal(t, "DENY", rec.Header().Get("X-Frame-Options"))
+
+	// 2. /docs redirects once to /docs/, and following that Location reaches 200 with zero loop.
+	rec = httptest.NewRecorder()
+	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "https://www.adtyai.com/docs?from=nav", nil))
+	assert.Equal(t, http.StatusMovedPermanently, rec.Code)
+	loc := rec.Header().Get("Location")
+	assert.Equal(t, "/docs/?from=nav", loc)
+
+	recFollow := httptest.NewRecorder()
+	engine.ServeHTTP(recFollow, httptest.NewRequest(http.MethodGet, "https://www.adtyai.com"+loc, nil))
+	assert.Equal(t, http.StatusOK, recFollow.Code)
+	assert.Contains(t, recFollow.Body.String(), "ADTY Docs Home")
+
+	// 3. HEAD /docs/ returns 200 empty body; POST /docs/ returns 405 (not 301).
+	rec = httptest.NewRecorder()
+	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodHead, "https://www.adtyai.com/docs/", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, rec.Body.String())
+
+	rec = httptest.NewRecorder()
+	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "https://www.adtyai.com/docs/", nil))
+	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+
+	// 4. Nested locale pages and hashed assets still work.
+	rec = httptest.NewRecorder()
+	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "https://www.adtyai.com/docs/zh-cn/", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "ADTY 中文文档")
+
+	rec = httptest.NewRecorder()
+	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "https://www.adtyai.com/docs/assets/app.js", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "public, max-age=2592000, immutable", rec.Header().Get("Cache-Control"))
+
+	// 5. Turning ADTY_DOCS_DIR=off still falls through cleanly to the built-in React SPA on both /docs and /docs/.
+	t.Setenv("ADTY_DOCS_DIR", "off")
+	for _, p := range []string{"/docs", "/docs/"} {
+		rec = httptest.NewRecorder()
+		engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "https://www.adtyai.com"+p, nil))
+		assert.Equal(t, http.StatusOK, rec.Code, "path=%s", p)
+		assert.Contains(t, rec.Body.String(), "SPA_INDEX", "path=%s", p)
+	}
 }

@@ -45,7 +45,7 @@ func setWebRouter(router *gin.Engine, assets WebAssets, pluginDispatcher, extern
 	if external != nil {
 		handlers = append(handlers, external)
 	}
-	router.NoRoute(append(handlers,
+	webHandlers := append(handlers,
 		func(c *gin.Context) {
 			// ServeFrontendFiles sends build files already compressed.
 			if !frontendFS.Exists("/", c.Request.URL.Path) {
@@ -79,7 +79,13 @@ func setWebRouter(router *gin.Engine, assets WebAssets, pluginDispatcher, extern
 			c.Header("Cache-Control", "no-cache")
 			c.Data(http.StatusOK, "text/html; charset=utf-8", assets.IndexPage)
 		},
-	)...)
+	)
+	// Register /docs and /docs/*filepath explicitly so Gin resolves /docs/ against a
+	// static prefix instead of falling into /:mode/mj and triggering pre-middleware
+	// RedirectTrailingSlash (/docs/ -> 301 /docs -> 301 /docs/ loop).
+	router.Any("/docs", webHandlers...)
+	router.Any("/docs/*filepath", webHandlers...)
+	router.NoRoute(webHandlers...)
 }
 
 // rejectRetiredFeaturePath returns JSON 404 for retired namespaces, including
