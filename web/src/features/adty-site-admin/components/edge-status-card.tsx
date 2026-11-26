@@ -39,7 +39,16 @@ import {
   syncResellerEdgeDNS,
 } from '../api'
 
-import type { ResellerEdgeNodeProbe, ResellerEdgeProbe } from '../types'
+import type {
+  ResellerEdgeNodeProbe,
+  ResellerEdgeProbe,
+  ResellerEdgeStatus,
+  ResellerEdgeWildcardCert,
+} from '../types'
+
+type EdgeStatusWithWildcards = ResellerEdgeStatus & {
+  wildcard_certs?: ResellerEdgeWildcardCert[] | null
+}
 
 function certStatusVariant(status: string | undefined): StatusVariant {
   switch (status) {
@@ -166,7 +175,13 @@ export function EdgeStatusCard(props: { canManage: boolean }) {
     return null
   }
 
-  const wc = status.wildcard_cert
+  const edgeStatus: EdgeStatusWithWildcards = status
+  let wildcardCerts: ResellerEdgeWildcardCert[] = []
+  if (edgeStatus.wildcard_certs && edgeStatus.wildcard_certs.length > 0) {
+    wildcardCerts = edgeStatus.wildcard_certs
+  } else if (edgeStatus.wildcard_cert) {
+    wildcardCerts = [edgeStatus.wildcard_cert]
+  }
   const mc = status.main_site_cert
   const pull = status.manifest_pull
   const dns = status.dns_sync
@@ -233,51 +248,96 @@ export function EdgeStatusCard(props: { canManage: boolean }) {
         <div className='bg-muted/30 flex flex-col gap-2 rounded-lg border p-3.5 text-xs'>
           <div className='flex flex-wrap items-center justify-between gap-2'>
             <span className='font-medium'>{t('Wildcard certificate')}</span>
-            {wc && (
+            {wildcardCerts.length === 1 && (
               <div className='flex items-center gap-1.5'>
                 <Badge variant='outline'>
-                  {wc.environment === 'staging'
+                  {wildcardCerts[0].environment === 'staging'
                     ? t('Staging')
                     : t('Production')}
                 </Badge>
                 <StatusBadge
-                  variant={certStatusVariant(wc.status)}
-                  label={certStatusLabel(t, wc.status)}
+                  variant={certStatusVariant(wildcardCerts[0].status)}
+                  label={certStatusLabel(t, wildcardCerts[0].status)}
                 />
               </div>
             )}
           </div>
-          {wc ? (
-            <>
-              <p className='font-mono'>{wc.cert_name}</p>
-              {wc.not_after > 0 && (
-                <p className='text-muted-foreground'>
-                  {t('Expires {{date}}', {
-                    date: formatTimestampToDate(wc.not_after),
-                  })}
-                </p>
-              )}
-              {wc.status !== 'ready' && wc.alias_fqdn && (
-                <div className='bg-background space-y-1 rounded border p-2'>
-                  <p className='text-muted-foreground'>
-                    {t('Add CNAME on default line:')}
-                  </p>
-                  <div className='flex items-center justify-between gap-1.5'>
-                    <span className='truncate font-mono'>
-                      {wc.challenge_host}
-                    </span>
-                    <CopyButton value={wc.challenge_host} />
+          {wildcardCerts.length > 0 ? (
+            <div
+              className={
+                wildcardCerts.length > 1
+                  ? 'divide-border space-y-2.5 divide-y'
+                  : 'space-y-2'
+              }
+            >
+              {wildcardCerts.map((cert, index) => (
+                <div
+                  key={cert.cert_name}
+                  className={index > 0 ? 'space-y-2 pt-2.5' : 'space-y-2'}
+                >
+                  <div className='flex flex-wrap items-center justify-between gap-2'>
+                    <p className='font-mono'>{cert.cert_name}</p>
+                    {wildcardCerts.length > 1 && (
+                      <div className='flex items-center gap-1.5'>
+                        <Badge variant='outline'>
+                          {cert.environment === 'staging'
+                            ? t('Staging')
+                            : t('Production')}
+                        </Badge>
+                        <StatusBadge
+                          variant={certStatusVariant(cert.status)}
+                          label={certStatusLabel(t, cert.status)}
+                        />
+                      </div>
+                    )}
                   </div>
-                  <div className='flex items-center justify-between gap-1.5'>
-                    <span className='truncate font-mono'>{wc.alias_fqdn}</span>
-                    <CopyButton value={wc.alias_fqdn} />
-                  </div>
+                  {cert.not_after > 0 && (
+                    <p className='text-muted-foreground'>
+                      {t('Expires {{date}}', {
+                        date: formatTimestampToDate(cert.not_after),
+                      })}
+                    </p>
+                  )}
+                  {cert.status !== 'ready' && cert.alias_fqdn && (
+                    <div className='bg-background space-y-1 rounded border p-2'>
+                      <p className='text-muted-foreground'>
+                        {t('Add CNAME on default line:')}
+                      </p>
+                      <div className='flex items-center justify-between gap-1.5'>
+                        <span className='truncate font-mono'>
+                          {cert.challenge_host}
+                        </span>
+                        <CopyButton value={cert.challenge_host} />
+                      </div>
+                      <div className='flex items-center justify-between gap-1.5'>
+                        <span className='truncate font-mono'>
+                          {cert.alias_fqdn}
+                        </span>
+                        <CopyButton value={cert.alias_fqdn} />
+                      </div>
+                    </div>
+                  )}
+                  {cert.last_error && (
+                    <p className='text-destructive break-all'>
+                      {cert.last_error}
+                    </p>
+                  )}
+                  {props.canManage && (
+                    <div className='pt-0.5'>
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='outline'
+                        disabled={retryCert.isPending}
+                        onClick={() => retryCert.mutate(cert.cert_name)}
+                      >
+                        {t('Retry certificate')}
+                      </Button>
+                    </div>
+                  )}
                 </div>
-              )}
-              {wc.last_error && (
-                <p className='text-destructive break-all'>{wc.last_error}</p>
-              )}
-            </>
+              ))}
+            </div>
           ) : (
             <p className='text-muted-foreground'>{t('Not configured')}</p>
           )}
@@ -287,19 +347,6 @@ export function EdgeStatusCard(props: { canManage: boolean }) {
               total: status.custom_cert_counts.total,
             })}
           </p>
-          {props.canManage && wc && (
-            <div className='pt-1'>
-              <Button
-                type='button'
-                size='sm'
-                variant='outline'
-                disabled={retryCert.isPending}
-                onClick={() => retryCert.mutate('')}
-              >
-                {t('Retry certificate')}
-              </Button>
-            </div>
-          )}
         </div>
 
         {mc && (

@@ -24,7 +24,7 @@ openclaw --version
   "models": {
     "mode": "merge",
     "providers": {
-      "adtyai": {
+      "gateway": {
         "baseUrl": "https://api.adtyai.com/v1",
         "apiKey": "<YOUR_API_KEY>",
         "api": "openai-completions",
@@ -52,8 +52,8 @@ openclaw --version
   "agents": {
     "defaults": {
       "model": {
-        "primary": "adtyai/gpt-5.4",
-        "fallbacks": ["adtyai/deepseek-chat"]
+        "primary": "gateway/gpt-5.4",
+        "fallbacks": ["gateway/deepseek-chat"]
       }
     }
   }
@@ -69,7 +69,7 @@ openclaw --version
   "models": {
     "mode": "merge",
     "providers": {
-      "adtyai-claude": {
+      "gateway-claude": {
         "baseUrl": "https://api.adtyai.com/v1",
         "apiKey": "<YOUR_API_KEY>",
         "api": "anthropic-messages",
@@ -97,7 +97,7 @@ openclaw --version
   "agents": {
     "defaults": {
       "model": {
-        "primary": "adtyai-claude/claude-sonnet-4-6"
+        "primary": "gateway-claude/claude-sonnet-4-6"
       }
     }
   }
@@ -109,18 +109,18 @@ openclaw --version
 :::
 
 ::: tip 避免在配置文件中明文保存密钥
-OpenClaw 支持在 `apiKey` 中使用环境变量占位符（例如 `"${ADTYAI_API_KEY}"`），并从 `~/.openclaw/.env` 或系统环境中读取。更多密钥隔离建议见 [账号安全与访问令牌](/zh-cn/guides/security)。
+OpenClaw 支持在 `apiKey` 中使用环境变量占位符（例如 `"${GATEWAY_API_KEY}"`），并从 `~/.openclaw/.env` 或系统环境中读取。更多密钥隔离建议见 [账号安全与访问令牌](/zh-cn/guides/security)。
 :::
 
 ## 3. 声明模型列表与选择默认模型
 
 - **精确填写模型 ID**：`models` 数组中每一项的 `id` 必须与 [ADTY AI 模型价格页](https://www.adtyai.com/pricing) 中当前密钥分组可用的模型 ID 一致。
-- **供应商前缀格式**：在 `agents.defaults.model.primary` 或命令行中引用模型时，需要带上供应商名称前缀（例如 `adtyai/<model-id>` 或 `adtyai-claude/<model-id>`）。
+- **供应商前缀格式**：在 `agents.defaults.model.primary` 或命令行中引用模型时，需要带上供应商名称前缀（例如 `gateway/<model-id>` 或 `gateway-claude/<model-id>`）。
 - **通过命令行查看与切换默认模型**：
 
   ```bash
   openclaw models list
-  openclaw models set adtyai/gpt-5.4
+  openclaw models set gateway/gpt-5.4
   ```
 
 ## 4. 测试对话

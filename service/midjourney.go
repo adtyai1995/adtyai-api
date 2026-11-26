@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -784,6 +785,38 @@ func applyMidjourneyHeaderOverride(c *gin.Context, req *http.Request, apiKey str
 	return nil
 }
 
+// ErrMidjourneyAmbiguousSubmitTransport marks a sanitized Midjourney outbound
+// error whose raw transport failure occurred after the request may already have
+// been sent upstream (e.g. post-send EOF, reset, or timeout), as opposed to a
+// pre-send dial or DNS failure.
+var ErrMidjourneyAmbiguousSubmitTransport = errors.New("ambiguous midjourney submit transport error")
+
+func isRawMidjourneyAmbiguousTransportError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && strings.EqualFold(opErr.Op, "dial") {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "no such host") || strings.Contains(msg, "dial tcp") {
+		return false
+	}
+	return strings.Contains(msg, "awaiting headers") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "timeout")
+}
+
 func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestURL string) (*dto.MidjourneyResponseWithStatusCode, []byte, error) {
 	var nullBytes []byte
 	if c != nil && c.Request != nil {
@@ -863,6 +896,9 @@ func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestU
 	if err != nil {
 		sanitized := sanitizeOutboundError(err)
 		common.SysLog(common.LogText("do request failed: %s", sanitized.Error()))
+		if isRawMidjourneyAmbiguousTransportError(err) {
+			sanitized = fmt.Errorf("%w: %s", ErrMidjourneyAmbiguousSubmitTransport, sanitized.Error())
+		}
 		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "do_request_failed", http.StatusInternalServerError), nullBytes, sanitized
 	}
 	defer CloseResponseBodyGracefully(resp)

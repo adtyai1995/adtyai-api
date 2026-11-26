@@ -428,7 +428,7 @@ func ManualCompleteAdtyTopUp(c *gin.Context) {
 				return qErr
 			}
 			nowUnix := common.GetTimestamp()
-			if lockedTopUp.Status == common.TopUpStatusExpired || (lockedExt != nil && lockedExt.ExpireAt > 0 && nowUnix >= lockedExt.ExpireAt) {
+			if lockedTopUp.Status == common.TopUpStatusExpired || model.AdtyTopupOrderIsExpired(lockedExt, nowUnix) {
 				return model.ErrUserQuotaPermission
 			}
 			if lockedExt != nil && lockedExt.SiteId > 0 {

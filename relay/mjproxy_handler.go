@@ -27,6 +27,7 @@ import (
 	rkdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/gin-gonic/gin"
@@ -286,11 +287,14 @@ func fetchMidjourneyImage(c *gin.Context, client *http.Client, rawURL, logicalUR
 }
 
 func isAmbiguousMidjourneySubmitError(resp *dto.MidjourneyResponseWithStatusCode, err error) bool {
-	if resp != nil && (resp.StatusCode == http.StatusGatewayTimeout || (err != nil && resp.StatusCode >= 200 && resp.StatusCode < 300)) {
+	if resp != nil && (operation_setting.IsAlwaysSkipRetryStatusCode(resp.StatusCode) || (err != nil && resp.StatusCode >= 200 && resp.StatusCode < 300)) {
 		return true
 	}
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, service.ErrMidjourneyAmbiguousSubmitTransport) {
+		return true
 	}
 	if IsAmbiguousTaskSubmitTransportError(err) {
 		return true
@@ -528,7 +532,7 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	midjResponse := &mjResp.Response
 	midjourneyTask.Code, midjourneyTask.MjId = midjResponse.Code, midjResponse.Result
 	midjourneyTask.Description = midjResponse.Description
-	if mjResp.StatusCode == http.StatusGatewayTimeout && priceData.Quota > 0 {
+	if operation_setting.IsAlwaysSkipRetryStatusCode(mjResp.StatusCode) && priceData.Quota > 0 {
 		upstreamAcceptedBillable = true
 		if midjourneyTask.MjId == "" {
 			midjourneyTask.Status = "AMBIGUOUS"
@@ -1032,7 +1036,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		}
 	}
 	if !skipNewRow {
-		if midjResponseWithStatus.StatusCode == http.StatusGatewayTimeout && priceData.Quota > 0 {
+		if operation_setting.IsAlwaysSkipRetryStatusCode(midjResponseWithStatus.StatusCode) && priceData.Quota > 0 {
 			upstreamAcceptedBillable = true
 			if midjourneyTask.MjId == "" {
 				midjourneyTask.Status = "AMBIGUOUS"

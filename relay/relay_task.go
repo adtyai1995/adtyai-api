@@ -534,7 +534,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if resp.StatusCode/100 != 2 {
 		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		taskErr := service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode, common.UpstreamAddresses(c)...)
-		if resp.StatusCode == http.StatusGatewayTimeout {
+		if operation_setting.IsAlwaysSkipRetryStatusCode(resp.StatusCode) {
 			taskErr.NoRetry = true
 			if c != nil {
 				c.Set("task_submit_ambiguous", true)

@@ -65,6 +65,8 @@ export const DEFAULT_REFERRAL: PublicReferralInfo = {
   withdrawUSDTNetworks: [],
 }
 
+export const SUBSITE_API_BASE_PLACEHOLDER = 'https://YOUR_API_DOMAIN'
+
 export const DEFAULT_BRAND: SiteBrand = {
   loaded: false,
   name: 'ADTY AI',
@@ -79,6 +81,7 @@ export const DEFAULT_BRAND: SiteBrand = {
 }
 
 const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F]/
+const RETRY_COOLDOWN_MS = 2000
 
 interface BrandReplacementState {
   template: string
@@ -95,6 +98,7 @@ const brandState = ref<SiteBrand>({
 })
 
 let inflightPromise: Promise<SiteBrand> | null = null
+let lastFailedAt = 0
 
 export function useSiteBrand(): Ref<SiteBrand> {
   return brandState
@@ -175,13 +179,17 @@ function shouldFetchSameOriginBrand(): boolean {
   return window.location.pathname.startsWith('/docs') || host !== 'docs.adtyai.com'
 }
 
+function createFallbackBrand(loaded: boolean): SiteBrand {
+  return {
+    ...DEFAULT_BRAND,
+    loaded,
+    referral: { ...DEFAULT_REFERRAL },
+  }
+}
+
 export async function resolveSiteBrand(): Promise<SiteBrand> {
   if (typeof window === 'undefined' || !shouldFetchSameOriginBrand()) {
-    const fallback: SiteBrand = {
-      ...DEFAULT_BRAND,
-      loaded: true,
-      referral: { ...DEFAULT_REFERRAL },
-    }
+    const fallback = createFallbackBrand(true)
     brandState.value = fallback
     return fallback
   }
@@ -190,7 +198,18 @@ export async function resolveSiteBrand(): Promise<SiteBrand> {
     return inflightPromise
   }
 
-  inflightPromise = (async () => {
+  let currentPromise: Promise<SiteBrand> | null = null
+  const pending = (async (): Promise<SiteBrand> => {
+    const fail = (): SiteBrand => {
+      if (currentPromise && inflightPromise === currentPromise) {
+        inflightPromise = null
+      }
+      lastFailedAt = Date.now()
+      const fallback = createFallbackBrand(false)
+      brandState.value = fallback
+      return fallback
+    }
+
     try {
       const resp = await fetch('/api/status', {
         method: 'GET',
@@ -199,31 +218,24 @@ export async function resolveSiteBrand(): Promise<SiteBrand> {
         headers: { Accept: 'application/json' },
       })
       if (!resp.ok) {
-        const fallback: SiteBrand = {
-          ...DEFAULT_BRAND,
-          loaded: true,
-          referral: { ...DEFAULT_REFERRAL },
-        }
-        brandState.value = fallback
-        return fallback
+        return fail()
       }
       const json = (await resp.json()) as { data?: Record<string, unknown> }
       const data = json?.data
       if (!data || typeof data !== 'object') {
-        const fallback: SiteBrand = {
-          ...DEFAULT_BRAND,
-          loaded: true,
-          referral: { ...DEFAULT_REFERRAL },
-        }
-        brandState.value = fallback
-        return fallback
+        return fail()
       }
 
+      const isSubsite = Boolean(
+        data.adty_site && typeof data.adty_site === 'object'
+      )
       const name = String(data.system_name || '').trim() || DEFAULT_BRAND.name
       const rawApiBase = String(data.server_address || '')
       const apiBase = isSafeHttpOrigin(rawApiBase)
         ? normalizeOrigin(rawApiBase)
-        : DEFAULT_BRAND.apiBase
+        : isSubsite
+          ? SUBSITE_API_BASE_PLACEHOLDER
+          : DEFAULT_BRAND.apiBase
       const rawSiteUrl = String(window.location.origin || '')
       const siteUrl = isSafeHttpOrigin(rawSiteUrl)
         ? normalizeOrigin(rawSiteUrl)
@@ -232,10 +244,10 @@ export async function resolveSiteBrand(): Promise<SiteBrand> {
       const logo = isSafeAssetUrl(rawLogo) ? rawLogo.trim() : ''
       const rawFavicon = String(data.favicon || '')
       const favicon = isSafeAssetUrl(rawFavicon) ? rawFavicon.trim() : ''
-      const isSubsite = Boolean(data.adty_site && typeof data.adty_site === 'object')
       const paymentMethods = toStringArray(data.payment_methods)
       const referral = parseReferralInfo(data)
 
+      lastFailedAt = 0
       const brand: SiteBrand = {
         loaded: true,
         name,
@@ -251,17 +263,19 @@ export async function resolveSiteBrand(): Promise<SiteBrand> {
       brandState.value = brand
       return brand
     } catch {
-      const fallback: SiteBrand = {
-        ...DEFAULT_BRAND,
-        loaded: true,
-        referral: { ...DEFAULT_REFERRAL },
-      }
-      brandState.value = fallback
-      return fallback
+      return fail()
     }
   })()
 
-  return inflightPromise
+  currentPromise = pending
+  inflightPromise = pending
+  void pending.then((result) => {
+    if (!result.loaded && inflightPromise === pending) {
+      inflightPromise = null
+    }
+  })
+
+  return pending
 }
 
 function containsDefaultBrandToken(value: string): boolean {
@@ -272,14 +286,21 @@ function containsDefaultBrandToken(value: string): boolean {
   )
 }
 
+function resolveReplacementApiBase(brand: SiteBrand): string {
+  if (brand.apiBase && isSafeHttpOrigin(brand.apiBase)) {
+    return normalizeOrigin(brand.apiBase)
+  }
+  if (brand.isSubsite) {
+    return SUBSITE_API_BASE_PLACEHOLDER
+  }
+  return ''
+}
+
 function replaceBrandText(input: string, brand: SiteBrand): string {
   const replacements: Array<[string, string]> = []
-  if (
-    brand.apiBase &&
-    brand.apiBase !== DEFAULT_BRAND.apiBase &&
-    isSafeHttpOrigin(brand.apiBase)
-  ) {
-    replacements.push([DEFAULT_BRAND.apiBase, normalizeOrigin(brand.apiBase)])
+  const effectiveApiBase = resolveReplacementApiBase(brand)
+  if (effectiveApiBase && effectiveApiBase !== DEFAULT_BRAND.apiBase) {
+    replacements.push([DEFAULT_BRAND.apiBase, effectiveApiBase])
   }
   if (
     brand.siteUrl &&
@@ -337,20 +358,37 @@ function toggleNavItemVisibility(pathNeedle: string, hidden: boolean): void {
 export function applyBrandToDOM(brand: SiteBrand): void {
   if (typeof document === 'undefined') return
 
+  const effectiveBrand =
+    !brand.loaded && brandState.value.loaded ? brandState.value : brand
+
+  if (
+    !effectiveBrand.loaded &&
+    lastFailedAt > 0 &&
+    shouldFetchSameOriginBrand() &&
+    !inflightPromise &&
+    Date.now() - lastFailedAt >= RETRY_COOLDOWN_MS
+  ) {
+    void resolveSiteBrand().then((next) => {
+      if (next.loaded) {
+        applyBrandToDOM(next)
+      }
+    })
+  }
+
   const root = document.documentElement
-  root.classList.toggle('adty-is-subsite', brand.isSubsite)
+  root.classList.toggle('adty-is-subsite', effectiveBrand.isSubsite)
   root.classList.toggle(
     'adty-referral-disabled',
-    brand.loaded && !brand.referral.enabled
+    effectiveBrand.loaded && !effectiveBrand.referral.enabled
   )
 
-  toggleNavItemVisibility('/guides/partner', brand.isSubsite)
+  toggleNavItemVisibility('/guides/partner', effectiveBrand.isSubsite)
   toggleNavItemVisibility(
     '/guides/referral',
-    brand.loaded && !brand.referral.enabled
+    effectiveBrand.loaded && !effectiveBrand.referral.enabled
   )
 
-  if (!brand.isWhiteLabel) return
+  if (!effectiveBrand.isWhiteLabel) return
 
   if (document.title) {
     const currentTitle = document.title
@@ -358,15 +396,15 @@ export function applyBrandToDOM(brand: SiteBrand): void {
       lastTitleState && currentTitle === lastTitleState.rendered
         ? lastTitleState.template
         : currentTitle
-    const nextTitle = replaceBrandText(titleTemplate, brand)
+    const nextTitle = replaceBrandText(titleTemplate, effectiveBrand)
     if (nextTitle !== currentTitle) {
       document.title = nextTitle
     }
     lastTitleState = { template: titleTemplate, rendered: nextTitle }
   }
 
-  if (brand.favicon && isSafeAssetUrl(brand.favicon)) {
-    const safeFavicon = brand.favicon.trim()
+  if (effectiveBrand.favicon && isSafeAssetUrl(effectiveBrand.favicon)) {
+    const safeFavicon = effectiveBrand.favicon.trim()
     let iconLink = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
     if (!iconLink) {
       iconLink = document.createElement('link')
@@ -378,8 +416,8 @@ export function applyBrandToDOM(brand: SiteBrand): void {
     }
   }
 
-  if (brand.logo && isSafeAssetUrl(brand.logo)) {
-    const safeLogo = brand.logo.trim()
+  if (effectiveBrand.logo && isSafeAssetUrl(effectiveBrand.logo)) {
+    const safeLogo = effectiveBrand.logo.trim()
     const titleEl = document.querySelector<HTMLElement>('.VPNavBarTitle .title')
     if (titleEl) {
       let img = titleEl.querySelector<HTMLImageElement>('img.adty-wl-logo')
@@ -395,18 +433,16 @@ export function applyBrandToDOM(brand: SiteBrand): void {
       if (img.getAttribute('src') !== safeLogo) {
         img.src = safeLogo
       }
-      if (img.alt !== brand.name) {
-        img.alt = brand.name
+      if (img.alt !== effectiveBrand.name) {
+        img.alt = effectiveBrand.name
       }
     }
   }
 
-  const safeSiteUrl = isSafeHttpOrigin(brand.siteUrl)
-    ? normalizeOrigin(brand.siteUrl)
+  const safeSiteUrl = isSafeHttpOrigin(effectiveBrand.siteUrl)
+    ? normalizeOrigin(effectiveBrand.siteUrl)
     : ''
-  const safeApiBase = isSafeHttpOrigin(brand.apiBase)
-    ? normalizeOrigin(brand.apiBase)
-    : ''
+  const safeApiBase = resolveReplacementApiBase(effectiveBrand)
 
   document.querySelectorAll<HTMLAnchorElement>('a[href]').forEach((anchor) => {
     if (anchor.closest('[data-adty-keep-raw="true"]')) return
@@ -449,7 +485,7 @@ export function applyBrandToDOM(brand: SiteBrand): void {
         const template =
           prev && currentVal === prev.rendered ? prev.template : currentVal
         if (containsDefaultBrandToken(template)) {
-          const next = replaceBrandText(template, brand)
+          const next = replaceBrandText(template, effectiveBrand)
           if (next !== currentVal) {
             node.nodeValue = next
           }

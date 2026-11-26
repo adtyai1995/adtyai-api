@@ -9,11 +9,11 @@ Current Codex CLI releases and GPT-5 family models require the OpenAI **Response
 Always include `wire_api = "responses"` in your provider block inside `~/.codex/config.toml`:
 
 ```toml
-model_provider = "adty"
+model_provider = "gateway"
 model = "gpt-5.4"
 
-[model_providers.adty]
-name = "ADTY"
+[model_providers.gateway]
+name = "ADTY AI"
 base_url = "https://api.adtyai.com/v1"
 wire_api = "responses"
 requires_openai_auth = true

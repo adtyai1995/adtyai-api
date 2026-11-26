@@ -1731,6 +1731,7 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 				"verify_records":  verifyRecordsFor(domain.Hostname, strings.TrimSpace(cfg.CnameTarget), detail),
 				"last_checked_at": now.Unix(),
 				"created_at":      now.Unix(),
+				"attempts":        0,
 			})
 			if err != nil {
 				return false, err
@@ -1741,27 +1742,55 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 				domain.SSLStatus = detail.SSL.Status
 				domain.LastCheckedAt = now.Unix()
 				domain.CreatedAt = now.Unix()
+				domain.Attempts = 0
 				syncSnapshot()
 			}
 			return changed, nil
 		}
 		if err := adtyProbeDomainHTTPS(ctx, &domain); err != nil {
+			attempts := domain.Attempts + 1
+			errMsg := adtyDomainAutomationUserError(err).Error()
+			updates := map[string]any{
+				"attempts":        attempts,
+				"last_error":      errMsg,
+				"last_checked_at": now.Unix(),
+			}
+			demote := attempts >= adtyActiveDomainProbeDemoteThreshold
+			if demote {
+				updates["status"] = model.AdtySiteDomainPending
+				updates["created_at"] = now.Unix()
+			}
+			rowsAffected, updErr := adtyUpdateLeasedDomainSnapshot(ctx, &domain, leaseToken, updates)
+			if updErr != nil {
+				return false, updErr
+			}
+			if rowsAffected > 0 {
+				domain.Attempts = attempts
+				domain.LastError = errMsg
+				domain.LastCheckedAt = now.Unix()
+				if demote {
+					changed = true
+					domain.Status = model.AdtySiteDomainPending
+					domain.CreatedAt = now.Unix()
+				}
+				syncSnapshot()
+			}
+			return changed, nil
+		}
+		if domain.Attempts != 0 || domain.LastError != "" {
 			rowsAffected, updErr := adtyUpdateLeasedDomainSnapshot(ctx, &domain, leaseToken, map[string]any{
-				"status":     model.AdtySiteDomainPending,
-				"last_error": adtyDomainAutomationUserError(err).Error(),
-				"created_at": now.Unix(),
+				"attempts":        0,
+				"last_error":      "",
+				"last_checked_at": now.Unix(),
 			})
 			if updErr != nil {
 				return false, updErr
 			}
 			if rowsAffected > 0 {
-				changed = true
-				domain.Status = model.AdtySiteDomainPending
-				domain.LastError = adtyDomainAutomationUserError(err).Error()
-				domain.CreatedAt = now.Unix()
-				syncSnapshot()
+				domain.Attempts = 0
+				domain.LastError = ""
+				domain.LastCheckedAt = now.Unix()
 			}
-			return changed, nil
 		}
 		if err := adtyAssignCheckedDomainTurnstile(ctx, &domain, leaseToken); err != nil {
 			return false, err
@@ -1827,7 +1856,7 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 		if err := adtyProbeDomainHTTPS(ctx, &domain); err != nil {
 			updates["last_error"] = adtyDomainAutomationUserError(err).Error()
 		} else {
-			updates["status"], updates["ssl_status"], updates["last_error"] = model.AdtySiteDomainActive, detail.SSL.Status, ""
+			updates["status"], updates["ssl_status"], updates["last_error"], updates["attempts"] = model.AdtySiteDomainActive, detail.SSL.Status, "", 0
 		}
 	default:
 		updates["ssl_status"] = detail.SSL.Status
@@ -1852,6 +1881,7 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 		domain.Status = model.AdtySiteDomainActive
 		domain.SSLStatus = detail.SSL.Status
 		domain.LastError = ""
+		domain.Attempts = 0
 		if err := adtyAssignCheckedDomainTurnstile(ctx, &domain, leaseToken); err != nil {
 			return changed, err
 		}

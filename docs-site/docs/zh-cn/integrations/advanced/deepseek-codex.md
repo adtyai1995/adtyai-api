@@ -13,10 +13,10 @@
 新建或编辑 `~/.codex/config.toml`（Windows 路径为 `%USERPROFILE%\.codex\config.toml`）：
 
 ```toml
-model_provider = "adtyai_deepseek"
+model_provider = "deepseek_gateway"
 model = "deepseek-chat"
 
-[model_providers.adtyai_deepseek]
+[model_providers.deepseek_gateway]
 name = "ADTY AI (DeepSeek)"
 base_url = "https://api.adtyai.com/v1"
 wire_api = "chat"
@@ -34,14 +34,14 @@ model = "deepseek-reasoner"
 如果你平时默认使用 GPT 模型，可以在 `~/.codex/config.toml` 中额外增加一个名为 `deepseek` 的配置档，需要时通过 `codex --profile deepseek` 启动：
 
 ```toml
-[model_providers.adtyai_deepseek]
+[model_providers.deepseek_gateway]
 name = "ADTY AI (DeepSeek)"
 base_url = "https://api.adtyai.com/v1"
 wire_api = "chat"
-env_key = "ADTYAI_DEEPSEEK_API_KEY"
+env_key = "DEEPSEEK_API_KEY"
 
 [profiles.deepseek]
-model_provider = "adtyai_deepseek"
+model_provider = "deepseek_gateway"
 model = "deepseek-chat"
 ```
 
@@ -68,16 +68,16 @@ model = "deepseek-chat"
 }
 ```
 
-若上面使用了独立环境变量 `env_key = "ADTYAI_DEEPSEEK_API_KEY"`，则在终端中导出该变量即可：
+若上面使用了独立环境变量 `env_key = "DEEPSEEK_API_KEY"`，则在终端中导出该变量即可：
 
 ::: code-group
 
 ```bash [macOS / Linux]
-export ADTYAI_DEEPSEEK_API_KEY="<YOUR_API_KEY>"
+export DEEPSEEK_API_KEY="<YOUR_API_KEY>"
 ```
 
 ```powershell [Windows（PowerShell）]
-[Environment]::SetEnvironmentVariable("ADTYAI_DEEPSEEK_API_KEY", "<YOUR_API_KEY>", "User")
+[Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "<YOUR_API_KEY>", "User")
 ```
 
 :::
@@ -100,7 +100,7 @@ codex --profile deepseek exec "请回复 OK 并列出当前目录的顶层文件
 
 ## 常见问题排查
 
-- **请求 `/v1/responses` 返回 `404` 或不支持错误**：确认 `[model_providers.adtyai_deepseek]` 中已设置 `wire_api = "chat"`。
+- **请求 `/v1/responses` 返回 `404` 或不支持错误**：确认 `[model_providers.deepseek_gateway]` 中已设置 `wire_api = "chat"`。
 - **`401 Unauthorized`**：检查 `~/.codex/auth.json` 是否为合法 JSON 且键名为 `"OPENAI_API_KEY"`（或确认配置的 `env_key` 已在当前终端生效）。
 - **`model_not_found`**：在 [ADTY AI 模型价格页](https://www.adtyai.com/pricing) 核对 `deepseek-chat` / `deepseek-reasoner` 是否在当前密钥分组中启用。
 - **希望图形化管理多套 Codex 配置？** 请查看 [CC Switch — 配置 Codex CLI](/zh-cn/integrations/cc-switch/codex)，更多排错请查阅 [Codex 排查](/zh-cn/faq/codex)。

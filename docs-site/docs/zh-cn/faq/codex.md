@@ -9,11 +9,11 @@
 请在 `~/.codex/config.toml` 的模型供应商区块中明确写入 `wire_api = "responses"`：
 
 ```toml
-model_provider = "adty"
+model_provider = "gateway"
 model = "gpt-5.4"
 
-[model_providers.adty]
-name = "ADTY"
+[model_providers.gateway]
+name = "ADTY AI"
 base_url = "https://api.adtyai.com/v1"
 wire_api = "responses"
 requires_openai_auth = true

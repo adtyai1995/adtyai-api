@@ -30,17 +30,17 @@ opencode --version
 
 ## 2. 使用环境变量保管 API 密钥
 
-建议将从 [ADTY AI 控制台](https://www.adtyai.com) 获取的 API 密钥写入环境变量 `ADTYAI_API_KEY`，避免把明文密钥直接写进配置文件：
+建议将从 [ADTY AI 控制台](https://www.adtyai.com) 获取的 API 密钥写入环境变量 `GATEWAY_API_KEY`，避免把明文密钥直接写进配置文件：
 
 ::: code-group
 
 ```bash [macOS / Linux（zsh / bash）]
-echo 'export ADTYAI_API_KEY="<YOUR_API_KEY>"' >> ~/.zshrc
+echo 'export GATEWAY_API_KEY="<YOUR_API_KEY>"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
 ```powershell [Windows（PowerShell）]
-[Environment]::SetEnvironmentVariable("ADTYAI_API_KEY", "<YOUR_API_KEY>", "User")
+[Environment]::SetEnvironmentVariable("GATEWAY_API_KEY", "<YOUR_API_KEY>", "User")
 ```
 
 :::
@@ -49,7 +49,7 @@ source ~/.zshrc
 
 ## 3. 配置 `~/.config/opencode/opencode.json`
 
-创建或编辑 `~/.config/opencode/opencode.json`（Windows 路径为 `%USERPROFILE%\.config\opencode\opencode.json`）。OpenCode 在运行时会自动解析 `{env:ADTYAI_API_KEY}`。
+创建或编辑 `~/.config/opencode/opencode.json`（Windows 路径为 `%USERPROFILE%\.config\opencode\opencode.json`）。OpenCode 在运行时会自动解析 `{env:GATEWAY_API_KEY}`。
 
 ::: tip OpenCode 中两类协议均需填写 `https://api.adtyai.com/v1`
 与 Anthropic 官方 Python/TypeScript SDK 不同，Vercel 的 `@ai-sdk/anthropic` 会直接在 `baseURL` 后拼接 `/messages`。因此，在 OpenCode 中无论是 `@ai-sdk/openai-compatible` 还是 `@ai-sdk/anthropic`，`baseURL` 都应填写 `https://api.adtyai.com/v1`。
@@ -63,12 +63,12 @@ source ~/.zshrc
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "adtyai": {
+    "gateway": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "ADTY AI",
       "options": {
         "baseURL": "https://api.adtyai.com/v1",
-        "apiKey": "{env:ADTYAI_API_KEY}"
+        "apiKey": "{env:GATEWAY_API_KEY}"
       },
       "models": {
         "gpt-5.4": {
@@ -88,7 +88,7 @@ source ~/.zshrc
       }
     }
   },
-  "model": "adtyai/gpt-5.4"
+  "model": "gateway/gpt-5.4"
 }
 ```
 
@@ -100,12 +100,12 @@ source ~/.zshrc
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "adtyai-anthropic": {
+    "gateway-anthropic": {
       "npm": "@ai-sdk/anthropic",
       "name": "ADTY AI (Anthropic)",
       "options": {
         "baseURL": "https://api.adtyai.com/v1",
-        "apiKey": "{env:ADTYAI_API_KEY}"
+        "apiKey": "{env:GATEWAY_API_KEY}"
       },
       "models": {
         "claude-sonnet-4-6": {
@@ -125,13 +125,13 @@ source ~/.zshrc
       }
     }
   },
-  "model": "adtyai-anthropic/claude-sonnet-4-6"
+  "model": "gateway-anthropic/claude-sonnet-4-6"
 }
 ```
 
 ### 在同一配置文件中同时声明两套供应商
 
-你可以在 `"provider"` 下同时保留 `adtyai` 与 `adtyai-anthropic`（若两套模型位于不同分组，也可分别引用 `{env:ADTYAI_OPENAI_KEY}` 与 `{env:ADTYAI_CLAUDE_KEY}`）。填写模型键名时，请以 [ADTY AI 模型价格页](https://www.adtyai.com/pricing) 展示的精确 `<model-id>` 为准。
+你可以在 `"provider"` 下同时保留 `gateway` 与 `gateway-anthropic`（若两套模型位于不同分组，也可分别引用 `{env:GATEWAY_OPENAI_KEY}` 与 `{env:GATEWAY_CLAUDE_KEY}`）。填写模型键名时，请以 [ADTY AI 模型价格页](https://www.adtyai.com/pricing) 展示的精确 `<model-id>` 为准。
 
 ## 4. 使用 `opencode` 验证
 
@@ -141,7 +141,7 @@ source ~/.zshrc
    opencode
    ```
 
-2. 在交互界面中输入 `/models`，选择已配置的 `adtyai/<model-id>` 或 `adtyai-anthropic/<model-id>`。
+2. 在交互界面中输入 `/models`，选择已配置的 `gateway/<model-id>` 或 `gateway-anthropic/<model-id>`。
 3. 也可以在终端直接执行单次连通性测试：
 
    ```bash
@@ -151,6 +151,6 @@ source ~/.zshrc
 ## 常见问题排查
 
 - **Anthropic 协议返回 `404 Not Found`**：请确认 `baseURL` 已包含 `/v1`（即 `https://api.adtyai.com/v1`），而不是省略了 `/v1`。
-- **`401 Unauthorized` 或读取不到密钥**：在启动 `opencode` 的同一终端里执行 `echo $ADTYAI_API_KEY`（PowerShell 执行 `$env:ADTYAI_API_KEY`），确认能输出完整的 `sk-...` 密钥。
+- **`401 Unauthorized` 或读取不到密钥**：在启动 `opencode` 的同一终端里执行 `echo $GATEWAY_API_KEY`（PowerShell 执行 `$env:GATEWAY_API_KEY`），确认能输出完整的 `sk-...` 密钥。
 - **`model_not_found`**：请检查 `models` 中的键名是否与 [https://www.adtyai.com/pricing](https://www.adtyai.com/pricing) 上当前密钥所属分组支持的模型 ID 完全一致。
 - **更多排查思路**：请查看 [渠道可用性与分组选择](/zh-cn/guides/channel-status) 与 [通用常见问题](/zh-cn/faq/)。

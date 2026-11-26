@@ -16,12 +16,13 @@ import (
 type AuditIntent struct {
 	ID                int64  `gorm:"primaryKey"`
 	EventID           string `gorm:"type:varchar(64);uniqueIndex"`
+	Category          string `gorm:"type:varchar(32);index:idx_audit_intent_retention,priority:1"`
 	Version           int
 	Payload           string `gorm:"type:text"`
-	CreatedAt         int64  `gorm:"type:bigint"`
+	CreatedAt         int64  `gorm:"type:bigint;index:idx_audit_intent_retention,priority:3"`
 	Attempts          int
 	NextAttemptAt     int64  `gorm:"type:bigint;index:idx_audit_intent_pending,priority:2"`
-	DeliveredAt       int64  `gorm:"type:bigint;index:idx_audit_intent_pending,priority:1"`
+	DeliveredAt       int64  `gorm:"type:bigint;index:idx_audit_intent_pending,priority:1;index:idx_audit_intent_retention,priority:2"`
 	LastErrorCategory string `gorm:"type:varchar(64)"`
 }
 
@@ -85,7 +86,7 @@ func AppendAuditIntentTx(tx *gorm.DB, entry AuditLog) error {
 		return errors.New("audit intent encoding failed")
 	}
 	return tx.Create(&AuditIntent{
-		EventID: entry.EventId, Version: 1, Payload: string(payload), CreatedAt: entry.CreatedAt,
+		EventID: entry.EventId, Category: strings.TrimSpace(entry.Category), Version: 1, Payload: string(payload), CreatedAt: entry.CreatedAt,
 	}).Error
 }
 

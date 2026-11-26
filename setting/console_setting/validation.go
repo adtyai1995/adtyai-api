@@ -428,8 +428,7 @@ func validateUptimeKumaGroups(groupsStr string) error {
 		return common.NewMessage("Model probe groups cannot exceed 50 entries")
 	}
 
-	groupIDSet := make(map[string]bool)
-	nameSet := make(map[string]bool)
+	effectiveKeySet := make(map[string]bool)
 
 	for i, group := range groups {
 		index := i + 1
@@ -468,17 +467,17 @@ func validateUptimeKumaGroups(groupsStr string) error {
 			return common.NewMessage("Group #{{index}} is missing the category name field", map[string]any{"index": index})
 		}
 
-		if groupID != "" {
-			if groupIDSet[groupID] {
+		effectiveKey := groupID
+		if effectiveKey == "" {
+			effectiveKey = categoryName
+		}
+		if effectiveKeySet[effectiveKey] {
+			if groupID != "" {
 				return common.NewMessage("Group #{{index}} group ID duplicates another group", map[string]any{"index": index})
 			}
-			groupIDSet[groupID] = true
-		} else {
-			if nameSet[categoryName] {
-				return common.NewMessage("Group #{{index}} category name duplicates another group", map[string]any{"index": index})
-			}
-			nameSet[categoryName] = true
+			return common.NewMessage("Group #{{index}} category name duplicates another group", map[string]any{"index": index})
 		}
+		effectiveKeySet[effectiveKey] = true
 
 		if rawEnabled, exists := group["enabled"]; exists && rawEnabled != nil {
 			if _, ok := rawEnabled.(bool); !ok {

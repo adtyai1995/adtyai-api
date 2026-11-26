@@ -39,12 +39,12 @@ Codex CLI reads two files from your user `.codex` directory:
 Create `~/.codex/config.toml` (or `$HOME\.codex\config.toml` on Windows):
 
 ```toml
-model_provider = "adty"
+model_provider = "gateway"
 model = "gpt-5.4"
 model_reasoning_effort = "medium"
 disable_response_storage = true
 
-[model_providers.adty]
+[model_providers.gateway]
 name = "ADTY AI"
 base_url = "https://api.adtyai.com/v1"
 wire_api = "responses"
@@ -55,7 +55,7 @@ Key options explained:
 
 | Option | Description |
 | --- | --- |
-| `model_provider` | Activates the `[model_providers.adty]` provider section below. |
+| `model_provider` | Activates the `[model_providers.gateway]` provider section below. |
 | `model` | Default model ID. Confirm available OpenAI / Codex models on [https://www.adtyai.com/pricing](https://www.adtyai.com/pricing). |
 | `model_reasoning_effort` | Controls reasoning depth (`"low"`, `"medium"`, `"high"`, or `"xhigh"` where supported by the model). Higher effort improves complex debugging at higher latency and token cost. |
 | `disable_response_storage` | Avoids stateful server-side response storage dependencies across relay upstreams. |
@@ -81,12 +81,12 @@ Create `~/.codex/auth.json` (or `$HOME\.codex\auth.json` on Windows):
 mkdir -p ~/.codex
 
 cat << 'EOF' > ~/.codex/config.toml
-model_provider = "adty"
+model_provider = "gateway"
 model = "gpt-5.4"
 model_reasoning_effort = "medium"
 disable_response_storage = true
 
-[model_providers.adty]
+[model_providers.gateway]
 name = "ADTY AI"
 base_url = "https://api.adtyai.com/v1"
 wire_api = "responses"
@@ -109,12 +109,12 @@ $codexDir = Join-Path $HOME ".codex"
 New-Item -ItemType Directory -Force -Path $codexDir | Out-Null
 
 @'
-model_provider = "adty"
+model_provider = "gateway"
 model = "gpt-5.4"
 model_reasoning_effort = "medium"
 disable_response_storage = true
 
-[model_providers.adty]
+[model_providers.gateway]
 name = "ADTY AI"
 base_url = "https://api.adtyai.com/v1"
 wire_api = "responses"

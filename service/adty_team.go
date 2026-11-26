@@ -1422,7 +1422,20 @@ func ListAdtyTeamTopups(leaderID int, teamID int64, pendingOnly ...bool) ([]mode
 			Where("t.status = ? AND adty_topup_orders.user_id = ? AND (adty_topup_orders.expire_at = 0 OR adty_topup_orders.expire_at > ?)", common.TopUpStatusPending, leaderID, now)
 	}
 	err := query.Order("adty_topup_orders.id desc").Limit(20).Find(&rows).Error
-	return rows, err
+	if err != nil {
+		return nil, err
+	}
+	if len(pendingOnly) > 0 && pendingOnly[0] {
+		now := time.Now().Unix()
+		active := rows[:0]
+		for i := range rows {
+			if !AdtyTopupOrderExpired(&rows[i], now) {
+				active = append(active, rows[i])
+			}
+		}
+		rows = active
+	}
+	return rows, nil
 }
 
 // ListAdtyTeamTopupsPage returns a paginated list of team top-up orders (enriched with TopUp status/amount/timestamps)
@@ -1460,9 +1473,11 @@ func ListAdtyTeamTopupsPage(leaderID int, teamID int64, status string, page, pag
 	base := model.DB.Table("adty_topup_orders AS a").
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
 		Where("a.team_id = ?", teamID)
+	now := time.Now().Unix()
 	if normalizedStatus == common.TopUpStatusPending {
-		now := time.Now().Unix()
 		base = base.Where("t.status = ? AND a.user_id = ? AND (a.expire_at = 0 OR a.expire_at > ?)", common.TopUpStatusPending, leaderID, now)
+	} else if normalizedStatus == common.TopUpStatusExpired {
+		base = base.Where("(LOWER(t.status) = ? OR (LOWER(t.status) = ? AND a.expire_at > 0 AND a.expire_at <= ?))", common.TopUpStatusExpired, common.TopUpStatusPending, now)
 	} else if normalizedStatus != "" {
 		base = base.Where("LOWER(t.status) = ?", normalizedStatus)
 	}

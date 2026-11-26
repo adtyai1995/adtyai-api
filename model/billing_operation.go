@@ -209,6 +209,34 @@ func RecordBillingOperationRetryFailure(key string, failure error, now int64) (b
 	return dead, nil
 }
 
+// DeferBillingOperationRetry postpones a pending settlement/refund without
+// consuming retry budget or transitioning to BillingDead (used while a
+// temporary site/account fund-write restriction is under anomaly review).
+func DeferBillingOperationRetry(key string, failure error, nextRetryAt int64) error {
+	if key == "" {
+		return nil
+	}
+	msg := ""
+	if failure != nil {
+		msg = truncateBillingOperationError(failure.Error())
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var row BillingOperation
+		if err := lockForUpdate(tx).Where("operation_key = ?", key).First(&row).Error; err != nil {
+			return err
+		}
+		if row.State != BillingSettlePending && row.State != BillingRefundPending {
+			return nil
+		}
+		return tx.Model(&BillingOperation{}).
+			Where("operation_key = ? AND state IN ?", key, []string{BillingSettlePending, BillingRefundPending}).
+			UpdateColumns(map[string]any{
+				"last_error":    msg,
+				"next_retry_at": nextRetryAt,
+			}).Error
+	})
+}
+
 // 一行的 last_error 只需要够定位问题，不该把整棵错误树塞进主库。
 const billingOperationLastErrorLimit = 2000
 

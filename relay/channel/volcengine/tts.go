@@ -223,13 +223,22 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 
 	header := http.Header{}
 	header.Set("Authorization", fmt.Sprintf("Bearer;%s", token))
+	headerOverride, overrideErr := channel.ResolveHeaderOverride(info, c)
+	if overrideErr != nil {
+		return nil, types.NewError(overrideErr, types.ErrorCodeChannelHeaderOverrideInvalid)
+	}
+	for key, value := range headerOverride {
+		header.Set(key, value)
+	}
 
 	transport, transportErr := service.NewRelayTransportWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
 	if transportErr != nil {
+		safeTransportErr := common.SanitizeOutboundError(transportErr, info.ApiKey, info.ChannelSetting.Proxy)
 		return nil, types.NewErrorWithStatusCode(
-			fmt.Errorf("failed to configure websocket proxy: %w", transportErr),
+			fmt.Errorf("failed to configure websocket proxy: %w", safeTransportErr),
 			types.ErrorCodeDoRequestFailed,
 			http.StatusBadGateway,
+			types.ErrOptionWithHideErrMsg("volcengine tts websocket dial failed"),
 		)
 	}
 	dialer := &websocket.Dialer{
@@ -253,17 +262,34 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 		if reqCtx.Err() != nil {
 			return nil, types.NewError(reqCtx.Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry())
 		}
+		safeDialErr := common.SanitizeOutboundError(dialErr, info.ApiKey, info.ChannelSetting.Proxy)
 		if resp != nil {
+			statusCode := http.StatusBadGateway
+			opts := []types.NewAPIErrorOptions{
+				types.ErrOptionWithHideErrMsg("volcengine tts websocket dial failed"),
+			}
+			if resp.StatusCode >= http.StatusBadRequest && resp.StatusCode <= 599 {
+				statusCode = resp.StatusCode
+				if resp.StatusCode < http.StatusInternalServerError &&
+					resp.StatusCode != http.StatusUnauthorized &&
+					resp.StatusCode != http.StatusPaymentRequired &&
+					resp.StatusCode != http.StatusForbidden &&
+					resp.StatusCode != http.StatusTooManyRequests {
+					opts = append(opts, types.ErrOptionWithSkipRetry())
+				}
+			}
 			return nil, types.NewErrorWithStatusCode(
-				fmt.Errorf("failed to connect to websocket: %w, status: %d", dialErr, resp.StatusCode),
+				fmt.Errorf("failed to connect to websocket: %w, status: %d", safeDialErr, resp.StatusCode),
 				types.ErrorCodeBadResponseStatusCode,
-				http.StatusBadGateway,
+				statusCode,
+				opts...,
 			)
 		}
 		return nil, types.NewErrorWithStatusCode(
-			fmt.Errorf("failed to connect to websocket: %w", dialErr),
+			fmt.Errorf("failed to connect to websocket: %w", safeDialErr),
 			types.ErrorCodeBadResponseStatusCode,
 			http.StatusBadGateway,
+			types.ErrOptionWithHideErrMsg("volcengine tts websocket dial failed"),
 		)
 	}
 	defer conn.Close()

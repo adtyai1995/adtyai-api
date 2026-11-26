@@ -39,7 +39,7 @@ import os
 from openai import OpenAI
 
 client = OpenAI(
-    api_key=os.environ["ADTYAI_API_KEY"],
+    api_key=os.environ["GATEWAY_API_KEY"],
     base_url="https://api.adtyai.com/v1",
     timeout=120.0,
     max_retries=3,
@@ -72,7 +72,7 @@ print()
 import OpenAI from "openai";
 
 const client = new OpenAI({
-  apiKey: process.env.ADTYAI_API_KEY,
+  apiKey: process.env.GATEWAY_API_KEY,
   baseURL: "https://api.adtyai.com/v1",
   timeout: 120_000,
   maxRetries: 3,
@@ -116,7 +116,7 @@ import os
 from openai import OpenAI
 
 client = OpenAI(
-    api_key=os.environ["ADTYAI_API_KEY"],
+    api_key=os.environ["GATEWAY_API_KEY"],
     base_url="https://api.adtyai.com/v1",
     timeout=180.0,
     max_retries=3,
@@ -145,7 +145,7 @@ print()
 import OpenAI from "openai";
 
 const client = new OpenAI({
-  apiKey: process.env.ADTYAI_API_KEY,
+  apiKey: process.env.GATEWAY_API_KEY,
   baseURL: "https://api.adtyai.com/v1",
   timeout: 180_000,
   maxRetries: 3,
@@ -210,7 +210,7 @@ import os
 import anthropic
 
 client = anthropic.Anthropic(
-    api_key=os.environ["ADTYAI_API_KEY"],
+    api_key=os.environ["GATEWAY_API_KEY"],
     base_url="https://api.adtyai.com",
     timeout=180.0,
     max_retries=3,
@@ -243,7 +243,7 @@ print()
 import Anthropic from "@anthropic-ai/sdk";
 
 const client = new Anthropic({
-  apiKey: process.env.ADTYAI_API_KEY,
+  apiKey: process.env.GATEWAY_API_KEY,
   baseURL: "https://api.adtyai.com",
   timeout: 180_000,
   maxRetries: 3,
@@ -311,7 +311,7 @@ from google import genai
 from google.genai import types
 
 client = genai.Client(
-    api_key=os.environ["ADTYAI_API_KEY"],
+    api_key=os.environ["GATEWAY_API_KEY"],
     http_options=types.HttpOptions(base_url="https://api.adtyai.com"),
 )
 
@@ -336,7 +336,7 @@ print()
 import { GoogleGenAI } from "@google/genai";
 
 const ai = new GoogleGenAI({
-  apiKey: process.env.ADTYAI_API_KEY,
+  apiKey: process.env.GATEWAY_API_KEY,
   httpOptions: {
     baseUrl: "https://api.adtyai.com",
   },
@@ -376,7 +376,7 @@ main();
 
 ```dotenv
 # 统一变量或按协议拆分
-ADTYAI_API_KEY="<YOUR_API_KEY>"
+GATEWAY_API_KEY="<YOUR_API_KEY>"
 
 # 或使用各 SDK 原生环境变量（代码中省略对应参数时自动读取）
 OPENAI_BASE_URL="https://api.adtyai.com/v1"

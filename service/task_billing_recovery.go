@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -160,6 +161,15 @@ func RecoverBillingOperations(ctx context.Context, limit int) error {
 		if _, _, err := model.ApplyBillingSettlement(op.OperationKey); err != nil {
 			if first == nil {
 				first = err
+			}
+			// A temporary site/account fund-write restriction under anomaly review
+			// must postpone recovery without consuming retry budget or transitioning
+			// already-accepted settlements/refunds into permanent BillingDead.
+			if errors.Is(err, model.ErrAdtyFundWriteRestricted) {
+				if deferErr := model.DeferBillingOperationRetry(op.OperationKey, err, retryNow+300); deferErr != nil {
+					common.SysError(common.LogText("billing recovery: failed to defer restricted operation %s: %s", op.OperationKey, deferErr.Error()))
+				}
+				continue
 			}
 			// 失败必须回执：不记 attempts 的话，同一条 op 每 15 秒重新排到队头，
 			// 攒够 limit 条就把「其他所有待结算 op」全部饿死（ISS-R4-0094）。

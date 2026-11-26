@@ -5,7 +5,11 @@ Copyright (C) 2023-2026 QuantumNous
 import { useData, withBase } from 'vitepress'
 import { computed, ref } from 'vue'
 
-import { useSiteBrand } from '../brand'
+import {
+  DEFAULT_BRAND,
+  SUBSITE_API_BASE_PLACEHOLDER,
+  useSiteBrand,
+} from '../brand'
 
 type ClientId =
   | 'claude-code'
@@ -119,7 +123,13 @@ const effectiveKey = computed(
   () => apiKeyInput.value.trim() || 'sk-your-api-key'
 )
 
-const apiBase = computed(() => brand.value.apiBase || 'https://api.adtyai.com')
+const apiBase = computed(
+  () =>
+    brand.value.apiBase ||
+    (brand.value.isSubsite
+      ? SUBSITE_API_BASE_PLACEHOLDER
+      : DEFAULT_BRAND.apiBase)
+)
 
 function escapeDoubleQuoted(value: string): string {
   return value
@@ -128,7 +138,9 @@ function escapeDoubleQuoted(value: string): string {
     .replace(/[\r\n]+/g, ' ')
 }
 
-const providerName = computed(() => brand.value.name.trim() || 'ADTY')
+const providerName = computed(
+  () => brand.value.name.trim() || (brand.value.isSubsite ? 'Custom API' : 'ADTY AI')
+)
 
 const providerSlug = computed(() => {
   const fromName = brand.value.name
@@ -140,18 +152,20 @@ const providerSlug = computed(() => {
     .replace(/-+$/g, '')
   if (fromName) return fromName
   if (brand.value.isSubsite) {
-    try {
-      const hostLabel = new URL(apiBase.value).hostname
-        .toLowerCase()
-        .replace(/^api[.-]/, '')
-        .split('.')[0]
-        ?.replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        .slice(0, 32)
-        .replace(/-+$/g, '')
-      if (hostLabel) return hostLabel
-    } catch {
-      // Fall through to neutral subsite provider slug.
+    if (apiBase.value && apiBase.value !== SUBSITE_API_BASE_PLACEHOLDER) {
+      try {
+        const hostLabel = new URL(apiBase.value).hostname
+          .toLowerCase()
+          .replace(/^api[.-]/, '')
+          .split('.')[0]
+          ?.replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 32)
+          .replace(/-+$/g, '')
+        if (hostLabel) return hostLabel
+      } catch {
+        // Fall through to neutral subsite provider slug.
+      }
     }
     return 'custom'
   }

@@ -483,7 +483,6 @@ func findReusableTeamPendingOrder(pendingList []model.AdtyTopupOrder, leaderID i
 	if quote == nil {
 		return nil
 	}
-	currentBEpusdtGateway := strings.TrimRight(strings.TrimSpace(setting.GetBEpusdtSetting().BaseURL), "/")
 	for i := range pendingList {
 		ext := &pendingList[i]
 		if ext.TeamId != teamID || ext.UserId != leaderID || ext.SiteId != quote.SiteID || ext.Provider != provider || ext.Method != method {
@@ -495,7 +494,7 @@ func findReusableTeamPendingOrder(pendingList []model.AdtyTopupOrder, leaderID i
 		if !ext.FaceUSD.Equal(quote.FaceUSD) || ext.CreditQuota != quote.CreditQuota || ext.PayCurrency != quote.PayCurrency {
 			continue
 		}
-		if ext.ExpireAt > 0 && ext.ExpireAt <= now+reusableTeamPendingMinRemaining {
+		if AdtyTopupOrderExpired(ext, now+reusableTeamPendingMinRemaining) {
 			continue
 		}
 		if !teamCheckoutReady(ext) {
@@ -503,11 +502,7 @@ func findReusableTeamPendingOrder(pendingList []model.AdtyTopupOrder, leaderID i
 		}
 		switch provider {
 		case model.PaymentProviderAdtyBEpusdt:
-			if !setting.BEpusdtConfigured() || !setting.BEpusdtChainEnabled(method) {
-				continue
-			}
-			storedGW := strings.TrimRight(strings.TrimSpace(ext.CheckoutGateway), "/")
-			if storedGW != "" && storedGW != currentBEpusdtGateway {
+			if !setting.BEpusdtConfigured() || !setting.BEpusdtChainEnabled(method) || !AdtyBEpusdtGatewayMatchesCurrent(ext) {
 				continue
 			}
 			return ext

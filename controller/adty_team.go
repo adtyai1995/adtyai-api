@@ -513,6 +513,9 @@ func GetAdtyTeamTopups(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	for i := range views {
+		sanitizePendingAdtyTopUpView(c, &views[i], false)
+	}
 	common.ApiSuccess(c, gin.H{
 		"items":     enrichAdtyTeamTopupViews(views),
 		"total":     total,

@@ -13,10 +13,10 @@ You can run **DeepSeek** models (`deepseek-chat`, `deepseek-reasoner`, or exact 
 Create or edit `~/.codex/config.toml` (on Windows, `%USERPROFILE%\.codex\config.toml`):
 
 ```toml
-model_provider = "adtyai_deepseek"
+model_provider = "deepseek_gateway"
 model = "deepseek-chat"
 
-[model_providers.adtyai_deepseek]
+[model_providers.deepseek_gateway]
 name = "ADTY AI (DeepSeek)"
 base_url = "https://api.adtyai.com/v1"
 wire_api = "chat"
@@ -34,14 +34,14 @@ model = "deepseek-reasoner"
 If you already use Codex CLI with GPT models, define a named profile so you can invoke DeepSeek on demand with `codex --profile deepseek`:
 
 ```toml
-[model_providers.adtyai_deepseek]
+[model_providers.deepseek_gateway]
 name = "ADTY AI (DeepSeek)"
 base_url = "https://api.adtyai.com/v1"
 wire_api = "chat"
-env_key = "ADTYAI_DEEPSEEK_API_KEY"
+env_key = "DEEPSEEK_API_KEY"
 
 [profiles.deepseek]
-model_provider = "adtyai_deepseek"
+model_provider = "deepseek_gateway"
 model = "deepseek-chat"
 ```
 
@@ -68,16 +68,16 @@ When `requires_openai_auth = true` is set in `~/.codex/config.toml`, place your 
 }
 ```
 
-If you used `env_key = "ADTYAI_DEEPSEEK_API_KEY"` in a named profile instead, export that variable in your shell:
+If you used `env_key = "DEEPSEEK_API_KEY"` in a named profile instead, export that variable in your shell:
 
 ::: code-group
 
 ```bash [macOS / Linux]
-export ADTYAI_DEEPSEEK_API_KEY="<YOUR_API_KEY>"
+export DEEPSEEK_API_KEY="<YOUR_API_KEY>"
 ```
 
 ```powershell [Windows (PowerShell)]
-[Environment]::SetEnvironmentVariable("ADTYAI_DEEPSEEK_API_KEY", "<YOUR_API_KEY>", "User")
+[Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "<YOUR_API_KEY>", "User")
 ```
 
 :::
@@ -100,7 +100,7 @@ Once verified, launch an interactive coding session with `codex` (or `codex --pr
 
 ## Troubleshooting
 
-- **Requests fail with `404` or `unsupported_endpoint` on `/v1/responses`**: Set `wire_api = "chat"` in `[model_providers.adtyai_deepseek]` and re-test.
+- **Requests fail with `404` or `unsupported_endpoint` on `/v1/responses`**: Set `wire_api = "chat"` in `[model_providers.deepseek_gateway]` and re-test.
 - **`401 Unauthorized`**: Confirm `~/.codex/auth.json` contains valid JSON with `"OPENAI_API_KEY"` (or your configured `env_key` is exported in the active terminal).
 - **`model_not_found`**: Verify that `deepseek-chat` or `deepseek-reasoner` matches an exact model ID enabled in your API key's group on [ADTY AI Pricing](https://www.adtyai.com/pricing).
 - **Prefer GUI profile switching?** Manage multiple Codex profiles cleanly via [CC Switch — Codex CLI Setup](/integrations/cc-switch/codex), or consult the [Codex FAQ](/faq/codex).

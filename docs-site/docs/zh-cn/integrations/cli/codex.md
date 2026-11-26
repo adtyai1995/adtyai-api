@@ -39,12 +39,12 @@ Codex CLI 会从用户主目录下的 `.codex` 文件夹读取配置与密钥：
 创建 `~/.codex/config.toml`（Windows 为 `$HOME\.codex\config.toml`）：
 
 ```toml
-model_provider = "adty"
+model_provider = "gateway"
 model = "gpt-5.4"
 model_reasoning_effort = "medium"
 disable_response_storage = true
 
-[model_providers.adty]
+[model_providers.gateway]
 name = "ADTY AI"
 base_url = "https://api.adtyai.com/v1"
 wire_api = "responses"
@@ -55,7 +55,7 @@ requires_openai_auth = true
 
 | 参数 | 说明 |
 | --- | --- |
-| `model_provider` | 指定启用的供应商块名称（对应下方 `[model_providers.adty]`）。 |
+| `model_provider` | 指定启用的供应商块名称（对应下方 `[model_providers.gateway]`）。 |
 | `model` | 默认模型 ID，请以 [https://www.adtyai.com/pricing](https://www.adtyai.com/pricing) 上实时展示的 OpenAI / Codex 模型为准。 |
 | `model_reasoning_effort` | 控制推理强度，可选 `"low"`、`"medium"`、`"high"`（部分模型支持 `"xhigh"`）。档位越高推理越深，但耗时与 Token 消耗也相应增加。 |
 | `disable_response_storage` | 关闭服务端状态持久化存储依赖，提升中转链路兼容性。 |
@@ -81,12 +81,12 @@ requires_openai_auth = true
 mkdir -p ~/.codex
 
 cat << 'EOF' > ~/.codex/config.toml
-model_provider = "adty"
+model_provider = "gateway"
 model = "gpt-5.4"
 model_reasoning_effort = "medium"
 disable_response_storage = true
 
-[model_providers.adty]
+[model_providers.gateway]
 name = "ADTY AI"
 base_url = "https://api.adtyai.com/v1"
 wire_api = "responses"
@@ -109,12 +109,12 @@ $codexDir = Join-Path $HOME ".codex"
 New-Item -ItemType Directory -Force -Path $codexDir | Out-Null
 
 @'
-model_provider = "adty"
+model_provider = "gateway"
 model = "gpt-5.4"
 model_reasoning_effort = "medium"
 disable_response_storage = true
 
-[model_providers.adty]
+[model_providers.gateway]
 name = "ADTY AI"
 base_url = "https://api.adtyai.com/v1"
 wire_api = "responses"

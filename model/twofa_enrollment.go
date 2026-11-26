@@ -104,13 +104,21 @@ func EnableTwoFAEnrollment(identity AuthSessionIdentity, token, code string) err
 		if !hmac.Equal([]byte(payload.SecretHash), []byte(secretHash)) {
 			return ErrTwoFASetupInvalid
 		}
-		if !common.ValidateTOTPCode(plainSecret, cleanCode) {
+		now := time.Now()
+		step, ok := common.MatchTOTPStep(plainSecret, cleanCode, now)
+		if !ok {
 			return ErrTwoFACodeInvalid
 		}
 		if _, err := IncrementUserAuthVersionWithTx(tx, identity.UserID); err != nil {
 			return err
 		}
-		return tx.Model(&pending).Updates(map[string]any{"is_enabled": true, "failed_attempts": 0, "locked_until": nil}).Error
+		return tx.Model(&pending).Updates(map[string]any{
+			"is_enabled":      true,
+			"failed_attempts": 0,
+			"locked_until":    nil,
+			"last_totp_step":  step,
+			"last_used_at":    now,
+		}).Error
 	})
 	if errors.Is(err, ErrAuthFlowInvalid) || errors.Is(err, ErrAuthFlowExpired) || errors.Is(err, ErrAuthFlowConsumed) {
 		return ErrTwoFASetupInvalid

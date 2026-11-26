@@ -98,17 +98,18 @@ func adtyPaymentScopeIdentity(db *gorm.DB, user *model.User, scopes []AdtyPaymen
 }
 
 // ResolveAdtyOwnerTopupSiteID resolves the active owned site ID for owner
-// margin top-up flows when the owner accesses the console from the main host
-// (where requestSiteID == 0).
+// margin top-up flows on both the main host (requestSiteID == 0) and subsite
+// hosts (requestSiteID > 0), verifying active status and current ownership.
 func ResolveAdtyOwnerTopupSiteID(userID, requestSiteID int) int {
-	if requestSiteID > 0 {
-		return requestSiteID
-	}
 	if userID <= 0 || model.DB == nil {
 		return 0
 	}
 	var site model.AdtySite
-	res := model.DB.Select("id").Where("owner_user_id = ? AND status = ?", userID, model.AdtySiteStatusActive).Order("id ASC").Limit(1).Find(&site)
+	query := model.DB.Select("id").Where("owner_user_id = ? AND status = ?", userID, model.AdtySiteStatusActive)
+	if requestSiteID > 0 {
+		query = query.Where("id = ?", requestSiteID)
+	}
+	res := query.Order("id ASC").Limit(1).Find(&site)
 	if res.Error != nil || res.RowsAffected == 0 {
 		return 0
 	}

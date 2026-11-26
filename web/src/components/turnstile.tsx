@@ -64,12 +64,35 @@ export function Turnstile({
       try {
         widgetId = window.turnstile.render(ref.current, {
           sitekey: siteKey,
-          callback: (token: string) => onVerifyRef.current(token),
-          'error-callback': () => onExpireRef.current?.(),
-          'expired-callback': () => onExpireRef.current?.(),
+          callback: (token: string) => {
+            if (cancelled) return
+            onVerifyRef.current(token)
+          },
+          'error-callback': () => {
+            if (cancelled) return
+            onExpireRef.current?.()
+          },
+          'expired-callback': () => {
+            if (cancelled) return
+            onExpireRef.current?.()
+          },
         })
       } catch {
-        /* empty */
+        rendered = false
+        if (!cancelled) {
+          onExpireRef.current?.()
+        }
+      }
+    }
+
+    const handleScriptError = () => {
+      scriptEl?.removeEventListener('load', render)
+      scriptEl?.removeEventListener('error', handleScriptError)
+      scriptEl?.remove()
+      scriptEl = null
+      rendered = false
+      if (!cancelled) {
+        onExpireRef.current?.()
       }
     }
 
@@ -81,7 +104,7 @@ export function Turnstile({
       if (existing) {
         scriptEl = existing
         existing.addEventListener('load', render)
-        render()
+        existing.addEventListener('error', handleScriptError)
       } else {
         const s = document.createElement('script')
         s.id = scriptId
@@ -91,6 +114,7 @@ export function Turnstile({
         s.defer = true
         scriptEl = s
         s.addEventListener('load', render)
+        s.addEventListener('error', handleScriptError)
         document.head.append(s)
       }
     }
@@ -98,6 +122,7 @@ export function Turnstile({
     return () => {
       cancelled = true
       scriptEl?.removeEventListener('load', render)
+      scriptEl?.removeEventListener('error', handleScriptError)
       if (widgetId !== undefined) {
         try {
           window.turnstile?.remove?.(widgetId)

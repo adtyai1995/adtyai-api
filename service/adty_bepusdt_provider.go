@@ -50,8 +50,13 @@ func AdtyBEpusdtGatewayMatchesCurrent(ext *model.AdtyTopupOrder) bool {
 		if pErr != nil || checkoutURL.Scheme == "" || checkoutURL.Host == "" || checkoutURL.User != nil {
 			return false
 		}
-		return strings.EqualFold(checkoutURL.Scheme, currentURL.Scheme) &&
-			strings.EqualFold(checkoutURL.Host, currentURL.Host)
+		if !strings.EqualFold(checkoutURL.Scheme, currentURL.Scheme) || !strings.EqualFold(checkoutURL.Host, currentURL.Host) {
+			return false
+		}
+		if curPath := strings.TrimRight(currentURL.Path, "/"); curPath != "" {
+			return checkoutURL.Path == curPath || strings.HasPrefix(checkoutURL.Path, curPath+"/")
+		}
+		return true
 	}
 	return true
 }

@@ -202,6 +202,21 @@ var AdtyReleaseTopUpReserveTx func(tx *gorm.DB, ext *AdtyTopupOrder) error
 // Returning allowExpire=false leaves the order pending with its guarantee intact.
 var AdtyBeforeExpireReleaseTx func(tx *gorm.DB, topUp *TopUp, ext *AdtyTopupOrder, now int64) (allowExpire bool, err error)
 
+// AdtyOrderExpiredHook evaluates whether ext has passed its payment deadline
+// (including provider fallback timeouts for legacy rows with ExpireAt == 0).
+var AdtyOrderExpiredHook func(ext *AdtyTopupOrder, now int64) bool
+
+// AdtyTopupOrderIsExpired reports whether ext has passed its payment deadline at now.
+func AdtyTopupOrderIsExpired(ext *AdtyTopupOrder, now int64) bool {
+	if ext == nil {
+		return false
+	}
+	if AdtyOrderExpiredHook != nil {
+		return AdtyOrderExpiredHook(ext, now)
+	}
+	return ext.ExpireAt > 0 && now >= ext.ExpireAt
+}
+
 // AdtyPrepareTopUpGiftOnCreditTx runs inside the credit transaction with the
 // pre-update order status and payment facts. After cancel or expiry released
 // a site-gift reserve, it checks verified payment effective-time evidence
@@ -397,7 +412,7 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 	}
 	now := common.GetTimestamp()
 	if facts.Source != AdtyPaymentSourceManual {
-		if topUp.Status == common.TopUpStatusExpired || (ext.ExpireAt > 0 && now >= ext.ExpireAt) {
+		if topUp.Status == common.TopUpStatusExpired || AdtyTopupOrderIsExpired(ext, now) {
 			return false, 0, nil, nil, ErrTopUpStatusInvalid
 		}
 		var reversals int64
@@ -797,11 +812,25 @@ func CountTeamActivePendingAdtyTopUpsTx(tx *gorm.DB, teamID int64, now int64) (i
 		tx = DB
 	}
 	var count int64
-	err := tx.Table("adty_topup_orders AS a").
+	if err := tx.Table("adty_topup_orders AS a").
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
-		Where("a.team_id = ? AND t.status = ? AND (a.expire_at = 0 OR a.expire_at > ?)", teamID, common.TopUpStatusPending, now).
-		Count(&count).Error
-	return count, err
+		Where("a.team_id = ? AND t.status = ? AND a.expire_at > ?", teamID, common.TopUpStatusPending, now).
+		Count(&count).Error; err != nil {
+		return 0, err
+	}
+	var legacy []AdtyTopupOrder
+	if err := tx.Table("adty_topup_orders AS a").Select("a.provider, a.created_at, a.expire_at").
+		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
+		Where("a.team_id = ? AND t.status = ? AND a.expire_at = 0", teamID, common.TopUpStatusPending).
+		Scan(&legacy).Error; err != nil {
+		return 0, err
+	}
+	for i := range legacy {
+		if !AdtyTopupOrderIsExpired(&legacy[i], now) {
+			count++
+		}
+	}
+	return count, nil
 }
 
 // ListTeamActivePendingAdtyTopUps returns unexpired pending orders for a team, newest first.
@@ -811,7 +840,16 @@ func ListTeamActivePendingAdtyTopUps(teamID int64, now int64) ([]AdtyTopupOrder,
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
 		Where("a.team_id = ? AND t.status = ? AND (a.expire_at = 0 OR a.expire_at > ?)", teamID, common.TopUpStatusPending, now).
 		Order("a.id DESC").Scan(&exts).Error
-	return exts, err
+	if err != nil {
+		return nil, err
+	}
+	active := exts[:0]
+	for i := range exts {
+		if !AdtyTopupOrderIsExpired(&exts[i], now) {
+			active = append(active, exts[i])
+		}
+	}
+	return active, nil
 }
 
 // ListUserActivePendingAdtyTopUpsForBusiness returns unexpired pending orders (newest first)
@@ -1242,7 +1280,15 @@ func ListUserAdtyTopUpsFiltered(userID int, filter AdtyUserTopUpListFilter) ([]A
 		if status == "cancelled" {
 			status = TopUpStatusCanceled
 		}
-		base = base.Where("LOWER(t.status) = ?", status)
+		now := time.Now().Unix()
+		switch status {
+		case common.TopUpStatusPending:
+			base = base.Where("LOWER(t.status) = ? AND (a.trade_no IS NULL OR a.expire_at = 0 OR a.expire_at > ?)", common.TopUpStatusPending, now)
+		case common.TopUpStatusExpired:
+			base = base.Where("(LOWER(t.status) = ? OR (LOWER(t.status) = ? AND a.expire_at > 0 AND a.expire_at <= ?))", common.TopUpStatusExpired, common.TopUpStatusPending, now)
+		default:
+			base = base.Where("LOWER(t.status) = ?", status)
+		}
 	}
 	if method := strings.ToLower(strings.TrimSpace(filter.Method)); method != "" && method != "all" {
 		if method == "usdt" {

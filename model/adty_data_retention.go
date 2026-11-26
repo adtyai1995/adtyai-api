@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -331,6 +332,107 @@ func DeleteOldAuditLogsByCategoriesBatch(ctx context.Context, categories []strin
 		return 0, result.Error
 	}
 	return result.RowsAffected, nil
+}
+
+// DeleteDeliveredAuditIntentsByCategoriesBatch prunes already-delivered
+// audit_intents rows matching categories older than targetTimestamp, preserving
+// pending (delivered_at = 0) intents and unrelated categories. Legacy rows
+// persisted before AuditIntent.Category existed have their category backfilled
+// from Payload once so each row is classified deterministically.
+func DeleteDeliveredAuditIntentsByCategoriesBatch(ctx context.Context, categories []string, targetTimestamp int64, limit int) (int64, error) {
+	if len(categories) == 0 || DB == nil {
+		return 0, nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if !DB.Migrator().HasTable(&AuditIntent{}) || !DB.Migrator().HasColumn(&AuditIntent{}, "category") {
+		return 0, nil
+	}
+	catSet := make(map[string]struct{}, len(categories))
+	for _, cat := range categories {
+		if trimmed := strings.TrimSpace(cat); trimmed != "" {
+			catSet[trimmed] = struct{}{}
+		}
+	}
+	if len(catSet) == 0 {
+		return 0, nil
+	}
+	var deleted int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return deleted, err
+		}
+		var legacy []struct {
+			ID      int64
+			Payload string
+		}
+		if err := DB.WithContext(ctx).Table("audit_intents").
+			Select("id, payload").
+			Where("delivered_at > 0 AND created_at < ? AND (category = '' OR category IS NULL)", targetTimestamp).
+			Order("id ASC").Limit(limit).Scan(&legacy).Error; err != nil {
+			return deleted, err
+		}
+		if len(legacy) == 0 {
+			break
+		}
+		var deleteIDs []int64
+		backfillByCategory := map[string][]int64{}
+		for _, row := range legacy {
+			var meta struct {
+				Category string `json:"category"`
+			}
+			_ = common.UnmarshalJsonStr(row.Payload, &meta)
+			cat := strings.TrimSpace(meta.Category)
+			if cat == "" {
+				cat = "_unknown"
+			}
+			if _, match := catSet[cat]; match {
+				deleteIDs = append(deleteIDs, row.ID)
+			} else {
+				backfillByCategory[cat] = append(backfillByCategory[cat], row.ID)
+			}
+		}
+		for cat, ids := range backfillByCategory {
+			if err := DB.WithContext(ctx).Table("audit_intents").
+				Where("id IN ? AND (category = '' OR category IS NULL)", ids).
+				Update("category", cat).Error; err != nil {
+				return deleted, err
+			}
+		}
+		if len(deleteIDs) > 0 {
+			res := DB.WithContext(ctx).Table("audit_intents").
+				Where("id IN ? AND delivered_at > 0", deleteIDs).
+				Delete(&AuditIntent{})
+			if res.Error != nil {
+				return deleted, res.Error
+			}
+			deleted += res.RowsAffected
+			return deleted, nil
+		}
+	}
+	var ids []int64
+	if err := DB.WithContext(ctx).Table("audit_intents").
+		Where("delivered_at > 0 AND created_at < ? AND category IN ?", targetTimestamp, categories).
+		Order("id ASC").Limit(limit).Pluck("id", &ids).Error; err != nil {
+		return deleted, err
+	}
+	if len(ids) == 0 {
+		return deleted, nil
+	}
+	res := DB.WithContext(ctx).Table("audit_intents").
+		Where("id IN ? AND delivered_at > 0", ids).
+		Delete(&AuditIntent{})
+	if res.Error != nil {
+		return deleted, res.Error
+	}
+	return deleted + res.RowsAffected, nil
 }
 
 // DeleteInactiveUserSessionsForRetention removes expired or revoked sessions older than retentionDays.

@@ -24,7 +24,7 @@ Use `https://api.adtyai.com/v1` with `api: "openai-completions"` for GPT, DeepSe
   "models": {
     "mode": "merge",
     "providers": {
-      "adtyai": {
+      "gateway": {
         "baseUrl": "https://api.adtyai.com/v1",
         "apiKey": "<YOUR_API_KEY>",
         "api": "openai-completions",
@@ -52,8 +52,8 @@ Use `https://api.adtyai.com/v1` with `api: "openai-completions"` for GPT, DeepSe
   "agents": {
     "defaults": {
       "model": {
-        "primary": "adtyai/gpt-5.4",
-        "fallbacks": ["adtyai/deepseek-chat"]
+        "primary": "gateway/gpt-5.4",
+        "fallbacks": ["gateway/deepseek-chat"]
       }
     }
   }
@@ -69,7 +69,7 @@ To use native Anthropic Messages routing for Claude models, add a provider with 
   "models": {
     "mode": "merge",
     "providers": {
-      "adtyai-claude": {
+      "gateway-claude": {
         "baseUrl": "https://api.adtyai.com/v1",
         "apiKey": "<YOUR_API_KEY>",
         "api": "anthropic-messages",
@@ -97,7 +97,7 @@ To use native Anthropic Messages routing for Claude models, add a provider with 
   "agents": {
     "defaults": {
       "model": {
-        "primary": "adtyai-claude/claude-sonnet-4-6"
+        "primary": "gateway-claude/claude-sonnet-4-6"
       }
     }
   }
@@ -109,18 +109,18 @@ Depending on your OpenClaw build's underlying Anthropic HTTP client, `anthropic-
 :::
 
 ::: tip Keeping Keys Out of Plain Config Files
-OpenClaw supports environment variable references (for example `"${ADTYAI_API_KEY}"`) in `apiKey` when loaded via `~/.openclaw/.env` or your shell environment. Check [Account Security & PAT](/guides/security) for recommended key scoping practices.
+OpenClaw supports environment variable references (for example `"${GATEWAY_API_KEY}"`) in `apiKey` when loaded via `~/.openclaw/.env` or your shell environment. Check [Account Security & PAT](/guides/security) for recommended key scoping practices.
 :::
 
 ## 3. Model List Declaration & Default Selection
 
 - **Exact IDs matter**: Every `id` inside the `models` array must match an active model ID available to your API key's group on [ADTY AI Pricing](https://www.adtyai.com/pricing).
-- **Provider prefix**: When selecting a default model in `agents.defaults.model.primary` or switching via CLI, prefix the model ID with your provider name (`adtyai/<model-id>` or `adtyai-claude/<model-id>`).
+- **Provider prefix**: When selecting a default model in `agents.defaults.model.primary` or switching via CLI, prefix the model ID with your provider name (`gateway/<model-id>` or `gateway-claude/<model-id>`).
 - **Switching from CLI**:
 
   ```bash
   openclaw models list
-  openclaw models set adtyai/gpt-5.4
+  openclaw models set gateway/gpt-5.4
   ```
 
 ## 4. Test a Conversation

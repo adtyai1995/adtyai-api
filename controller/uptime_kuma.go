@@ -283,14 +283,14 @@ func buildBuiltInUptimeResults(groups []console_setting.UptimeKumaGroup, probes 
 		if !group.IsEnabled() {
 			continue
 		}
-		if len(activeGroups) > 0 && strings.TrimSpace(group.GroupID) != "" {
-			if _, ok := activeGroups[strings.TrimSpace(group.GroupID)]; !ok {
-				continue
-			}
-		}
 		groupKey := strings.TrimSpace(group.GroupID)
 		if groupKey == "" {
 			groupKey = strings.TrimSpace(group.CategoryName)
+		}
+		if len(activeGroups) > 0 && groupKey != "" {
+			if _, ok := activeGroups[groupKey]; !ok {
+				continue
+			}
 		}
 		displayName := resolveUptimeGroupDisplayName(group)
 		probeModel := group.EffectiveProbeModel()
@@ -355,7 +355,7 @@ func buildBuiltInUptimeResults(groups []console_setting.UptimeKumaGroup, probes 
 		}
 
 		results = append(results, UptimeGroupResult{
-			GroupID:       group.GroupID,
+			GroupID:       groupKey,
 			CategoryName:  displayName,
 			Description:   group.Description,
 			Platform:      platform,
@@ -430,7 +430,11 @@ func prepareUptimeResultsForRequest(c *gin.Context, results []UptimeGroupResult,
 	isAdmin := c.GetInt("role") >= common.RoleAdminUser
 	filtered := make([]UptimeGroupResult, 0, len(results))
 	for _, item := range results {
-		if siteID > 0 && item.GroupID != "" && !service.SiteGroupAllowed(siteID, item.GroupID) {
+		groupKey := strings.TrimSpace(item.GroupID)
+		if groupKey == "" {
+			groupKey = strings.TrimSpace(item.CategoryName)
+		}
+		if siteID > 0 && (groupKey == "" || !service.SiteGroupAllowed(siteID, groupKey)) {
 			continue
 		}
 		// Copy struct so per-request GroupRatio and message redaction never mutate the shared cache.

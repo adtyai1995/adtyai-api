@@ -203,10 +203,10 @@ func CanCreditPaymentOrphanEvent(orphan *PaymentOrphanEvent) bool {
 		return false
 	}
 	var ext AdtyTopupOrder
-	if err := DB.Select("expire_at").Where("trade_no = ?", orphan.ReferenceID).Limit(1).Find(&ext).Error; err != nil {
+	if err := DB.Select("provider", "created_at", "expire_at").Where("trade_no = ?", orphan.ReferenceID).Limit(1).Find(&ext).Error; err != nil {
 		return false
 	}
-	if ext.ExpireAt > 0 && common.GetTimestamp() >= ext.ExpireAt {
+	if AdtyTopupOrderIsExpired(&ext, common.GetTimestamp()) {
 		return false
 	}
 	return true

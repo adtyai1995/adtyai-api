@@ -27,6 +27,15 @@ var adtyTurnstileHTTP = NewVerifiedDirectNoRedirectHTTPClient(10 * time.Second)
 
 const adtyTurnstileMaxTokenLength = 2048
 
+// Cloudflare Turnstile widget PUT rejects an empty domains array (minItems: 1).
+// Keep this non-routable placeholder when removing the last real hostname from
+// a widget, and strip it whenever checking capacity or assigning a real domain.
+const adtyTurnstileEmptySlotPlaceholder = "localhost"
+
+func isAdtyTurnstilePlaceholder(domain string) bool {
+	return strings.EqualFold(strings.TrimSpace(domain), adtyTurnstileEmptySlotPlaceholder)
+}
+
 // adtyTurnstileWidget 是 widget 详情里要原样带回 PUT 的字段。
 type adtyTurnstileWidget struct {
 	Sitekey        string   `json:"sitekey"`
@@ -104,13 +113,14 @@ func adtyTurnstileAssign(ctx context.Context, hostname string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if slices.Contains(widget.Domains, hostname) {
+		domains := slices.DeleteFunc(slices.Clone(widget.Domains), isAdtyTurnstilePlaceholder)
+		if slices.Contains(domains, hostname) {
 			return configured.Id, nil
 		}
-		if len(widget.Domains) >= adtyTurnstileDomainsPerWidget {
+		if len(domains) >= adtyTurnstileDomainsPerWidget {
 			continue
 		}
-		widget.Domains = append(widget.Domains, hostname)
+		widget.Domains = append(domains, hostname)
 		if err := AdtyCloudflare.putTurnstileWidget(ctx, account, configured.Id, widget); err != nil {
 			return "", err
 		}
@@ -148,7 +158,12 @@ func adtyTurnstileRemoveDomain(ctx context.Context, widgetId, hostname string) e
 		if !slices.Contains(widget.Domains, hostname) {
 			continue
 		}
-		widget.Domains = slices.DeleteFunc(widget.Domains, func(domain string) bool { return domain == hostname })
+		widget.Domains = slices.DeleteFunc(widget.Domains, func(domain string) bool {
+			return domain == hostname || isAdtyTurnstilePlaceholder(domain)
+		})
+		if len(widget.Domains) == 0 {
+			widget.Domains = []string{adtyTurnstileEmptySlotPlaceholder}
+		}
 		if err := AdtyCloudflare.putTurnstileWidget(ctx, account, id, widget); err != nil {
 			return err
 		}

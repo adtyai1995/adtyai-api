@@ -656,6 +656,11 @@ func executeDataRetentionDelete(ctx context.Context, checkCancel func() error, c
 		if err != nil {
 			return logs + audits, 1, err
 		}
+		if _, err := drainRetentionBatches(ctx, checkCancel, func() (int64, error) {
+			return model.DeleteDeliveredAuditIntentsByCategoriesBatch(ctx, []string{model.AuditCategoryLogin, model.AuditCategorySecurity}, cutoff, dataRetentionCleanupBatchSize)
+		}); err != nil {
+			return logs + audits, 1, err
+		}
 		if err := checkCancel(); err != nil {
 			return logs + audits, 1, err
 		}
@@ -676,6 +681,11 @@ func executeDataRetentionDelete(ctx context.Context, checkCancel func() error, c
 			return model.DeleteOldAuditLogsByCategoriesBatch(ctx, []string{model.AuditCategoryOperation, model.AuditCategoryAccessToken}, cutoff, dataRetentionCleanupBatchSize)
 		})
 		if err != nil {
+			return count, 1, err
+		}
+		if _, err := drainRetentionBatches(ctx, checkCancel, func() (int64, error) {
+			return model.DeleteDeliveredAuditIntentsByCategoriesBatch(ctx, []string{model.AuditCategoryOperation, model.AuditCategoryAccessToken}, cutoff, dataRetentionCleanupBatchSize)
+		}); err != nil {
 			return count, 1, err
 		}
 		return count, 0, nil

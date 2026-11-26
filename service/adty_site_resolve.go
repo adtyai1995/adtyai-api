@@ -549,7 +549,7 @@ func adtyAdvertisedDomain(siteID int, role string) string {
 		return ""
 	}
 	var binding model.AdtySiteDomain
-	err := model.DB.Select("hostname").Where("site_id = ? AND role = ? AND managed_by <> ? AND status = ? AND desired_state = ? AND automation_state IN ?", siteID, role, "platform", model.AdtySiteDomainActive, "serve", []string{"", "ready"}).Order("id").Limit(1).Find(&binding).Error
+	err := model.DB.Select("hostname").Where("site_id = ? AND role = ? AND managed_by <> ? AND status = ? AND desired_state = ? AND automation_state IN ?", siteID, role, "platform", model.AdtySiteDomainActive, "serve", []string{"", "ready", "retry"}).Order("id").Limit(1).Find(&binding).Error
 	if err != nil {
 		return ""
 	}

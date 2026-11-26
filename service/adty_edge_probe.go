@@ -88,25 +88,26 @@ type AdtyEdgeCertCounts struct {
 
 // AdtyEdgeStatusSummary is returned to admin settings for mainland edge observability and control.
 type AdtyEdgeStatusSummary struct {
-	EdgeMainlandEnabled   bool                       `json:"edge_mainland_enabled"`
-	EdgeACMEStaging       bool                       `json:"edge_acme_staging"`
-	EdgeNodeIP            string                     `json:"edge_node_ip"`
-	EdgeNodeIPs           []string                   `json:"edge_node_ips"`
-	EdgeFailoverToCF      bool                       `json:"edge_failover_to_cf"`
-	EdgeProbeEnabled      bool                       `json:"edge_probe_enabled"`
-	EdgeAutoFailover      bool                       `json:"edge_auto_failover"`
-	EdgeMainSiteEnabled   bool                       `json:"edge_main_site_enabled"`
-	EdgeMainSiteHost      string                     `json:"edge_main_site_host"`
-	EdgeMainSiteOriginSNI string                     `json:"edge_main_site_origin_sni"`
-	EdgeTokenConfigured   bool                       `json:"edge_token_configured"`
-	DomainMainlandTarget  string                     `json:"domain_mainland_target"`
-	EdgeACMEAliasSuffix   string                     `json:"edge_acme_alias_suffix"`
-	WildcardCert          *AdtyEdgeWildcardCertView  `json:"wildcard_cert"`
-	MainSiteCert          *AdtyEdgeWildcardCertView  `json:"main_site_cert"`
-	CustomCertCounts      AdtyEdgeCertCounts         `json:"custom_cert_counts"`
-	ManifestPull          *AdtyEdgeManifestPullState `json:"manifest_pull"`
-	DNSSync               *AdtyEdgeDNSSyncState      `json:"dns_sync"`
-	Probe                 *AdtyEdgeProbeState        `json:"probe"`
+	EdgeMainlandEnabled   bool                        `json:"edge_mainland_enabled"`
+	EdgeACMEStaging       bool                        `json:"edge_acme_staging"`
+	EdgeNodeIP            string                      `json:"edge_node_ip"`
+	EdgeNodeIPs           []string                    `json:"edge_node_ips"`
+	EdgeFailoverToCF      bool                        `json:"edge_failover_to_cf"`
+	EdgeProbeEnabled      bool                        `json:"edge_probe_enabled"`
+	EdgeAutoFailover      bool                        `json:"edge_auto_failover"`
+	EdgeMainSiteEnabled   bool                        `json:"edge_main_site_enabled"`
+	EdgeMainSiteHost      string                      `json:"edge_main_site_host"`
+	EdgeMainSiteOriginSNI string                      `json:"edge_main_site_origin_sni"`
+	EdgeTokenConfigured   bool                        `json:"edge_token_configured"`
+	DomainMainlandTarget  string                      `json:"domain_mainland_target"`
+	EdgeACMEAliasSuffix   string                      `json:"edge_acme_alias_suffix"`
+	WildcardCert          *AdtyEdgeWildcardCertView   `json:"wildcard_cert"`
+	WildcardCerts         []*AdtyEdgeWildcardCertView `json:"wildcard_certs,omitempty"`
+	MainSiteCert          *AdtyEdgeWildcardCertView   `json:"main_site_cert"`
+	CustomCertCounts      AdtyEdgeCertCounts          `json:"custom_cert_counts"`
+	ManifestPull          *AdtyEdgeManifestPullState  `json:"manifest_pull"`
+	DNSSync               *AdtyEdgeDNSSyncState       `json:"dns_sync"`
+	Probe                 *AdtyEdgeProbeState         `json:"probe"`
 }
 
 var (
@@ -616,6 +617,31 @@ func RunAdtyEdgeProbeOnce(ctx context.Context, now time.Time, force bool) (*Adty
 	return &state, nil
 }
 
+func buildAdtyEdgeWildcardCertView(cfg *adty_setting.ResellerSetting, root string, primary bool, suffix string, row *model.AdtyEdgeCert) *AdtyEdgeWildcardCertView {
+	certName := "*." + root
+	aliasFQDN := ""
+	if suffix != "" {
+		aliasFQDN = adtyEdgeWildcardAlias(root, primary, suffix)
+	}
+	wc := &AdtyEdgeWildcardCertView{
+		CertName:      certName,
+		ChallengeHost: adtyEdgeChallengeHost(certName),
+		AliasFQDN:     aliasFQDN,
+		Environment:   adtyEdgeACMEEnvironment(cfg),
+		Status:        model.AdtyEdgeCertStatusWaitingDNS,
+	}
+	if row != nil {
+		wc.AliasFQDN = row.AliasFQDN
+		wc.Environment = row.Environment
+		wc.Status = row.Status
+		wc.NotAfter = row.NotAfter
+		wc.LastError = row.LastError
+		wc.LastIssuedAt = row.LastIssuedAt
+		wc.Attempts = row.Attempts
+	}
+	return wc
+}
+
 // GetAdtyEdgeStatus aggregates edge configuration, certificate status, manifest pull, DNS sync, and probe results.
 func GetAdtyEdgeStatus() (*AdtyEdgeStatusSummary, error) {
 	cfg := resellerSetting()
@@ -645,31 +671,25 @@ func GetAdtyEdgeStatus() (*AdtyEdgeStatusSummary, error) {
 
 	roots := adtyEdgeRootDomains(cfg)
 	if len(roots) > 0 {
-		certName := "*." + roots[0]
 		suffix := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(cfg.EdgeACMEAliasSuffix)), ".")
-		aliasFQDN := ""
-		if suffix != "" {
-			aliasFQDN = adtyEdgeWildcardAlias(roots[0], true, suffix)
+		certNames := make([]string, len(roots))
+		for i, root := range roots {
+			certNames[i] = "*." + root
 		}
-		wc := &AdtyEdgeWildcardCertView{
-			CertName:      certName,
-			ChallengeHost: adtyEdgeChallengeHost(certName),
-			AliasFQDN:     aliasFQDN,
-			Environment:   adtyEdgeACMEEnvironment(cfg),
-			Status:        model.AdtyEdgeCertStatusWaitingDNS,
-		}
-		if row, err := GetAdtyEdgeWildcardCert(cfg); err != nil {
+		var certRows []model.AdtyEdgeCert
+		if err := model.DB.Where("cert_name IN ?", certNames).Find(&certRows).Error; err != nil {
 			return nil, err
-		} else if row != nil {
-			wc.AliasFQDN = row.AliasFQDN
-			wc.Environment = row.Environment
-			wc.Status = row.Status
-			wc.NotAfter = row.NotAfter
-			wc.LastError = row.LastError
-			wc.LastIssuedAt = row.LastIssuedAt
-			wc.Attempts = row.Attempts
 		}
-		summary.WildcardCert = wc
+		rowsByName := make(map[string]*model.AdtyEdgeCert, len(certRows))
+		for i := range certRows {
+			rowsByName[strings.ToLower(strings.TrimSpace(certRows[i].CertName))] = &certRows[i]
+		}
+		summary.WildcardCerts = make([]*AdtyEdgeWildcardCertView, 0, len(roots))
+		for i, root := range roots {
+			wc := buildAdtyEdgeWildcardCertView(cfg, root, i == 0, suffix, rowsByName["*."+root])
+			summary.WildcardCerts = append(summary.WildcardCerts, wc)
+		}
+		summary.WildcardCert = summary.WildcardCerts[0]
 	}
 
 	if mainHost := adtyEdgeMainSiteHost(cfg); mainHost != "" {

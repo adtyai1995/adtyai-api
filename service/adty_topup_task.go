@@ -70,6 +70,7 @@ func RunAdtyTopUpMaintenanceOnce(now int64) {
 			}
 		}
 	}
+	backfillLegacyAdtyTopupExpireAt(now)
 	verifyExpiredOrdersUnpaidBeforeExpire(now)
 	var cursorExpireAt, cursorID int64
 	for page := 0; page < 50; page++ {
@@ -172,7 +173,49 @@ func StartAdtyTopUpMaintenance() {
 	})
 }
 
+func backfillLegacyAdtyTopupExpireAt(now int64) {
+	if model.DB == nil {
+		return
+	}
+	var legacy []struct {
+		Id         int64
+		Provider   string
+		CreatedAt  int64
+		CreateTime int64
+	}
+	if err := model.DB.Table("adty_topup_orders AS a").
+		Select("a.id, a.provider, a.created_at, t.create_time").
+		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
+		Where("t.status = ? AND a.expire_at = 0", common.TopUpStatusPending).
+		Order("a.id ASC").Limit(200).Scan(&legacy).Error; err != nil {
+		common.SysError(common.LogText("list legacy expire_at=0 adty topups: %s", err.Error()))
+		return
+	}
+	for _, row := range legacy {
+		baseTime := row.CreatedAt
+		if baseTime <= 0 {
+			baseTime = row.CreateTime
+		}
+		if baseTime <= 0 {
+			baseTime = now
+		}
+		var deadline int64
+		switch row.Provider {
+		case model.PaymentProviderAdtyEpay:
+			deadline = AdtyEpayExpiry(baseTime)
+		case model.PaymentProviderAdtyBEpusdt:
+			deadline = baseTime + adtyUSDTOrderTimeoutSeconds()
+		default:
+			deadline = baseTime + adtyUSDTOrderTimeoutSeconds()
+		}
+		if deadline > 0 {
+			_ = model.DB.Model(&model.AdtyTopupOrder{}).Where("id = ? AND expire_at = 0", row.Id).Update("expire_at", deadline).Error
+		}
+	}
+}
+
 func init() {
+	model.AdtyOrderExpiredHook = AdtyTopupOrderExpired
 	RegisterAdtyMaintenanceHook("expire_root_gifts", expireAdtyRootGifts)
 	adtyMasterTasks = append(adtyMasterTasks, StartAdtyTopUpMaintenance)
 }

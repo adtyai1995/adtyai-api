@@ -1035,8 +1035,8 @@ func runAdtyModelProbes(ctx context.Context, filterGroupID string, scheduled boo
 		if groupKey == "" || modelName == "" {
 			continue
 		}
-		if len(activeGroups) > 0 && strings.TrimSpace(g.GroupID) != "" {
-			if _, ok := activeGroups[strings.TrimSpace(g.GroupID)]; !ok {
+		if len(activeGroups) > 0 && groupKey != "" {
+			if _, ok := activeGroups[groupKey]; !ok {
 				continue
 			}
 		}

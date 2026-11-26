@@ -17,6 +17,8 @@ import (
 	"time"
 )
 
+const adtyActiveDomainProbeDemoteThreshold = 3
+
 var (
 	adtyCloudflareZoneIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 	errAdtyDomainLeaseLost      = errors.New("domain automation lease lost")
@@ -85,6 +87,12 @@ func RunAdtyDomainAutomationOnce(ctx context.Context, now time.Time) error {
 		Order("next_run_at, id").Limit(50).Find(&rows).Error; err != nil {
 		return err
 	}
+	changed := false
+	defer func() {
+		if changed {
+			InvalidateAdtySiteCache()
+		}
+	}()
 	var failures []error
 	for i := range rows {
 		if err := ctx.Err(); err != nil {
@@ -115,8 +123,11 @@ func RunAdtyDomainAutomationOnce(ctx context.Context, now time.Time) error {
 		}
 		row = &fresh
 		runctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		err := adtyReconcileDomain(runctx, row)
+		rowChanged, err := adtyReconcileDomain(runctx, row)
 		cancel()
+		if rowChanged {
+			changed = true
+		}
 		finished := now.Add(time.Since(started))
 		updates := map[string]any{"lease_token": "", "lease_until": 0, "last_checked_at": finished.Unix(), "next_run_at": finished.Add(5 * time.Minute).Unix()}
 		if err != nil {
@@ -138,16 +149,19 @@ func RunAdtyDomainAutomationOnce(ctx context.Context, now time.Time) error {
 			return err
 		}
 	}
-	if err := adtyBackfillActiveCustomBaseURLTurnstile(ctx, now.Add(time.Since(started))); err != nil {
+	backfillChanged, err := adtyBackfillActiveCustomBaseURLTurnstile(ctx, now.Add(time.Since(started)))
+	if backfillChanged {
+		changed = true
+	}
+	if err != nil {
 		failures = append(failures, err)
 	}
-	InvalidateAdtySiteCache()
 	return errors.Join(failures...)
 }
 
-func adtyBackfillActiveCustomBaseURLTurnstile(ctx context.Context, now time.Time) error {
+func adtyBackfillActiveCustomBaseURLTurnstile(ctx context.Context, now time.Time) (bool, error) {
 	if !resellerSetting().TurnstileConfigured() {
-		return nil
+		return false, nil
 	}
 	started := time.Now()
 	var rows []model.AdtySiteDomain
@@ -156,18 +170,19 @@ func adtyBackfillActiveCustomBaseURLTurnstile(ctx context.Context, now time.Time
 		Where("status = ? AND role = ? AND managed_by <> ? AND turnstile_widget = ? AND desired_state IN ? AND lease_until <= ? AND site_id IN (?)",
 			model.AdtySiteDomainActive, model.AdtySiteDomainRoleBaseURL, "platform", "", []string{"", "serve"}, now.Unix(), nonDeletingSites).
 		Order("id ASC").Limit(50).Find(&rows).Error; err != nil {
-		return err
+		return false, err
 	}
+	changed := false
 	var failures []error
 	for i := range rows {
 		if err := ctx.Err(); err != nil {
-			return errors.Join(append(failures, err)...)
+			return changed, errors.Join(append(failures, err)...)
 		}
 		claimTime := now.Add(time.Since(started))
 		row := &rows[i]
 		nonce := make([]byte, 16)
 		if _, err := rand.Read(nonce); err != nil {
-			return err
+			return changed, err
 		}
 		row.LeaseToken = hex.EncodeToString(nonce)
 		claim := model.DB.Model(&model.AdtySiteDomain{}).
@@ -175,7 +190,7 @@ func adtyBackfillActiveCustomBaseURLTurnstile(ctx context.Context, now time.Time
 				row.Id, claimTime.Unix(), row.Generation, model.AdtySiteDomainActive, "").
 			Updates(map[string]any{"lease_token": row.LeaseToken, "lease_until": claimTime.Add(2 * time.Minute).Unix()})
 		if claim.Error != nil {
-			return claim.Error
+			return changed, claim.Error
 		}
 		if claim.RowsAffected == 0 {
 			continue
@@ -189,20 +204,21 @@ func adtyBackfillActiveCustomBaseURLTurnstile(ctx context.Context, now time.Time
 			failures = append(failures, fmt.Errorf("domain %d turnstile backfill: %w", row.Id, err))
 		} else if widget != "" {
 			updates["last_error"] = ""
+			changed = true
 		}
 		if err := model.DB.Model(&model.AdtySiteDomain{}).
 			Where("id = ? AND lease_token = ? AND generation = ?", row.Id, row.LeaseToken, row.Generation).
 			Updates(updates).Error; err != nil {
-			return err
+			return changed, err
 		}
 		genChangedUpdates := map[string]any{"lease_token": "", "lease_until": 0, "next_run_at": 0}
 		if err := model.DB.Model(&model.AdtySiteDomain{}).
 			Where("id = ? AND lease_token = ? AND generation <> ?", row.Id, row.LeaseToken, row.Generation).
 			Updates(genChangedUpdates).Error; err != nil {
-			return err
+			return changed, err
 		}
 	}
-	return errors.Join(failures...)
+	return changed, errors.Join(failures...)
 }
 
 func adtyBackfillOneBaseURLTurnstile(ctx context.Context, row *model.AdtySiteDomain) (string, error) {
@@ -330,42 +346,47 @@ func adtySaveDomainResource(row *model.AdtySiteDomain, values map[string]any) er
 	return nil
 }
 
-func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
+func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) (bool, error) {
 	unlock := adtyDomainLocks.Lock(row.Id)
 	defer unlock()
 
+	changed := false
 	var site model.AdtySite
 	if err := model.DB.WithContext(ctx).Select("id", "status").First(&site, row.SiteId).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
 	if site.Status == model.AdtySiteStatusDeleting {
-		return nil
+		return false, nil
 	}
 	cfg := resellerSetting()
 	if row.ProviderZone == "" {
 		row.ProviderZone = cfg.CloudflareZoneId
 		if err := adtySaveDomainResource(row, map[string]any{"provider_zone": row.ProviderZone}); err != nil {
-			return err
+			return changed, err
 		}
 	}
 	if row.ProviderZone != cfg.CloudflareZoneId {
-		return common.NewMessage("Stored Cloudflare zone differs; restore credentials or explicitly migrate this domain")
+		return changed, common.NewMessage("Stored Cloudflare zone differs; restore credentials or explicitly migrate this domain")
 	}
 	if row.DNSRoot != "" && row.DNSRoot != cfg.AliyunDomain {
-		return common.NewMessage("Stored DNS root differs; restore DNS configuration before continuing")
+		return changed, common.NewMessage("Stored DNS root differs; restore DNS configuration before continuing")
 	}
 	if row.DesiredState == "redirect_only" && row.TurnstileWidget != "" {
+		prevWidget := row.TurnstileWidget
 		if err := releaseRedirectWidget(ctx, row); err != nil {
-			return err
+			return changed, err
+		}
+		if row.TurnstileWidget != prevWidget {
+			changed = true
 		}
 	}
 	var records []AdtyDNSRecord
 	if row.DNSRecords != "" {
 		if err := common.Unmarshal([]byte(row.DNSRecords), &records); err != nil {
-			return common.NewMessage("Stored DNS resource list is invalid")
+			return changed, common.NewMessage("Stored DNS resource list is invalid")
 		}
 	}
 	if row.DesiredState == "removed" {
@@ -380,33 +401,33 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			var err error
 			hostnameID, lookupAttempted, err = adtyLookupCloudResourceState(model.DB, row.ProviderZone, row)
 			if err != nil {
-				return err
+				return changed, err
 			}
 			createAttempted = createAttempted || lookupAttempted
 		}
 		if hostnameID == "" && createAttempted {
 			candidate, err := AdtyCloudflare.findCustomHostname(ctx, row.ProviderZone, row.Hostname)
 			if err != nil {
-				return err
+				return changed, err
 			}
 			if candidate != nil {
-				return common.NewMessage("Unrecorded Cloudflare creation requires reconciliation before cleanup")
+				return changed, common.NewMessage("Unrecorded Cloudflare creation requires reconciliation before cleanup")
 			}
 		}
 		if hostnameID != "" {
 			if err := AdtyCloudflare.deleteCustomHostname(ctx, row.ProviderZone, hostnameID); err != nil {
-				return err
+				return changed, err
 			}
 		}
 		if hostnameID != "" || createAttempted || row.CFHostnameId != "" {
 			if err := model.DB.Where("domain_id = ? AND generation = ? AND zone = ?", row.Id, adtyCustomHostnameGeneration(row), row.ProviderZone).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
-				return err
+				return changed, err
 			}
 			if row.CFHostnameId != "" || row.CFCreateStartedAt > 0 {
 				row.CFHostnameId = ""
 				row.CFCreateStartedAt = 0
 				if err := adtySaveDomainResource(row, map[string]any{"cf_hostname_id": "", "cf_create_started_at": 0}); err != nil {
-					return err
+					return changed, err
 				}
 			}
 		}
@@ -414,7 +435,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			if records[0].ID == "" {
 				found, err := AdtyAliDNS().Find(ctx, row.DNSRoot, records[0])
 				if err != nil {
-					return err
+					return changed, err
 				}
 				if found != nil {
 					records[0] = *found
@@ -422,13 +443,13 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			}
 			if records[0].ID != "" {
 				if err := AdtyAliDNS().Delete(ctx, row.DNSRoot, records[0]); err != nil {
-					return err
+					return changed, err
 				}
 			}
 			records = records[1:]
 			encoded, _ := common.Marshal(records)
 			if err := adtySaveDomainResource(row, map[string]any{"dns_records": string(encoded)}); err != nil {
-				return err
+				return changed, err
 			}
 		}
 		var alreadyRemoved, needTurnstileRemove bool
@@ -450,18 +471,19 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			hostname = current.Hostname
 			return nil
 		}); err != nil {
-			return err
+			return changed, err
 		}
 		if alreadyRemoved {
-			return nil
+			return changed, nil
 		}
 		// External Turnstile removal runs OUTSIDE any DB transaction (R4-16).
 		if needTurnstileRemove {
 			if err := adtyTurnstileRemoveDomain(ctx, widgetID, hostname); err != nil {
-				return err
+				return changed, err
 			}
 		}
-		return model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		removed := false
+		if err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			var current model.AdtySiteDomain
 			if err := adtyLockDomainRow(tx, row.Id, &current); err != nil {
 				return err
@@ -488,6 +510,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			if res.RowsAffected != 1 {
 				return errAdtyDomainLeaseLost
 			}
+			removed = true
 			row.Status = model.AdtySiteDomainRemoved
 			row.AutomationState = "removed"
 			row.TurnstileWidget = ""
@@ -495,7 +518,13 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			row.EdgeCertError = ""
 			row.EdgeCertNotAfter = 0
 			return nil
-		})
+		}); err != nil {
+			return changed, err
+		}
+		if removed {
+			changed = true
+		}
+		return changed, nil
 	}
 	// Persist each successful provider resource immediately, even if close changes
 	// the desired state while the request is in flight. The next run cleans it.
@@ -555,6 +584,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 		return adtySaveDomainResource(row, map[string]any{"dns_records": string(encoded)})
 	}
 	if row.ManagedBy == "platform" {
+		prevDNSTarget, prevMainlandTarget := row.DNSTarget, row.MainlandTarget
 		row.DNSTarget = strings.TrimSpace(cfg.CnameTarget)
 		if row.Role == model.AdtySiteDomainRoleSite {
 			row.MainlandTarget = strings.TrimSpace(cfg.DomainMainlandTarget)
@@ -562,7 +592,10 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			row.MainlandTarget = ""
 		}
 		if err := adtySaveDomainResource(row, map[string]any{"mainland_target": row.MainlandTarget, "dns_target": row.DNSTarget}); err != nil {
-			return err
+			return changed, err
+		}
+		if row.DNSTarget != prevDNSTarget || row.MainlandTarget != prevMainlandTarget {
+			changed = true
 		}
 		wanted := []AdtyDNSRecord{{Type: "CNAME", Name: row.Hostname, Value: row.DNSTarget, Line: "default"}}
 		if row.Role == model.AdtySiteDomainRoleSite && row.MainlandTarget != "" {
@@ -570,7 +603,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 		}
 		for _, record := range wanted {
 			if err := ensure(record); err != nil {
-				return err
+				return changed, err
 			}
 		}
 		for i := 0; i < len(records); {
@@ -593,7 +626,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			if existing.ID == "" {
 				found, err := AdtyAliDNS().Find(ctx, row.DNSRoot, existing)
 				if err != nil {
-					return err
+					return changed, err
 				}
 				if found != nil {
 					existing = *found
@@ -601,31 +634,35 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			}
 			if existing.ID != "" {
 				if err := AdtyAliDNS().Delete(ctx, row.DNSRoot, existing); err != nil {
-					return err
+					return changed, err
 				}
 			}
 			records = append(records[:i], records[i+1:]...)
 			encoded, _ := common.Marshal(records)
 			if err := adtySaveDomainResource(row, map[string]any{"dns_records": string(encoded)}); err != nil {
-				return err
+				return changed, err
 			}
 		}
 	}
+	prevCFHostnameID := row.CFHostnameId
 	if strings.HasPrefix(row.CFHostnameId, adtyCloudResourcePendingPrefix) {
 		row.CFHostnameId = ""
 		if err := adtySaveDomainResource(row, map[string]any{"cf_hostname_id": ""}); err != nil {
-			return err
+			return changed, err
 		}
 	}
 	if row.CFHostnameId == "" {
 		hostnameID, _, err := adtyLookupCloudResourceState(model.DB, row.ProviderZone, row)
 		if err != nil {
-			return err
+			return changed, err
 		}
 		if hostnameID != "" {
 			row.CFHostnameId = hostnameID
 			if err := adtySaveDomainResource(row, map[string]any{"cf_hostname_id": row.CFHostnameId}); err != nil {
-				return err
+				return changed, err
+			}
+			if row.CFHostnameId != prevCFHostnameID {
+				changed = true
 			}
 		}
 	}
@@ -634,57 +671,60 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 		// based solely on the matching hostname.
 		if row.ManagedBy != "platform" {
 			if row.OwnershipToken == "" {
-				return common.NewMessage("Domain ownership verification is required")
+				return changed, common.NewMessage("Domain ownership verification is required")
 			}
 			matched, err := adtyOwnershipTXTMatches(ctx, row.Hostname, row.OwnershipToken)
 			if err != nil {
-				return common.NewMessage("Domain ownership lookup failed")
+				return changed, common.NewMessage("Domain ownership lookup failed")
 			}
 			if !matched {
-				return common.NewMessage("Domain ownership TXT is not verified")
+				return changed, common.NewMessage("Domain ownership TXT is not verified")
 			}
 		}
 		candidate, err := AdtyCloudflare.findCustomHostname(ctx, row.ProviderZone, row.Hostname)
 		if err != nil {
-			return err
+			return changed, err
 		}
 		if candidate != nil {
-			return common.NewMessage("An unrecorded Cloudflare hostname exists; administrator reconciliation is required")
+			return changed, common.NewMessage("An unrecorded Cloudflare hostname exists; administrator reconciliation is required")
 		}
 		startedAt := time.Now().Unix()
 		if err := adtySaveDomainResource(row, map[string]any{"cf_create_started_at": startedAt}); err != nil {
-			return err
+			return changed, err
 		}
 		row.CFCreateStartedAt = startedAt
 		detail, err := AdtyCloudflare.createCustomHostname(ctx, row.ProviderZone, row)
 		if err != nil {
-			return err
+			return changed, err
 		}
 		if detail.Id == "" {
-			return common.NewMessage("Cloudflare did not return a hostname ID")
+			return changed, common.NewMessage("Cloudflare did not return a hostname ID")
 		}
 		row.CFHostnameId = detail.Id
 		if err := adtySaveDomainResource(row, map[string]any{"cf_hostname_id": detail.Id}); err != nil {
-			return err
+			return changed, err
+		}
+		if row.CFHostnameId != prevCFHostnameID {
+			changed = true
 		}
 	}
 	detail, err := AdtyCloudflare.getCustomHostname(ctx, row.ProviderZone, row.CFHostnameId)
 	if err != nil {
-		return err
+		return changed, err
 	}
 	if !strings.EqualFold(detail.Hostname, row.Hostname) {
-		return common.NewMessage("Cloudflare hostname identity mismatch")
+		return changed, common.NewMessage("Cloudflare hostname identity mismatch")
 	}
 	verify := verifyRecordsFor(row.Hostname, row.DNSTarget, detail)
 	if row.ManagedBy == "platform" {
 		var requested []adtyVerifyRecord
 		if err := common.Unmarshal([]byte(verify), &requested); err != nil {
-			return err
+			return changed, err
 		}
 		for _, record := range requested {
 			if record.Type == "TXT" {
 				if err := ensure(AdtyDNSRecord{Type: "TXT", Name: record.Name, Value: record.Value, Line: "default"}); err != nil {
-					return err
+					return changed, err
 				}
 			}
 		}
@@ -700,6 +740,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 		row.ManagedBy != "platform" &&
 		(row.Role == model.AdtySiteDomainRoleSite || row.Role == model.AdtySiteDomainRoleBaseURL) &&
 		row.DesiredState == "serve" && row.TurnstileWidget == "" && cfg.TurnstileConfigured() {
+		prevWidget := row.TurnstileWidget
 		var widget, hostname string
 		needAssign := false
 		if err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -721,13 +762,13 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 			hostname = current.Hostname
 			return nil
 		}); err != nil {
-			return err
+			return changed, err
 		}
 		// External Turnstile assignment runs OUTSIDE any DB transaction (R4-16).
 		if needAssign {
 			assigned, assignErr := adtyTurnstileAssign(ctx, hostname)
 			if assignErr != nil {
-				return assignErr
+				return changed, assignErr
 			}
 			if assigned != "" {
 				compensateRemove := false
@@ -774,33 +815,50 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) error {
 					_ = adtyTurnstileRemoveDomain(ctx, assigned, hostname)
 				}
 				if txErr != nil {
-					return txErr
+					return changed, txErr
 				}
 			}
 		}
 		if widget != "" {
 			row.TurnstileWidget = widget
 		}
+		if row.TurnstileWidget != prevWidget {
+			changed = true
+		}
 	}
-	// Keep an unverified serving host out of the route table.
+	// Keep an unverified serving host out of the route table, but require
+	// consecutive probe failures before demoting an already-active domain so a
+	// single transient network or edge error does not cause an instant 404.
 	if status == model.AdtySiteDomainActive && row.DesiredState == "serve" {
 		if err := adtyProbeDomainHTTPS(ctx, row); err != nil {
-			result := model.DB.Model(&model.AdtySiteDomain{}).Where("id = ? AND generation = ? AND lease_token = ?", row.Id, row.Generation, row.LeaseToken).Updates(map[string]any{"status": model.AdtySiteDomainPending, "ssl_status": detail.SSL.Status, "verify_records": verify})
-			return errors.Join(err, result.Error)
+			nextStatus := model.AdtySiteDomainPending
+			if row.Status == model.AdtySiteDomainActive && row.Attempts+1 < adtyActiveDomainProbeDemoteThreshold {
+				nextStatus = model.AdtySiteDomainActive
+			}
+			if nextStatus != row.Status {
+				changed = true
+			}
+			result := model.DB.Model(&model.AdtySiteDomain{}).Where("id = ? AND generation = ? AND lease_token = ?", row.Id, row.Generation, row.LeaseToken).Updates(map[string]any{"status": nextStatus, "ssl_status": detail.SSL.Status, "verify_records": verify})
+			return changed, errors.Join(err, result.Error)
 		}
 	}
 	result := model.DB.Model(&model.AdtySiteDomain{}).Where("id = ? AND generation = ? AND lease_token = ?", row.Id, row.Generation, row.LeaseToken).Updates(map[string]any{"status": status, "automation_state": state, "ssl_status": detail.SSL.Status, "verify_records": verify})
 	if result.Error != nil {
-		return result.Error
+		return changed, result.Error
 	}
 	if result.RowsAffected != 1 {
-		return fmt.Errorf("Domain intent changed during reconciliation")
+		return changed, fmt.Errorf("Domain intent changed during reconciliation")
+	}
+	if status != row.Status || state != row.AutomationState {
+		changed = true
 	}
 	if state == "redirect_only" {
-		InvalidateAdtySiteCache()
-		return adtyProbeDomainHTTPS(ctx, row)
+		if changed {
+			InvalidateAdtySiteCache()
+		}
+		return changed, adtyProbeDomainHTTPS(ctx, row)
 	}
-	return nil
+	return changed, nil
 }
 
 func adtyAliDNSUserError(err error) error {

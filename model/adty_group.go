@@ -1131,7 +1131,9 @@ func DeleteAdtyGroup(id string) error {
 					changed := false
 					for _, entry := range rawGroups {
 						gid, _ := entry["groupId"].(string)
-						if strings.TrimSpace(gid) == id {
+						cat, _ := entry["categoryName"].(string)
+						trimmedGID := strings.TrimSpace(gid)
+						if trimmedGID == id || (trimmedGID == "" && strings.TrimSpace(cat) == id) {
 							changed = true
 							continue
 						}
