@@ -16,4 +16,10 @@ docs
 /web/node_modules
 /scripts/mail/node_modules
 /web/dist
+/docs-site/node_modules
+/docs-site/dist
+/docs-site/dist-*
+/docs-site/docs/.vitepress/cache
+/docs-site/docs/.vitepress/dist
+!docs-site/**/*.md
 !THIRD-PARTY-LICENSES.md

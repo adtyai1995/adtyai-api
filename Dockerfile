@@ -7,6 +7,14 @@ COPY ./web ./
 COPY ./VERSION /build/VERSION
 RUN DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$(cat /build/VERSION) bun run build
 
+FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS docs-builder
+
+WORKDIR /build/docs-site
+COPY docs-site/package.json docs-site/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY ./docs-site ./
+RUN VITEPRESS_BASE=/docs/ VITEPRESS_OUT=../dist bun run build
+
 FROM golang:1.26.11-alpine@sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb AS builder2
 ENV GO111MODULE=on CGO_ENABLED=0 GOWORK=off
 
@@ -36,6 +44,7 @@ RUN apt-get update \
     && update-ca-certificates
 
 COPY --from=builder2 /build/new-api /
+COPY --from=docs-builder /build/docs-site/dist /app/docs
 COPY LICENSE NOTICE THIRD-PARTY-LICENSES.md /licenses/
 EXPOSE 3000
 WORKDIR /data

@@ -48,7 +48,7 @@ sudo cp .env.example .env && sudo chmod 600 .env
 | `SESSION_COOKIE_TRUSTED_URL` | 是 | — | 与 `SESSION_COOKIE_SECURE=true` 配套，写 https origin |
 | `ADTY_FLUSH_TOKEN` | 是 | — | 内部刷盘接口密钥，compose 用 `:?` 强制要求 |
 | `ADTY_EDGE_TOKEN` | 否 | 空 | 可选：大陆边缘节点拉取 `GET /api/adty/internal/edge/manifest` 的共享密钥 |
-| `ADTY_DOCS_DIR` | 否 | `/data/docs` | 可选：全站同域 `/docs/` 白标静态文档目录（放入 VitePress `base="/docs/"` 构建产物即生效；目录无 `index.html` 或设 `off` 时自动回退内置文档） |
+| `ADTY_DOCS_DIR` | 否 | `/data/docs` | 可选：全站同域 `/docs/` 白标静态文档目录（优先读取宿主机 `./data/docs` 热覆盖，为空时自动回退使用随 `Dockerfile` 构建打入镜像的 `/app/docs` VitePress 产物；设 `off` 回退内置 React 文档） |
 | `LOG_SQL_DSN` | 否 | 空（用主库） | 独立日志库，必须是 PostgreSQL 18 |
 | `ADTY_TELEGRAM_ALLOW_NETWORK` | 否 | `1` | 设成 `0` 时进程里没有 Telegram sender：通知和公告同步全部失败，外部只看到「没有消息要发」 |
 | `NODE_NAME` | 否 | `adtyai-node-1` | 节点名，多节点时区分 |
@@ -280,8 +280,8 @@ sudo docker compose ps adtyai-api                 # 等到 healthy
 - 分站 Logo 存在 `/data/uploads/site-assets`，在 `./data` 卷里，跟着 `backup.sh` 每天的 data 打包一起备份。
 - 后台的服务器地址（ServerAddress）仍填主站地址：支付回调、支付跳转都走主站（执行层决定 30）。
 - **全站同域 `/docs/` 白标文档与分站外链覆盖**：
-  - 源站 `adtyai-api` 内置同域静态文档托管（`router/adty_docs.go`、`service/adty_static_docs.go`），默认读取容器内 `ADTY_DOCS_DIR`（`/data/docs`，对应宿主机 `./data/docs`）。将 VitePress 以 `base: '/docs/'` 构建的产物（可直接使用 `deploy/adty/docs/brand.ts`、`deploy/adty/docs/index.ts` 与 `deploy/adty/docs/build-dual.sh`）同步至宿主机 `./data/docs/` 后，主站及所有分站的 `/docs/` 立即通过海外源站（Cloudflare）与大陆香港边缘（`deploy/adty/edge/origin-proxy.conf` 对 `/docs/assets/` 30 天跨站共享缓存、`/docs/` 按 Host 短期缓存）全局可用；页面加载时同源请求 `/api/status` 自动替换当前站点名称、Logo、Favicon、控制台地址与 API Base URL。
-  - 若宿主机 `./data/docs/index.html` 不存在（或 `ADTY_DOCS_DIR=off`），自动无痛回退到内置前端白标文档页（`/docs`）。
+  - 源站 `adtyai-api` 已将 VitePress 白标文档源码直接纳入仓库 `docs-site/`（含白标运行时 `docs-site/docs/.vitepress/theme/brand.ts`、`docs-site/docs/.vitepress/theme/index.ts` 与配置 `docs-site/docs/.vitepress/config.mts`），并在 `Dockerfile` 中以 `base: '/docs/'` 自动构建至镜像内 `/app/docs`；主站与全部分站的 `/docs/` 无需单独文档域名或额外服务器，升级镜像即开箱可用，并自动复用海外源站（Cloudflare）与大陆香港边缘（`deploy/adty/edge/origin-proxy.conf` 对 `/docs/assets/` 30 天跨站共享缓存、`/docs/` 按 Host 5 分钟缓存）。页面加载时同源请求 `/api/status` 自动替换当前站点名称、Logo、Favicon、控制台地址与 API Base URL。
+  - 源站托管（`router/adty_docs.go`、`service/adty_static_docs.go`）按「宿主机 `ADTY_DOCS_DIR`（默认 `/data/docs`，对应 `./data/docs`）优先热覆盖 → 为空自动回退镜像内置 `/app/docs`」解析；如需临时 5 秒热更新文档无需重编镜像，可将构建产物直接放入 `./data/docs/`；若需停用静态文档并回退到内置 React `/docs` 页面，将 `ADTY_DOCS_DIR` 设为 `off` 即可。
   - 站长可在「站点设置 → 品牌」（及后台分站详情）填写可选外部 `docs_url`（`http://` / `https://`）；填写后，该分站顶栏、首页与控制台的文档入口及直接访问 `/docs`、`/docs/` 均跳转至站长外链，留空则继续使用本站同域 `/docs/` 白标文档。
 
 ## 12. 中国大陆首页加速（自建香港边缘节点）

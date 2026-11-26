@@ -13,6 +13,11 @@ build
 logs
 web/dist
 web/node_modules
+docs-site/dist
+docs-site/dist-*
+docs-site/node_modules
+docs-site/docs/.vitepress/cache
+docs-site/docs/.vitepress/dist
 .env
 one-api
 new-api

@@ -248,3 +248,54 @@ func TestAdtyStaticDocsServingAndSubsiteOverride(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "SPA_FALLBACK", rec.Body.String())
 }
+
+func TestAdtyStaticDocsBundledFallbackAndDisable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_ = setupAdtyDocsBrandDB(t)
+
+	bundledDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bundledDir, "index.html"), []byte("<html>Bundled VitePress</html>"), 0o644))
+	cleanupBundled := service.SetAdtyBundledStaticDocsDirForTest(bundledDir)
+	defer cleanupBundled()
+
+	buildRouter := func() *gin.Engine {
+		r := gin.New()
+		r.NoRoute(AdtyStaticDocs(), func(c *gin.Context) {
+			c.String(http.StatusOK, "SPA_FALLBACK")
+		})
+		return r
+	}
+
+	// Default unset ADTY_DOCS_DIR falls back to bundled /app/docs when /data/docs is absent.
+	t.Setenv("ADTY_DOCS_DIR", "")
+	assert.True(t, service.AdtyStaticDocsMounted())
+	rec := httptest.NewRecorder()
+	buildRouter().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "https://www.adtyai.com/docs/", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "Bundled VitePress")
+
+	// Explicit default /data/docs also falls back to bundled docs when /data/docs has no index.html.
+	t.Setenv("ADTY_DOCS_DIR", "/data/docs")
+	assert.True(t, service.AdtyStaticDocsMounted())
+	dir, ok := service.AdtyStaticDocsRootDir()
+	assert.True(t, ok)
+	assert.Equal(t, bundledDir, dir)
+
+	// Explicit non-default custom dir overrides bundled docs when ready.
+	overrideDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(overrideDir, "index.html"), []byte("<html>Hot Override</html>"), 0o644))
+	t.Setenv("ADTY_DOCS_DIR", overrideDir)
+	assert.True(t, service.AdtyStaticDocsMounted())
+	rec = httptest.NewRecorder()
+	buildRouter().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "https://www.adtyai.com/docs/", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "Hot Override")
+
+	// ADTY_DOCS_DIR=off disables BOTH external override and bundled fallback.
+	t.Setenv("ADTY_DOCS_DIR", "off")
+	assert.False(t, service.AdtyStaticDocsMounted())
+	rec = httptest.NewRecorder()
+	buildRouter().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "https://www.adtyai.com/docs", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "SPA_FALLBACK", rec.Body.String())
+}
