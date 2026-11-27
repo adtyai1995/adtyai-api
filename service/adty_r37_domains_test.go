@@ -37,11 +37,15 @@ func setupR37DomainTest(t *testing.T, configure func(*adty_setting.ResellerSetti
 
 	oldDB := model.DB
 	oldLookup := adtyLookupOwnershipTXT
+	oldLookupCNAME := adtyLookupOwnershipCNAME
 	oldDelay := adtyCustomHostnameRecordDelay
 	model.DB = db
 	adtyCustomHostnameRecordDelay = 0
 	adtyLookupOwnershipTXT = func(ctx context.Context, name string) ([]string, error) {
 		return nil, &net.DNSError{IsNotFound: true}
+	}
+	adtyLookupOwnershipCNAME = func(ctx context.Context, name string) (string, error) {
+		return "", &net.DNSError{IsNotFound: true}
 	}
 
 	rsPtr, ok := config.GlobalConfig.Get(adty_setting.ResellerSettingModule).(*adty_setting.ResellerSetting)
@@ -67,6 +71,7 @@ func setupR37DomainTest(t *testing.T, configure func(*adty_setting.ResellerSetti
 	t.Cleanup(func() {
 		model.DB = oldDB
 		adtyLookupOwnershipTXT = oldLookup
+		adtyLookupOwnershipCNAME = oldLookupCNAME
 		adtyCustomHostnameRecordDelay = oldDelay
 		common.OptionMapRWMutex.Lock()
 		*rsPtr = oldRS
@@ -88,6 +93,17 @@ func createR37TestSite(t *testing.T, db *gorm.DB, ownerID int, subdomain string)
 		t.Fatalf("create site %s: %v", subdomain, err)
 	}
 	return site
+}
+
+func assertVerifyRecordsHaveCNAMEOnly(t *testing.T, d model.AdtySiteDomain, expectedCNAME string) {
+	t.Helper()
+	var records []adtyVerifyRecord
+	if err := common.Unmarshal([]byte(d.VerifyRecords), &records); err != nil {
+		t.Fatalf("unmarshal verify_records for %s: %v (raw=%s)", d.Hostname, err, d.VerifyRecords)
+	}
+	if len(records) != 1 || records[0].Type != "CNAME" || records[0].Name != d.Hostname || records[0].Value != expectedCNAME {
+		t.Fatalf("expected CNAME-only record for %s -> %s, got %+v", d.Hostname, expectedCNAME, records)
+	}
 }
 
 func assertVerifyRecordsHaveCNAMEAndTXT(t *testing.T, d model.AdtySiteDomain, expectedCNAME string) {
@@ -216,8 +232,8 @@ func TestR37DomainPairCreateAndRoleSlotCap(t *testing.T) {
 	if domains[1].Hostname != "api.client.org" || domains[1].Role != model.AdtySiteDomainRoleBaseURL || domains[1].Status != model.AdtySiteDomainPending {
 		t.Fatalf("unexpected api domain: %+v", domains[1])
 	}
-	assertVerifyRecordsHaveCNAMEAndTXT(t, domains[0], "cname.platform.test")
-	assertVerifyRecordsHaveCNAMEAndTXT(t, domains[1], "cname.platform.test")
+	assertVerifyRecordsHaveCNAMEOnly(t, domains[0], "cname.platform.test")
+	assertVerifyRecordsHaveCNAMEOnly(t, domains[1], "cname.platform.test")
 
 	var audits int64
 	if err := db.Model(&model.AdtySiteAudit{}).Where("site_id = ? AND action = ?", site.Id, adtySiteDomainCreateAuditAction).Count(&audits).Error; err != nil {
@@ -410,12 +426,12 @@ func TestCheckAdtySiteDomainNowOwnerTrigger(t *testing.T) {
 		"last_checked_at":  time.Now().Add(-time.Minute).Unix(),
 	}).Error)
 
-	// 1. Immediate check bypasses 1-hour backoff and surfaces missing TXT right away.
+	// 1. Immediate check bypasses 1-hour backoff and surfaces missing CNAME right away.
 	checked, err := CheckAdtySiteDomainNow(ctx, 601, apiDomain.Id)
 	require.NoError(t, err)
 	assert.Equal(t, model.AdtySiteDomainPending, checked.Status)
 	assert.Equal(t, "retry", checked.AutomationState)
-	assert.Equal(t, "Domain ownership TXT is not verified", checked.LastError)
+	assert.Equal(t, "Domain CNAME is not pointing to the target yet", checked.LastError)
 	assert.Empty(t, checked.LeaseToken)
 	assert.Zero(t, checked.LeaseUntil)
 
@@ -445,14 +461,12 @@ func TestCheckAdtySiteDomainNowOwnerTrigger(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Platform domains are managed by the platform")
 
-	// 5. Once TXT propagates and cooldown passes, CheckAdtySiteDomainNow activates immediately.
-	var stored model.AdtySiteDomain
-	require.NoError(t, db.First(&stored, apiDomain.Id).Error)
-	adtyLookupOwnershipTXT = func(ctx context.Context, name string) ([]string, error) {
-		if name == adtyOwnershipTXTName(apiDomain.Hostname) {
-			return []string{stored.OwnershipToken}, nil
+	// 5. Once CNAME propagates and cooldown passes, CheckAdtySiteDomainNow activates immediately without any TXT record.
+	adtyLookupOwnershipCNAME = func(ctx context.Context, name string) (string, error) {
+		if name == apiDomain.Hostname {
+			return "cname.platform.test.", nil
 		}
-		return nil, &net.DNSError{IsNotFound: true}
+		return "", &net.DNSError{IsNotFound: true}
 	}
 	require.NoError(t, db.Model(&model.AdtySiteDomain{}).Where("id = ?", apiDomain.Id).Update("last_checked_at", time.Now().Add(-time.Minute).Unix()).Error)
 
@@ -463,10 +477,111 @@ func TestCheckAdtySiteDomainNowOwnerTrigger(t *testing.T) {
 	assert.Empty(t, activated.LastError)
 	assert.Zero(t, activated.Attempts)
 	assert.Equal(t, "cf-host-check-1", activated.CFHostnameId)
+	assertVerifyRecordsHaveCNAMEOnly(t, *activated, "cname.platform.test")
 
 	// 6. Failed domain cannot be checked directly.
 	require.NoError(t, db.Model(&model.AdtySiteDomain{}).Where("id = ?", pair[0].Id).Update("status", model.AdtySiteDomainFailed).Error)
 	_, err = CheckAdtySiteDomainNow(ctx, 601, pair[0].Id)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed verification")
+}
+
+func TestR48CrossSiteReclaimStillRequiresTXTProof(t *testing.T) {
+	db := setupR37DomainTest(t, func(rs *adty_setting.ResellerSetting) {
+		rs.DomainAutomationEnabled = true
+	})
+	oldCF := AdtyCloudflare
+	oldProbe := adtyProbeDomainHTTPS
+	t.Cleanup(func() {
+		AdtyCloudflare = oldCF
+		adtyProbeDomainHTTPS = oldProbe
+	})
+	adtyProbeDomainHTTPS = func(context.Context, *model.AdtySiteDomain) error { return nil }
+	cfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/test-zone-id/custom_hostnames":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": []any{}})
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/test-zone-id/custom_hostnames":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result": map[string]any{
+					"id":                     "cf-reclaim-1",
+					"hostname":               "www.reclaim.org",
+					"status":                 "pending",
+					"ownership_verification": map[string]any{"type": "txt", "name": "_cf-custom-hostname.www.reclaim.org", "value": "cf-optional-txt"},
+					"ssl":                    map[string]any{"status": "pending_validation"},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/test-zone-id/custom_hostnames/cf-reclaim-1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result": map[string]any{
+					"id":                     "cf-reclaim-1",
+					"hostname":               "www.reclaim.org",
+					"status":                 "pending",
+					"ownership_verification": map[string]any{"type": "txt", "name": "_cf-custom-hostname.www.reclaim.org", "value": "cf-optional-txt"},
+					"ssl":                    map[string]any{"status": "pending_validation"},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(cfSrv.Close)
+	AdtyCloudflare = &AdtyCloudflareClient{
+		BaseURL: cfSrv.URL,
+		HTTP:    cfSrv.Client(),
+		Token:   func() string { return "test-cf-token" },
+	}
+
+	site1 := createR37TestSite(t, db, 701, "former")
+	createR37TestSite(t, db, 702, "claimer")
+	ctx := context.Background()
+
+	// Former site previously bound and removed www.reclaim.org (simulating a dangling CNAME).
+	require.NoError(t, db.Create(&model.AdtySiteDomain{
+		SiteId:    site1.Id,
+		Hostname:  "www.reclaim.org",
+		Role:      model.AdtySiteDomainRoleSite,
+		ManagedBy: "owner",
+		Status:    model.AdtySiteDomainRemoved,
+	}).Error)
+
+	// Dangling CNAME still points to platform CNAME target.
+	adtyLookupOwnershipCNAME = func(ctx context.Context, name string) (string, error) {
+		if name == "www.reclaim.org" || name == "api.reclaim.org" {
+			return "cname.platform.test.", nil
+		}
+		return "", &net.DNSError{IsNotFound: true}
+	}
+
+	pair, err := AddAdtySiteDomainPair(ctx, 702, "www.reclaim.org", "api.reclaim.org")
+	require.NoError(t, err)
+	require.Len(t, pair, 2)
+
+	// Reclaimed hostname must strictly require TXT + CNAME; fresh api.reclaim.org only needs CNAME.
+	assertVerifyRecordsHaveCNAMEAndTXT(t, pair[0], "cname.platform.test")
+	assertVerifyRecordsHaveCNAMEOnly(t, pair[1], "cname.platform.test")
+
+	// CNAME alone must NOT allow cross-site takeover of www.reclaim.org.
+	checked, err := CheckAdtySiteDomainNow(ctx, 702, pair[0].Id)
+	require.NoError(t, err)
+	assert.Equal(t, model.AdtySiteDomainPending, checked.Status)
+	assert.Equal(t, "Domain ownership TXT is not verified", checked.LastError)
+	assert.Empty(t, checked.CFHostnameId)
+
+	// Once TXT is verified, CF Custom Hostname is created and verify_records does NOT expose Cloudflare's optional ownership TXT.
+	adtyLookupOwnershipTXT = func(ctx context.Context, name string) ([]string, error) {
+		if name == adtyOwnershipTXTName("www.reclaim.org") {
+			return []string{pair[0].OwnershipToken}, nil
+		}
+		return nil, &net.DNSError{IsNotFound: true}
+	}
+	require.NoError(t, db.Model(&model.AdtySiteDomain{}).Where("id = ?", pair[0].Id).Update("last_checked_at", time.Now().Add(-time.Minute).Unix()).Error)
+	verified, err := CheckAdtySiteDomainNow(ctx, 702, pair[0].Id)
+	require.NoError(t, err)
+	assert.Equal(t, "cf-reclaim-1", verified.CFHostnameId)
+	assert.Equal(t, "validating", verified.AutomationState)
+	assertVerifyRecordsHaveCNAMEOnly(t, *verified, "cname.platform.test")
 }

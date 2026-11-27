@@ -58,6 +58,10 @@ var (
 	adtyLookupOwnershipTXT = func(ctx context.Context, name string) ([]string, error) {
 		return net.DefaultResolver.LookupTXT(ctx, name)
 	}
+	// adtyLookupOwnershipCNAME 查自定义域名 CNAME 指向。测试换成假的，避免真去解析。
+	adtyLookupOwnershipCNAME = func(ctx context.Context, name string) (string, error) {
+		return net.DefaultResolver.LookupCNAME(ctx, name)
+	}
 )
 
 const (
@@ -297,11 +301,28 @@ type adtyVerifyRecord struct {
 	Value string `json:"value"`
 }
 
-// verifyRecordsFor 生成站长要加的记录：CNAME 指向 cname_target，再加 Cloudflare 要的 TXT（如果有）。
+// verifyRecordsFor 生成站长或平台自动化要加的记录：CNAME 指向 cname_target，再加 Cloudflare 要的 TXT（如果有）。
 func verifyRecordsFor(hostname, cnameTarget string, h *adtyCustomHostname) string {
+	return verifyRecordsForMode(hostname, cnameTarget, h, true)
+}
+
+// verifyRecordsForDomain 按域名托管方式生成验证记录：
+// 平台域名使用 ssl.method=txt 且由阿里云自动化代写，须保留 Cloudflare 返回的 ownership_verification TXT；
+// 站长自定义域名使用 ssl.method=http，CNAME 指向 cname_target 后由 Cloudflare 自动通过 HTTP 完成所有权与 SSL 签发，
+// 无需再要求站长添加冗余的 ownership_verification TXT。
+func verifyRecordsForDomain(domain *model.AdtySiteDomain, cnameTarget string, h *adtyCustomHostname) string {
+	includeOwnershipTXT := domain != nil && domain.ManagedBy == "platform"
+	host := ""
+	if domain != nil {
+		host = domain.Hostname
+	}
+	return verifyRecordsForMode(host, cnameTarget, h, includeOwnershipTXT)
+}
+
+func verifyRecordsForMode(hostname, cnameTarget string, h *adtyCustomHostname, includeOwnershipTXT bool) string {
 	records := []adtyVerifyRecord{{Type: "CNAME", Name: hostname, Value: cnameTarget}}
 	if h != nil {
-		if h.OwnershipVerification.Name != "" && h.OwnershipVerification.Value != "" {
+		if includeOwnershipTXT && h.OwnershipVerification.Name != "" && h.OwnershipVerification.Value != "" {
 			records = append(records, adtyVerifyRecord{Type: "TXT", Name: h.OwnershipVerification.Name, Value: h.OwnershipVerification.Value})
 		}
 		for _, record := range h.SSL.ValidationRecords {
@@ -491,10 +512,14 @@ func adtyUpsertCustomDomainTx(tx *gorm.DB, cfg *adty_setting.ResellerSetting, si
 	if err != nil {
 		return model.AdtySiteDomain{}, err
 	}
+	// Fresh domains and same-site re-binds only require CNAME pointing to cname_target;
+	// reclaiming a hostname previously bound by another site strictly requires a fresh TXT
+	// record to prevent dangling-CNAME cross-tenant hijacking.
+	requireTXT := found && existing != nil && existing.SiteId != siteId
 	domain := model.AdtySiteDomain{
 		SiteId: siteId, BoundBy: ownerUserId, Hostname: host, Role: role, OwnershipToken: token, Status: model.AdtySiteDomainPending,
 		ManagedBy: "owner", DesiredState: "serve", ProviderZone: cfg.CloudflareZoneId, DNSTarget: cfg.CnameTarget,
-		VerifyRecords: adtyOwnershipRecords(host, token, strings.TrimSpace(cfg.CnameTarget)),
+		VerifyRecords: adtyOwnershipRecordsForMode(host, token, strings.TrimSpace(cfg.CnameTarget), requireTXT),
 		LastCheckedAt: now, CreatedAt: now,
 	}
 	if cfg.DomainAutomationEnabled {
@@ -885,12 +910,95 @@ func adtyOwnershipTXTName(host string) string {
 }
 
 func adtyOwnershipRecords(host, token, cnameTarget string) string {
-	records := []adtyVerifyRecord{
-		{Type: "TXT", Name: adtyOwnershipTXTName(host), Value: token},
-		{Type: "CNAME", Name: host, Value: cnameTarget},
+	return adtyOwnershipRecordsForMode(host, token, cnameTarget, true)
+}
+
+func adtyOwnershipRecordsForMode(host, token, cnameTarget string, requireTXT bool) string {
+	var records []adtyVerifyRecord
+	if requireTXT && token != "" {
+		records = append(records, adtyVerifyRecord{Type: "TXT", Name: adtyOwnershipTXTName(host), Value: token})
 	}
+	records = append(records, adtyVerifyRecord{Type: "CNAME", Name: host, Value: cnameTarget})
 	data, _ := common.Marshal(records)
 	return string(data)
+}
+
+func adtyDomainRequiresOwnershipTXT(domain *model.AdtySiteDomain) bool {
+	if domain == nil || strings.TrimSpace(domain.OwnershipToken) == "" || strings.TrimSpace(domain.VerifyRecords) == "" {
+		return false
+	}
+	var records []adtyVerifyRecord
+	if err := common.Unmarshal([]byte(domain.VerifyRecords), &records); err != nil {
+		return false
+	}
+	txtName := adtyOwnershipTXTName(domain.Hostname)
+	token := strings.TrimSpace(domain.OwnershipToken)
+	for _, r := range records {
+		if strings.EqualFold(strings.TrimSpace(r.Type), "TXT") &&
+			strings.EqualFold(strings.TrimSpace(r.Name), txtName) &&
+			strings.TrimSpace(r.Value) == token {
+			return true
+		}
+	}
+	return false
+}
+
+func adtyOwnershipCNAMEMatches(ctx context.Context, host, cnameTarget string) (bool, error) {
+	expected := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(cnameTarget)), ".")
+	cleanHost := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if expected == "" || cleanHost == "" {
+		return false, nil
+	}
+	target, err := adtyLookupOwnershipCNAME(ctx, cleanHost)
+	if err != nil {
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+			return false, nil
+		}
+		return false, err
+	}
+	actual := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(target)), ".")
+	if actual == "" || actual == cleanHost {
+		return false, nil
+	}
+	if actual == expected {
+		return true, nil
+	}
+	if expectedTarget, expErr := adtyLookupOwnershipCNAME(ctx, expected); expErr == nil {
+		expectedCanon := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(expectedTarget)), ".")
+		if expectedCanon != "" && expectedCanon != expected && actual == expectedCanon {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func adtyVerifyCustomDomainOwnership(ctx context.Context, domain *model.AdtySiteDomain, cnameTarget string) (bool, error) {
+	if domain == nil || strings.TrimSpace(domain.OwnershipToken) == "" {
+		return false, common.NewMessage("Domain ownership verification is required")
+	}
+	if adtyDomainRequiresOwnershipTXT(domain) {
+		matched, err := adtyOwnershipTXTMatches(ctx, domain.Hostname, domain.OwnershipToken)
+		if err != nil {
+			return false, common.NewMessage("Domain ownership lookup failed")
+		}
+		if !matched {
+			return false, common.NewMessage("Domain ownership TXT is not verified")
+		}
+		return true, nil
+	}
+	cnameMatched, cnameErr := adtyOwnershipCNAMEMatches(ctx, domain.Hostname, cnameTarget)
+	if cnameMatched {
+		return true, nil
+	}
+	// Accept matching TXT as an optional zero-downtime pre-validation fallback.
+	if txtMatched, err := adtyOwnershipTXTMatches(ctx, domain.Hostname, domain.OwnershipToken); err == nil && txtMatched {
+		return true, nil
+	}
+	if cnameErr != nil {
+		return false, common.NewMessage("Domain CNAME lookup failed")
+	}
+	return false, common.NewMessage("Domain CNAME is not pointing to the target yet")
 }
 
 func adtyOwnershipTXTMatches(ctx context.Context, host, token string) (bool, error) {
@@ -1106,7 +1214,7 @@ func adtyAttachCustomHostname(ctx context.Context, domain *model.AdtySiteDomain)
 	}
 	defer adtyReleaseDomainLease(current.Id, leaseToken)
 
-	if err := adtyAttachCustomHostnameWithLease(ctx, &current, leaseToken); err != nil {
+	if err := adtyAttachCustomHostnameWithLease(ctx, &current, leaseToken, false); err != nil {
 		return err
 	}
 	current.LeaseToken, current.LeaseUntil = "", 0
@@ -1114,23 +1222,22 @@ func adtyAttachCustomHostname(ctx context.Context, domain *model.AdtySiteDomain)
 	return nil
 }
 
-func adtyAttachCustomHostnameWithLease(ctx context.Context, domain *model.AdtySiteDomain, leaseToken string) error {
+func adtyAttachCustomHostnameWithLease(ctx context.Context, domain *model.AdtySiteDomain, leaseToken string, recordUnverifiedErr bool) error {
 	if domain.Status != model.AdtySiteDomainPending || domain.CFHostnameId != "" || domain.OwnershipToken == "" {
 		return nil
 	}
-	// External DNS lookup runs OUTSIDE any DB transaction.
-	matched, err := adtyOwnershipTXTMatches(ctx, domain.Hostname, domain.OwnershipToken)
-	if err != nil {
-		common.SysError(common.LogText("ownership lookup failed for domain %d: %s", domain.Id, err.Error()))
-		_, _ = adtyUpdateLeasedDomainSnapshot(ctx, domain, leaseToken, map[string]any{
-			"last_error": common.NewMessage("Domain ownership lookup failed").Error(),
-		})
-		return nil
-	}
-	if !matched {
-		return nil
-	}
 	cfg := resellerSetting()
+	// External DNS lookup runs OUTSIDE any DB transaction.
+	matched, verifyErr := adtyVerifyCustomDomainOwnership(ctx, domain, strings.TrimSpace(cfg.CnameTarget))
+	if !matched {
+		if verifyErr != nil && (recordUnverifiedErr || strings.Contains(strings.ToLower(verifyErr.Error()), "lookup failed")) {
+			_, _ = adtyUpdateLeasedDomainSnapshot(ctx, domain, leaseToken, map[string]any{
+				"last_error": verifyErr.Error(),
+			})
+			domain.LastError = verifyErr.Error()
+		}
+		return nil
+	}
 	zone := adtyDomainEffectiveZone(domain, cfg)
 
 	// Tx1: Durably commit cf_create_started_at BEFORE calling createCustomHostname so a
@@ -1186,7 +1293,7 @@ func adtyAttachCustomHostnameWithLease(ctx context.Context, domain *model.AdtySi
 		detail = created
 	}
 	now := time.Now().Unix()
-	records := verifyRecordsFor(domain.Hostname, strings.TrimSpace(cfg.CnameTarget), detail)
+	records := verifyRecordsForDomain(domain, strings.TrimSpace(cfg.CnameTarget), detail)
 
 	// Tx2: Re-verify leased domain state and persist the Cloudflare hostname record.
 	rowsAffected, err := adtyUpdateLeasedDomainSnapshot(ctx, domain, leaseToken, map[string]any{
@@ -1742,7 +1849,7 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 			rowsAffected, err := adtyUpdateLeasedDomainSnapshot(ctx, &domain, leaseToken, map[string]any{
 				"status":          model.AdtySiteDomainPending,
 				"ssl_status":      detail.SSL.Status,
-				"verify_records":  verifyRecordsFor(domain.Hostname, strings.TrimSpace(cfg.CnameTarget), detail),
+				"verify_records":  verifyRecordsForDomain(&domain, strings.TrimSpace(cfg.CnameTarget), detail),
 				"last_checked_at": now.Unix(),
 				"created_at":      now.Unix(),
 				"attempts":        0,
@@ -1823,7 +1930,7 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 			syncSnapshot()
 			return false, nil
 		}
-		if err := adtyAttachCustomHostnameWithLease(ctx, &domain, leaseToken); err != nil {
+		if err := adtyAttachCustomHostnameWithLease(ctx, &domain, leaseToken, true); err != nil {
 			// Cloudflare 拒绝这个主机名（非法、已被别的 zone 占用、token 缺权限……）
 			// 是这一行的属性，不是整批的：记账，并让超时判断也能看到它。
 			// 其它错误（DB 写失败之类）照旧上抛：事务已经坏了，不能装作没事。
@@ -1874,7 +1981,7 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 		}
 	default:
 		updates["ssl_status"] = detail.SSL.Status
-		updates["verify_records"] = verifyRecordsFor(domain.Hostname, strings.TrimSpace(cfg.CnameTarget), detail)
+		updates["verify_records"] = verifyRecordsForDomain(&domain, strings.TrimSpace(cfg.CnameTarget), detail)
 		if len(detail.VerificationErrors) > 0 {
 			updates["last_error"] = strings.Join(detail.VerificationErrors, "; ")
 		}

@@ -140,25 +140,6 @@ function edgeCertLabel(t: TFunction, status: string | undefined): string {
   }
 }
 
-function domainAutomationLabel(t: TFunction, state: string): string {
-  switch (state) {
-    case 'queued':
-      return t('Domain automation: Queued')
-    case 'validating':
-      return t('Domain automation: Validating')
-    case 'ready':
-      return t('Domain automation: Ready')
-    case 'retry':
-      return t('Domain automation: Retrying')
-    case 'redirect_only':
-      return t('Domain automation: Redirect only')
-    case 'removed':
-      return t('Domain automation: Removed')
-    default:
-      return state
-  }
-}
-
 function BrandCard(props: { site: OwnerSite }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
@@ -460,18 +441,31 @@ function DomainsCard(props: { site: OwnerSite }) {
   const [apiHostname, setApiHostname] = useState('')
   useDraftNavigation(siteHostname !== '' || apiHostname !== '')
   const [deleting, setDeleting] = useState<SiteDomain | null>(null)
-  const [checkingId, setCheckingId] = useState<number | null>(null)
+  const [checkingTarget, setCheckingTarget] = useState<{
+    id: number
+    mode: 'dns' | 'edge_cert'
+  } | null>(null)
+  const [expandedEdgeIds, setExpandedEdgeIds] = useState<
+    Record<number, boolean>
+  >({})
   const domains = props.site.domains ?? []
-  const customSiteDomain = domains.find(
+  const platformSiteDomain = domains.find(
     (d) =>
-      d.managed_by !== 'platform' && d.role === 'site' && d.status !== 'removed'
+      d.managed_by === 'platform' &&
+      d.role === 'site' &&
+      d.status !== 'removed'
   )
-  const customApiDomain = domains.find(
+  const platformApiDomain = domains.find(
     (d) =>
-      d.managed_by !== 'platform' &&
+      d.managed_by === 'platform' &&
       d.role === 'base_url' &&
       d.status !== 'removed'
   )
+  const customDomains = domains.filter(
+    (d) => d.managed_by !== 'platform' && d.status !== 'removed'
+  )
+  const customSiteDomain = customDomains.find((d) => d.role === 'site')
+  const customApiDomain = customDomains.find((d) => d.role === 'base_url')
   const bothEmpty = !customSiteDomain && !customApiDomain
   const bothConfigured = Boolean(customSiteDomain && customApiDomain)
   let missingRole: SiteDomainRole | null = null
@@ -518,9 +512,10 @@ function DomainsCard(props: { site: OwnerSite }) {
     onSuccess: () => setDeleting(null),
   })
   const checkNow = useMutation({
-    mutationFn: (id: number) => checkDomainNow(id),
-    onMutate: (id) => setCheckingId(id),
-    onSuccess: (updated) => {
+    mutationFn: (input: { id: number; mode: 'dns' | 'edge_cert' }) =>
+      checkDomainNow(input.id),
+    onMutate: (input) => setCheckingTarget(input),
+    onSuccess: (updated, input) => {
       queryClient.setQueryData<OwnerSite | undefined>(
         siteOwnerKeys.site,
         (prev) =>
@@ -534,6 +529,18 @@ function DomainsCard(props: { site: OwnerSite }) {
             : prev
       )
       void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
+      if (input.mode === 'edge_cert') {
+        if (updated.edge_cert_status === 'ready') {
+          toast.success(
+            t('Edge certificate is ready. You can now configure Step 2.')
+          )
+        } else if (updated.edge_cert_error) {
+          toast.error(formatDomainLastError(updated.edge_cert_error, t))
+        } else {
+          toast.error(t('ACME verification CNAME is not detected yet'))
+        }
+        return
+      }
       if (updated.status === 'active') {
         toast.success(t('Domain DNS verified and active'))
       } else if (updated.last_error) {
@@ -547,18 +554,19 @@ function DomainsCard(props: { site: OwnerSite }) {
       }
     },
     onError: (err) => handleServerError(err),
-    onSettled: () => setCheckingId(null),
+    onSettled: () => setCheckingTarget(null),
   })
 
   const platformSiteUrl = normalizeDisplayUrl(
     props.site.base_url || props.site.host
   )
   const platformApiUrl = normalizeDisplayUrl(props.site.api_base_url)
-  const cnameTarget = (props.site.cname_target ?? '').trim()
   const mainlandTarget = (props.site.domain_mainland_target ?? '').trim()
   const acmeSuffix = (props.site.edge_acme_alias_suffix ?? '').trim()
   const edgeMainlandEnabled = Boolean(props.site.edge_mainland_enabled)
   const closing = props.site.status === 'closing'
+  const toggleEdgePanel = (id: number) =>
+    setExpandedEdgeIds((prev) => ({ ...prev, [id]: !prev[id] }))
 
   return (
     <Card>
@@ -568,9 +576,17 @@ function DomainsCard(props: { site: OwnerSite }) {
       <CardContent className='grid gap-4'>
         <div className='bg-muted/30 grid gap-3 rounded-lg border p-3 sm:grid-cols-2'>
           <div className='space-y-1'>
-            <p className='text-muted-foreground text-xs font-medium'>
-              {t('Platform site address')}
-            </p>
+            <div className='flex items-center gap-2'>
+              <p className='text-muted-foreground text-xs font-medium'>
+                {t('Platform site address')}
+              </p>
+              {platformSiteDomain && platformSiteDomain.status !== 'active' && (
+                <StatusBadge
+                  variant={domainVariant(platformSiteDomain.status)}
+                  label={domainLabel(t, platformSiteDomain.status)}
+                />
+              )}
+            </div>
             <div className='flex items-center gap-1.5'>
               <span className='truncate font-mono text-sm'>
                 {platformSiteUrl}
@@ -580,9 +596,17 @@ function DomainsCard(props: { site: OwnerSite }) {
           </div>
           {platformApiUrl && (
             <div className='space-y-1'>
-              <p className='text-muted-foreground text-xs font-medium'>
-                {t('Platform API address')}
-              </p>
+              <div className='flex items-center gap-2'>
+                <p className='text-muted-foreground text-xs font-medium'>
+                  {t('Platform API address')}
+                </p>
+                {platformApiDomain && platformApiDomain.status !== 'active' && (
+                  <StatusBadge
+                    variant={domainVariant(platformApiDomain.status)}
+                    label={domainLabel(t, platformApiDomain.status)}
+                  />
+                )}
+              </div>
               <div className='flex items-center gap-1.5'>
                 <span className='truncate font-mono text-sm'>
                   {platformApiUrl}
@@ -599,38 +623,42 @@ function DomainsCard(props: { site: OwnerSite }) {
           </p>
         ) : (
           <>
-            {cnameTarget && (
-              <div className='bg-muted/40 space-y-2.5 rounded-lg border p-3'>
-                <div className='space-y-0.5'>
-                  <p className='text-sm font-medium'>{t('DNS CNAME target')}</p>
-                  <p className='text-muted-foreground text-xs'>
-                    {t(
-                      'Add a CNAME record on the default line for both your site domain and API domain pointing to the target below.'
-                    )}
-                  </p>
-                </div>
-                <div className='bg-background flex items-center justify-between gap-2 rounded-md border px-3 py-2'>
-                  <div className='min-w-0'>
-                    <p className='text-muted-foreground text-[11px]'>
-                      {t('Default CNAME target')}
-                    </p>
-                    <p className='truncate font-mono text-xs'>{cnameTarget}</p>
-                  </div>
-                  <CopyButton value={cnameTarget} />
-                </div>
-              </div>
-            )}
-
-            {domains.length > 0 && (
+            {customDomains.length > 0 && (
               <div className='grid gap-2.5'>
-                {domains.map((domain) => {
+                {customDomains.map((domain) => {
                   const verifyRecords = parseVerifyRecords(
                     domain.verify_records
                   )
+                  const showEdgePanel =
+                    edgeMainlandEnabled &&
+                    domain.role === 'site' &&
+                    Boolean(domain.edge_acme_alias && acmeSuffix) &&
+                    (domain.status === 'active' || domain.status === 'pending')
+                  const edgeExpanded = Boolean(expandedEdgeIds[domain.id])
+                  const edgeReady = domain.edge_cert_status === 'ready'
+                  const edgeFailed = domain.edge_cert_status === 'failed'
+                  const edgeIssuing = domain.edge_cert_status === 'issuing'
+                  const edgeMismatch = Boolean(
+                    domain.edge_cert_error &&
+                      domain.edge_cert_error.includes('currently points to')
+                  )
+                  const canShowStep2 =
+                    domain.status === 'active' &&
+                    edgeReady &&
+                    Boolean(mainlandTarget)
+                  let edgeToggleLabel = t('Configure')
+                  if (edgeExpanded) {
+                    edgeToggleLabel = t('Hide')
+                  } else if (edgeReady) {
+                    edgeToggleLabel = t('View')
+                  }
+                  const showEdgeError =
+                    (edgeFailed || edgeMismatch) &&
+                    Boolean(domain.edge_cert_error)
                   return (
                     <div
                       key={domain.id}
-                      className='space-y-2 rounded-lg border p-3'
+                      className='space-y-2.5 rounded-lg border p-3'
                     >
                       <div className='flex flex-wrap items-center justify-between gap-2'>
                         <div className='flex flex-wrap items-center gap-2'>
@@ -648,47 +676,36 @@ function DomainsCard(props: { site: OwnerSite }) {
                             variant={domainVariant(domain.status)}
                             label={domainLabel(t, domain.status)}
                           />
-                          {domain.managed_by !== 'platform' &&
-                            domain.status === 'pending' && (
-                              <Button
-                                size='sm'
-                                variant='outline'
-                                disabled={closing || checkNow.isPending}
-                                onClick={() => checkNow.mutate(domain.id)}
-                              >
-                                {checkingId === domain.id && checkNow.isPending
-                                  ? t('Checking DNS...')
-                                  : t('Check DNS now')}
-                              </Button>
-                            )}
+                          {domain.status === 'pending' && (
+                            <Button
+                              size='sm'
+                              variant='outline'
+                              disabled={closing || checkNow.isPending}
+                              onClick={() =>
+                                checkNow.mutate({ id: domain.id, mode: 'dns' })
+                              }
+                            >
+                              {checkingTarget?.id === domain.id &&
+                              checkingTarget.mode === 'dns' &&
+                              checkNow.isPending
+                                ? t('Checking DNS...')
+                                : t('Check DNS now')}
+                            </Button>
+                          )}
                           <Button
                             size='sm'
                             variant='outline'
                             onClick={() => setDeleting(domain)}
-                            disabled={
-                              remove.isPending ||
-                              domain.managed_by === 'platform'
-                            }
+                            disabled={remove.isPending}
                           >
                             {t('Delete')}
                           </Button>
                         </div>
                       </div>
-                      {domain.managed_by === 'platform' && (
-                        <p className='text-muted-foreground text-xs'>
-                          {t('Platform domains are managed by the platform')}
-                        </p>
-                      )}
-                      {domain.automation_state && (
-                        <p className='text-muted-foreground text-xs'>
-                          {domainAutomationLabel(t, domain.automation_state)}
-                        </p>
-                      )}
-                      {domain.managed_by !== 'platform' &&
-                        domain.status !== 'active' &&
+                      {domain.status !== 'active' &&
                         domain.verify_records &&
                         (verifyRecords.length > 0 ? (
-                          <div className='space-y-2 pt-1'>
+                          <div className='space-y-2 pt-0.5'>
                             <p className='text-muted-foreground text-xs font-medium'>
                               {t('DNS records to add')}
                             </p>
@@ -740,16 +757,14 @@ function DomainsCard(props: { site: OwnerSite }) {
                           {formatDomainLastError(domain.last_error, t)}
                         </p>
                       )}
-                      {edgeMainlandEnabled &&
-                        domain.managed_by !== 'platform' &&
-                        domain.role === 'site' &&
-                        domain.status === 'active' && (
-                          <div className='bg-muted/30 space-y-2.5 rounded-md border p-3'>
-                            <div className='flex flex-wrap items-center justify-between gap-2'>
+                      {showEdgePanel && (
+                        <div className='bg-muted/30 space-y-2.5 rounded-md border px-3 py-2.5'>
+                          <div className='flex flex-wrap items-center justify-between gap-2'>
+                            <div className='flex flex-wrap items-center gap-2'>
                               <span className='text-xs font-medium'>
-                                {t('Mainland China acceleration')}
+                                {t('Mainland China acceleration (optional)')}
                               </span>
-                              <div className='flex flex-wrap items-center gap-2'>
+                              {edgeReady || edgeIssuing || edgeFailed ? (
                                 <StatusBadge
                                   variant={edgeCertVariant(
                                     domain.edge_cert_status
@@ -759,7 +774,13 @@ function DomainsCard(props: { site: OwnerSite }) {
                                     domain.edge_cert_status
                                   )}
                                 />
-                                {(domain.edge_cert_not_after ?? 0) > 0 && (
+                              ) : (
+                                <span className='text-muted-foreground text-xs'>
+                                  {t('Not configured')}
+                                </span>
+                              )}
+                              {edgeReady &&
+                                (domain.edge_cert_not_after ?? 0) > 0 && (
                                   <span className='text-muted-foreground text-[11px]'>
                                     {t('Expires {{date}}', {
                                       date: formatTimestampToDate(
@@ -768,20 +789,53 @@ function DomainsCard(props: { site: OwnerSite }) {
                                     })}
                                   </span>
                                 )}
-                              </div>
                             </div>
-                            <p className='text-muted-foreground text-xs'>
-                              {t(
-                                'Optional: speed up mainland China homepage visits through the platform edge node. Your API domain stays on Cloudflare.'
-                              )}
-                            </p>
-                            {domain.edge_acme_alias && acmeSuffix && (
+                            <Button
+                              type='button'
+                              size='sm'
+                              variant='ghost'
+                              className='h-7 px-2 text-xs'
+                              onClick={() => toggleEdgePanel(domain.id)}
+                            >
+                              {edgeToggleLabel}
+                            </Button>
+                          </div>
+                          {edgeExpanded && (
+                            <div className='space-y-2.5 border-t pt-2.5'>
+                              <p className='text-muted-foreground text-xs'>
+                                {t(
+                                  'Optional: speed up mainland China homepage visits through the platform edge node. Your API domain stays on Cloudflare.'
+                                )}
+                              </p>
                               <div className='space-y-1.5'>
-                                <p className='text-xs font-medium'>
-                                  {t(
-                                    'Step 1: Add the ACME certificate verification CNAME (default line)'
+                                <div className='flex flex-wrap items-center justify-between gap-2'>
+                                  <p className='text-xs font-medium'>
+                                    {t(
+                                      'Step 1: Add the ACME certificate verification CNAME (default line)'
+                                    )}
+                                  </p>
+                                  {!edgeReady && (
+                                    <Button
+                                      type='button'
+                                      size='sm'
+                                      variant='outline'
+                                      className='h-7 text-xs'
+                                      disabled={closing || checkNow.isPending}
+                                      onClick={() =>
+                                        checkNow.mutate({
+                                          id: domain.id,
+                                          mode: 'edge_cert',
+                                        })
+                                      }
+                                    >
+                                      {checkingTarget?.id === domain.id &&
+                                      checkingTarget.mode === 'edge_cert' &&
+                                      checkNow.isPending
+                                        ? t('Checking certificate...')
+                                        : t('Check certificate')}
+                                    </Button>
                                   )}
-                                </p>
+                                </div>
                                 <div className='bg-background grid gap-2 rounded-md border p-2.5 text-xs sm:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] sm:items-center'>
                                   <Badge
                                     variant='outline'
@@ -817,69 +871,76 @@ function DomainsCard(props: { site: OwnerSite }) {
                                   </div>
                                 </div>
                               </div>
-                            )}
-                            {domain.edge_cert_error && (
-                              <p className='text-destructive text-xs'>
-                                {formatDomainLastError(
-                                  domain.edge_cert_error,
-                                  t
-                                )}
-                              </p>
-                            )}
-                            {domain.edge_cert_status === 'ready' &&
-                            mainlandTarget ? (
-                              <div className='space-y-1.5'>
-                                <p className='text-xs font-medium'>
-                                  {t(
-                                    'Step 2: Point your mainland China DNS line to the acceleration target'
+                              {showEdgeError && (
+                                <p className='text-destructive text-xs'>
+                                  {formatDomainLastError(
+                                    domain.edge_cert_error,
+                                    t
                                   )}
                                 </p>
-                                <div className='bg-background grid gap-2 rounded-md border p-2.5 text-xs sm:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] sm:items-center'>
-                                  <Badge
-                                    variant='outline'
-                                    className='w-fit font-mono'
-                                  >
-                                    CNAME
-                                  </Badge>
-                                  <div className='flex min-w-0 items-center justify-between gap-1.5'>
-                                    <div className='min-w-0'>
-                                      <span className='text-muted-foreground block text-[11px]'>
-                                        {t('Host record')} ·{' '}
-                                        {t('Mainland China line')}
-                                      </span>
-                                      <span className='block truncate font-mono'>
-                                        {domain.hostname}
-                                      </span>
+                              )}
+                              {!showEdgeError && !edgeReady && (
+                                <p className='text-muted-foreground text-xs'>
+                                  {t(
+                                    'Add the CNAME record above and click "Check certificate" to issue the edge certificate.'
+                                  )}
+                                </p>
+                              )}
+                              {canShowStep2 ? (
+                                <div className='space-y-1.5'>
+                                  <p className='text-xs font-medium'>
+                                    {t(
+                                      'Step 2: Point your mainland China DNS line to the acceleration target'
+                                    )}
+                                  </p>
+                                  <div className='bg-background grid gap-2 rounded-md border p-2.5 text-xs sm:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] sm:items-center'>
+                                    <Badge
+                                      variant='outline'
+                                      className='w-fit font-mono'
+                                    >
+                                      CNAME
+                                    </Badge>
+                                    <div className='flex min-w-0 items-center justify-between gap-1.5'>
+                                      <div className='min-w-0'>
+                                        <span className='text-muted-foreground block text-[11px]'>
+                                          {t('Host record')} ·{' '}
+                                          {t('Mainland China line')}
+                                        </span>
+                                        <span className='block truncate font-mono'>
+                                          {domain.hostname}
+                                        </span>
+                                      </div>
+                                      <CopyButton value={domain.hostname} />
                                     </div>
-                                    <CopyButton value={domain.hostname} />
-                                  </div>
-                                  <div className='flex min-w-0 items-center justify-between gap-1.5'>
-                                    <div className='min-w-0'>
-                                      <span className='text-muted-foreground block text-[11px]'>
-                                        {t('Record value')}
-                                      </span>
-                                      <span className='block truncate font-mono'>
-                                        {mainlandTarget}
-                                      </span>
+                                    <div className='flex min-w-0 items-center justify-between gap-1.5'>
+                                      <div className='min-w-0'>
+                                        <span className='text-muted-foreground block text-[11px]'>
+                                          {t('Record value')}
+                                        </span>
+                                        <span className='block truncate font-mono'>
+                                          {mainlandTarget}
+                                        </span>
+                                      </div>
+                                      <CopyButton value={mainlandTarget} />
                                     </div>
-                                    <CopyButton value={mainlandTarget} />
                                   </div>
+                                  <p className='text-muted-foreground text-[11px]'>
+                                    {t(
+                                      'Keep the default/overseas CNAME pointing to Cloudflare. Requires a DNS provider that supports split-line routing (such as AliDNS or DNSPod).'
+                                    )}
+                                  </p>
                                 </div>
-                                <p className='text-muted-foreground text-[11px]'>
+                              ) : (
+                                <p className='text-muted-foreground text-xs'>
                                   {t(
-                                    'Keep the default/overseas CNAME pointing to Cloudflare. Requires a DNS provider that supports split-line routing (such as AliDNS or DNSPod).'
+                                    'Step 2 will appear automatically once the domain is active and the edge certificate is ready.'
                                   )}
                                 </p>
-                              </div>
-                            ) : (
-                              <p className='text-muted-foreground text-xs'>
-                                {t(
-                                  'Step 2 will appear automatically once the edge certificate is ready.'
-                                )}
-                              </p>
-                            )}
-                          </div>
-                        )}
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )
                 })}
@@ -894,7 +955,7 @@ function DomainsCard(props: { site: OwnerSite }) {
                   </p>
                   <p className='text-muted-foreground text-xs'>
                     {t(
-                      'Fill in both your site domain and API domain and submit them together.'
+                      'Bind both a site domain and an API domain together. After submitting, add the 2 default-line CNAME records shown below to issue HTTPS certificates automatically.'
                     )}
                   </p>
                 </div>
@@ -1018,9 +1079,7 @@ function DomainsCard(props: { site: OwnerSite }) {
 
             {bothConfigured && (
               <p className='text-muted-foreground text-xs'>
-                {t(
-                  'Both custom domain slots (site domain and API domain) are configured. Delete a domain above to reconfigure.'
-                )}
+                {t('To replace a domain, delete it above and bind a new one.')}
               </p>
             )}
           </>

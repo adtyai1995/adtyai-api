@@ -11896,6 +11896,20 @@
     "Custom domain service is not configured": "尚未配置自定义域名服务",
     "Please wait {{seconds}} seconds before checking DNS again": "请等待 {{seconds}} 秒后再重新检测 DNS",
     "A DNS check is already in progress for this domain. Please try again in a few seconds.": "该域名正在进行 DNS 检测，请稍后几秒再试。",
-    "This domain failed verification. Delete it and add it again.": "该域名验证已失败，请删除后重新添加。"
+    "This domain failed verification. Delete it and add it again.": "该域名验证已失败，请删除后重新添加。",
+    "Domain CNAME is not pointing to the target yet": "域名 CNAME 尚未指向目标地址（如使用 Cloudflare 解析请关闭小云朵，仅保留 DNS 解析）",
+    "Domain CNAME lookup failed": "域名 CNAME 解析查询失败",
+    "A certificate check is already in progress for this domain. Please try again in a few seconds.": "该域名正在进行证书检测，请稍后几秒再试。",
+    "Please add CNAME record {{host}} -> {{target}}": "请先添加 CNAME 记录 {{host}} -> {{target}}",
+    "{{host}} currently points to {{actual}}; expected {{expected}}": "{{host}} 当前指向 {{actual}}，请修改为 {{expected}}",
+    "Bind both a site domain and an API domain together. After submitting, add the 2 default-line CNAME records shown below to issue HTTPS certificates automatically.": "请同时绑定站点域名与 API 域名。提交后只需按下方提示添加 2 条默认线路 CNAME 记录即可自动签发 HTTPS 证书并生效。",
+    "Mainland China acceleration (optional)": "中国大陆首页加速（可选）",
+    "Check certificate": "立即检测证书",
+    "Checking certificate...": "检测证书中...",
+    "Edge certificate is ready. You can now configure Step 2.": "边缘证书已签发就绪，现在可以配置第 2 步中国大陆线路。",
+    "ACME verification CNAME is not detected yet": "尚未检测到 ACME 证书验证 CNAME 记录",
+    "Add the CNAME record above and click \"Check certificate\" to issue the edge certificate.": "添加上方 CNAME 记录后点击「立即检测证书」，系统将自动签发边缘 HTTPS 证书。",
+    "Step 2 will appear automatically once the domain is active and the edge certificate is ready.": "域名生效且边缘证书签发就绪后，将自动展示第 2 步大陆线路解析指引。",
+    "To replace a domain, delete it above and bind a new one.": "如需更换域名，请先删除对应域名后再重新绑定。"
   }
 }

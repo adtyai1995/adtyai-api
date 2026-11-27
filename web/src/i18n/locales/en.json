@@ -11896,6 +11896,20 @@
     "Custom domain service is not configured": "Custom domain service is not configured",
     "Please wait {{seconds}} seconds before checking DNS again": "Please wait {{seconds}} seconds before checking DNS again",
     "A DNS check is already in progress for this domain. Please try again in a few seconds.": "A DNS check is already in progress for this domain. Please try again in a few seconds.",
-    "This domain failed verification. Delete it and add it again.": "This domain failed verification. Delete it and add it again."
+    "This domain failed verification. Delete it and add it again.": "This domain failed verification. Delete it and add it again.",
+    "Domain CNAME is not pointing to the target yet": "Domain CNAME is not pointing to the target yet (if using Cloudflare DNS, turn off the orange proxy cloud so it is DNS only).",
+    "Domain CNAME lookup failed": "Domain CNAME lookup failed",
+    "A certificate check is already in progress for this domain. Please try again in a few seconds.": "A certificate check is already in progress for this domain. Please try again in a few seconds.",
+    "Please add CNAME record {{host}} -> {{target}}": "Please add CNAME record {{host}} -> {{target}}",
+    "{{host}} currently points to {{actual}}; expected {{expected}}": "{{host}} currently points to {{actual}}; expected {{expected}}",
+    "Bind both a site domain and an API domain together. After submitting, add the 2 default-line CNAME records shown below to issue HTTPS certificates automatically.": "Bind both a site domain and an API domain together. After submitting, add the 2 default-line CNAME records shown below to issue HTTPS certificates automatically.",
+    "Mainland China acceleration (optional)": "Mainland China acceleration (optional)",
+    "Check certificate": "Check certificate",
+    "Checking certificate...": "Checking certificate...",
+    "Edge certificate is ready. You can now configure Step 2.": "Edge certificate is ready. You can now configure Step 2.",
+    "ACME verification CNAME is not detected yet": "ACME verification CNAME is not detected yet",
+    "Add the CNAME record above and click \"Check certificate\" to issue the edge certificate.": "Add the CNAME record above and click \"Check certificate\" to issue the edge certificate.",
+    "Step 2 will appear automatically once the domain is active and the edge certificate is ready.": "Step 2 will appear automatically once the domain is active and the edge certificate is ready.",
+    "To replace a domain, delete it above and bind a new one.": "To replace a domain, delete it above and bind a new one."
   }
 }

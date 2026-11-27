@@ -1308,3 +1308,105 @@ func TestAdtyEdgeMainSiteCertManifestAndValidation(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, statusDisabled.MainSiteCert)
 }
+
+func TestEdgeCertParallelPendingIssuanceAndOnDemandOwnerCheck(t *testing.T) {
+	db := setupEdgeTestEnv(t, func(rs *adty_setting.ResellerSetting) {
+		rs.EdgeMainlandEnabled = true
+		rs.EdgeACMEAliasSuffix = "acme.adtyaicf.top"
+		rs.DomainMainlandTarget = "cn.adtyaicf.top"
+		rs.RootDomains = []string{"adtyai-fz.top"}
+	})
+	acmeSrv := newMockACMEServer(t)
+	adtyEdgeACMEDirectoryURL = func(bool) string { return acmeSrv.server.URL + "/directory" }
+	adtyEdgeACMEHTTPClient = acmeSrv.server.Client()
+
+	var cfMu sync.Mutex
+	cfTXTs := map[string]AdtyCloudflareDNSRecord{}
+	cfSeq := 0
+	cfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cfMu.Lock()
+		defer cfMu.Unlock()
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-adtyaicf":
+			writeJSON(w, map[string]any{"success": true, "result": map[string]string{"id": "zone-adtyaicf", "name": "adtyaicf.top"}})
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-adtyaicf/dns_records":
+			var body AdtyCloudflareDNSRecord
+			_ = common.DecodeJson(r.Body, &body)
+			cfSeq++
+			body.Id = fmt.Sprintf("txt-p-%d", cfSeq)
+			cfTXTs[body.Id] = body
+			writeJSON(w, map[string]any{"success": true, "result": body})
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/zones/zone-adtyaicf/dns_records/"):
+			id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			delete(cfTXTs, id)
+			writeJSON(w, map[string]any{"success": true, "result": map[string]string{"id": id}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(cfSrv.Close)
+
+	oldCooldown := adtyOwnerDomainCheckCooldown
+	t.Cleanup(func() {
+		adtyOwnerDomainCheckCooldown = oldCooldown
+	})
+	AdtyCloudflare = &AdtyCloudflareClient{BaseURL: cfSrv.URL, HTTP: cfSrv.Client(), Token: func() string { return "tok" }}
+	adtyOwnerDomainCheckCooldown = 10 * time.Second
+
+	site := model.AdtySite{OwnerUserId: 801, Subdomain: "par", RootDomain: "adtyai-fz.top", Status: model.AdtySiteStatusActive}
+	require.NoError(t, db.Create(&site).Error)
+
+	pendingDom := model.AdtySiteDomain{
+		SiteId: site.Id, Hostname: "www.parallel.example", Role: model.AdtySiteDomainRoleSite,
+		ManagedBy: "owner", DesiredState: "serve", Status: model.AdtySiteDomainPending, EdgeACMEAlias: "d90-aabbccdd",
+	}
+	activeDom := model.AdtySiteDomain{
+		SiteId: site.Id, Hostname: "www.ondemand.example", Role: model.AdtySiteDomainRoleSite,
+		ManagedBy: "owner", DesiredState: "serve", Status: model.AdtySiteDomainActive, EdgeACMEAlias: "d91-11223344",
+		LastCheckedAt: time.Now().Add(-time.Minute).Unix(),
+	}
+	require.NoError(t, db.Create(&pendingDom).Error)
+	require.NoError(t, db.Create(&activeDom).Error)
+
+	cnameMap := map[string]string{
+		"_acme-challenge.www.parallel.example": "d90-aabbccdd.acme.adtyaicf.top",
+	}
+	adtyEdgeLookupCNAME = func(_ context.Context, name string) (string, error) {
+		if target, ok := cnameMap[strings.ToLower(name)]; ok {
+			return target + ".", nil
+		}
+		return "", &net.DNSError{IsNotFound: true}
+	}
+	adtyEdgeLookupTXT = func(_ context.Context, name string) ([]string, error) {
+		cfMu.Lock()
+		defer cfMu.Unlock()
+		var out []string
+		for _, rec := range cfTXTs {
+			if rec.Name == name {
+				out = append(out, rec.Content)
+			}
+		}
+		return out, nil
+	}
+
+	// 1. Background RunAdtyEdgeCertOnce pre-issues cert for pending custom site domain in parallel,
+	//    while BuildAdtyEdgeManifest still keeps the pending domain excluded until status=active.
+	now := time.Now()
+	require.NoError(t, RunAdtyEdgeCertOnce(context.Background(), now))
+	var refreshedPending model.AdtySiteDomain
+	require.NoError(t, db.First(&refreshedPending, pendingDom.Id).Error)
+	assert.Equal(t, model.AdtyEdgeCertStatusReady, refreshedPending.EdgeCertStatus)
+
+	mPending, err := BuildAdtyEdgeManifest(context.Background(), now.Add(time.Minute))
+	require.NoError(t, err)
+	for _, entry := range mPending.CustomDomains {
+		assert.NotEqual(t, "www.parallel.example", entry.Hostname, "pending domain must not enter edge manifest before activation")
+	}
+
+	// 2. Owner clicks "Check certificate" on an already-active site domain via CheckAdtySiteDomainNow.
+	cnameMap["_acme-challenge.www.ondemand.example"] = "d91-11223344.acme.adtyaicf.top"
+	checkedActive, err := CheckAdtySiteDomainNow(context.Background(), 801, activeDom.Id)
+	require.NoError(t, err)
+	assert.Equal(t, model.AdtyEdgeCertStatusReady, checkedActive.EdgeCertStatus)
+	assert.Empty(t, checkedActive.EdgeCertError)
+}

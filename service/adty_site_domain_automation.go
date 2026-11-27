@@ -194,6 +194,28 @@ func CheckAdtySiteDomainNow(ctx context.Context, ownerUserID int, domainID int) 
 		return nil, common.NewMessage("Domain not found")
 	}
 	if row.Status == model.AdtySiteDomainActive {
+		cfg := resellerSetting()
+		if row.Role == model.AdtySiteDomainRoleSite && cfg.EdgeMainlandEnabled && row.EdgeCertStatus != model.AdtyEdgeCertStatusReady {
+			now := time.Now()
+			if adtyOwnerDomainCheckCooldown > 0 && row.LastCheckedAt > 0 {
+				cooldownSec := int64(adtyOwnerDomainCheckCooldown / time.Second)
+				elapsed := now.Unix() - row.LastCheckedAt
+				if elapsed >= 0 && elapsed < cooldownSec {
+					return nil, common.NewMessage("Please wait {{seconds}} seconds before checking DNS again", map[string]any{"seconds": cooldownSec - elapsed})
+				}
+			}
+			runctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			edgeErr := CheckAdtyCustomEdgeCertNow(runctx, &row, false)
+			cancel()
+			if edgeErr != nil {
+				return nil, edgeErr
+			}
+			var updated model.AdtySiteDomain
+			if err := model.DB.WithContext(ctx).Where("id = ? AND site_id = ?", row.Id, site.Id).First(&updated).Error; err != nil {
+				return &row, nil
+			}
+			return &updated, nil
+		}
 		return &row, nil
 	}
 	if row.Status != model.AdtySiteDomainPending {
@@ -229,6 +251,14 @@ func CheckAdtySiteDomainNow(ctx context.Context, ownerUserID int, domainID int) 
 		var updated model.AdtySiteDomain
 		if err := model.DB.WithContext(ctx).Where("id = ? AND site_id = ?", row.Id, site.Id).First(&updated).Error; err != nil {
 			return &row, nil
+		}
+		if updated.Role == model.AdtySiteDomainRoleSite && resellerSetting().EdgeMainlandEnabled && updated.EdgeCertStatus != model.AdtyEdgeCertStatusReady {
+			edgeCtx, edgeCancel := context.WithTimeout(ctx, 45*time.Second)
+			_ = CheckAdtyCustomEdgeCertNow(edgeCtx, &updated, true)
+			edgeCancel()
+			if err := model.DB.WithContext(ctx).Where("id = ? AND site_id = ?", row.Id, site.Id).First(&updated).Error; err != nil {
+				return &row, nil
+			}
 		}
 		return &updated, nil
 	}
@@ -296,6 +326,14 @@ func CheckAdtySiteDomainNow(ctx context.Context, ownerUserID int, domainID int) 
 	var updated model.AdtySiteDomain
 	if err := model.DB.WithContext(ctx).Where("id = ? AND site_id = ?", fresh.Id, site.Id).First(&updated).Error; err != nil {
 		return &fresh, nil
+	}
+	if updated.Role == model.AdtySiteDomainRoleSite && resellerSetting().EdgeMainlandEnabled && updated.EdgeCertStatus != model.AdtyEdgeCertStatusReady {
+		edgeCtx, edgeCancel := context.WithTimeout(ctx, 45*time.Second)
+		_ = CheckAdtyCustomEdgeCertNow(edgeCtx, &updated, true)
+		edgeCancel()
+		if err := model.DB.WithContext(ctx).Where("id = ? AND site_id = ?", fresh.Id, site.Id).First(&updated).Error; err != nil {
+			return &fresh, nil
+		}
 	}
 	return &updated, nil
 }
@@ -814,15 +852,12 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) (bool, 
 		// Unknown existing resources need an explicit reconciliation, never deletion
 		// based solely on the matching hostname.
 		if row.ManagedBy != "platform" {
-			if row.OwnershipToken == "" {
-				return changed, common.NewMessage("Domain ownership verification is required")
-			}
-			matched, err := adtyOwnershipTXTMatches(ctx, row.Hostname, row.OwnershipToken)
+			matched, err := adtyVerifyCustomDomainOwnership(ctx, row, strings.TrimSpace(cfg.CnameTarget))
 			if err != nil {
-				return changed, common.NewMessage("Domain ownership lookup failed")
+				return changed, err
 			}
 			if !matched {
-				return changed, common.NewMessage("Domain ownership TXT is not verified")
+				return changed, common.NewMessage("Domain CNAME is not pointing to the target yet")
 			}
 		}
 		candidate, err := AdtyCloudflare.findCustomHostname(ctx, row.ProviderZone, row.Hostname)
@@ -859,7 +894,7 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) (bool, 
 	if !strings.EqualFold(detail.Hostname, row.Hostname) {
 		return changed, common.NewMessage("Cloudflare hostname identity mismatch")
 	}
-	verify := verifyRecordsFor(row.Hostname, row.DNSTarget, detail)
+	verify := verifyRecordsForDomain(row, row.DNSTarget, detail)
 	if row.ManagedBy == "platform" {
 		var requested []adtyVerifyRecord
 		if err := common.Unmarshal([]byte(verify), &requested); err != nil {

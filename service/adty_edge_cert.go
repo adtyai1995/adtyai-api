@@ -494,8 +494,8 @@ func adtyEnsureEdgeCertRows(ctx context.Context, cfg *adty_setting.ResellerSetti
 	var domains []model.AdtySiteDomain
 	if err := model.DB.WithContext(ctx).
 		Joins("JOIN adty_sites ON adty_sites.id = adty_site_domains.site_id").
-		Where("adty_site_domains.managed_by <> ? AND adty_site_domains.role = ? AND adty_site_domains.status = ? AND adty_site_domains.desired_state IN ? AND adty_sites.status <> ?",
-			"platform", model.AdtySiteDomainRoleSite, model.AdtySiteDomainActive, []string{"", "serve", "redirect_only"}, model.AdtySiteStatusDeleting).
+		Where("adty_site_domains.managed_by <> ? AND adty_site_domains.role = ? AND adty_site_domains.status IN ? AND adty_site_domains.desired_state IN ? AND adty_sites.status <> ?",
+			"platform", model.AdtySiteDomainRoleSite, []string{model.AdtySiteDomainPending, model.AdtySiteDomainActive}, []string{"", "serve", "redirect_only"}, model.AdtySiteStatusDeleting).
 		Order("adty_site_domains.id ASC").Find(&domains).Error; err != nil {
 		return nil, err
 	}
@@ -867,8 +867,8 @@ func RunAdtyEdgeCertOnce(ctx context.Context, now time.Time) error {
 			var activeCount int64
 			if err := model.DB.WithContext(ctx).Model(&model.AdtySiteDomain{}).
 				Joins("JOIN adty_sites ON adty_sites.id = adty_site_domains.site_id").
-				Where("adty_site_domains.id = ? AND adty_site_domains.status = ? AND adty_site_domains.desired_state IN ? AND LOWER(TRIM(adty_site_domains.edge_acme_alias)) = ? AND adty_sites.status <> ?",
-					row.DomainId, model.AdtySiteDomainActive, []string{"", "serve", "redirect_only"}, aliasLabel, model.AdtySiteStatusDeleting).
+				Where("adty_site_domains.id = ? AND adty_site_domains.status IN ? AND adty_site_domains.desired_state IN ? AND LOWER(TRIM(adty_site_domains.edge_acme_alias)) = ? AND adty_sites.status <> ?",
+					row.DomainId, []string{model.AdtySiteDomainPending, model.AdtySiteDomainActive}, []string{"", "serve", "redirect_only"}, aliasLabel, model.AdtySiteStatusDeleting).
 				Count(&activeCount).Error; err != nil {
 				return err
 			}
@@ -988,6 +988,168 @@ func RunAdtyEdgeCertOnce(ctx context.Context, now time.Time) error {
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// CheckAdtyCustomEdgeCertNow performs an immediate ACME CNAME check and certificate
+// issuance attempt for a single custom website domain, bypassing retry backoff while
+// keeping the same per-row lease isolation as RunAdtyEdgeCertOnce.
+// When onlyIfCNAMEConfigured is true, it checks DNS first and returns nil without
+// modifying error fields if the owner has not opted into Mainland China acceleration.
+func CheckAdtyCustomEdgeCertNow(ctx context.Context, domain *model.AdtySiteDomain, onlyIfCNAMEConfigured bool) error {
+	cfg := resellerSetting()
+	if domain == nil || domain.Id <= 0 || domain.ManagedBy == "platform" || domain.Role != model.AdtySiteDomainRoleSite {
+		return nil
+	}
+	if !cfg.EdgeMainlandEnabled || !cfg.CloudflareConfigured() {
+		return nil
+	}
+	suffix := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(cfg.EdgeACMEAliasSuffix)), ".")
+	certName := strings.ToLower(strings.TrimSpace(domain.Hostname))
+	if suffix == "" || certName == "" {
+		return nil
+	}
+	hasCertTable, err := model.AdtyTableExists(model.DB.WithContext(ctx), &model.AdtyEdgeCert{})
+	if err != nil || !hasCertTable {
+		return err
+	}
+	alias := strings.TrimSpace(domain.EdgeACMEAlias)
+	if alias == "" {
+		generated, genErr := adtyGenerateEdgeACMEAlias(domain.Id)
+		if genErr != nil {
+			return genErr
+		}
+		res := model.DB.WithContext(ctx).Model(&model.AdtySiteDomain{}).
+			Where("id = ? AND edge_acme_alias = ?", domain.Id, "").
+			Update("edge_acme_alias", generated)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected > 0 {
+			alias = generated
+			domain.EdgeACMEAlias = generated
+		} else {
+			var fresh model.AdtySiteDomain
+			if err := model.DB.WithContext(ctx).Select("edge_acme_alias").First(&fresh, domain.Id).Error; err == nil {
+				alias = strings.TrimSpace(fresh.EdgeACMEAlias)
+				domain.EdgeACMEAlias = alias
+			}
+		}
+	}
+	if alias == "" {
+		return nil
+	}
+	aliasFQDN := strings.ToLower(alias) + "." + suffix
+	if onlyIfCNAMEConfigured {
+		matched, _, dnsErr := adtyEdgeCheckCNAME(ctx, adtyEdgeChallengeHost(certName), aliasFQDN)
+		if dnsErr != nil || !matched {
+			return nil
+		}
+	}
+	env := adtyEdgeACMEEnvironment(cfg)
+	if err := adtyUpsertEdgeCertRow(ctx, certName, model.AdtyEdgeCertKindCustom, domain.Id, aliasFQDN, env); err != nil {
+		return err
+	}
+	now := time.Now()
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return err
+	}
+	leaseToken := hex.EncodeToString(nonce)
+	claim := model.DB.WithContext(ctx).Model(&model.AdtyEdgeCert{}).
+		Where("cert_name = ? AND lease_until <= ?", certName, now.Unix()).
+		Updates(map[string]any{
+			"lease_token": leaseToken,
+			"lease_until": now.Add(adtyEdgeCertLeaseTTL).Unix(),
+		})
+	if claim.Error != nil {
+		return claim.Error
+	}
+	if claim.RowsAffected == 0 {
+		if onlyIfCNAMEConfigured {
+			return nil
+		}
+		return common.NewMessage("A certificate check is already in progress for this domain. Please try again in a few seconds.")
+	}
+	var fresh model.AdtyEdgeCert
+	if err := model.DB.WithContext(ctx).Where("cert_name = ? AND lease_token = ?", certName, leaseToken).First(&fresh).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	preserveReady := fresh.Status == model.AdtyEdgeCertStatusReady &&
+		fresh.Environment == env &&
+		fresh.CertPEM != "" &&
+		fresh.KeyEncrypted != "" &&
+		fresh.NotAfter > now.Add(adtyEdgePreserveReadyMargin).Unix()
+	if preserveReady {
+		_ = model.DB.WithContext(ctx).Model(&model.AdtyEdgeCert{}).
+			Where("id = ? AND lease_token = ?", fresh.Id, leaseToken).
+			Updates(map[string]any{"lease_token": "", "lease_until": 0}).Error
+		adtySyncDomainEdgeCertColumns(ctx, &fresh, model.AdtyEdgeCertStatusReady, "", fresh.NotAfter)
+		if !onlyIfCNAMEConfigured {
+			_ = model.DB.WithContext(ctx).Model(&model.AdtySiteDomain{}).Where("id = ?", domain.Id).Update("last_checked_at", now.Unix()).Error
+		}
+		return nil
+	}
+	issued, issueErr := adtyIssueEdgeCert(ctx, cfg, &fresh, env)
+	finished := time.Now()
+	updates := map[string]any{
+		"lease_token": "",
+		"lease_until": 0,
+	}
+	var syncStatus, syncErr string
+	var syncNotAfter int64
+	if issueErr == nil {
+		updates["status"] = model.AdtyEdgeCertStatusReady
+		updates["environment"] = issued.Environment
+		updates["cert_pem"] = issued.CertPEM
+		updates["key_encrypted"] = issued.KeyEncrypted
+		updates["not_before"] = issued.NotBefore
+		updates["not_after"] = issued.NotAfter
+		updates["last_error"] = ""
+		updates["attempts"] = 0
+		updates["last_issued_at"] = finished.Unix()
+		nextRenew := time.Unix(issued.NotAfter, 0).Add(-adtyEdgeRenewBefore)
+		if nextRenew.Before(finished.Add(time.Hour)) {
+			nextRenew = finished.Add(time.Hour)
+		}
+		updates["next_run_at"] = nextRenew.Unix()
+		syncStatus = model.AdtyEdgeCertStatusReady
+		syncErr = ""
+		syncNotAfter = issued.NotAfter
+	} else if errors.Is(issueErr, errAdtyEdgeWaitingDNS) {
+		msg := adtyEdgeCertUserError(issueErr)
+		updates["status"] = model.AdtyEdgeCertStatusWaitingDNS
+		updates["last_error"] = msg
+		updates["next_run_at"] = finished.Add(adtyEdgeCertWaitingRetry).Unix()
+		syncStatus = model.AdtyEdgeCertStatusWaitingDNS
+		syncErr = msg
+		syncNotAfter = fresh.NotAfter
+	} else {
+		msg := adtyEdgeCertUserError(issueErr)
+		backoff := adtyEdgeFailureBackoff(fresh.Attempts, issueErr)
+		updates["status"] = model.AdtyEdgeCertStatusFailed
+		updates["last_error"] = msg
+		updates["attempts"] = fresh.Attempts + 1
+		updates["next_run_at"] = finished.Add(backoff).Unix()
+		syncStatus = model.AdtyEdgeCertStatusFailed
+		syncErr = msg
+		syncNotAfter = fresh.NotAfter
+	}
+	res := model.DB.WithContext(ctx).Model(&model.AdtyEdgeCert{}).
+		Where("id = ? AND lease_token = ?", fresh.Id, leaseToken).
+		Updates(updates)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 1 {
+		adtySyncDomainEdgeCertColumns(ctx, &fresh, syncStatus, syncErr, syncNotAfter)
+	}
+	if !onlyIfCNAMEConfigured {
+		_ = model.DB.WithContext(ctx).Model(&model.AdtySiteDomain{}).Where("id = ?", domain.Id).Update("last_checked_at", finished.Unix()).Error
+	}
+	return nil
 }
 
 // RetryAdtyEdgeCert resets backoff on one certificate (or the primary wildcard cert if empty).

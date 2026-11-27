@@ -20,6 +20,8 @@ import type { TFunction } from 'i18next'
 
 const DOMAIN_HTTP_ERROR_RE = /^Domain returned HTTP (\d+)$/
 const CLOUDFLARE_HTTP_ERROR_RE = /^Cloudflare returned HTTP (\d+)$/
+const EDGE_ADD_CNAME_RE = /^add CNAME (\S+) -> (\S+)$/
+const EDGE_CNAME_MISMATCH_RE = /^(\S+) currently points to (\S+) instead of (\S+)$/
 
 export function formatDomainLastError(
   raw: string | null | undefined,
@@ -39,6 +41,23 @@ export function formatDomainLastError(
   if (cloudflareHttpMatch) {
     return t('Cloudflare returned HTTP {{status}}', {
       status: cloudflareHttpMatch[1],
+    })
+  }
+
+  const edgeAddMatch = EDGE_ADD_CNAME_RE.exec(trimmed)
+  if (edgeAddMatch) {
+    return t('Please add CNAME record {{host}} -> {{target}}', {
+      host: edgeAddMatch[1],
+      target: edgeAddMatch[2],
+    })
+  }
+
+  const edgeMismatchMatch = EDGE_CNAME_MISMATCH_RE.exec(trimmed)
+  if (edgeMismatchMatch) {
+    return t('{{host}} currently points to {{actual}}; expected {{expected}}', {
+      host: edgeMismatchMatch[1],
+      actual: edgeMismatchMatch[2],
+      expected: edgeMismatchMatch[3],
     })
   }
 

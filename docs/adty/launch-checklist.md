@@ -156,7 +156,7 @@
 - [ ] 在阿里云根域（如 `adtyai-fz.top`）默认线路添加一次 `_acme-challenge.adtyai-fz.top CNAME wild.acme.adtyaicf.top`；源站 `.env` 配置 `ADTY_EDGE_TOKEN`，将香港 VPS 公网 IPv4 写入 `/etc/adtyai/edge-ips.txt` 并执行 `sudo /opt/adtyai/update-edge-ips.sh` 刷新 Nginx 白名单与 UFW `adtyai-edge` 规则。
 - [ ] 在「分站管理 → 域名设置 → 中国大陆首页加速」填写一个或多个香港节点 IPv4（单节点填 1 行、多节点填多行）并先勾选 Let's Encrypt 测试环境验证通过，再切回生产环境确认 `*.adtyai-fz.top` 泛域名证书签发 `ready`；确认香港节点 `adty-edge-sync.timer` 正常拉取清单、通过 `nginx -t` 并命中 `/static/` 缓存，同时拒绝未知 Host 与 `api-sN.*`。
 - [ ] 验证阿里云按用途分流：平台网站域名（`role=site`）存在 `default -> edge.adtyaicf.top` 与 `internal -> cn.adtyaicf.top`；平台 API 域名（`role=base_url`）仅存在 `default -> edge.adtyaicf.top`，不经香港节点。
-- [ ] 验证站长自定义网站域名两步加速（第 1 步 `_acme-challenge` CNAME 生效、证书 `ready` 后才展示第 2 步大陆 CNAME；自定义 API 域名不展示）、Root 后台「一键回切 Cloudflare」（`cn.adtyaicf.top` 切橙云 `proxied=true`）/「切回香港边缘节点」（恢复全部已配置节点灰云 TTL 60s）、每分钟并发多节点 HTTPS SNI 探活与节点明细表（含开启「自动摘除故障节点与全挂回切」后的 3 失败摘除 / 2 成功恢复行为）。
+- [ ] 验证站长自定义域名极简绑定（新域名仅加 2 条默认线路 CNAME 即可生效、无需 TXT；跨站认领历史释放域名仍强验 TXT；可选中国大陆首页加速默认折叠、支持展开第 1 步 `_acme-challenge` 并行预签与「立即检测证书」、仅在域名 `active` 且证书 `ready` 后才展示第 2 步大陆 CNAME；自定义 API 域名不展示）、Root 后台「一键回切 Cloudflare」（`cn.adtyaicf.top` 切橙云 `proxied=true`）/「切回香港边缘节点」（恢复全部已配置节点灰云 TTL 60s）、每分钟并发多节点 HTTPS SNI 探活与节点明细表（含开启「自动摘除故障节点与全挂回切」后的 3 失败摘除 / 2 成功恢复行为）。
 
 ## 12. 收尾
 
