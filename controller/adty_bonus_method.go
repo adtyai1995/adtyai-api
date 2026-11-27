@@ -95,15 +95,20 @@ func GetAdtyMainMethodBonus(c *gin.Context) {
 	common.ApiSuccess(c, adty_setting.MainMethodBonusMap())
 }
 
-// PutAdtyMainMethodBonus lets Root set one main-site payment-method gift rule.
+// PutAdtyMainMethodBonus lets Root set the main-site USDT recharge bonus rule.
 func PutAdtyMainMethodBonus(c *gin.Context) {
 	var body adtyMethodBonusBody
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	method, err := adty_setting.CanonicalBonusMethod(body.Method)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	merge := func(current string) (string, error) {
-		return adty_setting.MergeMainMethodBonus(current, body.Method, body.Enabled, body.Rate)
+		return adty_setting.MergeMainMethodBonus(current, method, body.Enabled, body.Rate)
 	}
 	// 非法参数要在事务外就变成 400：事务里的错误一律按写库失败回 500。
 	if _, err := merge(""); err != nil {
@@ -113,13 +118,13 @@ func PutAdtyMainMethodBonus(c *gin.Context) {
 	beforeFn := func(current string) any {
 		var rules map[string]adty_setting.MethodBonusRule
 		_ = common.UnmarshalJsonStr(current, &rules)
-		prev := rules[body.Method]
-		return map[string]any{"method": body.Method, "enabled": prev.Enabled, "rate": prev.Rate}
+		prev := rules[method]
+		return map[string]any{"method": method, "enabled": prev.Enabled, "rate": prev.Rate}
 	}
 	if !saveAdtyBonusMethodOption(c, 0, adty_setting.TopupSettingKeyMethodBonus, "adty.topup.method_bonus.update",
-		map[string]any{"method": body.Method, "enabled": body.Enabled, "rate": body.Rate},
+		map[string]any{"method": method, "enabled": body.Enabled, "rate": body.Rate},
 		beforeFn,
-		map[string]any{"method": body.Method, "enabled": body.Enabled, "rate": body.Rate}, merge) {
+		map[string]any{"method": method, "enabled": body.Enabled, "rate": body.Rate}, merge) {
 		return
 	}
 	common.ApiSuccess(c, adty_setting.MainMethodBonusMap())
@@ -188,9 +193,9 @@ func PutAdtySiteBonusMethodAuth(c *gin.Context) {
 	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Per-site payment method bonus authorization has been removed"))
 }
 
-// PutAdtySiteMethodBonus lets an active site owner configure a gift rule for any
-// payment method currently enabled on the main site (or disable an existing rule
-// even if the main site disabled that method later).
+// PutAdtySiteMethodBonus lets an active site owner configure the USDT gift rule
+// when USDT is enabled on the main site (or disable an existing USDT rule even
+// if the main site disabled USDT later).
 func PutAdtySiteMethodBonus(c *gin.Context) {
 	site, ok := adtyOwnerSiteOr403(c)
 	if !ok {
@@ -206,11 +211,16 @@ func PutAdtySiteMethodBonus(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if _, err := adty_setting.MergeMainMethodBonus("", body.Method, body.Enabled, body.Rate); err != nil {
+	method, err := adty_setting.CanonicalBonusMethod(body.Method)
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if body.Enabled && !service.IsMainSiteBonusMethodEnabled(body.Method) {
+	if _, err := adty_setting.MergeMainMethodBonus("", method, body.Enabled, body.Rate); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if body.Enabled && !service.IsMainSiteBonusMethodEnabled(method) {
 		common.ApiError(c, common.NewMessage("This payment method is not enabled on the main site"))
 		return
 	}
@@ -229,21 +239,21 @@ func PutAdtySiteMethodBonus(c *gin.Context) {
 		if locked.OwnerUserId != actorID || locked.Status != model.AdtySiteStatusActive {
 			return "", errAdtyBonusSiteForbidden
 		}
-		return adty_setting.MergeSiteMethodBonus(current, site.Id, body.Method, body.Enabled, body.Rate)
+		return adty_setting.MergeSiteMethodBonus(current, site.Id, method, body.Enabled, body.Rate)
 	}
 	beforeFn := func(current string) any {
 		var bySite map[string]map[string]adty_setting.MethodBonusRule
 		_ = common.UnmarshalJsonStr(current, &bySite)
 		var prev adty_setting.MethodBonusRule
 		if siteRules := bySite[strconv.Itoa(site.Id)]; siteRules != nil {
-			prev = siteRules[body.Method]
+			prev = siteRules[method]
 		}
-		return map[string]any{"site_id": site.Id, "method": body.Method, "enabled": prev.Enabled, "rate": prev.Rate}
+		return map[string]any{"site_id": site.Id, "method": method, "enabled": prev.Enabled, "rate": prev.Rate}
 	}
 	if !saveAdtyBonusMethodOption(c, site.Id, adty_setting.TopupSettingKeySiteMethodBonus, "adty.topup.site_method_bonus.update",
-		map[string]any{"method": body.Method, "enabled": body.Enabled, "rate": body.Rate, "site_id": site.Id},
+		map[string]any{"method": method, "enabled": body.Enabled, "rate": body.Rate, "site_id": site.Id},
 		beforeFn,
-		map[string]any{"site_id": site.Id, "method": body.Method, "enabled": body.Enabled, "rate": body.Rate}, merge, func(tx *gorm.DB) error {
+		map[string]any{"site_id": site.Id, "method": method, "enabled": body.Enabled, "rate": body.Rate}, merge, func(tx *gorm.DB) error {
 			txRef = tx
 			return nil
 		}) {

@@ -26,13 +26,13 @@ Card/wallet channels typically settle within seconds. On-chain USDT transfers cr
 
 ## Recharge Bonus
 
-When a site configures **Recharge Bonus by payment method**:
+When a site enables **USDT Recharge Bonus**:
 
-- The bonus percentage is **applied automatically** based on the payment method you choose—no promo code is required.
+- The bonus percentage is **applied automatically** to eligible online **USDT** top-ups across all enabled USDT networks—no promo code is required.
 - Eligible bonus amounts are previewed right on the top-up panel before you confirm payment.
 - Once the order completes, both the base top-up and the bonus credit are reflected in your wallet records.
 
-Bonus availability and rates are tied to the active payment method and current site configuration, so always check the Wallet page preview prior to checkout.
+Bonus availability and rates are tied to the current site's USDT Recharge Bonus configuration, so always check the Wallet page preview prior to checkout.
 
 ## Quota Vouchers
 

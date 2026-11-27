@@ -29,8 +29,13 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SYSTEM_SETTINGS_VIEW } from '@/components/layout/config/system-settings.config'
+import { BonusPanel } from '@/features/adty-site-owner/components/bonus-panel'
+import { OwnerVerificationProvider } from '@/features/adty-site-owner/components/owner-verification'
+import type { OwnerSite } from '@/features/adty-site-owner/types'
+import { RechargeBonusSection } from '@/features/system-settings/billing/recharge-bonus-section'
 import { BILLING_SECTION_IDS } from '@/features/system-settings/billing/section-registry'
 import { useSidebarData } from '@/hooks/use-sidebar-data'
+import { api } from '@/lib/api'
 import { ROLE } from '@/lib/roles'
 import { Route as BillingSectionRoute } from '@/routes/_authenticated/system-settings/billing/$section'
 import { useAuthStore } from '@/stores/auth-store'
@@ -397,6 +402,44 @@ describe('R-36 Items 2, 3, and 4', () => {
     expect(resolveMethodBonusPercent('usdt.trc20', { usdt: '0.005' })).toBe(
       '0.5'
     )
+    expect(
+      resolveMethodBonusPercent('usdt.erc20', { alipay: '0.05', usdt: '0.03' })
+    ).toBe('3')
+    expect(
+      resolveMethodBonusPercent('alipay', { alipay: '0.05', usdt: '0.03' })
+    ).toBeNull()
+    expect(
+      resolveMethodBonusPercent('wxpay', { wxpay: '0.05', usdt: '0.03' })
+    ).toBeNull()
+
+    const usdtSceneInfo: AdtyTopupInfo = {
+      ...SINGLE_SCENE_INFO,
+      method_bonus_rates: { alipay: '0.05', usdt: '0.005' },
+      scenes: [
+        {
+          key: 'wallet_topup',
+          name: 'Wallet top-up',
+          min_usd: '1',
+          max_usd: '1000',
+          methods: [
+            {
+              id: 'alipay',
+              label: 'Alipay',
+              kind: 'epay',
+              currency: 'CNY',
+              available: true,
+            },
+            {
+              id: 'usdt.trc20',
+              label: 'USDT · TRC20',
+              kind: 'usdt',
+              currency: 'USDT',
+              available: true,
+            },
+          ],
+        },
+      ],
+    }
 
     quoteAdtyTopupMock.mockResolvedValueOnce({
       available: true,
@@ -406,29 +449,51 @@ describe('R-36 Items 2, 3, and 4', () => {
         bonus_rate: '0.005',
         bonus_usd: '0.50',
         credit_quota: 50_250_000,
-        pay_amount: '700.00',
-        pay_currency: 'CNY',
+        pay_amount: '100.00',
+        pay_currency: 'USDT',
         price_cny_per_usd: '7.00',
       },
     })
 
     renderWithQuery(
       <AdtyRechargeCard
-        info={SINGLE_SCENE_INFO}
+        info={usdtSceneInfo}
         loading={false}
         paying={false}
         onPay={vi.fn()}
       />
     )
 
+    // Only USDT button displays a bonus badge; Alipay never displays one even if stale rate exists.
+    expect(screen.getAllByText('Bonus +0.5%')).toHaveLength(1)
+    expect(screen.queryByText('Bonus +5%')).toBeNull()
+
     fireEvent.click(screen.getByRole('button', { name: '$10' }))
-    fireEvent.click(screen.getByRole('button', { name: /Alipay/i }))
+    fireEvent.click(screen.getByRole('button', { name: /USDT · TRC20/i }))
 
     await waitFor(() => {
       expect(screen.getByText(/\(\+0\.5%\)/)).toBeTruthy()
     })
     expect(screen.queryByText(/\(\+50%\)/)).toBeNull()
-    expect(screen.getByTestId('adty-pay').textContent).toBe('$100.00')
+    expect(screen.getByTestId('adty-pay').textContent).toBe('100.00 USDT')
+
+    quoteAdtyTopupMock.mockResolvedValueOnce({
+      available: true,
+      quote: {
+        amount_usd: '100',
+        face_usd: '100',
+        bonus_rate: '0',
+        bonus_usd: '0',
+        credit_quota: 50_000_000,
+        pay_amount: '700.00',
+        pay_currency: 'CNY',
+        price_cny_per_usd: '7.00',
+      },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Alipay/i }))
+    await waitFor(() => {
+      expect(screen.getByTestId('adty-pay').textContent).toBe('$100.00')
+    })
     expect(screen.queryByText(/1 USD =/)).toBeNull()
     expect(screen.queryByText(/¥/)).toBeNull()
   })
@@ -442,8 +507,8 @@ describe('R-36 Items 2, 3, and 4', () => {
         bonus_rate: '0.05',
         bonus_usd: '5.00',
         credit_quota: 52_500_000,
-        pay_amount: '700.00',
-        pay_currency: 'CNY',
+        pay_amount: '100.00',
+        pay_currency: 'USDT',
         price_cny_per_usd: '7.00',
       },
     })
@@ -464,6 +529,83 @@ describe('R-36 Items 2, 3, and 4', () => {
       expect(screen.getByText(/\(\+5%\)/)).toBeTruthy()
     })
     expect(screen.queryByText(/\(\+0\.05%\)/)).toBeNull()
+  })
+
+  it('renders only USDT in main-site RechargeBonusSection and subsite BonusPanel (R-45)', async () => {
+    const getSpy = vi.spyOn(api, 'get').mockResolvedValueOnce({
+      data: {
+        success: true,
+        data: {
+          alipay: { enabled: true, rate: '0.05' },
+          wxpay: { enabled: true, rate: '0.04' },
+          usdt: { enabled: true, rate: '0.025' },
+        },
+      },
+    } as never)
+
+    try {
+      const { unmount } = renderWithQuery(<RechargeBonusSection />)
+      await waitFor(() => {
+        expect(screen.getByRole('switch', { name: 'USDT' })).toBeTruthy()
+      })
+      expect(screen.queryByText('Alipay')).toBeNull()
+      expect(screen.queryByText('WeChat Pay')).toBeNull()
+      expect(screen.getByDisplayValue('0.025')).toBeTruthy()
+      unmount()
+    } finally {
+      getSpy.mockRestore()
+    }
+
+    const baseSite = {
+      id: 7,
+      status: 'active',
+      bonus_methods: [
+        {
+          method: 'alipay',
+          enabled: true,
+          rate: '0.05',
+          authorized: true,
+          enabled_by_main: true,
+        },
+        {
+          method: 'wxpay',
+          enabled: true,
+          rate: '0.04',
+          authorized: true,
+          enabled_by_main: true,
+        },
+        {
+          method: 'usdt',
+          enabled: true,
+          rate: '0.03',
+          authorized: true,
+          enabled_by_main: true,
+        },
+      ],
+    } as unknown as OwnerSite
+
+    const { rerender } = renderWithQuery(
+      <OwnerVerificationProvider>
+        <BonusPanel site={baseSite} />
+      </OwnerVerificationProvider>
+    )
+    expect(screen.getByRole('switch', { name: 'USDT' })).toBeTruthy()
+    expect(screen.queryByText('Alipay')).toBeNull()
+    expect(screen.queryByText('WeChat Pay')).toBeNull()
+    expect(screen.getByDisplayValue('0.03')).toBeTruthy()
+
+    rerender(
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <OwnerVerificationProvider>
+          <BonusPanel site={{ ...baseSite, bonus_methods: [] }} />
+        </OwnerVerificationProvider>
+      </QueryClientProvider>
+    )
+    expect(
+      screen.getByText('USDT payment is not currently enabled on the main site.')
+    ).toBeTruthy()
   })
 
   it('shows Referral sidebar entry for migrated main-site user with adty_has_legacy_site_commissions even when referral is off (R1-12)', () => {

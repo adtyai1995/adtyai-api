@@ -42,7 +42,7 @@ function RechargeBonusPage() {
     <SectionPageLayout>
       <SectionPageLayout.Title>{t('Recharge Bonus')}</SectionPageLayout.Title>
       <SectionPageLayout.Description>
-        {t('Configure main-site recharge bonus rates by payment method.')}
+        {t('Configure the main-site USDT recharge bonus rate.')}
       </SectionPageLayout.Description>
       <SectionPageLayout.Content>
         <div className='mx-auto flex w-full max-w-7xl flex-col gap-5'>

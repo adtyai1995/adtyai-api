@@ -11880,6 +11880,12 @@
     "Commission settles after coverage and the {{days}}-day observation period. Refunded orders void or claw back their commission.": "Commission settles after coverage and the {{days}}-day observation period. Refunded orders void or claw back their commission.",
     "Cash withdrawals of invite commission are reviewed by the site administrator.": "Cash withdrawals of invite commission are reviewed by the site administrator.",
     "Transferring to your balance credits your account immediately. Cash withdrawals are completed after review and payout.": "Transferring to your balance credits your account immediately. Cash withdrawals are completed after review and payout.",
-    "Site administrators can create teams or issue team registration links.": "Site administrators can create teams or issue team registration links."
+    "Site administrators can create teams or issue team registration links.": "Site administrators can create teams or issue team registration links.",
+    "Recharge bonus is only supported for USDT": "Recharge bonus is only supported for USDT",
+    "Configure the main-site USDT recharge bonus rate.": "Configure the main-site USDT recharge bonus rate.",
+    "USDT Recharge Bonus": "USDT Recharge Bonus",
+    "Configure the main-site USDT recharge bonus rate (0 to 1, e.g. 0.025 for 2.5%). Applies to all USDT networks. Bonus credits do not earn referral commissions.": "Configure the main-site USDT recharge bonus rate (0 to 1, e.g. 0.025 for 2.5%). Applies to all USDT networks. Bonus credits do not earn referral commissions.",
+    "Configure the USDT recharge bonus rate for your site (applies to all USDT networks). Eligible customer USDT recharges receive the configured bonus paid from your earnings.": "Configure the USDT recharge bonus rate for your site (applies to all USDT networks). Eligible customer USDT recharges receive the configured bonus paid from your earnings.",
+    "USDT payment is not currently enabled on the main site.": "USDT payment is not currently enabled on the main site."
   }
 }

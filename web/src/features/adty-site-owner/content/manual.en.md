@@ -76,7 +76,7 @@ Provides three tabs (`Teams`, `Create team`, `Team registration links`) matching
 
 ### 3.6 Recharge Bonus
 
-- Configure per enabled payment method (`Alipay`, `WeChat Pay`, `USDT` — all USDT chains share one rule) from `0%` to `100%`. Applies only to regular customer online wallet top-ups (not team top-ups or owner margin top-ups). Requires **step-up verification**.
+- Configure the **USDT** recharge bonus rate (all USDT chains share one rule; Alipay and WeChat Pay do not support recharge bonuses) from `0%` to `100%` when USDT is enabled on the main site. Applies only to regular customer online USDT wallet top-ups (not team top-ups or owner margin top-ups). Requires **step-up verification**.
 - **Funding Pre-Freeze Warning**:
   - The bonus amount is pre-frozen the instant a customer creates an online top-up order—first from **available earnings**, and then from your **margin cycle allowance** only if platform admins authorized margin bonus coverage.
   - **If available funds cannot cover the bonus, customer checkout fails immediately.**

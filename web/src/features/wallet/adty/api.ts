@@ -29,7 +29,7 @@ import type {
 } from './types'
 
 export type AdtyTopupInfo = BaseAdtyTopupInfo & {
-  /** Active payment-method recharge bonus rates keyed by canonical method (e.g. alipay, wxpay, usdt). */
+  /** Active recharge bonus rates keyed by canonical method (USDT only: { usdt: "0.025" }). */
   method_bonus_rates?: Record<string, string>
 }
 
@@ -57,17 +57,20 @@ export function formatBonusRatePercent(raw?: string | number): string | null {
   return rounded > 0 ? String(rounded) : null
 }
 
-/** Resolves the active recharge bonus percent for a payment method id (maps usdt.* -> usdt). */
+/** Resolves the active recharge bonus percent for a USDT payment method id (maps usdt.* -> usdt). */
 export function resolveMethodBonusPercent(
   methodId: string,
   methodBonusRates?: Record<string, string>
 ): string | null {
   if (!methodBonusRates) return null
   const normalized = methodId.toLowerCase().trim()
+  if (normalized !== 'usdt' && !normalized.startsWith('usdt.')) {
+    return null
+  }
   const raw =
     methodBonusRates[methodId] ??
     methodBonusRates[normalized] ??
-    (normalized.startsWith('usdt') ? methodBonusRates.usdt : undefined)
+    methodBonusRates.usdt
   return formatBonusRateFraction(raw)
 }
 

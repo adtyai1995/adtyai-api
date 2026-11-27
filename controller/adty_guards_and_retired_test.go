@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -501,4 +502,84 @@ func TestPostAdtyRootExpiringGiftRetired(t *testing.T) {
 		assert.NotEqual(t, http.StatusGone, rec.Code)
 		assert.Contains(t, rec.Body.String(), "permission")
 	})
+}
+
+func TestRechargeBonusEndpointsUSDTOnly(t *testing.T) {
+	db := setupGuardsTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.AuditIntent{}, &model.AuditLog{}))
+
+	oldBonusDB := model.DB
+	adty_setting.SetAuthoritativeBonusDB(db)
+	t.Cleanup(func() {
+		adty_setting.SetAuthoritativeBonusDB(oldBonusDB)
+		_ = adty_setting.ApplyMethodBonusOption(adty_setting.TopupSettingKeyMethodBonus, "{}")
+		_ = adty_setting.ApplyMethodBonusOption(adty_setting.TopupSettingKeySiteMethodBonus, "{}")
+	})
+
+	require.NoError(t, db.Create(&model.Option{
+		Key:   adty_setting.TopupSettingKeyMethodBonus,
+		Value: `{"alipay":{"enabled":true,"rate":"0.05"},"wxpay":{"enabled":true,"rate":"0.04"},"usdt":{"enabled":true,"rate":"0.03"}}`,
+	}).Error)
+
+	// GET main-site bonus methods strips legacy Alipay/WeChat Pay keys.
+	getRec := httptest.NewRecorder()
+	getCtx, _ := gin.CreateTestContext(getRec)
+	getCtx.Request = httptest.NewRequest(http.MethodGet, "/api/adty/admin/bonus-methods", nil)
+	GetAdtyMainMethodBonus(getCtx)
+	require.Equal(t, http.StatusOK, getRec.Code)
+	var getResp struct {
+		Success bool                                    `json:"success"`
+		Data    map[string]adty_setting.MethodBonusRule `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(getRec.Body.Bytes(), &getResp))
+	assert.True(t, getResp.Success)
+	assert.Equal(t, map[string]adty_setting.MethodBonusRule{"usdt": {Enabled: true, Rate: "0.03"}}, getResp.Data)
+
+	// PUT main-site rejects Alipay and WeChat Pay.
+	for _, method := range []string{"alipay", "wxpay"} {
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		ctx.Request = httptest.NewRequest(http.MethodPut, "/api/adty/admin/bonus-methods", strings.NewReader(`{"method":"`+method+`","enabled":true,"rate":"0.05"}`))
+		ctx.Set("id", 1)
+		ctx.Set("role", common.RoleRootUser)
+		PutAdtyMainMethodBonus(ctx)
+		assert.Contains(t, rec.Body.String(), "Recharge bonus is only supported for USDT")
+	}
+
+	// PUT main-site accepts USDT and cleans legacy keys from options.
+	putRec := httptest.NewRecorder()
+	putCtx, _ := gin.CreateTestContext(putRec)
+	putCtx.Request = httptest.NewRequest(http.MethodPut, "/api/adty/admin/bonus-methods", strings.NewReader(`{"method":"usdt","enabled":true,"rate":"0.025"}`))
+	putCtx.Set("id", 1)
+	putCtx.Set("role", common.RoleRootUser)
+	PutAdtyMainMethodBonus(putCtx)
+	require.Equal(t, http.StatusOK, putRec.Code)
+	var putResp struct {
+		Success bool                                    `json:"success"`
+		Data    map[string]adty_setting.MethodBonusRule `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(putRec.Body.Bytes(), &putResp))
+	assert.True(t, putResp.Success)
+	assert.Equal(t, map[string]adty_setting.MethodBonusRule{"usdt": {Enabled: true, Rate: "0.025"}}, putResp.Data)
+
+	var opt model.Option
+	require.NoError(t, db.Where("key = ?", adty_setting.TopupSettingKeyMethodBonus).First(&opt).Error)
+	assert.NotContains(t, opt.Value, "alipay")
+	assert.NotContains(t, opt.Value, "wxpay")
+
+	// PUT subsite rejects Alipay and WeChat Pay before step-up verification.
+	owner := model.User{Username: "bonus_owner", Role: common.RoleCommonUser, Status: common.UserStatusEnabled}
+	require.NoError(t, db.Create(&owner).Error)
+	site := model.AdtySite{OwnerUserId: owner.Id, Subdomain: "bonusonly", RootDomain: "example.com", Status: model.AdtySiteStatusActive}
+	require.NoError(t, db.Create(&site).Error)
+
+	for _, method := range []string{"alipay", "wxpay"} {
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		ctx.Request = httptest.NewRequest(http.MethodPut, "/api/adty/site/bonus-methods", strings.NewReader(`{"method":"`+method+`","enabled":true,"rate":"0.05"}`))
+		ctx.Set("id", owner.Id)
+		ctx.Set("role", owner.Role)
+		PutAdtySiteMethodBonus(ctx)
+		assert.Contains(t, rec.Body.String(), "Recharge bonus is only supported for USDT")
+	}
 }

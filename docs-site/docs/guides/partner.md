@@ -22,7 +22,7 @@ ADTY AI Subsite Partnership gives resellers, studios, developer communities, and
 ### Independent Retail Commercial Controls
 
 - **Retail pricing multiplier**: Set your own retail pricing multiplier and commercial margin independently of upstream supply settlement.
-- **Recharge Bonus campaigns**: Configure Recharge Bonus by payment method directly from your site admin panel.
+- **Recharge Bonus campaigns**: Configure USDT Recharge Bonus rates directly from your site admin panel.
 - **Built-in Referral Program**: Toggle referrals on or off for your subsite, set your own commission percentage, observation period, and supported withdrawal methods.
 
 ### Complete Operational Suite

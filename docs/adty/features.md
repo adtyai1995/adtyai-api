@@ -24,14 +24,14 @@
 - **Root 到期试用赠金（DEC-031，已于 R-44 退役）**：已从用户管理行菜单、手动调额弹窗与钱包余额构成（`wallet-lot-projection.tsx`）中移除全部入口与展示，`POST /api/adty/admin/users/:id/expiring-gifts` 固定返回 `410 Gone` 禁止新发；钱包仅区分「本金」与「永久赠金」；后端保留既有 `adty_fund_batches` 表结构、历史流水标签与历史遗留批次到期清零任务以保证历史财务事实不丢失。
 - **钱包易支付应付金额展示（R-44）**：用户钱包（`/wallet`）、站长保证金充值（`/site-owner/wallets`）及团队在线充值（`/my-team`）使用易支付时，应付金额区、易支付付款弹窗与充值记录实付列统一只展示应付美元（`$xx.xx`），不再向前端展示人民币金额与人民币汇率换算；后端易支付网关下单与后台财务对账仍保留原始人民币结算数据。
 
-**做什么**：用户在钱包页（`/wallet`）选面额、选已配置的支付方式充值，支持 BEpusdt 和易支付。加赠按支付方式配置：主站由 Root 设每种方式的比例；分站直接按主站已启用的支付方式放行，由站长在站长中心设本站比例（原 Root 逐站授权 `site_method_auth` 已退役返 410）。优惠码已退役，报价和写入一律拒绝；能主动加额度的只有充值额度兑换码（`adty_voucher`）。
+**做什么**：用户在钱包页（`/wallet`）选面额、选已配置的支付方式充值，支持 BEpusdt 和易支付。充值赠送仅支持 USDT（主站由 Root 设主站 USDT 比例；主站启用 USDT 后，分站由站长在站长中心设本站 USDT 比例，支付宝与微信支付不提供充值赠送；原 Root 逐站授权 `site_method_auth` 已退役返 410）。优惠码已退役，报价和写入一律拒绝；能主动加额度的只有充值额度兑换码（`adty_voucher`）。
 
 **规则**：
 
 - **面额**：普通自选面额为正整数美元，不低于最低充值额 `MinTopUp`（默认 1）。钱包总额不能超过 2^53 − 1 额度，下单时会检查。易支付还受通道的单笔和每日限额限制。
-- **加赠按支付方式**：现行配置键为 `adty_topup_setting.method_bonus`（主站规则）和 `adty_topup_setting.site_method_bonus`（站长针对主站已启用支付方式的本站规则）；历史 `adty_topup_setting.site_method_auth` 已退役仅作历史兼容保留。每条规则是 `{"enabled": bool, "rate": "0.025"}`，`rate` 是 **0–1 的小数比例**（0.025 = 2.5%），不是百分数，也不是金额档位；没有规则或 `enabled=false` 就不送（`setting/adty_setting/bonus_method.go`）。支付方式规范化成 `alipay`、`wxpay`、`usdt`，USDT 的 TRC20 / ERC20 / BEP20 / Polygon / X Layer **共用一条 `usdt` 规则**（`service/adty_method_bonus.go:15-26`）。
+- **加赠仅支持 USDT（R-45）**：现行配置键为 `adty_topup_setting.method_bonus`（主站规则）和 `adty_topup_setting.site_method_bonus`（分站规则）；历史 `adty_topup_setting.site_method_auth` 已退役仅作历史兼容保留。每条规则是 `{"enabled": bool, "rate": "0.025"}`，`rate` 是 **0–1 的小数比例**（0.025 = 2.5%），不是百分数，也不是金额档位；没有规则或 `enabled=false` 就不送（`setting/adty_setting/bonus_method.go`）。主站与分站充值赠送统一仅支持 `usdt`，USDT 的 TRC20 / ERC20 / BEP20 / Polygon / X Layer **共用一条 `usdt` 规则**（`service/adty_method_bonus.go:15-31`）；支付宝（`alipay`）和微信支付（`wxpay`）不再支持配置或发放充值赠送，数据库遗留的旧 `alipay`/`wxpay` 规则会被自动忽略并在保存时清理（已创建历史订单快照与账务不受影响）。
 - **金额档位已退役**：`adty_topup_setting.bonus_rates` 和 `adty_reseller_setting.max_site_bonus_extra` 只保留历史读取，不参与现行报价、开站必填项或设置校验。通用配置接口拒绝保存旧档位，分站设置接口拒绝写入旧 extra（包括 null），已有历史值保留。`SaveAdtySiteBonusRates` 一律返回 `ErrAdtyAmountTierRetired`。
-- **加赠配置流程**：主站比例 Root 用 `PUT /api/adty/admin/bonus-methods {method, enabled, rate}`。原分站逐站授权接口 `PUT /api/adty/admin/sites/:id/bonus-methods` 已退役返回 410 Gone；现行直接按主站已启用的支付方式放行，站长调 `PUT /api/adty/site/bonus-methods {method, enabled, rate}` 设本站规则，主站未启用的支付方式不会发放分站赠金（`setting/adty_setting/bonus_method.go`、`controller/adty_bonus_method.go`）。
+- **加赠配置流程**：主站 USDT 比例 Root 用 `PUT /api/adty/admin/bonus-methods {method: "usdt", enabled, rate}`。原分站逐站授权接口 `PUT /api/adty/admin/sites/:id/bonus-methods` 已退役返回 410 Gone；现行只要主站已启用 USDT 支付，站长即可调 `PUT /api/adty/site/bonus-methods {method: "usdt", enabled, rate}` 设本站 USDT 规则，提交非 USDT 方式一律拒绝，主站未启用 USDT 时无法开启分站 USDT 赠金（`setting/adty_setting/bonus_method.go`、`controller/adty_bonus_method.go`）。
 - **报价保障**：先按主站支付方式启用状态和本站启用规则计算赠金；未启用则不送。分站加赠为正时，`SiteBonusEarningCovers` 校验收益钱包可用余额（`balance − frozen_usd`）；不足部分只有 Root 授权了保证金补位（`adty_topup_setting.site_bonus_margin_fill`）且保证金本周期允许支取才放行。保障不足拒绝报价。不存在按主站历史金额档位或旧 extra 计算的上限。
 - **公式**：
   - 加赠 = 面额 × rate（8 位小数）。
@@ -43,18 +43,18 @@
 - **分站客户**：只用主站已启用支付方式下站长自己启用的本站规则；站长没设或没开就不送，不存在「回落到主站规则」。
 - **优惠码**：已整条删除（2026-11-16）：报价和下单不再接受优惠码，订单上没有优惠码字段，管理接口和面板也已删除。要主动加额度只能用充值额度兑换码。
 
-**算例（主站，`method_bonus` = `usdt` 2.5%、`alipay` 1%）**：
+**算例（主站，`method_bonus` = `usdt` 2.5%）**：
 
 - $100 USDT：加赠 $100 × 0.025 = $2.50，入账 $102.50 = 51,250,000 额度；应付 100 USDT。
-- $100 支付宝（`Price` 7.3）：加赠 $1.00，入账 $101.00 = 50,500,000 额度；应付 ¥730.00。
+- $100 支付宝（`Price` 7.3）：不享充值赠送，入账 $100.00 = 50,000,000 额度；网关实付 ¥730.00（钱包前台仅展示 `$100.00`）。
 - 自定义 $150 USDT：加赠 $3.75，入账 $153.75 = 76,875,000 额度。
 
-**算例（分站）**：主站已启用 USDT 支付方式，站长将本站比例设为 3%，$100 订单赠金为 $3.00。收益钱包可用余额 ≥ $3.00 时可报价；只有 $2.00 且未授权保证金补位时拒绝报价。旧档位为空或历史 extra 未设置，计算结果一致；比例改为 5% 后按 $5.00 校验真实保障。
+**算例（分站）**：主站已启用 USDT 支付方式，站长将本站 USDT 比例设为 3%，$100 USDT 订单赠金为 $3.00。收益钱包可用余额 ≥ $3.00 时可报价；只有 $2.00 且未授权保证金补位时拒绝报价。旧档位为空或历史 extra 未设置，计算结果一致；比例改为 5% 后按 $5.00 校验真实保障。
 
 **后台**：
 
-- 充值赠送（`/recharge-bonus`，仅超级管理员；旧路径 `/system-settings/billing/recharge-bonus` 重定向至此）：按支付方式配置主站充值赠送开关和比例（`adty_topup_setting.method_bonus`）。人民币单价 `Price`、最低充值 `MinTopUp`、金额按钮和回调地址 `CustomCallbackAddress` 在「系统设置 → 计费 → 支付网关」。
-- 站长中心 → 充值赠送（`/site-owner/bonus`）：主站已启用支付方式的本站开关和比例（原站点明细内的逐站授权列表已移除）。
+- 充值赠送（`/recharge-bonus`，仅超级管理员；旧路径 `/system-settings/billing/recharge-bonus` 重定向至此）：配置主站 USDT 充值赠送开关和比例（`adty_topup_setting.method_bonus`）。人民币单价 `Price`、最低充值 `MinTopUp`、金额按钮和回调地址 `CustomCallbackAddress` 在「系统设置 → 计费 → 支付网关」。
+- 站长中心 → 充值赠送（`/site-owner/bonus`）：主站启用 USDT 支付后，配置本站 USDT 充值赠送开关和比例（原站点明细内的逐站授权列表及支付宝/微信赠送入口已移除）。
 
 **默认**：没有任何支付方式规则，不送加赠。「支付合规确认」2026-11-01 取消，相关接口和设置 2026-11-16 删除，支付默认就能用（见 deleted-features.md）。
 
@@ -270,7 +270,7 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 ### 充值赠送和试用额度
 
-- **充值赠送**：按支付方式，不按金额档位。原逐站授权（`PUT /api/adty/admin/sites/:id/bonus-methods` / `site_method_auth`）已退役返回 410 Gone，现行直接按主站已启用支付方式放行，站长在站长中心 → 充值赠送（`/site-owner/bonus`）设本站比例（`site_method_bonus`，要重新验证身份）。收益保障、赠金冻结和待履约见「充值和加赠」。旧站点金额档位 `adty_sites.bonus_rates` 不再接受新保存（`SaveAdtySiteBonusRates` 返回 `ErrAdtyAmountTierRetired`）。
+- **充值赠送**：仅支持 USDT（全链共用一条 `usdt` 规则，支付宝与微信支付不提供充值赠送），不按金额档位。原逐站授权（`PUT /api/adty/admin/sites/:id/bonus-methods` / `site_method_auth`）已退役返回 410 Gone，现行只要主站启用 USDT 支付即可放行，站长在站长中心 → 充值赠送（`/site-owner/bonus`）设本站 USDT 比例（`site_method_bonus`，要重新验证身份）。收益保障、赠金冻结和待履约见「充值和加赠」。旧站点金额档位 `adty_sites.bonus_rates` 不再接受新保存（`SaveAdtySiteBonusRates` 返回 `ErrAdtyAmountTierRetired`）。
 - **试用额度与手动加余额（均已退役）**：旧版 `POST /api/adty/site/customers/:id/trial` 与站长手动给客户/团队增加余额接口（`POST /api/adty/site/customers/:id/balance`、`POST /api/adty/site/teams/:id/balance`）均已退役（后端返 410 Gone）；站长给客户加额度统一通过「签发站点兑换码（`site_customer`）」完成（优先从可用收益出资，不足部分由超出等级底线的超额保证金补足）。历史已落库的 `site_trial` 与历史手动调额流水保留只读展示。
 
 ### 收益、冻结、结算、提现

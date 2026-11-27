@@ -12,7 +12,7 @@ import (
 	"gorm.io/gorm"
 )
 
-var adtyCanonicalBonusMethods = []string{AdtyMethodAlipay, AdtyMethodWxpay, "usdt"}
+var adtyCanonicalBonusMethods = []string{"usdt"}
 
 // ErrAdtySiteBonusQuotaUnavailable is returned to end customers when a subsite's
 // owner bonus reserve cannot cover a top-up gift, without leaking internal
@@ -20,18 +20,14 @@ var adtyCanonicalBonusMethods = []string{AdtyMethodAlipay, AdtyMethodWxpay, "usd
 var ErrAdtySiteBonusQuotaUnavailable = common.NewMessage("Recharge bonus quota is temporarily unavailable on this site. Please contact the site administrator or try again later.")
 
 // AdtyBonusMethod is the canonical payment-method key for gift rules.
-// USDT chains share one rule. Amount-tier rates are not a bonus authority.
+// Recharge bonus is only supported for USDT (all USDT chains share one "usdt" rule).
+// Amount-tier rates are not a bonus authority.
 func AdtyBonusMethod(method string) string {
 	method = strings.ToLower(strings.TrimSpace(method))
-	if strings.HasPrefix(method, "usdt") {
+	if method == "usdt" || strings.HasPrefix(method, "usdt.") {
 		return "usdt"
 	}
-	switch method {
-	case AdtyMethodAlipay, AdtyMethodWxpay:
-		return method
-	default:
-		return ""
-	}
+	return ""
 }
 
 // AdtyPaymentMethodBonus returns the snapshot rate and USD gift for one order.
@@ -85,9 +81,9 @@ func adtyMethodBonusRule(site *model.AdtySite, key string) (adty_setting.MethodB
 	return adty_setting.MainMethodBonus(key)
 }
 
-// EnabledMainSiteBonusMethods returns the canonical bonus method keys
-// ("alipay", "wxpay", "usdt") currently enabled on the main site across active
-// wallet_topup payment scenes and configured providers/channels, in fixed order.
+// EnabledMainSiteBonusMethods returns the supported canonical bonus method keys
+// ("usdt") currently enabled on the main site across active wallet_topup
+// payment scenes and configured providers.
 func EnabledMainSiteBonusMethods() []string {
 	enabled := map[string]bool{}
 	usedScenes := false
@@ -100,18 +96,11 @@ func EnabledMainSiteBonusMethods() []string {
 				}
 				for _, provider := range AdtyPaymentProviders() {
 					for _, method := range provider.Methods() {
-						if !method.Available || !adtySceneMethod(scene, provider.Name(), method.Id, method.Currency) {
+						key := AdtyBonusMethod(method.Id)
+						if key == "" || !method.Available || !adtySceneMethod(scene, provider.Name(), method.Id, method.Currency) {
 							continue
 						}
-						if method.Kind == "epay" {
-							channelMethods, chErr := adtyEpaySceneChannelMethods(scene, method)
-							if chErr != nil || len(channelMethods) == 0 {
-								continue
-							}
-						}
-						if key := AdtyBonusMethod(method.Id); key != "" {
-							enabled[key] = true
-						}
+						enabled[key] = true
 					}
 				}
 			}
@@ -145,7 +134,7 @@ func IsMainSiteBonusMethodEnabled(method string) bool {
 
 // AdtyActiveMethodBonusRates returns authoritative active bonus rates as decimal
 // fraction strings in (0, 1] (e.g. "0.05" for 5%) keyed by canonical method
-// ("alipay", "wxpay", "usdt"). Only enabled rules with positive rates are included.
+// ("usdt"). Only enabled rules with positive rates are included.
 // Team and site-owner businesses do not receive recharge method bonuses.
 func AdtyActiveMethodBonusRates(userID int, requestSiteID int, business string) map[string]string {
 	out := map[string]string{}
@@ -199,8 +188,8 @@ type AdtySiteBonusMethod struct {
 	EnabledByMain bool   `json:"enabled_by_main"`
 }
 
-// AdtySiteBonusMethods lists all payment methods currently enabled on the main
-// site in fixed order (alipay, wxpay, usdt) with the subsite owner's saved rules.
+// AdtySiteBonusMethods lists supported recharge bonus methods (USDT only)
+// currently enabled on the main site with the subsite owner's saved rule.
 func AdtySiteBonusMethods(site *model.AdtySite) []AdtySiteBonusMethod {
 	if site == nil {
 		return nil

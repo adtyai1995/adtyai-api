@@ -32,7 +32,7 @@ type PaymentMethodButtonsProps = {
   selected: string | null
   onSelect: (key: string) => void
   disabled?: boolean
-  /** Optional active per-method recharge bonus rates (e.g. { alipay: "0.05", usdt: "0.025" }). */
+  /** Optional active USDT recharge bonus rate map (e.g. { usdt: "0.025" }). */
   methodBonusRates?: Record<string, string>
 }
 

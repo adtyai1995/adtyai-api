@@ -41,11 +41,7 @@ type MainBonusMethodRule = {
 
 type MainBonusMethodsMap = Record<string, MainBonusMethodRule>
 
-const MAIN_BONUS_METHODS = [
-  { key: 'alipay', labelKey: 'Alipay' },
-  { key: 'wxpay', labelKey: 'WeChat Pay' },
-  { key: 'usdt', labelKey: 'USDT' },
-] as const
+const MAIN_BONUS_METHODS = [{ key: 'usdt', labelKey: 'USDT' }] as const
 
 function isValidBonusRateDecimal(raw: string): boolean {
   const trimmed = raw.trim()
@@ -178,8 +174,6 @@ export function RechargeBonusSection() {
     bodyContent = (
       <div className='space-y-3 p-5 sm:p-6'>
         <Skeleton className='h-12 w-full' />
-        <Skeleton className='h-12 w-full' />
-        <Skeleton className='h-12 w-full' />
       </div>
     )
   } else if (query.isError) {
@@ -271,9 +265,9 @@ export function RechargeBonusSection() {
 
   return (
     <SettingsSection
-      title={t('Payment Method Recharge Bonus')}
+      title={t('USDT Recharge Bonus')}
       description={t(
-        'Configure main-site recharge bonus rates (0 to 1, e.g. 0.025 for 2.5%) for Alipay, WeChat Pay, and USDT. Bonus credits do not earn referral commissions.'
+        'Configure the main-site USDT recharge bonus rate (0 to 1, e.g. 0.025 for 2.5%). Applies to all USDT networks. Bonus credits do not earn referral commissions.'
       )}
       bodyClassName='p-0 sm:p-0'
     >

@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/glebarez/sqlite"
 	"github.com/shopspring/decimal"
@@ -50,8 +51,12 @@ func setupPaymentSceneBonusTestDB(t *testing.T) *gorm.DB {
 	oldLogDB := model.LOG_DB
 	oldRedis := common.RedisEnabled
 	oldMemCache := common.MemoryCacheEnabled
+	oldOptionMap := common.OptionMap
 	common.RedisEnabled = false
 	common.MemoryCacheEnabled = false
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap = map[string]string{}
+	common.OptionMapRWMutex.Unlock()
 	model.DB = db
 	model.LOG_DB = db
 	adty_setting.SetAuthoritativeBonusDB(db)
@@ -61,6 +66,9 @@ func setupPaymentSceneBonusTestDB(t *testing.T) *gorm.DB {
 		adty_setting.SetAuthoritativeBonusDB(oldDB)
 		common.RedisEnabled = oldRedis
 		common.MemoryCacheEnabled = oldMemCache
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = oldOptionMap
+		common.OptionMapRWMutex.Unlock()
 		_ = sqlDB.Close()
 	})
 	return db
@@ -68,6 +76,27 @@ func setupPaymentSceneBonusTestDB(t *testing.T) *gorm.DB {
 
 func TestCreateAdtyPaymentOrderSkipsBonusForPausedAndClosingSubsites(t *testing.T) {
 	db := setupPaymentSceneBonusTestDB(t)
+
+	oldBEpusdt := setting.GetBEpusdtSetting()
+	oldTradeTypes, _ := common.Marshal(oldBEpusdt.TradeTypes)
+	t.Cleanup(func() {
+		enabledStr := "false"
+		if oldBEpusdt.Enabled {
+			enabledStr = "true"
+		}
+		_ = model.ApplyOptionValues(map[string]string{
+			setting.BEpusdtOptionKeyEnabled:    enabledStr,
+			setting.BEpusdtOptionKeyBaseURL:    oldBEpusdt.BaseURL,
+			setting.BEpusdtOptionKeySecret:     oldBEpusdt.Secret,
+			setting.BEpusdtOptionKeyTradeTypes: string(oldTradeTypes),
+		})
+	})
+	require.NoError(t, model.ApplyOptionValues(map[string]string{
+		setting.BEpusdtOptionKeyEnabled:    "true",
+		setting.BEpusdtOptionKeyBaseURL:    "https://bepusdt.example.com",
+		setting.BEpusdtOptionKeySecret:     "bepusdt-test-secret",
+		setting.BEpusdtOptionKeyTradeTypes: `["usdt.trc20"]`,
+	}))
 
 	scenesPayload, err := common.Marshal([]model.AdtyPaymentScene{
 		{
@@ -77,9 +106,9 @@ func TestCreateAdtyPaymentOrderSkipsBonusForPausedAndClosingSubsites(t *testing.
 			Enabled:    true,
 			MinUSD:     decimal.NewFromInt(1),
 			MaxUSD:     decimal.NewFromInt(10000),
-			Providers:  []string{model.PaymentProviderAdtyEpay},
-			Methods:    []string{AdtyMethodAlipay},
-			Currencies: []string{"CNY"},
+			Providers:  []string{model.PaymentProviderAdtyBEpusdt, model.PaymentProviderAdtyEpay},
+			Methods:    []string{AdtyMethodUSDTTRC20, AdtyMethodAlipay},
+			Currencies: []string{"USDT", "CNY"},
 			SiteScope:  "all",
 		},
 	})
@@ -111,10 +140,10 @@ func TestCreateAdtyPaymentOrderSkipsBonusForPausedAndClosingSubsites(t *testing.
 	}).Error)
 	require.NoError(t, db.Preload("Methods").First(channel, channel.Id).Error)
 
-	// Seed site method bonus for sites 1 (active), 2 (paused), 3 (closing).
+	// Seed site method bonus (both USDT and legacy Alipay) for sites 1 (active), 2 (paused), 3 (closing).
 	require.NoError(t, db.Create(&model.Option{
 		Key:   adty_setting.TopupSettingKeySiteMethodBonus,
-		Value: `{"1":{"alipay":{"enabled":true,"rate":"0.1"}},"2":{"alipay":{"enabled":true,"rate":"0.1"}},"3":{"alipay":{"enabled":true,"rate":"0.1"}}}`,
+		Value: `{"1":{"usdt":{"enabled":true,"rate":"0.1"},"alipay":{"enabled":true,"rate":"0.1"}},"2":{"usdt":{"enabled":true,"rate":"0.1"}},"3":{"usdt":{"enabled":true,"rate":"0.1"}}}`,
 	}).Error)
 
 	cases := []struct {
@@ -127,7 +156,7 @@ func TestCreateAdtyPaymentOrderSkipsBonusForPausedAndClosingSubsites(t *testing.
 		expectReserved decimal.Decimal
 	}{
 		{
-			name:           "active subsite applies bonus and reserves gift",
+			name:           "active subsite applies USDT bonus and reserves gift",
 			siteID:         1,
 			ownerID:        101,
 			customerID:     201,
@@ -136,7 +165,7 @@ func TestCreateAdtyPaymentOrderSkipsBonusForPausedAndClosingSubsites(t *testing.
 			expectReserved: decimal.NewFromInt(10),
 		},
 		{
-			name:           "paused subsite gets zero bonus and zero reserve",
+			name:           "paused subsite gets zero USDT bonus and zero reserve",
 			siteID:         2,
 			ownerID:        102,
 			customerID:     202,
@@ -145,7 +174,7 @@ func TestCreateAdtyPaymentOrderSkipsBonusForPausedAndClosingSubsites(t *testing.
 			expectReserved: decimal.Zero,
 		},
 		{
-			name:           "closing subsite gets zero bonus and zero reserve",
+			name:           "closing subsite gets zero USDT bonus and zero reserve",
 			siteID:         3,
 			ownerID:        103,
 			customerID:     203,
@@ -176,10 +205,10 @@ func TestCreateAdtyPaymentOrderSkipsBonusForPausedAndClosingSubsites(t *testing.
 			topUp := &model.TopUp{
 				UserId:          tc.customerID,
 				Amount:          100,
-				Money:           700,
+				Money:           100,
 				TradeNo:         tradeNo,
-				PaymentMethod:   AdtyMethodAlipay,
-				PaymentProvider: model.PaymentProviderAdtyEpay,
+				PaymentMethod:   AdtyMethodUSDTTRC20,
+				PaymentProvider: model.PaymentProviderAdtyBEpusdt,
 				CreateTime:      time.Now().Unix(),
 				Status:          common.TopUpStatusPending,
 			}
@@ -188,15 +217,14 @@ func TestCreateAdtyPaymentOrderSkipsBonusForPausedAndClosingSubsites(t *testing.
 				TradeNo:     tradeNo,
 				UserId:      tc.customerID,
 				SiteId:      tc.siteID,
-				Provider:    model.PaymentProviderAdtyEpay,
-				Method:      AdtyMethodAlipay,
-				ChannelId:   channel.Id,
+				Provider:    model.PaymentProviderAdtyBEpusdt,
+				Method:      AdtyMethodUSDTTRC20,
 				FaceUSD:     decimal.NewFromInt(100),
-				PayAmount:   decimal.NewFromInt(700),
-				PayCurrency: "CNY",
+				PayAmount:   decimal.NewFromInt(100),
+				PayCurrency: "USDT",
 				ExpireAt:    time.Now().Unix() + 900,
 			}
-			err = CreateAdtyPaymentOrder(topUp, ext, model.AdtyBusinessWalletTopup, channel)
+			err = CreateAdtyPaymentOrder(topUp, ext, model.AdtyBusinessWalletTopup)
 			require.NoError(t, err)
 
 			assert.True(t, ext.BonusUSD.Equal(tc.expectBonusUSD), "expected BonusUSD=%s got=%s", tc.expectBonusUSD, ext.BonusUSD)
@@ -207,4 +235,36 @@ func TestCreateAdtyPaymentOrderSkipsBonusForPausedAndClosingSubsites(t *testing.
 			assert.True(t, earn.FrozenUSD.Equal(tc.expectReserved), "expected wallet FrozenUSD=%s got=%s", tc.expectReserved, earn.FrozenUSD)
 		})
 	}
+
+	t.Run("active subsite grants zero bonus for Alipay even if legacy rule exists", func(t *testing.T) {
+		tradeNo := "ORD_ALIPAY_NO_BONUS"
+		topUp := &model.TopUp{
+			UserId:          201,
+			Amount:          100,
+			Money:           700,
+			TradeNo:         tradeNo,
+			PaymentMethod:   AdtyMethodAlipay,
+			PaymentProvider: model.PaymentProviderAdtyEpay,
+			CreateTime:      time.Now().Unix(),
+			Status:          common.TopUpStatusPending,
+		}
+		ext := &model.AdtyTopupOrder{
+			Business:    model.AdtyBusinessWalletTopup,
+			TradeNo:     tradeNo,
+			UserId:      201,
+			SiteId:      1,
+			Provider:    model.PaymentProviderAdtyEpay,
+			Method:      AdtyMethodAlipay,
+			ChannelId:   channel.Id,
+			FaceUSD:     decimal.NewFromInt(100),
+			PayAmount:   decimal.NewFromInt(700),
+			PayCurrency: "CNY",
+			ExpireAt:    time.Now().Unix() + 900,
+		}
+		require.NoError(t, CreateAdtyPaymentOrder(topUp, ext, model.AdtyBusinessWalletTopup, channel))
+		assert.Empty(t, ext.BonusMethod)
+		assert.True(t, ext.BonusRate.IsZero())
+		assert.True(t, ext.BonusUSD.IsZero())
+		assert.True(t, ext.GiftReserveEarning.IsZero())
+	})
 }

@@ -11880,6 +11880,12 @@
     "Commission settles after coverage and the {{days}}-day observation period. Refunded orders void or claw back their commission.": "佣金在资金覆盖并满 {{days}} 天观察期后生效，退款订单将按比例作废或扣回佣金。",
     "Cash withdrawals of invite commission are reviewed by the site administrator.": "邀请佣金的现金提现由该站点管理员审核。",
     "Transferring to your balance credits your account immediately. Cash withdrawals are completed after review and payout.": "转入站内余额会立即到账；现金提现将在审核并完成打款后到账。",
-    "Site administrators can create teams or issue team registration links.": "站点管理员可创建团队或签发团队注册链接。"
+    "Site administrators can create teams or issue team registration links.": "站点管理员可创建团队或签发团队注册链接。",
+    "Recharge bonus is only supported for USDT": "充值赠送仅支持 USDT",
+    "Configure the main-site USDT recharge bonus rate.": "配置主站 USDT 充值赠送比例。",
+    "USDT Recharge Bonus": "USDT 充值赠送",
+    "Configure the main-site USDT recharge bonus rate (0 to 1, e.g. 0.025 for 2.5%). Applies to all USDT networks. Bonus credits do not earn referral commissions.": "配置主站 USDT 充值赠送比例（0 到 1 之间的小数，例如 0.025 表示 2.5%），适用于全部 USDT 网络。赠送额度不参与推广返佣。",
+    "Configure the USDT recharge bonus rate for your site (applies to all USDT networks). Eligible customer USDT recharges receive the configured bonus paid from your earnings.": "配置本站 USDT 充值赠送比例（适用于全部 USDT 网络）。符合条件的客户 USDT 充值将获得对应赠金，由您的站长收益承担。",
+    "USDT payment is not currently enabled on the main site.": "主站当前暂未启用 USDT 支付。"
   }
 }

@@ -188,27 +188,21 @@ func ParseSiteBonusMarginFillAllowed(rawMarginFill string, siteID int) (bool, er
 	return allowed != nil && allowed[siteID], nil
 }
 
-// MainMethodBonusMap returns all main-site bonus rules from the authoritative DB
-// when wired, falling back to the in-memory option snapshot.
+// MainMethodBonusMap returns supported main-site bonus rules (USDT only) from
+// the authoritative DB when wired, falling back to the in-memory option snapshot.
 func MainMethodBonusMap() map[string]MethodBonusRule {
 	if raw, ok := readOptionFromDB(getAuthoritativeBonusDB(), TopupSettingKeyMethodBonus); ok {
 		var rules map[string]MethodBonusRule
 		if err := unmarshalBonusSetting(raw, &rules); err == nil {
-			if rules == nil {
-				return map[string]MethodBonusRule{}
-			}
-			return rules
+			return filterSupportedMethodBonusMap(rules)
 		}
 	}
 	ts := GetTopupSetting()
-	if ts.MethodBonus == nil {
-		return map[string]MethodBonusRule{}
-	}
-	return ts.MethodBonus
+	return filterSupportedMethodBonusMap(ts.MethodBonus)
 }
 
-// SiteMethodBonusMap returns one site's bonus rules from the authoritative DB
-// when wired, falling back to the in-memory option snapshot.
+// SiteMethodBonusMap returns one site's supported bonus rules (USDT only) from
+// the authoritative DB when wired, falling back to the in-memory option snapshot.
 func SiteMethodBonusMap(siteID int) map[string]MethodBonusRule {
 	if siteID <= 0 {
 		return map[string]MethodBonusRule{}
@@ -216,27 +210,27 @@ func SiteMethodBonusMap(siteID int) map[string]MethodBonusRule {
 	if raw, ok := readOptionFromDB(getAuthoritativeBonusDB(), TopupSettingKeySiteMethodBonus); ok {
 		var all map[int]map[string]MethodBonusRule
 		if err := unmarshalBonusSetting(raw, &all); err == nil {
-			if all == nil || all[siteID] == nil {
+			if all == nil {
 				return map[string]MethodBonusRule{}
 			}
-			return all[siteID]
+			return filterSupportedMethodBonusMap(all[siteID])
 		}
 	}
 	ts := GetTopupSetting()
-	if ts.SiteMethodBonus == nil || ts.SiteMethodBonus[siteID] == nil {
+	if ts.SiteMethodBonus == nil {
 		return map[string]MethodBonusRule{}
 	}
-	return ts.SiteMethodBonus[siteID]
+	return filterSupportedMethodBonusMap(ts.SiteMethodBonus[siteID])
 }
 
-// MainMethodBonus is the main-site rule. An absent rule is off.
+// MainMethodBonus is the main-site rule. An absent or unsupported method is off.
 func MainMethodBonus(method string) (MethodBonusRule, bool) {
 	key, err := canonicalBonusMethod(method)
-	if err == nil {
-		method = key
+	if err != nil {
+		return MethodBonusRule{}, false
 	}
 	if raw, ok := readOptionFromDB(getAuthoritativeBonusDB(), TopupSettingKeyMethodBonus); ok {
-		if rule, found, err := ParseMainMethodBonus(raw, method); err == nil {
+		if rule, found, err := ParseMainMethodBonus(raw, key); err == nil {
 			return rule, found
 		}
 	}
@@ -244,7 +238,7 @@ func MainMethodBonus(method string) (MethodBonusRule, bool) {
 	if ts.MethodBonus == nil {
 		return MethodBonusRule{}, false
 	}
-	rule, ok := ts.MethodBonus[method]
+	rule, ok := ts.MethodBonus[key]
 	return rule, ok
 }
 
@@ -276,9 +270,7 @@ func MergeMainMethodBonus(current string, method string, enabled bool, rate stri
 	if err := unmarshalBonusSetting(current, &next); err != nil {
 		return "", err
 	}
-	if next == nil {
-		next = map[string]MethodBonusRule{}
-	}
+	next = filterSupportedMethodBonusMap(next)
 	next[key] = MethodBonusRule{Enabled: enabled, Rate: parsed}
 	return marshalBonusSetting(next)
 }
@@ -313,9 +305,7 @@ func mergeAuthorizedSiteMethodBonus(current string, siteID int, key string, enab
 	if next == nil {
 		next = map[int]map[string]MethodBonusRule{}
 	}
-	if next[siteID] == nil {
-		next[siteID] = map[string]MethodBonusRule{}
-	}
+	next[siteID] = filterSupportedMethodBonusMap(next[siteID])
 	next[siteID][key] = MethodBonusRule{Enabled: enabled, Rate: parsed}
 	return marshalBonusSetting(next)
 }
@@ -715,15 +705,29 @@ func SiteBonusMarginFillAllowedTx(tx *gorm.DB, siteID int) bool {
 	return ts.SiteBonusMarginFill != nil && ts.SiteBonusMarginFill[siteID]
 }
 
+// CanonicalBonusMethod validates and normalizes a recharge bonus payment method.
+// Recharge bonus is only supported for USDT (all USDT networks share the single "usdt" rule).
+func CanonicalBonusMethod(method string) (string, error) {
+	return canonicalBonusMethod(method)
+}
+
 func canonicalBonusMethod(method string) (string, error) {
 	method = strings.ToLower(strings.TrimSpace(method))
-	if strings.HasPrefix(method, "usdt") {
+	if method == "usdt" || strings.HasPrefix(method, "usdt.") {
 		return "usdt", nil
 	}
-	if method == "alipay" || method == "wxpay" {
-		return method, nil
+	return "", errBonusMethod("Recharge bonus is only supported for USDT")
+}
+
+func filterSupportedMethodBonusMap(in map[string]MethodBonusRule) map[string]MethodBonusRule {
+	out := map[string]MethodBonusRule{}
+	if in == nil {
+		return out
 	}
-	return "", errBonusMethod("unsupported payment method")
+	if rule, ok := in["usdt"]; ok {
+		out["usdt"] = rule
+	}
+	return out
 }
 
 func parseBonusRate(rate string, enabled bool) (string, error) {

@@ -25,6 +25,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { useDraftNavigation } from '@/features/system-settings/hooks/use-draft-navigation'
+import { PaymentMethodIcon } from '@/features/wallet/adty/components/payment-logos'
 
 import { saveOwnerSiteMethodBonus } from '../api'
 import { useVerifiedOwnerMutation } from '../hooks/use-verified-owner-mutation'
@@ -34,18 +35,31 @@ type MethodRow = { method: string; enabled: boolean; rate: string }
 
 /** Canonical payment-method keys are stored, the labels are translated. */
 const METHOD_LABELS: Record<string, string> = {
-  alipay: 'Alipay',
-  wxpay: 'WeChat Pay',
   usdt: 'USDT',
+}
+
+function isSupportedBonusMethod(method: string): boolean {
+  return method.toLowerCase().trim() === 'usdt'
+}
+
+function formatBonusRatePercent(raw: string): string {
+  const trimmed = raw.trim()
+  if (!/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(trimmed)) return ''
+  const num = Number(trimmed)
+  if (!Number.isFinite(num) || num < 0 || num > 1) return ''
+  const pct = Number((num * 100).toFixed(4))
+  return `= ${pct}%`
 }
 
 const rowValue = (row: MethodRow) =>
   JSON.stringify({ enabled: row.enabled, rate: row.rate })
 
-/** Recharge bonus rules by payment method for this site; the bonus is paid from the owner's earnings. */
+/** USDT recharge bonus rule for this site; the bonus is paid from the owner's earnings. */
 export function BonusPanel(props: { site: OwnerSite }) {
   const { t } = useTranslation()
-  const saved = props.site.bonus_methods ?? []
+  const saved = (props.site.bonus_methods ?? []).filter((row) =>
+    isSupportedBonusMethod(row.method)
+  )
   const savedRef = useRef<Map<string, string>>(
     new Map(saved.map((row) => [row.method, rowValue(row)]))
   )
@@ -53,13 +67,13 @@ export function BonusPanel(props: { site: OwnerSite }) {
     saved.map(({ method, enabled, rate }) => ({ method, enabled, rate }))
   )
   useEffect(() => {
-    const incoming = (props.site.bonus_methods ?? []).map(
-      ({ method, enabled, rate }) => ({
+    const incoming = (props.site.bonus_methods ?? [])
+      .filter((row) => isSupportedBonusMethod(row.method))
+      .map(({ method, enabled, rate }) => ({
         method,
         enabled,
         rate,
-      })
-    )
+      }))
     const prevSaved = savedRef.current
     setRows((current) => {
       const currentByMethod = new Map(current.map((row) => [row.method, row]))
@@ -102,22 +116,21 @@ export function BonusPanel(props: { site: OwnerSite }) {
     <div className='flex flex-col gap-4'>
       <p className='text-dim max-w-[80ch] text-[13px] leading-relaxed'>
         {t(
-          'Configure recharge bonus rates by payment method. Eligible customer recharges receive the configured bonus paid from your earnings.'
+          'Configure the USDT recharge bonus rate for your site (applies to all USDT networks). Eligible customer USDT recharges receive the configured bonus paid from your earnings.'
         )}{' '}
         {t('A rate of 0.025 grants 2.5% of the recharge amount.')}
       </p>
       {rows.length === 0 && (
         <EmptyState
           className='min-h-24'
-          title={t(
-            'No payment methods are currently enabled on the main site.'
-          )}
+          title={t('USDT payment is not currently enabled on the main site.')}
         />
       )}
       {rows.length > 0 && (
         <ul className='border-border divide-border divide-y overflow-hidden rounded-[14px] border'>
           {rows.map((row) => {
             const unchanged = savedByMethod.get(row.method) === rowValue(row)
+            const percentHint = formatBonusRatePercent(row.rate)
             return (
               <li
                 key={row.method}
@@ -131,6 +144,10 @@ export function BonusPanel(props: { site: OwnerSite }) {
                     onCheckedChange={(enabled) =>
                       update(row.method, { enabled })
                     }
+                  />
+                  <PaymentMethodIcon
+                    method={row.method}
+                    className='size-6 shrink-0'
                   />
                   <Label
                     htmlFor={`bonus-method-${row.method}`}
@@ -151,12 +168,16 @@ export function BonusPanel(props: { site: OwnerSite }) {
                     className='w-32 font-mono tabular-nums'
                     inputMode='decimal'
                     autoComplete='off'
+                    placeholder='0.025'
                     value={row.rate}
                     disabled={closing}
                     onChange={(event) =>
                       update(row.method, { rate: event.target.value })
                     }
                   />
+                  <span className='text-dim w-16 font-mono text-xs tabular-nums'>
+                    {percentHint}
+                  </span>
                 </div>
                 <Button
                   type='button'
