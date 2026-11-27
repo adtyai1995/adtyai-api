@@ -28,6 +28,8 @@ import { WalletLotProjectionLines } from '@/features/wallet/components/wallet-lo
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import { formatCompactNumber, formatQuota } from '@/lib/format'
 import { getRoleLabel } from '@/lib/roles'
+import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { getDisplayName } from '../lib'
 import type { UserProfile } from '../types'
@@ -43,6 +45,9 @@ interface ProfileHeaderProps {
 
 export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
   const { t } = useTranslation()
+  const isTeamEmployee = useAuthStore(
+    (state) => state.auth.user?.is_team_employee === true
+  )
 
   if (loading) {
     return (
@@ -64,8 +69,16 @@ export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
           </div>
         </CardContent>
         <div className='border-t'>
-          <div className='divide-border/60 grid grid-cols-1 divide-y sm:grid-cols-3 sm:divide-x sm:divide-y-0'>
-            {['balance', 'usage', 'requests'].map((key) => (
+          <div
+            className={cn(
+              'divide-border/60 grid grid-cols-1 divide-y sm:divide-x sm:divide-y-0',
+              isTeamEmployee ? 'sm:grid-cols-2' : 'sm:grid-cols-3'
+            )}
+          >
+            {(isTeamEmployee
+              ? ['usage', 'requests']
+              : ['balance', 'usage', 'requests']
+            ).map((key) => (
               <div key={key} className='px-4 py-3.5 sm:px-5 sm:py-4'>
                 <Skeleton className='h-3.5 w-20' />
                 <Skeleton className='mt-2 h-7 w-28' />
@@ -86,20 +99,27 @@ export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
   const avatarFallbackStyle = getUserAvatarStyle(avatarName)
   const roleLabel = getRoleLabel(profile.role)
   const stats: {
+    key: 'balance' | 'usage' | 'requests'
     label: string
     value: string
     description: string
     icon: typeof WalletCards
     tone: IconBadgeTone
   }[] = [
+    ...(!isTeamEmployee
+      ? [
+          {
+            key: 'balance' as const,
+            label: t('Current Balance'),
+            value: formatQuota(profile.quota),
+            description: t('Remaining quota'),
+            icon: WalletCards,
+            tone: 'success' as const,
+          },
+        ]
+      : []),
     {
-      label: t('Current Balance'),
-      value: formatQuota(profile.quota),
-      description: t('Remaining quota'),
-      icon: WalletCards,
-      tone: 'success',
-    },
-    {
+      key: 'usage',
       label: t('Total Usage'),
       value: formatQuota(profile.used_quota),
       description: t('Total consumed quota'),
@@ -107,6 +127,7 @@ export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
       tone: 'info',
     },
     {
+      key: 'requests',
       label: t('API Requests'),
       value: formatCompactNumber(profile.request_count),
       description: t('Total requests made'),
@@ -158,9 +179,14 @@ export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
         </div>
       </CardContent>
       <div className='border-t'>
-        <div className='divide-border/60 grid grid-cols-3 divide-x'>
+        <div
+          className={cn(
+            'divide-border/60 grid divide-x',
+            stats.length === 2 ? 'grid-cols-2' : 'grid-cols-3'
+          )}
+        >
           {stats.map((item) => (
-            <div key={item.label} className='min-w-0 px-3 py-3 sm:px-5 sm:py-4'>
+            <div key={item.key} className='min-w-0 px-3 py-3 sm:px-5 sm:py-4'>
               <div className='flex items-center gap-2'>
                 <IconBadge tone={item.tone} size='stat'>
                   <item.icon />
@@ -176,7 +202,7 @@ export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
               <div className='text-muted-foreground/60 mt-1 hidden text-xs md:block'>
                 {item.description}
               </div>
-              {item.label === t('Current Balance') && (
+              {item.key === 'balance' && (
                 <WalletLotProjectionLines
                   projection={profile.wallet_lot_projection}
                 />

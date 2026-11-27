@@ -51,6 +51,30 @@ func loadAdtyBusinessLocation() (*time.Location, string, error) {
 	return loc, loc.String(), nil
 }
 
+func loadAdtyBusinessLocationTx(tx *gorm.DB) (*time.Location, string, error) {
+	if tx == nil {
+		return loadAdtyBusinessLocation()
+	}
+	name := defaultBusinessTimezone
+	if tx.Migrator().HasTable(&model.Option{}) {
+		var row model.Option
+		res := tx.Where(&model.Option{Key: adtyBusinessTimezoneKey}).Limit(1).Find(&row)
+		if res.Error != nil {
+			return nil, "", res.Error
+		}
+		if res.RowsAffected > 0 {
+			if trimmed := strings.TrimSpace(row.Value); trimmed != "" {
+				name = trimmed
+			}
+		}
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, "", common.NewMessage("Invalid parameters")
+	}
+	return loc, loc.String(), nil
+}
+
 // FreezeAdtyBillingClock records the business clock once when quoting an
 // expression. Serialized attempt snapshots take precedence on a retry.
 func FreezeAdtyBillingClock(input *billingexpr.RequestInput, snapshot *billingexpr.BillingSnapshot, start time.Time) (string, error) {

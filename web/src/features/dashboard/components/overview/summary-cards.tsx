@@ -29,9 +29,14 @@ import { useSummaryCardsConfig } from '@/features/dashboard/hooks/use-dashboard-
 import type { QuotaDataItem } from '@/features/dashboard/types'
 import { useStatus } from '@/hooks/use-status'
 import { toIntlLocale } from '@/i18n/languages'
+import { api } from '@/lib/api'
 import { getCurrencyLabel, isCurrencyDisplayEnabled } from '@/lib/currency'
 import { formatCompactNumber, formatNumber, formatQuota } from '@/lib/format'
-import { requireServerSuccess } from '@/lib/server-error-message'
+import { ROLE } from '@/lib/roles'
+import {
+  createServerError,
+  requireServerSuccess,
+} from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -174,8 +179,43 @@ export function SummaryCards() {
   const user = useAuthStore((state) => state.auth.user)
   const { status, loading } = useStatus()
 
+  const isSiteStaff = (user?.staff_site_id ?? 0) > 0
+  const isPureSiteOwner = Boolean(
+    user?.adty_site_owner && user.role < ROLE.ADMIN
+  )
+  const isTeamEmployee = user?.is_team_employee === true
+  const hasTeam = user?.adty_has_team === true
+  const hidePersonalBalance = isSiteStaff || isPureSiteOwner || isTeamEmployee
+  const showTeamQuotaPanel = isTeamEmployee && hasTeam
+  const showRightPanel = !hidePersonalBalance || showTeamQuotaPanel
+
   const summaryWindow = useMemo(() => getSummaryWindow(), [])
   const remainQuota = Number(user?.quota ?? 0)
+
+  const teamMineQuery = useQuery({
+    queryKey: ['adty-team', 'mine'],
+    enabled: showTeamQuotaPanel,
+    queryFn: async () => {
+      const response = await api.get('/api/adty/teams/mine')
+      const body = response.data as {
+        success?: boolean
+        data?: {
+          team?: {
+            name?: string
+            shared_quota?: number
+            status?: string
+          } | null
+        }
+      }
+      if (!body.success) {
+        throw createServerError(body, t('Failed to load data'))
+      }
+      return body.data?.team ?? null
+    },
+    staleTime: 60 * 1000,
+    meta: { errorToast: false },
+  })
+  const team = teamMineQuery.data
 
   const usageTrendQuery = useQuery({
     queryKey: [
@@ -254,7 +294,12 @@ export function SummaryCards() {
 
   return (
     <div className='bg-card border-border overflow-hidden rounded-[14px] border'>
-      <div className='grid xl:grid-cols-[minmax(0,1fr)_19rem]'>
+      <div
+        className={cn(
+          'grid',
+          showRightPanel && 'xl:grid-cols-[minmax(0,1fr)_19rem]'
+        )}
+      >
         <div className='flex flex-col gap-4 p-4 sm:p-5'>
           <div className='flex flex-wrap items-start justify-between gap-3'>
             <div className='flex flex-col gap-1'>
@@ -289,34 +334,28 @@ export function SummaryCards() {
           </StaggerContainer>
         </div>
 
-        <div className='flex flex-col justify-between gap-4 border-t p-4 sm:p-5 xl:border-t-0 xl:border-l'>
-          <div className='flex flex-col gap-3'>
-            <div className='flex items-center justify-between gap-2'>
-              <span className='text-faint text-[12px] font-medium'>
-                {t('Credit remaining')}
-              </span>
-              <span className='flex items-center gap-1.5'>
-                <span
-                  className={cn('size-1.5 rounded-full', healthCfg.dotClass)}
-                  aria-hidden='true'
-                />
-                <span className='text-dim text-[11.5px] font-medium'>
-                  {t(healthCfg.labelKey)}
+        {showTeamQuotaPanel && (
+          <div className='flex flex-col justify-between gap-4 border-t p-4 sm:p-5 xl:border-t-0 xl:border-l'>
+            <div className='flex flex-col gap-3'>
+              <div className='flex items-center justify-between gap-2'>
+                <span className='text-faint text-[12px] font-medium'>
+                  {t('Shared quota')}
                 </span>
-              </span>
-            </div>
+                <span className='text-dim truncate text-[11.5px] font-medium'>
+                  {team?.name || t('Team employee account')}
+                </span>
+              </div>
 
-            <div
-              className={cn(
-                'font-display text-[28px] leading-none font-extrabold tracking-[-0.02em] tabular-nums',
-                user ? 'text-foreground' : 'text-faint'
-              )}
-            >
-              {user ? formatQuota(remainQuota) : '—'}
-            </div>
+              <div
+                className={cn(
+                  'font-display text-[28px] leading-none font-extrabold tracking-[-0.02em] tabular-nums',
+                  team ? 'text-foreground' : 'text-faint'
+                )}
+              >
+                {team ? formatQuota(Number(team.shared_quota ?? 0)) : '—'}
+              </div>
 
-            <div className='divide-border grid grid-cols-2 divide-x border-t pt-3'>
-              <div className='min-w-0 pr-3'>
+              <div className='border-t pt-3'>
                 <div className='text-faint flex items-center gap-1 text-[11.5px] leading-none font-medium'>
                   <Flame className='size-3 shrink-0' aria-hidden='true' />
                   <span className='truncate'>{t('7-day daily average')}</span>
@@ -325,43 +364,94 @@ export function SummaryCards() {
                   {formatQuota(usage.dailyAverage)}
                 </div>
               </div>
-              <div className='min-w-0 pl-3'>
-                <div className='text-faint flex items-center gap-1 text-[11.5px] leading-none font-medium'>
-                  {runwayDays !== null && runwayDays < 3 ? (
-                    <TrendingDown
-                      className='size-3 shrink-0'
-                      aria-hidden='true'
-                    />
-                  ) : (
-                    <ShieldCheck
-                      className='size-3 shrink-0'
-                      aria-hidden='true'
-                    />
-                  )}
-                  <span className='truncate'>{t('Runway')}</span>
+            </div>
+
+            <Button
+              variant='brand'
+              className='justify-between'
+              render={<Link to='/my-team' />}
+            >
+              <span>{t('My team')}</span>
+              <ArrowRight data-icon='inline-end' />
+            </Button>
+          </div>
+        )}
+
+        {!hidePersonalBalance && (
+          <div className='flex flex-col justify-between gap-4 border-t p-4 sm:p-5 xl:border-t-0 xl:border-l'>
+            <div className='flex flex-col gap-3'>
+              <div className='flex items-center justify-between gap-2'>
+                <span className='text-faint text-[12px] font-medium'>
+                  {t('Credit remaining')}
+                </span>
+                <span className='flex items-center gap-1.5'>
+                  <span
+                    className={cn('size-1.5 rounded-full', healthCfg.dotClass)}
+                    aria-hidden='true'
+                  />
+                  <span className='text-dim text-[11.5px] font-medium'>
+                    {t(healthCfg.labelKey)}
+                  </span>
+                </span>
+              </div>
+
+              <div
+                className={cn(
+                  'font-display text-[28px] leading-none font-extrabold tracking-[-0.02em] tabular-nums',
+                  user ? 'text-foreground' : 'text-faint'
+                )}
+              >
+                {user ? formatQuota(remainQuota) : '—'}
+              </div>
+
+              <div className='divide-border grid grid-cols-2 divide-x border-t pt-3'>
+                <div className='min-w-0 pr-3'>
+                  <div className='text-faint flex items-center gap-1 text-[11.5px] leading-none font-medium'>
+                    <Flame className='size-3 shrink-0' aria-hidden='true' />
+                    <span className='truncate'>{t('7-day daily average')}</span>
+                  </div>
+                  <div className='mt-1.5 truncate text-[13px] font-semibold tabular-nums'>
+                    {formatQuota(usage.dailyAverage)}
+                  </div>
                 </div>
-                <div
-                  className={cn(
-                    'mt-1.5 truncate text-[13px] font-semibold tabular-nums',
-                    healthLevel === 'critical' && 'text-destructive',
-                    healthLevel === 'caution' && 'text-warning'
-                  )}
-                >
-                  {runwayDisplay}
+                <div className='min-w-0 pl-3'>
+                  <div className='text-faint flex items-center gap-1 text-[11.5px] leading-none font-medium'>
+                    {runwayDays !== null && runwayDays < 3 ? (
+                      <TrendingDown
+                        className='size-3 shrink-0'
+                        aria-hidden='true'
+                      />
+                    ) : (
+                      <ShieldCheck
+                        className='size-3 shrink-0'
+                        aria-hidden='true'
+                      />
+                    )}
+                    <span className='truncate'>{t('Runway')}</span>
+                  </div>
+                  <div
+                    className={cn(
+                      'mt-1.5 truncate text-[13px] font-semibold tabular-nums',
+                      healthLevel === 'critical' && 'text-destructive',
+                      healthLevel === 'caution' && 'text-warning'
+                    )}
+                  >
+                    {runwayDisplay}
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
 
-          <Button
-            variant='brand'
-            className='justify-between'
-            render={<Link to='/wallet' />}
-          >
-            <span>{t('Wallet')}</span>
-            <ArrowRight data-icon='inline-end' />
-          </Button>
-        </div>
+            <Button
+              variant='brand'
+              className='justify-between'
+              render={<Link to='/wallet' />}
+            >
+              <span>{t('Wallet')}</span>
+              <ArrowRight data-icon='inline-end' />
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   )

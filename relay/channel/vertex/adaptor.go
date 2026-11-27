@@ -224,6 +224,11 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	if strings.Contains(info.UpstreamModelName, "claude") {
 		claude.CommonClaudeHeadersOperation(c, req, info)
 	}
+	if info != nil && info.RelayMode == constant.RelayModeImagesEdits &&
+		!info.ChannelSetting.PassThroughBodyEnabled &&
+		!model_setting.GetGlobalSettings().PassThroughRequestEnabled {
+		req.Set("Content-Type", gin.MIMEJSON)
+	}
 	return nil
 }
 

@@ -78,23 +78,23 @@ var (
 	adtySendSubsiteResend = common.SendResendEmailWithConfig
 
 	subsiteBlockedIPPrefixes = []netip.Prefix{
-		netip.MustParsePrefix("0.0.0.0/8"),      // RFC 1122 "this network"
-		netip.MustParsePrefix("100.64.0.0/10"),  // RFC 6598 CGNAT
-		netip.MustParsePrefix("192.0.0.0/24"),   // IETF protocol assignments
-		netip.MustParsePrefix("192.0.2.0/24"),   // TEST-NET-1
-		netip.MustParsePrefix("198.18.0.0/15"),  // RFC 2544 benchmarking
+		netip.MustParsePrefix("0.0.0.0/8"),       // RFC 1122 "this network"
+		netip.MustParsePrefix("100.64.0.0/10"),   // RFC 6598 CGNAT
+		netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments
+		netip.MustParsePrefix("192.0.2.0/24"),    // TEST-NET-1
+		netip.MustParsePrefix("198.18.0.0/15"),   // RFC 2544 benchmarking
 		netip.MustParsePrefix("198.51.100.0/24"), // TEST-NET-2
-		netip.MustParsePrefix("203.0.113.0/24"), // TEST-NET-3
-		netip.MustParsePrefix("240.0.0.0/4"),    // Reserved / limited broadcast
-		netip.MustParsePrefix("::/96"),          // Deprecated IPv4-compatible IPv6
+		netip.MustParsePrefix("203.0.113.0/24"),  // TEST-NET-3
+		netip.MustParsePrefix("240.0.0.0/4"),     // Reserved / limited broadcast
+		netip.MustParsePrefix("::/96"),           // Deprecated IPv4-compatible IPv6
 		netip.MustParsePrefix("::ffff:0:0:0/96"), // RFC 2765 SIIT IPv4-translated
-		netip.MustParsePrefix("64:ff9b::/96"),   // RFC 6052 NAT64 well-known
-		netip.MustParsePrefix("64:ff9b:1::/48"), // RFC 8215 NAT64 local-use
-		netip.MustParsePrefix("100::/64"),       // RFC 6666 discard-only
-		netip.MustParsePrefix("2001::/23"),      // RFC 2928 / Teredo / IETF protocol assignments
-		netip.MustParsePrefix("2001:db8::/32"),  // RFC 3849 documentation
-		netip.MustParsePrefix("2002::/16"),      // RFC 3056 6to4
-		netip.MustParsePrefix("fec0::/10"),      // Deprecated IPv6 site-local
+		netip.MustParsePrefix("64:ff9b::/96"),    // RFC 6052 NAT64 well-known
+		netip.MustParsePrefix("64:ff9b:1::/48"),  // RFC 8215 NAT64 local-use
+		netip.MustParsePrefix("100::/64"),        // RFC 6666 discard-only
+		netip.MustParsePrefix("2001::/23"),       // RFC 2928 / Teredo / IETF protocol assignments
+		netip.MustParsePrefix("2001:db8::/32"),   // RFC 3849 documentation
+		netip.MustParsePrefix("2002::/16"),       // RFC 3056 6to4
+		netip.MustParsePrefix("fec0::/10"),       // Deprecated IPv6 site-local
 	}
 )
 
@@ -270,14 +270,18 @@ func validateSubsiteMailAddress(raw string) (*mail.Address, bool) {
 }
 
 func loadAdtySiteMailConfig(siteID int) (*model.AdtySiteMailConfig, bool, error) {
-	if siteID <= 0 || model.DB == nil {
+	return loadAdtySiteMailConfigTx(model.DB, siteID)
+}
+
+func loadAdtySiteMailConfigTx(db *gorm.DB, siteID int) (*model.AdtySiteMailConfig, bool, error) {
+	if siteID <= 0 || db == nil {
 		return nil, false, nil
 	}
-	if !model.DB.Migrator().HasTable(&model.AdtySiteMailConfig{}) {
+	if !db.Migrator().HasTable(&model.AdtySiteMailConfig{}) {
 		return nil, false, nil
 	}
 	var row model.AdtySiteMailConfig
-	res := model.DB.Where("site_id = ?", siteID).Limit(1).Find(&row)
+	res := db.Where("site_id = ?", siteID).Limit(1).Find(&row)
 	if res.Error != nil {
 		return nil, false, res.Error
 	}
@@ -568,10 +572,17 @@ func adtySubsiteFallbackDisplayName(site *model.AdtySite) string {
 // EnsureAdtySiteMailConfigured enforces the R-41 #8A policy before enqueuing
 // asynchronous subsite emails or accepting subsite verification flows.
 func EnsureAdtySiteMailConfigured(site *model.AdtySite) error {
+	return EnsureAdtySiteMailConfiguredTx(model.DB, site)
+}
+
+// EnsureAdtySiteMailConfiguredTx enforces the R-41 #8A policy using the
+// caller's database handle/transaction so transactional callers never open a
+// second connection while holding row locks.
+func EnsureAdtySiteMailConfiguredTx(db *gorm.DB, site *model.AdtySite) error {
 	if site == nil || site.Id <= 0 {
 		return nil
 	}
-	cfg, found, err := loadAdtySiteMailConfig(site.Id)
+	cfg, found, err := loadAdtySiteMailConfigTx(db, site.Id)
 	if err != nil {
 		return err
 	}

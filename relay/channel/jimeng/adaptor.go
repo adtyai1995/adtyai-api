@@ -190,7 +190,7 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
-	if info.RelayMode == relayconstant.RelayModeImagesGenerations {
+	if info.RelayMode == relayconstant.RelayModeImagesGenerations || info.RelayMode == relayconstant.RelayModeImagesEdits {
 		usage, err = jimengImageHandler(c, resp, info)
 	} else if info.IsStream {
 		usage, err = openai.OaiStreamHandler(c, info, resp)

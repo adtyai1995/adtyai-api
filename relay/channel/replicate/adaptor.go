@@ -22,6 +22,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 
 	"github.com/gin-gonic/gin"
 	"github.com/samber/lo"
@@ -57,7 +58,11 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	channel.SetupApiRequestHeader(info, c, req)
 	req.Set("Authorization", "Bearer "+info.ApiKey)
 	req.Set("Prefer", "wait")
-	if req.Get("Content-Type") == "" {
+	if info.RelayMode == relayconstant.RelayModeImagesEdits &&
+		!info.ChannelSetting.PassThroughBodyEnabled &&
+		!model_setting.GetGlobalSettings().PassThroughRequestEnabled {
+		req.Set("Content-Type", gin.MIMEJSON)
+	} else if req.Get("Content-Type") == "" {
 		req.Set("Content-Type", "application/json")
 	}
 	if req.Get("Accept") == "" {

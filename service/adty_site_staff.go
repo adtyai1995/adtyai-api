@@ -347,10 +347,16 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 func AdtyStaffAccess(userID int, authVersion int64, permission string) (*model.AdtySiteStaff, *model.AdtySite, error) {
 	var staff model.AdtySiteStaff
 	if err := model.DB.Where("user_id = ? AND status = ?", userID, "enabled").First(&staff).Error; err != nil {
-		return nil, nil, ErrAdtyStaffDenied
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil, ErrAdtyStaffDenied
+		}
+		return nil, nil, err
 	}
 	var user model.User
 	if err := model.DB.Select("id", "staff_site_id", "site_id", "status", "auth_version", "role").First(&user, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil, ErrAdtyStaffDenied
+		}
 		return nil, nil, err
 	}
 	if user.Status != common.UserStatusEnabled || user.AuthVersion != authVersion || user.StaffSiteId != staff.SiteId || user.SiteId != staff.SiteId || user.Role != common.RoleCommonUser {
@@ -358,6 +364,9 @@ func AdtyStaffAccess(userID int, authVersion int64, permission string) (*model.A
 	}
 	var site model.AdtySite
 	if err := model.DB.First(&site, staff.SiteId).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil, ErrAdtyStaffDenied
+		}
 		return nil, nil, err
 	}
 	if site.OwnerUserId != staff.OwnerUserId || !AdtySiteAgreementAccepted(site.AgreementVer) || (site.Status != model.AdtySiteStatusActive && site.Status != model.AdtySiteStatusPaused && site.Status != model.AdtySiteStatusClosing) {

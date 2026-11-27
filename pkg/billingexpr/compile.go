@@ -334,11 +334,145 @@ func validateMinMaxConstantValue(name string, val any, depth int) error {
 	return fmt.Errorf("invalid argument for %s (type %T)", name, val)
 }
 
-func validateMinMaxArgType(name string, arg ast.Node) error {
-	return validateMinMaxArgTypeDepth(name, arg, 0)
+func unwrapChainNode(n ast.Node) ast.Node {
+	for {
+		ch, ok := n.(*ast.ChainNode)
+		if !ok || ch == nil {
+			return n
+		}
+		n = ch.Node
+	}
 }
 
-func validateMinMaxArgTypeDepth(name string, arg ast.Node, depth int) error {
+func constIntNode(n ast.Node) (int, bool) {
+	n = unwrapChainNode(n)
+	switch v := n.(type) {
+	case *ast.IntegerNode:
+		return v.Value, true
+	case *ast.ConstantNode:
+		switch c := v.Value.(type) {
+		case int:
+			return c, true
+		case int64:
+			return int(c), true
+		}
+	case *ast.UnaryNode:
+		inner, ok := constIntNode(v.Node)
+		if !ok {
+			return 0, false
+		}
+		if v.Operator == "-" {
+			return -inner, true
+		}
+		if v.Operator == "+" {
+			return inner, true
+		}
+	}
+	return 0, false
+}
+
+func constStringNode(n ast.Node) (string, bool) {
+	n = unwrapChainNode(n)
+	switch v := n.(type) {
+	case *ast.StringNode:
+		return v.Value, true
+	case *ast.ConstantNode:
+		if s, ok := v.Value.(string); ok {
+			return s, true
+		}
+	}
+	return "", false
+}
+
+func isDefiniteStringNode(n ast.Node, depth int) bool {
+	if n == nil || depth > maxMinMaxValidationDepth {
+		return false
+	}
+	n = unwrapChainNode(n)
+	switch v := n.(type) {
+	case *ast.StringNode:
+		return true
+	case *ast.ConstantNode:
+		_, ok := v.Value.(string)
+		return ok
+	case *ast.BinaryNode:
+		if v.Operator == "+" {
+			return isDefiniteStringNode(v.Left, depth+1) || isDefiniteStringNode(v.Right, depth+1)
+		}
+	case *ast.ConditionalNode:
+		return isDefiniteStringNode(v.Exp1, depth+1) && isDefiniteStringNode(v.Exp2, depth+1)
+	}
+	t := n.Type()
+	return t != nil && t.Kind() == reflect.String
+}
+
+func resolveLiteralMemberNode(node ast.Node, depth int) (resolved ast.Node, definiteNil bool, ok bool) {
+	if node == nil || depth > maxMinMaxValidationDepth {
+		return nil, false, false
+	}
+	mem, isMem := unwrapChainNode(node).(*ast.MemberNode)
+	if !isMem {
+		return nil, false, false
+	}
+	base := unwrapChainNode(mem.Node)
+	if inner, innerNil, innerOK := resolveLiteralMemberNode(base, depth+1); innerOK {
+		if innerNil {
+			return nil, true, true
+		}
+		base = unwrapChainNode(inner)
+	}
+	switch container := base.(type) {
+	case *ast.ArrayNode:
+		idx, idxOK := constIntNode(mem.Property)
+		if !idxOK {
+			return nil, false, false
+		}
+		if idx < 0 {
+			idx += len(container.Nodes)
+		}
+		if idx < 0 || idx >= len(container.Nodes) {
+			return nil, true, true
+		}
+		return container.Nodes[idx], false, true
+	case *ast.MapNode:
+		key, keyOK := constStringNode(mem.Property)
+		if !keyOK {
+			return nil, false, false
+		}
+		allConstKeys := true
+		var matched ast.Node
+		found := false
+		for _, rawPair := range container.Pairs {
+			pair, isPair := rawPair.(*ast.PairNode)
+			if !isPair {
+				allConstKeys = false
+				continue
+			}
+			pk, pkOK := constStringNode(pair.Key)
+			if !pkOK {
+				allConstKeys = false
+				continue
+			}
+			if pk == key {
+				matched = pair.Value
+				found = true
+			}
+		}
+		if found {
+			return matched, false, true
+		}
+		if allConstKeys {
+			return nil, true, true
+		}
+	}
+	return nil, false, false
+}
+
+func validateMinMaxArgType(name string, arg ast.Node) error {
+	return validateMinMaxArgTypeDepth(name, arg, 0, false)
+}
+
+func validateMinMaxArgTypeDepth(name string, arg ast.Node, depth int, allowNil bool) error {
 	if depth > maxMinMaxValidationDepth {
 		return fmt.Errorf("invalid argument for %s (nesting depth exceeded)", name)
 	}
@@ -346,6 +480,9 @@ func validateMinMaxArgTypeDepth(name string, arg ast.Node, depth int) error {
 		return fmt.Errorf("invalid argument for %s (type nil)", name)
 	}
 	if _, isNil := arg.(*ast.NilNode); isNil || arg.Nature().Nil {
+		if allowNil {
+			return nil
+		}
 		return fmt.Errorf("invalid argument for %s (type nil)", name)
 	}
 	if arr, ok := arg.(*ast.ArrayNode); ok {
@@ -353,34 +490,172 @@ func validateMinMaxArgTypeDepth(name string, arg ast.Node, depth int) error {
 			return fmt.Errorf("invalid argument for %s (empty array)", name)
 		}
 		for _, elem := range arr.Nodes {
-			if err := validateMinMaxArgTypeDepth(name, elem, depth+1); err != nil {
+			if err := validateMinMaxArgTypeDepth(name, elem, depth+1, false); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 	if cn, ok := arg.(*ast.ConstantNode); ok {
+		if cn.Value == nil && allowNil {
+			return nil
+		}
 		return validateMinMaxConstantValue(name, cn.Value, depth)
 	}
 	if ch, ok := arg.(*ast.ChainNode); ok {
-		return validateMinMaxArgTypeDepth(name, ch.Node, depth+1)
+		return validateMinMaxArgTypeDepth(name, ch.Node, depth+1, allowNil)
 	}
 	if cond, ok := arg.(*ast.ConditionalNode); ok {
-		if err := validateMinMaxArgTypeDepth(name, cond.Exp1, depth+1); err != nil {
+		if err := validateMinMaxArgTypeDepth(name, cond.Exp1, depth+1, allowNil); err != nil {
 			return err
 		}
-		return validateMinMaxArgTypeDepth(name, cond.Exp2, depth+1)
+		return validateMinMaxArgTypeDepth(name, cond.Exp2, depth+1, allowNil)
 	}
-	if bin, ok := arg.(*ast.BinaryNode); ok && bin.Operator == "??" {
-		if _, leftNil := bin.Left.(*ast.NilNode); !leftNil && !bin.Left.Nature().Nil {
-			if err := validateMinMaxArgTypeDepth(name, bin.Left, depth+1); err != nil {
+	if bin, ok := arg.(*ast.BinaryNode); ok {
+		if bin.Operator == "??" {
+			if err := validateMinMaxArgTypeDepth(name, bin.Left, depth+1, true); err != nil {
 				return err
 			}
+			return validateMinMaxArgTypeDepth(name, bin.Right, depth+1, allowNil)
 		}
-		return validateMinMaxArgTypeDepth(name, bin.Right, depth+1)
+		if bin.Operator == "+" && (isDefiniteStringNode(bin.Left, depth+1) || isDefiniteStringNode(bin.Right, depth+1)) {
+			return fmt.Errorf("invalid argument for %s (type string)", name)
+		}
+	}
+	if mem, ok := arg.(*ast.MemberNode); ok {
+		if resolved, defNil, resolvedOK := resolveLiteralMemberNode(mem, depth+1); resolvedOK {
+			if defNil {
+				if allowNil {
+					return nil
+				}
+				return fmt.Errorf("invalid argument for %s (type nil)", name)
+			}
+			return validateMinMaxArgTypeDepth(name, resolved, depth+1, allowNil || mem.Optional)
+		}
+		switch container := unwrapChainNode(mem.Node).(type) {
+		case *ast.ArrayNode:
+			if len(container.Nodes) == 0 {
+				if allowNil {
+					return nil
+				}
+				return fmt.Errorf("invalid argument for %s (empty array)", name)
+			}
+			var firstErr error
+			validAny := false
+			for _, elem := range container.Nodes {
+				if err := validateMinMaxArgTypeDepth(name, elem, depth+1, allowNil || mem.Optional); err == nil {
+					validAny = true
+				} else if firstErr == nil {
+					firstErr = err
+				}
+			}
+			if !validAny && firstErr != nil {
+				return firstErr
+			}
+			return nil
+		case *ast.MapNode:
+			if len(container.Pairs) == 0 {
+				if allowNil {
+					return nil
+				}
+				return fmt.Errorf("invalid argument for %s (type nil)", name)
+			}
+			var firstErr error
+			validAny := false
+			for _, rawPair := range container.Pairs {
+				pair, isPair := rawPair.(*ast.PairNode)
+				if !isPair {
+					validAny = true
+					continue
+				}
+				if err := validateMinMaxArgTypeDepth(name, pair.Value, depth+1, allowNil || mem.Optional); err == nil {
+					validAny = true
+				} else if firstErr == nil {
+					firstErr = err
+				}
+			}
+			if !validAny && firstErr != nil {
+				return firstErr
+			}
+			return nil
+		}
 	}
 	if sl, ok := arg.(*ast.SliceNode); ok {
-		return validateMinMaxArgTypeDepth(name, sl.Node, depth+1)
+		if arr, isArr := unwrapChainNode(sl.Node).(*ast.ArrayNode); isArr {
+			length := len(arr.Nodes)
+			if length == 0 {
+				return fmt.Errorf("invalid argument for %s (empty array)", name)
+			}
+			from, fromKnown := 0, sl.From == nil
+			if sl.From != nil {
+				from, fromKnown = constIntNode(sl.From)
+			}
+			to, toKnown := length, sl.To == nil
+			if sl.To != nil {
+				to, toKnown = constIntNode(sl.To)
+			}
+			if fromKnown {
+				if from < 0 {
+					from = length + from
+				}
+				if from < 0 {
+					from = 0
+				}
+				if from >= length {
+					return fmt.Errorf("invalid argument for %s (empty array)", name)
+				}
+			}
+			if toKnown {
+				if to < 0 {
+					to = length + to
+				}
+				if to <= 0 {
+					return fmt.Errorf("invalid argument for %s (empty array)", name)
+				}
+				if to > length {
+					to = length
+				}
+			}
+			if fromKnown && toKnown {
+				if from >= to {
+					return fmt.Errorf("invalid argument for %s (empty array)", name)
+				}
+				for _, elem := range arr.Nodes[from:to] {
+					if err := validateMinMaxArgTypeDepth(name, elem, depth+1, false); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			start, end := 0, length
+			if fromKnown {
+				start = from
+			}
+			if toKnown {
+				end = to
+			}
+			for _, elem := range arr.Nodes[start:end] {
+				if err := validateMinMaxArgTypeDepth(name, elem, depth+1, false); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if sl.To != nil {
+			if to, toOK := constIntNode(sl.To); toOK && to == 0 {
+				return fmt.Errorf("invalid argument for %s (empty array)", name)
+			}
+		}
+		if sl.From != nil && sl.To != nil {
+			if from, fromOK := constIntNode(sl.From); fromOK {
+				if to, toOK := constIntNode(sl.To); toOK {
+					if (from >= 0 && to >= 0 && from >= to) || (from < 0 && to < 0 && from >= to) {
+						return fmt.Errorf("invalid argument for %s (empty array)", name)
+					}
+				}
+			}
+		}
+		return validateMinMaxArgTypeDepth(name, sl.Node, depth+1, false)
 	}
 	t := arg.Type()
 	if t == nil {

@@ -175,7 +175,7 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 			errMsg := extractOpenAIImageStreamErrorMessage(raw)
 			eventErr := buildOpenAIImageStreamError(raw, errMsg)
 			lastErrorEventErr = eventErr
-			if !helper.HasWrittenStreamPayload(c) {
+			if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) && completedImages == 0 && !service.ValidUsage(usage) {
 				streamErr = eventErr
 				sr.Stop(streamErr)
 				return

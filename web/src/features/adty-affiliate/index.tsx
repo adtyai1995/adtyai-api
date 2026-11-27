@@ -41,6 +41,7 @@ export function AffiliateProgram() {
   const isAdmin = Boolean(user && user.role >= ROLE.ADMIN)
   const isSiteOwner = user?.adty_site_owner === true
   const isStaff = (user?.staff_site_id ?? 0) > 0
+  const isTeamEmployee = user?.is_team_employee === true
   const settings = useQuery({
     queryKey: referralQueryKeys.publicSettings,
     queryFn: getReferralPublicSettings,
@@ -59,7 +60,7 @@ export function AffiliateProgram() {
         {t('Sign up to start earning')}
       </Button>
     )
-  } else if (!isAdmin && !isSiteOwner && !isStaff) {
+  } else if (!isAdmin && !isSiteOwner && !isStaff && !isTeamEmployee) {
     cta = (
       <Button size='lg' render={<Link to='/referral' />}>
         {t('Get my referral link')}

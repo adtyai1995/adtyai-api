@@ -318,7 +318,7 @@ func adtyUsageReconcileMismatch(tx *gorm.DB, siteId int, cutoff string) (bool, s
 	if model.LOG_DB == nil {
 		return false, "", nil
 	}
-	loc, _, err := loadAdtyBusinessLocation()
+	loc, _, err := loadAdtyBusinessLocationTx(tx)
 	if err != nil {
 		return false, "", err
 	}
@@ -327,8 +327,18 @@ func adtyUsageReconcileMismatch(tx *gorm.DB, siteId int, cutoff string) (bool, s
 		return false, "", err
 	}
 	end = end.AddDate(0, 0, 1)
+	logDB := model.LOG_DB
+	if logDB == model.DB {
+		logDB = tx
+	} else if model.DB != nil {
+		if logSQL, err1 := logDB.DB(); err1 == nil && logSQL != nil {
+			if mainSQL, err2 := model.DB.DB(); err2 == nil && logSQL == mainSQL {
+				logDB = tx
+			}
+		}
+	}
 	var logs []model.Log
-	if err := model.LOG_DB.Where("type IN ? AND created_at < ? AND other LIKE ?", []int{model.LogTypeConsume, model.LogTypeRefund}, end.Unix(), `%"site_id"%`).Find(&logs).Error; err != nil {
+	if err := logDB.Where("type IN ? AND created_at < ? AND other LIKE ?", []int{model.LogTypeConsume, model.LogTypeRefund}, end.Unix(), `%"site_id"%`).Find(&logs).Error; err != nil {
 		return false, "", err
 	}
 	logTotal := decimal.Zero

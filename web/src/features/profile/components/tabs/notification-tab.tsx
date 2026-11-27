@@ -42,6 +42,7 @@ import {
 } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { updateUserSettings } from '../../api'
 import { NOTIFICATION_METHODS } from '../../constants'
@@ -126,8 +127,12 @@ export function NotificationTab({
   quotaRemindThreshold,
 }: NotificationTabProps) {
   const { t } = useTranslation()
+  const isTeamEmployee = useAuthStore(
+    (state) => state.auth.user?.is_team_employee === true
+  )
   const role = profile?.role ?? 0
   const isAdmin = role >= ROLE.ADMIN
+  const showQuotaReminder = quotaRemindEnabled && !isTeamEmployee
   const [loading, setLoading] = useState(false)
   const [settings, setSettings] = useState(() => normalizeUserSettings())
   const [thresholdInput, setThresholdInput] = useState('')
@@ -211,13 +216,13 @@ export function NotificationTab({
 
   return (
     <div className='space-y-4 sm:space-y-6'>
-      {!quotaRemindEnabled && !isAdmin && (
+      {!showQuotaReminder && !isAdmin && (
         <p className='text-muted-foreground text-sm'>
           {t('No notifications are available to you right now')}
         </p>
       )}
 
-      {(quotaRemindEnabled || isAdmin) && (
+      {(showQuotaReminder || isAdmin) && (
         <>
           {/* Notification Type */}
           <div className='space-y-2.5'>
@@ -467,7 +472,7 @@ export function NotificationTab({
               {t('Notifications to receive')}
             </h4>
             <SettingsControlGroup>
-              {quotaRemindEnabled && (
+              {showQuotaReminder && (
                 <>
                   <SettingsSwitchField
                     controlId='quotaWarningEnabled'

@@ -61,13 +61,19 @@ func RecordAdtyPaymentAttempt(tradeNo, provider, source, outcome string, operato
 		return err
 	}
 	// Avoid writing redundant immutable "unpaid" rows on every background poll;
-	// manual operator queries and state transitions are always recorded.
+	// manual operator queries, state transitions, and the first post-expiry
+	// unpaid confirmation (required by confirmTopUpUnpaidBeforeExpireTx) are
+	// always recorded.
 	if operatorID == 0 && source == AdtyPaymentSourceQuery && outcome == "unpaid" {
 		var latest []AdtyOrderPaymentEvent
-		if qErr := DB.Select("outcome").
+		if qErr := DB.Select("outcome", "created_at").
 			Where("trade_no = ? AND provider = ? AND source = ?", tradeNo, provider, source).
 			Order("id DESC").Limit(1).Find(&latest).Error; qErr == nil && len(latest) > 0 && latest[0].Outcome == "unpaid" {
-			return nil
+			ext := rows[0]
+			now := common.GetTimestamp()
+			if ext.ExpireAt <= 0 || now < ext.ExpireAt || latest[0].CreatedAt >= ext.ExpireAt {
+				return nil
+			}
 		}
 	}
 	return appendAdtyPaymentEventTx(DB, &rows[0], source, outcome, operatorID)

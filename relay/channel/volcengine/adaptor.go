@@ -316,7 +316,9 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 		}
 		req.Set("Content-Type", "application/json")
 		return nil
-	} else if info.RelayMode == constant.RelayModeImagesEdits {
+	} else if info.RelayMode == constant.RelayModeImagesEdits &&
+		!info.ChannelSetting.PassThroughBodyEnabled &&
+		!model_setting.GetGlobalSettings().PassThroughRequestEnabled {
 		req.Set("Content-Type", gin.MIMEJSON)
 	}
 

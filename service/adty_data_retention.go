@@ -388,25 +388,50 @@ func allowedDataRetentionAction(spec dataRetentionCategorySpec, action string) b
 	return false
 }
 
-// ConfiguredDataRetentionDays returns the Root-configured period when one is set.
-func ConfiguredDataRetentionDays(category string) (int, bool) {
+// ConfiguredDataRetentionDaysStrict returns the Root-configured retention period
+// and propagates database errors so cleanup paths fail closed.
+func ConfiguredDataRetentionDaysStrict(category string) (int, bool, error) {
 	row, ok, err := model.GetAdtyDataRetentionPolicy(category)
-	if err != nil || !ok || row.RetentionDays == nil || *row.RetentionDays <= 0 {
-		return 0, false
+	if err != nil {
+		return 0, false, err
+	}
+	if !ok || row.RetentionDays == nil || *row.RetentionDays <= 0 {
+		return 0, false, nil
 	}
 	if *row.RetentionDays > maxDataRetentionDays {
-		return maxDataRetentionDays, true
+		return maxDataRetentionDays, true, nil
 	}
-	return *row.RetentionDays, true
+	return *row.RetentionDays, true, nil
+}
+
+// ConfiguredDataRetentionDays returns the Root-configured period when one is set.
+func ConfiguredDataRetentionDays(category string) (int, bool) {
+	days, ok, err := ConfiguredDataRetentionDaysStrict(category)
+	if err != nil {
+		return 0, false
+	}
+	return days, ok
+}
+
+func usageLogCleanupFloorStrict(now time.Time) (time.Duration, error) {
+	floor := LogCleanupRetention
+	days, ok, err := ConfiguredDataRetentionDaysStrict(model.DataRetentionCategoryAPIUsageLogs)
+	if err != nil {
+		return 0, err
+	}
+	if ok {
+		configured := time.Duration(min(days, maxDataRetentionDays)) * 24 * time.Hour
+		if configured > floor {
+			return configured, nil
+		}
+	}
+	return floor, nil
 }
 
 func usageLogCleanupFloor(now time.Time) time.Duration {
-	floor := LogCleanupRetention
-	if days, ok := ConfiguredDataRetentionDays(model.DataRetentionCategoryAPIUsageLogs); ok {
-		configured := time.Duration(min(days, maxDataRetentionDays)) * 24 * time.Hour
-		if configured > floor {
-			return configured
-		}
+	floor, err := usageLogCleanupFloorStrict(now)
+	if err != nil {
+		return LogCleanupRetention
 	}
 	return floor
 }

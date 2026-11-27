@@ -93,15 +93,28 @@ func IsDataRetentionCategory(category string) bool {
 	return false
 }
 
+func isAdtyUndefinedTableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such table") ||
+		strings.Contains(msg, "42p01") ||
+		strings.Contains(msg, "error 1146") ||
+		strings.Contains(msg, "42s02") ||
+		(strings.Contains(msg, "relation") && strings.Contains(msg, "does not exist")) ||
+		(strings.Contains(msg, "table") && strings.Contains(msg, "doesn't exist"))
+}
+
 func GetAdtyDataRetentionPolicies() (map[string]AdtyDataRetentionPolicy, error) {
 	rows := []AdtyDataRetentionPolicy{}
 	if DB == nil {
 		return nil, errors.New("database unavailable")
 	}
-	if !DB.Migrator().HasTable(&AdtyDataRetentionPolicy{}) {
-		return map[string]AdtyDataRetentionPolicy{}, nil
-	}
 	if err := DB.Find(&rows).Error; err != nil {
+		if isAdtyUndefinedTableError(err) {
+			return map[string]AdtyDataRetentionPolicy{}, nil
+		}
 		return nil, err
 	}
 	out := make(map[string]AdtyDataRetentionPolicy, len(rows))
@@ -115,12 +128,9 @@ func GetAdtyDataRetentionPolicy(category string) (AdtyDataRetentionPolicy, bool,
 	if DB == nil {
 		return AdtyDataRetentionPolicy{}, false, errors.New("database unavailable")
 	}
-	if !DB.Migrator().HasTable(&AdtyDataRetentionPolicy{}) {
-		return AdtyDataRetentionPolicy{}, false, nil
-	}
 	var row AdtyDataRetentionPolicy
 	err := DB.Where("category = ?", category).Take(&row).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	if errors.Is(err, gorm.ErrRecordNotFound) || isAdtyUndefinedTableError(err) {
 		return AdtyDataRetentionPolicy{}, false, nil
 	}
 	if err != nil {

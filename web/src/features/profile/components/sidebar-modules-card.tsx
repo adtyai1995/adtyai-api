@@ -58,6 +58,7 @@ export function SidebarModulesCard() {
   const [config, setConfig] = useState<SidebarModulesConfig>({})
   const currentUser = useAuthStore((s) => s.auth.user)
   const setUser = useAuthStore((s) => s.auth.setUser)
+  const isTeamEmployee = currentUser?.is_team_employee === true
 
   const sectionDefs: SectionDef[] = [
     {
@@ -124,9 +125,18 @@ export function SidebarModulesCard() {
         const adminSection = adminConfig[section.key]
         if (!adminSection?.enabled) return []
 
-        const modules = section.modules.filter(
-          (module) => adminSection[module.key] === true
-        )
+        const modules = section.modules.filter((module) => {
+          if (
+            isTeamEmployee &&
+            section.key === 'personal' &&
+            (module.key === 'topup' ||
+              module.key === 'referral' ||
+              module.key === 'referrals')
+          ) {
+            return false
+          }
+          return adminSection[module.key] === true
+        })
         return modules.length ? [{ ...section, modules }] : []
       })
     : []

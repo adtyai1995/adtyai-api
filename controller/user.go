@@ -2043,6 +2043,7 @@ func ManageUser(c *gin.Context) {
 		return
 	}
 	changed := false
+	var staffUserIDs []int
 	var ticketAudits []model.AuditLog
 	var postCommitWarnings []string
 	if req.Action == "demote" {
@@ -2080,7 +2081,7 @@ func ManageUser(c *gin.Context) {
 			authz.NotifyPolicyChanged()
 		}
 	} else if err := model.DB.Transaction(func(tx *gorm.DB) error {
-		var staffUserIDs []int
+		staffUserIDs = nil
 		if req.Action == "disable" {
 			var lockErr error
 			staffUserIDs, lockErr = service.PreLockSiteOwnerStaffForDisableTx(tx, user.Id)
@@ -2128,6 +2129,17 @@ func ManageUser(c *gin.Context) {
 		}
 		if _, err := model.RevokeAllUserSessions(user.Id, reason); err != nil {
 			postCommitWarnings = append(postCommitWarnings, "session_revoke_failed")
+		}
+		if req.Action == "disable" && len(staffUserIDs) > 0 {
+			staffRevokeFailed := false
+			for _, staffID := range staffUserIDs {
+				if _, err := model.RevokeAllUserSessions(staffID, "site_owner_disabled"); err != nil {
+					staffRevokeFailed = true
+				}
+			}
+			if staffRevokeFailed {
+				postCommitWarnings = append(postCommitWarnings, "staff_session_revoke_failed")
+			}
 		}
 	}
 	// Role and status were written by themselves. Publish and revoke already

@@ -57,7 +57,7 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		scanFn(c, resp, info, func(data string, sr *helper.StreamResult) {
 			if len(data) > 0 {
 				if oaiErr, statusCode := ExtractEmbeddedOpenAIError(common.StringToByteSlice(data), upstreamErrorFallbackStatus(resp)); oaiErr != nil {
-					if !headersWritten && !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
+					if !headersWritten && !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) && streamedAudioBytes == 0 && !service.ValidUsage(usage) {
 						streamErr = types.WithOpenAIError(*oaiErr, statusCode)
 						sr.Stop(streamErr)
 						return

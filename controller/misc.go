@@ -67,8 +67,9 @@ func GetReady(c *gin.Context) {
 }
 
 func GetStatus(c *gin.Context) {
-	// 支付方式可能查通道表，必须在配置锁之外算。
-	paymentMethods := service.AdtyAvailablePaymentMethodIDs()
+	// 支付方式可能查通道表与场景表，必须在配置锁之外算。
+	requestSiteID := service.AdtyRequestSiteID(c)
+	paymentMethods := service.AdtyPublicWalletPaymentMethodIDsForSite(requestSiteID)
 	// 分站 widget 要在拿配置锁之前查，避免锁里再查站点表。
 	common.OptionMapRWMutex.RLock()
 	turnstileSiteKey := common.TurnstileSiteKey
@@ -95,7 +96,7 @@ func GetStatus(c *gin.Context) {
 	quotaDisplayType := operation_setting.GetQuotaDisplayType()
 	logSetting := operation_setting.GetLogSetting()
 	serverAddress := service.AdtySiteAPIBaseURL(nil)
-	referralPublic := service.AdtyPublicReferralInfoForSite(service.AdtyRequestSiteID(c))
+	referralPublic := service.AdtyPublicReferralInfoForSite(requestSiteID)
 	referralEnabled := referralPublic.Enabled
 	docsStaticMounted := service.AdtyStaticDocsMounted()
 	// 锁只包住读 OptionMap / 全局变量的这段，读完立刻放（下面都是拼响应，不碰配置）。

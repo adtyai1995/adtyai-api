@@ -342,6 +342,15 @@ func refreshLoginSession(c *gin.Context, rawRefreshToken, expectedSID, ip, userA
 	if !adtyRefreshSessionSiteAllowed(c, currentUser, session) {
 		return nil, nil, ErrLoginSessionMismatch
 	}
+	if currentUser.StaffSiteId > 0 {
+		if _, _, staffErr := AdtyStaffAccess(currentUser.Id, currentUser.AuthVersion, ""); staffErr != nil {
+			if errors.Is(staffErr, ErrAdtyStaffDenied) {
+				_, _ = model.RevokeUserSession(session.UserID, session.SID, "staff_access_denied")
+				return nil, nil, ErrLoginSessionRevoked
+			}
+			return nil, nil, staffErr
+		}
+	}
 	nextSecret := deriveNextRefreshSecret(sid, secret)
 	rotated, err := model.RotateUserSessionRefresh(session.UserID, sid, hashRefreshSecret(secret), hashRefreshSecret(nextSecret), time.Now().Unix(), RefreshReplayWindow, truncateAuthMetadata(ip, 64), truncateAuthMetadata(userAgent, 512))
 	if err != nil {

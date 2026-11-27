@@ -399,6 +399,66 @@ func AdtyPaymentScenesForUser(userID int, scope ...AdtyPaymentScope) ([]AdtyPaym
 	return views, nil
 }
 
+// AdtyPublicWalletPaymentMethodIDsForSite returns the distinct live wallet_topup
+// payment method IDs permitted for the public customer audience of siteID
+// (main_customer when siteID == 0, site_customer when siteID > 0), intersecting
+// enabled payment scene rules with currently available provider methods/channels.
+func AdtyPublicWalletPaymentMethodIDsForSite(siteID int) []string {
+	if model.DB == nil {
+		return AdtyAvailablePaymentMethodIDs()
+	}
+	config, err := GetAdtyPaymentScenes()
+	if err != nil {
+		return []string{}
+	}
+	kind := "main_customer"
+	if siteID > 0 {
+		kind = "site_customer"
+	}
+	matchedScenes := make([]model.AdtyPaymentScene, 0, len(config.Scenes))
+	for _, scene := range config.Scenes {
+		if adtySceneAudience(scene, siteID, kind, model.AdtyBusinessWalletTopup) {
+			matchedScenes = append(matchedScenes, scene)
+		}
+	}
+	if len(matchedScenes) == 0 {
+		return []string{}
+	}
+	ids := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, provider := range AdtyPaymentProviders() {
+		for _, method := range provider.Methods() {
+			if !method.Available || method.Id == "" {
+				continue
+			}
+			if _, ok := seen[method.Id]; ok {
+				continue
+			}
+			for _, scene := range matchedScenes {
+				if !adtySceneMethod(scene, provider.Name(), method.Id, method.Currency) {
+					continue
+				}
+				if method.Kind == "epay" {
+					channelMethods, chErr := adtyEpaySceneChannelMethods(scene, method)
+					if chErr != nil || len(channelMethods) == 0 {
+						continue
+					}
+				}
+				if method.FaceUSD != "" {
+					face, parseErr := common.ParseBoundedDecimalString(method.FaceUSD, 12, 8)
+					if parseErr != nil || face.LessThan(scene.MinUSD) || (scene.MaxUSD.IsPositive() && face.GreaterThan(scene.MaxUSD)) {
+						continue
+					}
+				}
+				seen[method.Id] = struct{}{}
+				ids = append(ids, method.Id)
+				break
+			}
+		}
+	}
+	return ids
+}
+
 // adtyEpaySceneChannelMethods 把一种易支付方式按通道展开成钱包里的按钮：每个启用的、
 // 支持这种方式的、场景允许的通道各一个，名字用后台设的显示名称。顺序同挑通道（优先级高的在前）。
 func adtyEpaySceneChannelMethods(scene model.AdtyPaymentScene, method AdtyMethodInfo) ([]AdtyMethodInfo, error) {

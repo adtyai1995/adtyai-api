@@ -42,10 +42,15 @@ func cleanupAuthArtifacts() {
 	if err := model.DeleteExpiredAuthFlows(now); err != nil {
 		common.SysError(common.LogText("failed to delete expired authentication flows: %s", err.Error()))
 	}
-	// A.17.2: When Root has configured a login_security data retention period,
-	// expired/revoked sessions and expired PATs are deleted solely by the
-	// audited adty_data_retention runner so the configured window is never cut short.
-	if _, configured := ConfiguredDataRetentionDays(model.DataRetentionCategoryLoginSecurity); configured {
+	// A.17.2: When Root has configured a login_security data retention period
+	// (or when the retention policy cannot be read), skip eager cleanup so the
+	// configured retention window is never cut short.
+	_, configured, retentionErr := ConfiguredDataRetentionDaysStrict(model.DataRetentionCategoryLoginSecurity)
+	if retentionErr != nil {
+		common.SysError(common.LogText("failed to read login_security data retention policy; skipping auth artifact cleanup: %s", retentionErr.Error()))
+		return
+	}
+	if configured {
 		return
 	}
 	if err := model.DeleteExpiredUserSessions(now.Unix()); err != nil {

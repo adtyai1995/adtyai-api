@@ -131,9 +131,21 @@ func runAdtyEpayFollowUpQueries(now int64) {
 		if ext.ChannelId <= 0 {
 			continue
 		}
+		// Atomically advance last_query_at up front so transient credit errors,
+		// restricted fund writes, or orphan conflicts back off cleanly instead
+		// of re-pinning the head of the scan queue on every tick (R13-P2-03).
+		claimed := model.DB.Model(&model.AdtyTopupOrder{}).
+			Where("id = ? AND last_query_at = ?", ext.Id, ext.LastQueryAt).
+			Update("last_query_at", now)
+		if claimed.Error != nil {
+			common.SysError(common.LogText("epay follow-up claim failed trade_no=%s: %s", ext.TradeNo, claimed.Error.Error()))
+			continue
+		}
+		if claimed.RowsAffected == 0 {
+			continue
+		}
 		channel, chErr := model.GetAdtyEpayChannel(ext.ChannelId)
 		if chErr != nil || channel == nil || strings.TrimSpace(channel.GatewayURL) == "" {
-			_ = model.UpdateAdtyTopupOrderFields(ext.TradeNo, map[string]any{"last_query_at": now})
 			continue
 		}
 		httpsQueryable := adtyEpayChannelHTTPSQueryable(channel)
@@ -157,10 +169,6 @@ func runAdtyEpayFollowUpQueries(now int64) {
 			}); reviewErr != nil {
 				continue
 			}
-		}
-		update := map[string]any{"last_query_at": now}
-		if legacy {
-			update["expire_at"] = deadline
 		}
 		if err != nil || facts == nil {
 			outcome := "unpaid"
@@ -229,8 +237,10 @@ func runAdtyEpayFollowUpQueries(now int64) {
 				model.FinishAdtyTopUpCredit(topUp, frozen, credited, "")
 			}
 		}
-		if err := model.UpdateAdtyTopupOrderFields(ext.TradeNo, update); err != nil {
-			common.SysError(common.LogText("epay follow-up checkpoint failed trade_no=%s: %s", ext.TradeNo, err.Error()))
+		if legacy {
+			if err := model.UpdateAdtyTopupOrderFields(ext.TradeNo, map[string]any{"expire_at": deadline}); err != nil {
+				common.SysError(common.LogText("epay follow-up checkpoint failed trade_no=%s: %s", ext.TradeNo, err.Error()))
+			}
 		}
 	}
 }

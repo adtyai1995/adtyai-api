@@ -85,7 +85,9 @@ func isPermanentAdtyTopUpCreditReject(err error) bool {
 		errors.Is(err, model.ErrPaymentOrphanNotCredit) ||
 		errors.Is(err, model.ErrTopUpQuotaLimitExceeded) ||
 		errors.Is(err, model.ErrInvalidTopUpQuota) ||
-		errors.Is(err, model.ErrTopUpNotFound)
+		errors.Is(err, model.ErrTopUpNotFound) ||
+		errors.Is(err, ErrAdtyTeamInvalid) ||
+		errors.Is(err, gorm.ErrRecordNotFound)
 }
 
 func RecoverAdtyHostedPaymentForActor(ctx context.Context, ext *model.AdtyTopupOrder, operatorID, actorRole int, denyAdminTarget bool) error {

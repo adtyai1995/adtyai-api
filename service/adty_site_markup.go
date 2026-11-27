@@ -674,18 +674,23 @@ func SaveAdtySitePricing(input AdtySitePricingInput) (*AdtySitePricingResult, er
 		hasAfter := hasDefault
 		if input.ClearDefault {
 			if hasDefault {
+				after = adtySiteMinMarkup
+				if after.GreaterThan(before) {
+					if err := EnsureAdtySiteMailConfiguredTx(tx, &site); err != nil {
+						return err
+					}
+				}
 				if err := tx.Delete(&defaultRow).Error; err != nil {
 					return err
 				}
 				changed = true
-				after = adtySiteMinMarkup
 				action = "deleted"
 				hasAfter = false
 			}
 		} else if input.DefaultMarkup != nil {
 			after = *input.DefaultMarkup
 			if after.GreaterThan(before) {
-				if err := EnsureAdtySiteMailConfigured(&site); err != nil {
+				if err := EnsureAdtySiteMailConfiguredTx(tx, &site); err != nil {
 					return err
 				}
 			}

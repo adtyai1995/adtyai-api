@@ -23,14 +23,13 @@ import (
 // 三项都用 decimal 算；站长收益用「客户付 − 平台收」得出，两项相加正好等于客户付的钱。
 // 记账只累加当天仍待结算的槽位，钩子失败只记日志，不影响请求。
 
+func adtySiteEarningDayTx(tx *gorm.DB) string {
+	return time.Now().In(model.AdtyBusinessLocation(tx)).Format("2006-01-02")
+}
+
 // adtySiteEarningDayFn 是记账用的日期（优先按平台业务时区），测试可以替换。
 var adtySiteEarningDayFn = func() string {
-	if model.DB != nil && model.DB.Migrator().HasTable(&model.Option{}) {
-		if loc, _, err := loadAdtyBusinessLocation(); err == nil && loc != nil {
-			return time.Now().In(loc).Format("2006-01-02")
-		}
-	}
-	return time.Now().In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02")
+	return adtySiteEarningDayTx(model.DB)
 }
 
 var adtyImmediateEarningSeq atomic.Uint64
@@ -546,7 +545,7 @@ func adtySiteBonusAfterCreditTx(tx *gorm.DB, topUp *model.TopUp, ext *model.Adty
 	case model.AdtyGiftFulfillmentPending, model.AdtyGiftFulfillmentPendingReview, model.AdtyGiftFulfillmentCanceled:
 		return nil
 	}
-	return upsertAdtySiteEarningTx(tx, adtySiteEarningDayFn(), adtySiteEarningEntry{
+	return upsertAdtySiteEarningTx(tx, adtySiteEarningDayTx(tx), adtySiteEarningEntry{
 		SiteId: ext.SiteId, SiteOwnerUserId: ext.SiteOwnerUserId, UserId: topUp.UserId, Kind: model.AdtySiteEarningBonus, Earning: bonus.Neg(),
 	})
 }
@@ -603,7 +602,7 @@ func adtySiteBonusAfterRefundTx(tx *gorm.DB, topUp *model.TopUp, ext *model.Adty
 		}
 	}
 	if returned.IsPositive() {
-		if err := upsertAdtySiteEarningTx(tx, adtySiteEarningDayFn(), adtySiteEarningEntry{
+		if err := upsertAdtySiteEarningTx(tx, adtySiteEarningDayTx(tx), adtySiteEarningEntry{
 			SiteId: ext.SiteId, SiteOwnerUserId: ext.SiteOwnerUserId, UserId: topUp.UserId, Kind: model.AdtySiteEarningBonusReversal, Earning: returned,
 		}); err != nil {
 			return err
