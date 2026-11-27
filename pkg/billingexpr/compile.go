@@ -157,12 +157,45 @@ var compileEnvPrototypeV1 = map[string]any{
 	"weekday":     func(...string) int { return 0 },
 	"month":       func(...string) int { return 0 },
 	"day":         func(...string) int { return 0 },
-	"max":         math.Max,
-	"min":         math.Min,
 	"abs":         math.Abs,
 	"ceil":        math.Ceil,
 	"floor":       math.Floor,
 }
+
+// lenBuiltinPatcher restores builtin len(...) calls that parser.ParseWithConfig
+// parses as CallNode{Callee: IdentifierNode{"len"}} because compileEnvPrototypeV1
+// also exposes bare "len" as the float64 context-length variable.
+type lenBuiltinPatcher struct{}
+
+func (lenBuiltinPatcher) Visit(node *ast.Node) {
+	call, ok := (*node).(*ast.CallNode)
+	if !ok {
+		return
+	}
+	callee, ok := call.Callee.(*ast.IdentifierNode)
+	if !ok || callee.Value != "len" {
+		return
+	}
+	ast.Patch(node, &ast.BuiltinNode{
+		Name:      "len",
+		Arguments: call.Arguments,
+	})
+}
+
+var roundCompileOption = expr.Function(
+	"round",
+	func(params ...any) (any, error) { return float64(0), nil },
+	new(func(float64) float64),
+	new(func(int) float64),
+	new(func(any) float64),
+	new(func(float64, int) float64),
+	new(func(int, int) float64),
+	new(func(any, int) float64),
+	new(func(float64, float64) float64),
+	new(func(any, float64) float64),
+	new(func(float64, any) float64),
+	new(func(any, any) float64),
+)
 
 func getCompileEnv(version int) map[string]any {
 	switch version {
@@ -226,7 +259,14 @@ func compileEntryFromCacheByHash(exprStr, hash string) (*cachedEntry, error) {
 	// Compile still type-checks and accepts the same programs; financial
 	// evaluation uses the patched parse tree with exact decimals instead of
 	// the float64 VM program.
-	prog, err := expr.Compile(body, expr.Env(getCompileEnv(version)), expr.Patch(&requestRulePatcher{}), expr.AsFloat64())
+	prog, err := expr.Compile(
+		body,
+		expr.Env(getCompileEnv(version)),
+		expr.Patch(lenBuiltinPatcher{}),
+		expr.Patch(&requestRulePatcher{}),
+		roundCompileOption,
+		expr.AsFloat64(),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("expr compile error: %w", err)
 	}

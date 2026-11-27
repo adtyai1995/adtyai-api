@@ -41,7 +41,16 @@ func (r *AudioRequest) GetTokenCountMeta() *types.TokenCountMeta {
 }
 
 func (r *AudioRequest) IsStream(c *http.Request) bool {
-	return r.StreamFormat == "sse"
+	if !strings.EqualFold(strings.TrimSpace(r.StreamFormat), "sse") {
+		return false
+	}
+	if c != nil && c.URL != nil {
+		path := c.URL.Path
+		if strings.Contains(path, "/audio/transcriptions") || strings.Contains(path, "/audio/translations") {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *AudioRequest) SetModelName(modelName string) {

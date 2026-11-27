@@ -62,6 +62,7 @@ import { resolveLocalizedAnnouncement } from '@/features/dashboard/lib/text'
 import { useStatus } from '@/hooks/use-status'
 import { getAnnouncementDetail } from '@/lib/api'
 import { getAnnouncementColorClass } from '@/lib/colors'
+import { subsiteDocument } from '@/lib/subsite-document'
 import { formatDateTimeObject } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
@@ -549,7 +550,9 @@ export function NotificationPopover({
 }: NotificationPopoverProps) {
   const { t, i18n } = useTranslation()
   const { status } = useStatus()
-  const isSubsite = Boolean(status?.adty_site)
+  const plainTextNotice = Boolean(
+    subsiteDocument() || !status || status.adty_site
+  )
   const staffSiteId = useAuthStore((state) => state.auth.user?.staff_site_id ?? 0)
   const currentLanguage = i18n.resolvedLanguage || i18n.language
   return (
@@ -612,7 +615,7 @@ export function NotificationPopover({
               <NoticeContent
                 notice={notice}
                 loading={loading}
-                plainText={isSubsite}
+                plainText={plainTextNotice}
                 t={t}
               />
             </TabsContent>

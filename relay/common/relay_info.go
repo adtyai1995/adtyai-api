@@ -664,9 +664,16 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		startTime = time.Now()
 	}
 
+	relayMode := relayconstant.EditsRelayMode(c.Request.URL.Path, c.GetInt("relay_mode"))
+	if relayMode == relayconstant.RelayModeUnknown {
+		relayMode = c.GetInt("relay_mode")
+	}
+
 	isStream := false
 
-	if request != nil {
+	if request != nil &&
+		relayMode != relayconstant.RelayModeAudioTranscription &&
+		relayMode != relayconstant.RelayModeAudioTranslation {
 		isStream = request.IsStream(c.Request)
 	}
 	c.Set(string(constant.ContextKeyIsStream), isStream)
@@ -698,7 +705,7 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		TokenGroup:     tokenGroup,
 
 		isFirstResponse: true,
-		RelayMode:       relayconstant.EditsRelayMode(c.Request.URL.Path, c.GetInt("relay_mode")),
+		RelayMode:       relayMode,
 		RequestURLPath:  c.Request.URL.String(),
 		RequestHeaders:  cloneRequestHeaders(c),
 		IsStream:        isStream,
@@ -714,10 +721,6 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 			//promptTokens: common.GetContextKeyInt(c, constant.ContextKeyPromptTokens),
 			estimatePromptTokens: common.GetContextKeyInt(c, constant.ContextKeyEstimatedTokens),
 		},
-	}
-
-	if info.RelayMode == relayconstant.RelayModeUnknown {
-		info.RelayMode = c.GetInt("relay_mode")
 	}
 
 	if info.RelayMode == relayconstant.RelayModeImagesEdits && strings.HasPrefix(c.Request.URL.Path, "/v1/edits") {

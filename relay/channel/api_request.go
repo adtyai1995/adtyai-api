@@ -700,6 +700,8 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	if info.IsStream &&
 		!info.DisablePing &&
 		info.RelayMode != constant.RelayModeAudioSpeech &&
+		info.RelayMode != constant.RelayModeAudioTranscription &&
+		info.RelayMode != constant.RelayModeAudioTranslation &&
 		info.RelayFormat != types.RelayFormatOpenAIImage &&
 		info.RelayMode != constant.RelayModeImagesGenerations &&
 		info.RelayMode != constant.RelayModeImagesEdits {

@@ -87,6 +87,8 @@ export const DEFAULT_BRAND: SiteBrand = {
 
 const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F]/
 const RETRY_COOLDOWN_MS = 2000
+const SEARCH_HIDDEN_ATTR = 'data-adty-wl-hidden'
+const SEARCH_EMPTY_ATTR = 'data-adty-wl-empty'
 
 interface BrandReplacementState {
   template: string
@@ -95,12 +97,26 @@ interface BrandReplacementState {
 
 const textNodeState = new WeakMap<Text, BrandReplacementState>()
 const anchorHrefState = new WeakMap<HTMLAnchorElement, BrandReplacementState>()
+const anchorAriaLabelState = new WeakMap<
+  HTMLAnchorElement,
+  BrandReplacementState
+>()
 let lastTitleState: BrandReplacementState | null = null
 
 const brandState = ref<SiteBrand>({
   ...DEFAULT_BRAND,
   referral: { ...DEFAULT_REFERRAL },
 })
+let lastObservedBrandRef: SiteBrand = brandState.value
+let lastAppliedBrand: SiteBrand | null = null
+
+function getActiveSearchBrand(): SiteBrand {
+  if (brandState.value !== lastObservedBrandRef) {
+    lastObservedBrandRef = brandState.value
+    lastAppliedBrand = null
+  }
+  return lastAppliedBrand ?? brandState.value
+}
 
 let inflightPromise: Promise<SiteBrand> | null = null
 let lastFailedAt = 0
@@ -485,18 +501,24 @@ function rewriteTextNodesInRoot(root: Node, brand: SiteBrand): void {
   }
 }
 
+interface SplitTextSegment {
+  node: Text
+  start: number
+  end: number
+  original: string
+  nextTemplate: string
+  modified: boolean
+}
+
 function replaceBrandAcrossSplitNodes(
   root: HTMLElement,
   brand: SiteBrand
 ): void {
-  const raw = root.textContent
-  if (!raw || !containsDefaultBrandToken(raw)) return
-
   const matcher = buildBrandReplacementMatcher(brand)
   if (!matcher) return
 
-  const segments: Array<{ node: Text; start: number; end: number }> = []
-  let fullText = ''
+  const segments: SplitTextSegment[] = []
+  let fullOriginal = ''
   let prevBoundary: Element | null = null
 
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
@@ -504,75 +526,133 @@ function replaceBrandAcrossSplitNodes(
   while (current) {
     const parentEl = current.parentElement
     const parentTag = parentEl?.tagName
-    if (
-      parentTag !== 'SCRIPT' &&
-      parentTag !== 'STYLE' &&
-      !parentEl?.closest('[data-adty-keep-raw="true"]') &&
-      !parentEl?.closest('.VPLocalSearchBox .no-results')
-    ) {
-      const val = current.nodeValue || ''
-      if (val.length > 0) {
+    const skipped =
+      parentTag === 'SCRIPT' ||
+      parentTag === 'STYLE' ||
+      Boolean(parentEl?.closest('[data-adty-keep-raw="true"]')) ||
+      Boolean(parentEl?.closest('.VPLocalSearchBox .no-results'))
+
+    const currentVal = current.nodeValue || ''
+    if (skipped) {
+      if (currentVal.length > 0 && fullOriginal.length > 0) {
+        fullOriginal += '\u0000'
+        prevBoundary = null
+      }
+    } else if (currentVal.length > 0) {
+      const prev = textNodeState.get(current)
+      const original =
+        prev && currentVal === prev.rendered ? prev.template : currentVal
+      if (original.length > 0) {
         const boundary = parentEl?.closest(BLOCK_BOUNDARY_SELECTOR) ?? root
         if (prevBoundary !== null && boundary !== prevBoundary) {
-          fullText += '\u0000'
+          fullOriginal += '\u0000'
         }
         prevBoundary = boundary
-        const start = fullText.length
-        fullText += val
-        segments.push({ node: current, start, end: fullText.length })
+        const start = fullOriginal.length
+        fullOriginal += original
+        segments.push({
+          node: current,
+          start,
+          end: fullOriginal.length,
+          original,
+          nextTemplate: original,
+          modified: false,
+        })
       }
     }
     current = walker.nextNode() as Text | null
   }
 
-  if (segments.length === 0 || !containsDefaultBrandToken(fullText)) return
+  if (segments.length < 2 || !containsDefaultBrandToken(fullOriginal)) return
 
-  const matches: Array<{ start: number; end: number; replacement: string }> = []
+  const crossMatches: Array<{
+    start: number
+    end: number
+    matched: string
+    firstSegIdx: number
+    lastSegIdx: number
+  }> = []
+
   matcher.regex.lastIndex = 0
-  let match = matcher.regex.exec(fullText)
+  let match = matcher.regex.exec(fullOriginal)
   while (match !== null) {
     const matched = match[0]
     const replacement = matcher.lookup.get(matched) ?? matched
     if (replacement !== matched) {
-      matches.push({
-        start: match.index,
-        end: match.index + matched.length,
-        replacement,
-      })
+      const start = match.index
+      const end = start + matched.length
+      let firstSegIdx = -1
+      let lastSegIdx = -1
+      for (let idx = 0; idx < segments.length; idx++) {
+        const seg = segments[idx]
+        if (seg.end <= start) continue
+        if (seg.start >= end) break
+        if (firstSegIdx === -1) {
+          firstSegIdx = idx
+        }
+        lastSegIdx = idx
+      }
+      if (firstSegIdx !== -1 && lastSegIdx > firstSegIdx) {
+        crossMatches.push({
+          start,
+          end,
+          matched,
+          firstSegIdx,
+          lastSegIdx,
+        })
+      }
     }
-    match = matcher.regex.exec(fullText)
+    match = matcher.regex.exec(fullOriginal)
   }
 
-  if (matches.length === 0) return
+  if (crossMatches.length === 0) return
+
+  for (let i = crossMatches.length - 1; i >= 0; i--) {
+    const m = crossMatches[i]
+    for (let idx = m.firstSegIdx; idx <= m.lastSegIdx; idx++) {
+      const seg = segments[idx]
+      const localStart = Math.max(0, m.start - seg.start)
+      const localEnd = Math.min(seg.original.length, m.end - seg.start)
+      const before = seg.nextTemplate.slice(0, localStart)
+      const after = seg.nextTemplate.slice(localEnd)
+      if (idx === m.firstSegIdx) {
+        seg.nextTemplate = before + m.matched + after
+      } else {
+        seg.nextTemplate = before + after
+      }
+      seg.modified = true
+    }
+  }
 
   const emptyMarks = new Set<HTMLElement>()
-  for (let i = matches.length - 1; i >= 0; i--) {
-    const m = matches[i]
-    let placed = false
-    for (const seg of segments) {
-      if (seg.end <= m.start || seg.start >= m.end) continue
-      const val = seg.node.nodeValue || ''
-      const localStart = Math.max(0, m.start - seg.start)
-      const localEnd = Math.min(val.length, m.end - seg.start)
-      const before = val.slice(0, localStart)
-      const after = val.slice(localEnd)
-      if (!placed) {
-        seg.node.nodeValue = before + m.replacement + after
-        placed = true
-      } else {
-        seg.node.nodeValue = before + after
+  for (const seg of segments) {
+    if (!seg.modified) continue
+    if (seg.nextTemplate === '') {
+      if (seg.node.nodeValue !== '') {
+        seg.node.nodeValue = ''
       }
       textNodeState.delete(seg.node)
       const markEl = seg.node.parentElement
-      if (
-        seg.node.nodeValue === '' &&
-        markEl?.tagName === 'MARK' &&
-        markEl.textContent === ''
-      ) {
+      if (markEl?.tagName === 'MARK' && markEl.textContent === '') {
         emptyMarks.add(markEl)
       }
+    } else if (containsDefaultBrandToken(seg.nextTemplate)) {
+      const nextRendered = replaceBrandText(seg.nextTemplate, brand)
+      if (seg.node.nodeValue !== nextRendered) {
+        seg.node.nodeValue = nextRendered
+      }
+      textNodeState.set(seg.node, {
+        template: seg.nextTemplate,
+        rendered: nextRendered,
+      })
+    } else {
+      if (seg.node.nodeValue !== seg.nextTemplate) {
+        seg.node.nodeValue = seg.nextTemplate
+      }
+      textNodeState.delete(seg.node)
     }
   }
+
   emptyMarks.forEach((markEl) => {
     if (markEl.textContent === '') {
       markEl.remove()
@@ -588,67 +668,371 @@ function shouldPatchSearchBox(brand: SiteBrand): boolean {
   )
 }
 
-function patchSearchBoxElement(searchBox: HTMLElement, brand: SiteBrand): void {
+function shouldHideDocsHref(href: string, brand: SiteBrand): boolean {
+  if (!href) return false
   const hidePartner = brand.isSubsite
   const hideReferral = brand.loaded && !brand.referral.enabled
+  return (
+    (hidePartner && matchesGuideRoute(href, '/guides/partner')) ||
+    (hideReferral && matchesGuideRoute(href, '/guides/referral'))
+  )
+}
 
+interface SearchResultItem {
+  container: HTMLElement
+  anchor: HTMLAnchorElement
+}
+
+function collectSearchResultItems(searchBox: HTMLElement): SearchResultItem[] {
   const resultAnchors = searchBox.querySelectorAll<HTMLAnchorElement>(
     'a.result[href], li[role="option"] > a[href], li.result > a[href]'
   )
   const seenAnchors = new Set<HTMLAnchorElement>()
+  const items: SearchResultItem[] = []
   resultAnchors.forEach((anchor) => {
     if (seenAnchors.has(anchor) || anchor.closest('.excerpt')) return
     seenAnchors.add(anchor)
-
-    const href = anchor.getAttribute('href') || ''
-    const hidden =
-      (hidePartner && matchesGuideRoute(href, '/guides/partner')) ||
-      (hideReferral && matchesGuideRoute(href, '/guides/referral'))
     const container =
       anchor.closest<HTMLElement>('li[role="option"]') ||
       anchor.closest<HTMLElement>('li') ||
       anchor
+    items.push({ container, anchor })
+  })
+  return items
+}
+
+function isHiddenSearchItem(item: SearchResultItem, brand: SiteBrand): boolean {
+  const href = item.anchor.getAttribute('href') || ''
+  return (
+    shouldHideDocsHref(href, brand) ||
+    item.container.getAttribute(SEARCH_HIDDEN_ATTR) === 'true' ||
+    item.container.getAttribute('aria-hidden') === 'true' ||
+    item.container.style.display === 'none'
+  )
+}
+
+function getSearchInput(searchBox: HTMLElement): HTMLInputElement | null {
+  return searchBox.querySelector<HTMLInputElement>(
+    '#localsearch-input, input.search-input, input[type="search"]'
+  )
+}
+
+function isZhSearchLocale(): boolean {
+  if (typeof document !== 'undefined') {
+    const lang = (document.documentElement.lang || '').trim().toLowerCase()
+    if (lang.startsWith('zh')) return true
+  }
+  if (typeof window !== 'undefined') {
+    const path = window.location.pathname.toLowerCase()
+    if (
+      path === '/zh-cn' ||
+      path.startsWith('/zh-cn/') ||
+      path.includes('/zh-cn/')
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+function findSelectedSearchItem(
+  searchBox: HTMLElement,
+  items: SearchResultItem[]
+): SearchResultItem | null {
+  const byClassOrAria = items.find(
+    (item) =>
+      item.anchor.classList.contains('selected') ||
+      item.container.getAttribute('aria-selected') === 'true'
+  )
+  if (byClassOrAria) return byClassOrAria
+
+  const activeDescendantId =
+    getSearchInput(searchBox)?.getAttribute('aria-activedescendant') || ''
+  if (activeDescendantId) {
+    const byActiveId = items.find(
+      (item) => item.container.id === activeDescendantId
+    )
+    if (byActiveId) return byActiveId
+  }
+  return null
+}
+
+function dispatchSearchItemSelectionEvents(
+  searchBox: HTMLElement,
+  anchor: HTMLAnchorElement
+): void {
+  const prevActive =
+    typeof document !== 'undefined' ? document.activeElement : null
+  const focusInEvent =
+    typeof FocusEvent === 'function'
+      ? new FocusEvent('focusin', { bubbles: false })
+      : new Event('focusin', { bubbles: false })
+  anchor.dispatchEvent(focusInEvent)
+  const mouseEnterEvent =
+    typeof MouseEvent === 'function'
+      ? new MouseEvent('mouseenter', { bubbles: false })
+      : new Event('mouseenter', { bubbles: false })
+  anchor.dispatchEvent(mouseEnterEvent)
+  if (
+    prevActive instanceof HTMLElement &&
+    prevActive !== anchor &&
+    searchBox.contains(prevActive) &&
+    !prevActive.closest('a.result')
+  ) {
+    const restoreFocusIn =
+      typeof FocusEvent === 'function'
+        ? new FocusEvent('focusin', { bubbles: false })
+        : new Event('focusin', { bubbles: false })
+    prevActive.dispatchEvent(restoreFocusIn)
+  }
+}
+
+function selectSearchResultItem(
+  searchBox: HTMLElement,
+  allItems: SearchResultItem[],
+  target: SearchResultItem,
+  scroll: boolean
+): void {
+  for (const item of allItems) {
+    const isTarget = item === target
+    if (item.anchor.classList.contains('selected') !== isTarget) {
+      item.anchor.classList.toggle('selected', isTarget)
+    }
+    const nextAriaSelected = isTarget ? 'true' : 'false'
+    if (item.container.getAttribute('aria-selected') !== nextAriaSelected) {
+      item.container.setAttribute('aria-selected', nextAriaSelected)
+    }
+  }
+  const searchInput = getSearchInput(searchBox)
+  if (searchInput && target.container.id) {
+    if (
+      searchInput.getAttribute('aria-activedescendant') !== target.container.id
+    ) {
+      searchInput.setAttribute('aria-activedescendant', target.container.id)
+    }
+  }
+  dispatchSearchItemSelectionEvents(searchBox, target.anchor)
+  if (scroll && typeof target.anchor.scrollIntoView === 'function') {
+    target.anchor.scrollIntoView({ block: 'nearest' })
+  }
+}
+
+function clearSearchSelection(
+  searchBox: HTMLElement,
+  allItems: SearchResultItem[]
+): void {
+  for (const item of allItems) {
+    if (item.anchor.classList.contains('selected')) {
+      item.anchor.classList.remove('selected')
+    }
+    if (item.container.getAttribute('aria-selected') !== 'false') {
+      item.container.setAttribute('aria-selected', 'false')
+    }
+  }
+  const searchInput = getSearchInput(searchBox)
+  if (searchInput?.hasAttribute('aria-activedescendant')) {
+    searchInput.removeAttribute('aria-activedescendant')
+  }
+}
+
+function syncSyntheticNoResults(
+  searchBox: HTMLElement,
+  hiddenCount: number,
+  visibleCount: number
+): void {
+  const resultsList = searchBox.querySelector<HTMLElement>('ul.results')
+  if (!resultsList) return
+
+  const existing = resultsList.querySelector<HTMLElement>(
+    `[${SEARCH_EMPTY_ATTR}="1"]`
+  )
+  const hasNativeNoResults = Boolean(
+    resultsList.querySelector(`.no-results:not([${SEARCH_EMPTY_ATTR}="1"])`)
+  )
+  const query = getSearchInput(searchBox)?.value?.trim() || ''
+  const shouldShow =
+    hiddenCount > 0 &&
+    visibleCount === 0 &&
+    query.length > 0 &&
+    !hasNativeNoResults
+
+  if (!shouldShow) {
+    if (existing) {
+      existing.remove()
+    }
+    return
+  }
+
+  const zh = isZhSearchLocale()
+  const localeKey = zh ? 'zh' : 'en'
+  let emptyItem = existing
+  if (!emptyItem) {
+    emptyItem = document.createElement('li')
+    emptyItem.className = 'no-results'
+    emptyItem.setAttribute(SEARCH_EMPTY_ATTR, '1')
+    for (const attr of Array.from(resultsList.attributes)) {
+      if (attr.name.startsWith('data-v-')) {
+        emptyItem.setAttribute(attr.name, attr.value)
+      }
+    }
+    emptyItem.style.fontSize = '0.9rem'
+    emptyItem.style.textAlign = 'center'
+    emptyItem.style.padding = '12px'
+    resultsList.appendChild(emptyItem)
+  }
+
+  if (
+    emptyItem.dataset.adtyWlQuery !== query ||
+    emptyItem.dataset.adtyWlLocale !== localeKey
+  ) {
+    emptyItem.dataset.adtyWlQuery = query
+    emptyItem.dataset.adtyWlLocale = localeKey
+    emptyItem.textContent = ''
+    const prefix = zh ? '无匹配结果 "' : 'No results for "'
+    emptyItem.appendChild(document.createTextNode(prefix))
+    const strong = document.createElement('strong')
+    strong.textContent = query
+    emptyItem.appendChild(strong)
+    emptyItem.appendChild(document.createTextNode('"'))
+  }
+}
+
+function cleanupSearchBoxPatch(searchBox: HTMLElement): void {
+  searchBox
+    .querySelectorAll<HTMLElement>(`[${SEARCH_EMPTY_ATTR}="1"]`)
+    .forEach((node) => {
+      node.remove()
+    })
+  searchBox
+    .querySelectorAll<HTMLElement>(`[${SEARCH_HIDDEN_ATTR}="true"]`)
+    .forEach((container) => {
+      if (container.style.display !== '') {
+        container.style.display = ''
+      }
+      if (container.hasAttribute('aria-hidden')) {
+        container.removeAttribute('aria-hidden')
+      }
+      container.removeAttribute(SEARCH_HIDDEN_ATTR)
+    })
+}
+
+function patchSearchBoxElement(searchBox: HTMLElement, brand: SiteBrand): void {
+  const allItems = collectSearchResultItems(searchBox)
+  const visibleItems: SearchResultItem[] = []
+  let hiddenCount = 0
+
+  for (const item of allItems) {
+    const { anchor, container } = item
+    const href = anchor.getAttribute('href') || ''
+    const hidden = shouldHideDocsHref(href, brand)
     const nextDisplay = hidden ? 'none' : ''
     if (container.style.display !== nextDisplay) {
       container.style.display = nextDisplay
     }
     if (hidden) {
+      hiddenCount++
       if (container.getAttribute('aria-hidden') !== 'true') {
         container.setAttribute('aria-hidden', 'true')
       }
-    } else if (container.hasAttribute('aria-hidden')) {
-      container.removeAttribute('aria-hidden')
+      if (container.getAttribute(SEARCH_HIDDEN_ATTR) !== 'true') {
+        container.setAttribute(SEARCH_HIDDEN_ATTR, 'true')
+      }
+    } else {
+      visibleItems.push(item)
+      if (container.hasAttribute('aria-hidden')) {
+        container.removeAttribute('aria-hidden')
+      }
+      if (container.hasAttribute(SEARCH_HIDDEN_ATTR)) {
+        container.removeAttribute(SEARCH_HIDDEN_ATTR)
+      }
     }
 
     if (brand.isWhiteLabel) {
       const ariaLabel = anchor.getAttribute('aria-label')
-      if (ariaLabel && containsDefaultBrandToken(ariaLabel)) {
-        const nextLabel = replaceBrandText(ariaLabel, brand)
-        if (nextLabel !== ariaLabel) {
-          anchor.setAttribute('aria-label', nextLabel)
+      if (ariaLabel !== null) {
+        const prev = anchorAriaLabelState.get(anchor)
+        const template =
+          prev && ariaLabel === prev.rendered ? prev.template : ariaLabel
+        if (containsDefaultBrandToken(template)) {
+          const nextLabel = replaceBrandText(template, brand)
+          if (nextLabel !== ariaLabel) {
+            anchor.setAttribute('aria-label', nextLabel)
+          }
+          anchorAriaLabelState.set(anchor, {
+            template,
+            rendered: nextLabel,
+          })
+        } else if (prev && ariaLabel !== prev.rendered) {
+          anchorAriaLabelState.delete(anchor)
         }
+      } else if (anchorAriaLabelState.has(anchor)) {
+        anchorAriaLabelState.delete(anchor)
       }
     }
-  })
+  }
+
+  if (hiddenCount > 0) {
+    if (visibleItems.length === 0) {
+      clearSearchSelection(searchBox, allItems)
+    } else {
+      const currentSelected = findSelectedSearchItem(searchBox, allItems)
+      const hasHiddenSelected = allItems.some(
+        (item) =>
+          isHiddenSearchItem(item, brand) &&
+          (item.anchor.classList.contains('selected') ||
+            item.container.getAttribute('aria-selected') === 'true')
+      )
+      const searchInput = getSearchInput(searchBox)
+      const activeDescendantId =
+        searchInput?.getAttribute('aria-activedescendant') || ''
+      const activeDescendantIsHidden =
+        activeDescendantId !== '' &&
+        allItems.some(
+          (item) =>
+            item.container.id === activeDescendantId &&
+            isHiddenSearchItem(item, brand)
+        )
+      if (
+        hasHiddenSelected ||
+        !currentSelected ||
+        isHiddenSearchItem(currentSelected, brand) ||
+        activeDescendantIsHidden
+      ) {
+        const nextSelected =
+          currentSelected && !isHiddenSearchItem(currentSelected, brand)
+            ? currentSelected
+            : visibleItems[0]
+        selectSearchResultItem(searchBox, allItems, nextSelected, false)
+      }
+    }
+  }
+
+  syncSyntheticNoResults(searchBox, hiddenCount, visibleItems.length)
 
   if (!brand.isWhiteLabel) return
 
   rewriteAnchorsInRoot(searchBox, brand)
-  rewriteTextNodesInRoot(searchBox, brand)
 
   searchBox
     .querySelectorAll<HTMLElement>('li[role="option"], li.result')
     .forEach((item) => {
       replaceBrandAcrossSplitNodes(item, brand)
     })
+
+  rewriteTextNodesInRoot(searchBox, brand)
 }
 
 function patchOpenSearchBoxes(brand: SiteBrand): void {
-  if (typeof document === 'undefined' || !shouldPatchSearchBox(brand)) return
+  if (typeof document === 'undefined') return
+  const shouldPatch = shouldPatchSearchBox(brand)
   document
     .querySelectorAll<HTMLElement>('.VPLocalSearchBox')
     .forEach((searchBox) => {
-      patchSearchBoxElement(searchBox, brand)
+      if (shouldPatch) {
+        patchSearchBoxElement(searchBox, brand)
+      } else {
+        cleanupSearchBoxPatch(searchBox)
+      }
     })
 }
 
@@ -664,24 +1048,30 @@ export function installSearchBoxWhiteLabelObserver(): () => void {
   let scheduled = false
   let isPatchingSearch = false
 
-  const flush = () => {
-    scheduled = false
-    if (!active) return
-    const brand = brandState.value
-    if (!shouldPatchSearchBox(brand)) return
-    if (!document.querySelector('.VPLocalSearchBox')) return
+  const runWithSearchPatchGuard = (fn: () => void) => {
     isPatchingSearch = true
     try {
-      patchOpenSearchBoxes(brand)
+      fn()
     } finally {
       observer.takeRecords()
       isPatchingSearch = false
     }
   }
 
+  const flush = () => {
+    scheduled = false
+    if (!active) return
+    const brand = getActiveSearchBrand()
+    if (!shouldPatchSearchBox(brand)) return
+    if (!document.querySelector('.VPLocalSearchBox')) return
+    runWithSearchPatchGuard(() => {
+      patchOpenSearchBoxes(brand)
+    })
+  }
+
   const schedule = () => {
     if (scheduled || isPatchingSearch || !active) return
-    const brand = brandState.value
+    const brand = getActiveSearchBrand()
     if (!shouldPatchSearchBox(brand)) return
     if (!document.querySelector('.VPLocalSearchBox')) return
     scheduled = true
@@ -692,12 +1082,145 @@ export function installSearchBoxWhiteLabelObserver(): () => void {
     schedule()
   })
 
+  const onSearchKeyDown = (event: KeyboardEvent) => {
+    if (!active || event.isComposing) return
+    const key = event.key
+    if (key !== 'ArrowDown' && key !== 'ArrowUp' && key !== 'Enter') return
+
+    const brand = getActiveSearchBrand()
+    if (!shouldPatchSearchBox(brand)) return
+
+    const targetEl = event.target instanceof Element ? event.target : null
+    const searchBox =
+      targetEl?.closest<HTMLElement>('.VPLocalSearchBox') ??
+      document.querySelector<HTMLElement>('.VPLocalSearchBox')
+    if (!searchBox) return
+
+    if (
+      key === 'Enter' &&
+      event.target instanceof HTMLButtonElement &&
+      event.target.type !== 'submit'
+    ) {
+      return
+    }
+
+    const allItems = collectSearchResultItems(searchBox)
+    if (allItems.length === 0) return
+
+    const visibleItems = allItems.filter(
+      (item) => !isHiddenSearchItem(item, brand)
+    )
+    const hiddenCount = allItems.length - visibleItems.length
+    if (hiddenCount === 0) return
+
+    if (visibleItems.length === 0) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      runWithSearchPatchGuard(() => {
+        patchSearchBoxElement(searchBox, brand)
+      })
+      return
+    }
+
+    if (key === 'ArrowDown' || key === 'ArrowUp') {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      const currentSelected = findSelectedSearchItem(searchBox, allItems)
+      const currentVisibleIdx = currentSelected
+        ? visibleItems.indexOf(currentSelected)
+        : -1
+      const nextVisibleIdx =
+        key === 'ArrowDown'
+          ? currentVisibleIdx === -1
+            ? 0
+            : (currentVisibleIdx + 1) % visibleItems.length
+          : currentVisibleIdx <= 0
+            ? visibleItems.length - 1
+            : currentVisibleIdx - 1
+      runWithSearchPatchGuard(() => {
+        selectSearchResultItem(
+          searchBox,
+          allItems,
+          visibleItems[nextVisibleIdx],
+          true
+        )
+      })
+      return
+    }
+
+    const targetAnchor = targetEl?.closest<HTMLAnchorElement>('a[href]')
+    if (
+      targetAnchor &&
+      !targetAnchor.closest('.excerpt') &&
+      shouldHideDocsHref(targetAnchor.getAttribute('href') || '', brand)
+    ) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      runWithSearchPatchGuard(() => {
+        patchSearchBoxElement(searchBox, brand)
+      })
+      return
+    }
+
+    const selectedItem = findSelectedSearchItem(searchBox, allItems)
+    if (
+      !selectedItem ||
+      isHiddenSearchItem(selectedItem, brand) ||
+      shouldHideDocsHref(selectedItem.anchor.getAttribute('href') || '', brand)
+    ) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      runWithSearchPatchGuard(() => {
+        patchSearchBoxElement(searchBox, brand)
+      })
+      return
+    }
+
+    dispatchSearchItemSelectionEvents(searchBox, selectedItem.anchor)
+  }
+
+  const onSearchClick = (event: MouseEvent) => {
+    if (!active) return
+    const brand = getActiveSearchBrand()
+    if (!shouldPatchSearchBox(brand)) return
+    const targetEl = event.target instanceof Element ? event.target : null
+    const anchor = targetEl?.closest<HTMLAnchorElement>('a[href]')
+    if (!anchor) return
+    const searchBox = anchor.closest<HTMLElement>('.VPLocalSearchBox')
+    if (!searchBox || anchor.closest('.excerpt')) return
+    const href = anchor.getAttribute('href') || ''
+    if (shouldHideDocsHref(href, brand)) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }
+  }
+
+  const onSearchInput = (event: Event) => {
+    if (!active) return
+    const target = event.target
+    if (
+      target instanceof HTMLInputElement &&
+      target.value.trim() === '' &&
+      target.closest('.VPLocalSearchBox')
+    ) {
+      schedule()
+    }
+  }
+
   if (document.body) {
     observer.observe(document.body, {
       childList: true,
       subtree: true,
       characterData: true,
+      attributes: true,
+      attributeFilter: ['aria-selected'],
     })
+  }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('keydown', onSearchKeyDown, true)
+    window.addEventListener('click', onSearchClick, true)
+    window.addEventListener('input', onSearchInput, true)
   }
 
   schedule()
@@ -705,6 +1228,11 @@ export function installSearchBoxWhiteLabelObserver(): () => void {
   return () => {
     active = false
     observer.disconnect()
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('keydown', onSearchKeyDown, true)
+      window.removeEventListener('click', onSearchClick, true)
+      window.removeEventListener('input', onSearchInput, true)
+    }
   }
 }
 
@@ -713,6 +1241,8 @@ export function applyBrandToDOM(brand: SiteBrand): void {
 
   const effectiveBrand =
     !brand.loaded && brandState.value.loaded ? brandState.value : brand
+  lastObservedBrandRef = brandState.value
+  lastAppliedBrand = effectiveBrand
 
   if (
     !effectiveBrand.loaded &&
@@ -796,6 +1326,6 @@ export function applyBrandToDOM(brand: SiteBrand): void {
   }
 
   rewriteAnchorsInRoot(document, effectiveBrand)
-  rewriteTextNodesInRoot(document.body, effectiveBrand)
   patchOpenSearchBoxes(effectiveBrand)
+  rewriteTextNodesInRoot(document.body, effectiveBrand)
 }

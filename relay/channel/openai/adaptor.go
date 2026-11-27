@@ -492,6 +492,13 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 					}
 				}
 			}
+			if strings.EqualFold(key, "stream_format") {
+				for _, value := range values {
+					if strings.TrimSpace(value) != "" {
+						return nil, errors.New("streaming audio transcription is not supported")
+					}
+				}
+			}
 			for _, value := range values {
 				if err := writer.WriteField(key, value); err != nil {
 					return nil, fmt.Errorf("error writing form field %q: %w", key, err)

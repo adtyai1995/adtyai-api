@@ -40,13 +40,29 @@ func GetAdtyTopUpInfo(c *gin.Context) {
 	bonusRates := map[string]float64{}
 	methods := make([]service.AdtyMethodInfo, 0)
 	teamID, _ := strconv.ParseInt(c.Query("team_id"), 10, 64)
-	scenes, err := service.AdtyPaymentScenesForUser(c.GetInt("id"), service.AdtyPaymentScope{TeamID: teamID, Business: c.Query("business"), SiteID: service.AdtyRequestSiteID(c)})
-	if err != nil {
-		writeAdtyTopUpError(c, err)
-		return
-	}
 	business := c.Query("business")
+	userID := c.GetInt("id")
+	reqSiteID := service.AdtyRequestSiteID(c)
 	isOwnerBiz := business == model.AdtyBusinessOwnerSelfUseTopup || business == model.AdtyBusinessOwnerMarginTopup
+	ownerSiteID := 0
+	ownerMarginReadOnlyUnavailable := false
+	if isOwnerBiz {
+		ownerSiteID = service.ResolveAdtyOwnerTopupSiteID(userID, reqSiteID)
+		if business == model.AdtyBusinessOwnerMarginTopup && ownerSiteID == 0 && service.ResolveAdtyOwnerTopupReadSiteID(userID, reqSiteID) > 0 {
+			ownerMarginReadOnlyUnavailable = true
+		}
+	}
+	var scenes []service.AdtyPaymentSceneView
+	if ownerMarginReadOnlyUnavailable {
+		scenes = make([]service.AdtyPaymentSceneView, 0)
+	} else {
+		var err error
+		scenes, err = service.AdtyPaymentScenesForUser(userID, service.AdtyPaymentScope{TeamID: teamID, Business: business, SiteID: reqSiteID})
+		if err != nil {
+			writeAdtyTopUpError(c, err)
+			return
+		}
+	}
 	for _, scene := range scenes {
 		if scene.Key == model.AdtyBusinessWalletTopup || isOwnerBiz || business == model.AdtyBusinessTeamTopup {
 			methods = scene.Methods
@@ -56,15 +72,14 @@ func GetAdtyTopUpInfo(c *gin.Context) {
 	if len(methods) == 0 && len(scenes) > 0 {
 		methods = scenes[0].Methods
 	}
-	methodBonusRates := service.AdtyActiveMethodBonusRates(c.GetInt("id"), service.AdtyRequestSiteID(c), business)
+	methodBonusRates := map[string]string{}
+	if !ownerMarginReadOnlyUnavailable {
+		methodBonusRates = service.AdtyActiveMethodBonusRates(userID, reqSiteID, business)
+	}
 	var pending *model.AdtyTopUpView
 	pendingOrders := make([]model.AdtyTopUpView, 0)
-	ownerSiteID := 0
-	if isOwnerBiz {
-		ownerSiteID = service.ResolveAdtyOwnerTopupSiteID(c.GetInt("id"), service.AdtyRequestSiteID(c))
-	}
 	if business != model.AdtyBusinessTeamTopup && (!isOwnerBiz || ownerSiteID > 0) {
-		if views, err := model.ListUserActivePendingAdtyTopUpViewsForBusiness(c.GetInt("id"), time.Now().Unix(), ownerSiteID, business); err == nil {
+		if views, err := model.ListUserActivePendingAdtyTopUpViewsForBusiness(userID, time.Now().Unix(), ownerSiteID, business); err == nil {
 			filtered := make([]model.AdtyTopUpView, 0, len(views))
 			for i := range views {
 				sanitizePendingAdtyTopUpView(c, &views[i], false)

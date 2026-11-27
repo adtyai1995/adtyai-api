@@ -340,6 +340,11 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
+	if info != nil && strings.HasPrefix(info.UpstreamModelName, "imagen") && info.IsStream && !info.IsChannelTest {
+		nonStreamInfo := *info
+		nonStreamInfo.IsStream = false
+		return channel.DoApiRequest(a, c, &nonStreamInfo, requestBody)
+	}
 	return channel.DoApiRequest(a, c, info, requestBody)
 }
 

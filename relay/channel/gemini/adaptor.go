@@ -69,6 +69,10 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 	if !strings.HasPrefix(info.UpstreamModelName, "imagen") {
 		return nil, errors.New("not supported model for image generation, only imagen models are supported")
 	}
+	if (info.RelayMode == constant.RelayModeImagesGenerations || info.RelayMode == constant.RelayModeImagesEdits) &&
+		(info.IsStream || (request.Stream != nil && *request.Stream)) {
+		return nil, types.NewErrorWithStatusCode(errors.New("streaming image generation is not supported for this channel"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
 
 	// convert size to aspect ratio but allow user to specify aspect ratio
 	aspectRatio := "1:1" // default aspect ratio
@@ -255,6 +259,11 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
+	if info != nil && strings.HasPrefix(info.UpstreamModelName, "imagen") && info.IsStream && !info.IsChannelTest {
+		nonStreamInfo := *info
+		nonStreamInfo.IsStream = false
+		return channel.DoApiRequest(a, c, &nonStreamInfo, requestBody)
+	}
 	return channel.DoApiRequest(a, c, info, requestBody)
 }
 

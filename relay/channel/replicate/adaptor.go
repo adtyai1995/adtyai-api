@@ -70,6 +70,9 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 	if info == nil {
 		return nil, errors.New("replicate adaptor: relay info is nil")
 	}
+	if info.IsStream || (request.Stream != nil && *request.Stream) {
+		return nil, types.NewErrorWithStatusCode(errors.New("streaming image generation is not supported for this channel"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
 	if strings.TrimSpace(request.Prompt) == "" {
 		if v := c.PostForm("prompt"); strings.TrimSpace(v) != "" {
 			request.Prompt = v

@@ -424,7 +424,7 @@ func AdtySiteForHostWithError(host string) (*model.AdtySite, error) {
 	// the local branding cache. A database failure must not serve stale business
 	// nor trigger a false 404 logout on subsites (R-32 #26).
 	var current model.AdtySite
-	if err := model.DB.Select("id", "status", "close_transfer_to", "home_page_content", "legal_docs", "archived_hidden_at").First(&current, site.Id).Error; err != nil {
+	if err := model.DB.Select("id", "status", "close_transfer_to", "brand", "home_page_content", "legal_docs", "archived_hidden_at").First(&current, site.Id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -442,6 +442,7 @@ func AdtySiteForHostWithError(host string) (*model.AdtySite, error) {
 	}
 	copy := *site
 	copy.Status, copy.CloseTransferTo = current.Status, current.CloseTransferTo
+	copy.Brand = current.Brand
 	copy.HomePageContent = current.HomePageContent
 	copy.LegalDocs = current.LegalDocs
 	copy.ArchivedHiddenAt = current.ArchivedHiddenAt

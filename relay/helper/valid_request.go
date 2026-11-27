@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -120,6 +121,9 @@ func GetAndValidAudioRequest(c *gin.Context, relayMode int) (*dto.AudioRequest, 
 	default:
 		if audioRequest.Model == "" {
 			return nil, errors.New("model is required")
+		}
+		if strings.TrimSpace(audioRequest.StreamFormat) != "" {
+			return nil, types.NewErrorWithStatusCode(errors.New("streaming audio transcription is not supported"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
 		if audioRequest.ResponseFormat == "" {
 			audioRequest.ResponseFormat = "json"

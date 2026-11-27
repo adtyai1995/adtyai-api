@@ -402,16 +402,41 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 		}
 		cycleUsed = decimal.Zero
 	}
-	if kind == model.AdtySiteWalletMargin && !change.MarginExcessOnly && delta.IsZero() && change.HoldDelta.IsNegative() && cycleCarryFrozen.IsPositive() {
-		cycleCarryFrozen = cycleCarryFrozen.Sub(change.HoldDelta.Abs())
-		if cycleCarryFrozen.IsNegative() {
-			cycleCarryFrozen = decimal.Zero
+	if kind == model.AdtySiteWalletMargin && !change.MarginExcessOnly && !change.OpenMarginCycle {
+		if delta.IsZero() && change.HoldDelta.IsNegative() && cycleCarryFrozen.IsPositive() {
+			cycleCarryFrozen = cycleCarryFrozen.Sub(change.HoldDelta.Abs())
+			if cycleCarryFrozen.IsNegative() {
+				cycleCarryFrozen = decimal.Zero
+			}
 		}
-	}
-	if kind == model.AdtySiteWalletMargin && delta.IsPositive() && change.ReleaseCycleUsed.IsPositive() && !change.OpenMarginCycle {
-		cycleUsed = cycleUsed.Sub(change.ReleaseCycleUsed)
-		if cycleUsed.IsNegative() {
-			cycleUsed = decimal.Zero
+		if delta.IsPositive() {
+			releasedCycleUsed := decimal.Zero
+			if change.ReleaseCycleUsed.IsPositive() {
+				releasedCycleUsed = decimal.Min(cycleUsed, change.ReleaseCycleUsed)
+				cycleUsed = cycleUsed.Sub(releasedCycleUsed)
+				if cycleUsed.IsNegative() {
+					cycleUsed = decimal.Zero
+				}
+			}
+			if change.HoldDelta.IsZero() && releasedCycleUsed.IsPositive() && cycleCarryFrozen.IsPositive() {
+				// Pure cycle-used reversal (e.g. commission_clawback_return) shrinks carried ceiling
+				// alongside CycleUsedUSD so no over-cap blind spot remains for the rest of the cycle.
+				cycleCarryFrozen = cycleCarryFrozen.Sub(releasedCycleUsed)
+				if cycleCarryFrozen.IsNegative() {
+					cycleCarryFrozen = decimal.Zero
+				}
+			} else if change.HoldDelta.IsPositive() {
+				// Cross-cycle gift spend refund restores prior-cycle frozen commitment into FrozenUSD
+				// beyond any same-cycle ReleaseCycleUsed. Bound by the pre-change legal commitment so
+				// a pre-existing over-cap cannot be masked.
+				netRestore := change.HoldDelta.Sub(releasedCycleUsed)
+				if netRestore.IsPositive() {
+					occupiedBefore := wallet.CycleUsedUSD.Add(wallet.FrozenUSD)
+					priorCeiling := decimal.Max(AdtyMarginCycleLimit(cycleTier), cycleCarryFrozen)
+					legalBefore := decimal.Min(occupiedBefore, priorCeiling)
+					cycleCarryFrozen = decimal.Max(cycleCarryFrozen, legalBefore.Add(netRestore))
+				}
+			}
 		}
 	}
 	updates := map[string]any{

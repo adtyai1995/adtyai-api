@@ -251,12 +251,18 @@ func awsHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types
 		return types.NewError(fmt.Errorf("unexpected AWS invoke request type %T", a.AwsReq), types.ErrorCodeBadRequestBody), nil
 	}
 
-	upstreamCtx, cancel, cancelErr := channel.DetachedNonStreamContext(c, info, 0)
+	detachInfo := info
+	if info != nil && info.IsStream && !info.IsChannelTest {
+		infoCopy := *info
+		infoCopy.IsStream = false
+		detachInfo = &infoCopy
+	}
+	upstreamCtx, cancel, cancelErr := channel.DetachedNonStreamContext(c, detachInfo, 0)
 	if cancelErr != nil {
 		return cancelErr, nil
 	}
 	defer cancel()
-	if info == nil || info.IsStream || info.IsChannelTest {
+	if detachInfo == nil || detachInfo.IsStream || detachInfo.IsChannelTest {
 		var invokeCancel context.CancelFunc
 		upstreamCtx, invokeCancel = newAwsInvokeContext(upstreamCtx)
 		defer invokeCancel()
@@ -390,12 +396,18 @@ func handleNovaRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) 
 		return types.NewError(fmt.Errorf("unexpected AWS invoke request type %T", a.AwsReq), types.ErrorCodeBadRequestBody), nil
 	}
 
-	upstreamCtx, cancel, cancelErr := channel.DetachedNonStreamContext(c, info, 0)
+	detachInfo := info
+	if info != nil && info.IsStream && !info.IsChannelTest {
+		infoCopy := *info
+		infoCopy.IsStream = false
+		detachInfo = &infoCopy
+	}
+	upstreamCtx, cancel, cancelErr := channel.DetachedNonStreamContext(c, detachInfo, 0)
 	if cancelErr != nil {
 		return cancelErr, nil
 	}
 	defer cancel()
-	if info == nil || info.IsStream || info.IsChannelTest {
+	if detachInfo == nil || detachInfo.IsStream || detachInfo.IsChannelTest {
 		var invokeCancel context.CancelFunc
 		upstreamCtx, invokeCancel = newAwsInvokeContext(upstreamCtx)
 		defer invokeCancel()
