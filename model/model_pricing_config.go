@@ -786,6 +786,9 @@ func UpdateModelPricingOptions(updates map[string]string, audits ...func(*gorm.D
 func mutateModelPricingOptions(mutate func(*gorm.DB, map[string]map[string]any) error) error {
 	modelPricingMutationMu.Lock()
 	defer modelPricingMutationMu.Unlock()
+	// Pre-warm the 60s task-alias cache before starting the FOR UPDATE
+	// transaction so validateModelPricing never queries outer DB inside tx.
+	prewarmTaskAliasView()
 	sortedKeys := slices.Clone(modelPricingOptionKeys)
 	slices.Sort(sortedKeys)
 	var committed map[string]map[string]any

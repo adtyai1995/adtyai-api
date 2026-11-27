@@ -72,8 +72,9 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 }
 
 func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
-	if info.RelayMode == constant.RelayModeResponses {
+	if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
 		info.VendorToolUsage = aliResponsesToolUsage
+		return
 	}
 	if info.RelayFormat == types.RelayFormatClaude {
 		if supportsAliAnthropicMessages(info.UpstreamModelName) {
@@ -87,6 +88,9 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+		return fmt.Sprintf("%s/compatible-mode/v1/responses", info.ChannelBaseUrl), nil
+	}
 	var fullRequestURL string
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
@@ -105,8 +109,6 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 			}
 		case constant.RelayModeRerank:
 			fullRequestURL = fmt.Sprintf("%s/api/v1/services/rerank/text-rerank/text-rerank", info.ChannelBaseUrl)
-		case constant.RelayModeResponses:
-			fullRequestURL = fmt.Sprintf("%s/compatible-mode/v1/responses", info.ChannelBaseUrl)
 		case constant.RelayModeCompletions:
 			fullRequestURL = fmt.Sprintf("%s/compatible-mode/v1/completions", info.ChannelBaseUrl)
 		default:
@@ -201,6 +203,10 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
+	if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+		adaptor := openai.Adaptor{}
+		return adaptor.DoResponse(c, resp, info)
+	}
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
 		if supportsAliAnthropicMessages(info.UpstreamModelName) {

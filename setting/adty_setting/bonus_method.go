@@ -38,8 +38,36 @@ func getAuthoritativeBonusDB() *gorm.DB {
 	return authoritativeBonusDB
 }
 
+func bonusTableExists(db *gorm.DB, tableName string) (bool, error) {
+	if db == nil || strings.TrimSpace(tableName) == "" {
+		return false, nil
+	}
+	var count int64
+	var err error
+	dialector := ""
+	if db.Dialector != nil {
+		dialector = db.Dialector.Name()
+	}
+	switch dialector {
+	case "postgres":
+		err = db.Raw("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = CURRENT_SCHEMA() AND table_name = ?", tableName).Scan(&count).Error
+	case "mysql":
+		err = db.Raw("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?", tableName).Scan(&count).Error
+	default:
+		err = db.Raw("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", tableName).Scan(&count).Error
+	}
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func readOptionFromDB(db *gorm.DB, key string) (string, bool) {
-	if db == nil || !db.Migrator().HasTable("options") {
+	if db == nil {
+		return "", false
+	}
+	exists, err := bonusTableExists(db, "options")
+	if err != nil || !exists {
 		return "", false
 	}
 	var row struct {
@@ -402,7 +430,10 @@ func LoadBonusPolicySnapshotTx(tx *gorm.DB, siteID int, isTeam bool, method stri
 				return snap, err
 			}
 		} else {
-			rule, ok = MainMethodBonus(key)
+			ts := GetTopupSetting()
+			if ts.MethodBonus != nil {
+				rule, ok = ts.MethodBonus[key]
+			}
 		}
 		snap.MainAuthorized = ok && rule.Enabled
 	} else {
@@ -410,7 +441,8 @@ func LoadBonusPolicySnapshotTx(tx *gorm.DB, siteID int, isTeam bool, method stri
 		if rawFill, hasFill := rawValues[TopupSettingKeySiteBonusMarginFill]; hasFill {
 			snap.MarginFillAllowed, _ = ParseSiteBonusMarginFillAllowed(rawFill, siteID)
 		} else {
-			snap.MarginFillAllowed = SiteBonusMarginFillAllowed(siteID)
+			ts := GetTopupSetting()
+			snap.MarginFillAllowed = ts.SiteBonusMarginFill != nil && ts.SiteBonusMarginFill[siteID]
 		}
 		rawBonus, hasBonus := rawValues[TopupSettingKeySiteMethodBonus]
 		if !hasBonus {
@@ -460,25 +492,38 @@ func CreateBonusOrderSnapshotTx(tx *gorm.DB, tradeNo string, siteID int, isTeam 
 		return snap, err
 	}
 	tradeNo = strings.TrimSpace(tradeNo)
-	if tradeNo != "" && tx.Migrator().HasTable("adty_topup_orders") {
-		bonusMethod := ""
-		if snap.BonusUSD.IsPositive() {
-			bonusMethod = snap.CanonicalMethod
+	if tradeNo != "" {
+		hasOrdersTable, tableErr := bonusTableExists(tx, "adty_topup_orders")
+		if tableErr != nil {
+			return snap, tableErr
 		}
-		if err := tx.Table("adty_topup_orders").
-			Where("trade_no = ?", tradeNo).
-			Updates(map[string]any{
-				"bonus_usd":    snap.BonusUSD,
-				"bonus_method": bonusMethod,
-			}).Error; err != nil {
-			return snap, err
+		if hasOrdersTable {
+			bonusMethod := ""
+			if snap.BonusUSD.IsPositive() {
+				bonusMethod = snap.CanonicalMethod
+			}
+			if err := tx.Table("adty_topup_orders").
+				Where("trade_no = ?", tradeNo).
+				Updates(map[string]any{
+					"bonus_usd":    snap.BonusUSD,
+					"bonus_method": bonusMethod,
+				}).Error; err != nil {
+				return snap, err
+			}
 		}
 	}
 	return snap, nil
 }
 
 func verifyTrustedBonusSiteTx(tx *gorm.DB, siteID int) error {
-	if siteID <= 0 || tx == nil || !tx.Migrator().HasTable("adty_sites") {
+	if siteID <= 0 || tx == nil {
+		return nil
+	}
+	hasSitesTable, err := bonusTableExists(tx, "adty_sites")
+	if err != nil {
+		return err
+	}
+	if !hasSitesTable {
 		return nil
 	}
 	var row struct {
@@ -512,7 +557,14 @@ func loadBonusOptionsTx(tx *gorm.DB, keys []string, lock bool) (map[string]strin
 	if db == nil {
 		db = getAuthoritativeBonusDB()
 	}
-	if db == nil || !db.Migrator().HasTable("options") {
+	if db == nil {
+		return out, nil
+	}
+	hasOptionsTable, err := bonusTableExists(db, "options")
+	if err != nil {
+		return nil, err
+	}
+	if !hasOptionsTable {
 		return out, nil
 	}
 	if lock && tx != nil {
@@ -552,7 +604,11 @@ func ensureBonusOptionRowTx(tx *gorm.DB, key string) error {
 }
 
 func upsertBonusOptionRowTx(tx *gorm.DB, key, value string) error {
-	if !tx.Migrator().HasTable("options") {
+	hasOptionsTable, err := bonusTableExists(tx, "options")
+	if err != nil {
+		return err
+	}
+	if !hasOptionsTable {
 		return errBonusMethod("options table is missing")
 	}
 	if err := ensureBonusOptionRowTx(tx, key); err != nil {
@@ -613,7 +669,17 @@ func AuthorizeSiteBonusMarginFill(siteID int, allowed bool) {
 
 // SiteBonusMarginFillAllowed reports the Root authorization for margin fill.
 func SiteBonusMarginFillAllowed(siteID int) bool {
-	if raw, ok := readOptionFromDB(getAuthoritativeBonusDB(), TopupSettingKeySiteBonusMarginFill); ok {
+	return SiteBonusMarginFillAllowedTx(nil, siteID)
+}
+
+// SiteBonusMarginFillAllowedTx reports the Root authorization for margin fill
+// using tx when provided so transactional callers never open an outer DB query.
+func SiteBonusMarginFillAllowedTx(tx *gorm.DB, siteID int) bool {
+	db := tx
+	if db == nil {
+		db = getAuthoritativeBonusDB()
+	}
+	if raw, ok := readOptionFromDB(db, TopupSettingKeySiteBonusMarginFill); ok {
 		if allowed, err := ParseSiteBonusMarginFillAllowed(raw, siteID); err == nil {
 			return allowed
 		}

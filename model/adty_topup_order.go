@@ -1027,11 +1027,9 @@ func FailPendingAdtyTopUp(tradeNo, expectedPaymentProvider string) error {
 	return DB.Transaction(func(tx *gorm.DB) error {
 		topUp, locked, err := lockAdtyTopUpTx(tx, tradeNo)
 		if err != nil {
-			if errors.Is(err, ErrTopUpNotFound) {
-				// Fallback for non-ADTY top_up rows without extension.
-				return UpdatePendingTopUpStatus(tradeNo, expectedPaymentProvider, common.TopUpStatusFailed)
+			if !errors.Is(err, ErrTopUpNotFound) || topUp == nil {
+				return err
 			}
-			return err
 		}
 		if expectedPaymentProvider != "" && topUp.PaymentProvider != expectedPaymentProvider {
 			return ErrPaymentMethodMismatch
@@ -1090,9 +1088,10 @@ func ExpireAdtyTopUpsAfter(now, cursorExpireAt, cursorID int64, limit int) ([]Ex
 	}
 	last := candidates[len(candidates)-1]
 	out := make([]ExpiredAdtyTopUp, 0, len(candidates))
+	var firstErr error
 	for _, candidate := range candidates {
 		var expired *ExpiredAdtyTopUp
-		err := DB.Transaction(func(tx *gorm.DB) error {
+		txErr := DB.Transaction(func(tx *gorm.DB) error {
 			topUp, locked, err := lockAdtyTopUpTx(tx, candidate.TradeNo)
 			if err != nil {
 				return err
@@ -1120,14 +1119,18 @@ func ExpireAdtyTopUpsAfter(now, cursorExpireAt, cursorID int64, limit int) ([]Ex
 			expired = &ExpiredAdtyTopUp{TradeNo: locked.TradeNo, Provider: locked.Provider, ChannelId: locked.ChannelId}
 			return nil
 		})
-		if err != nil {
-			return out, len(candidates), last.ExpireAt, last.Id, err
+		if txErr != nil {
+			common.SysError(common.LogText("expire adty topup failed trade_no=%s: %s", candidate.TradeNo, txErr.Error()))
+			if firstErr == nil {
+				firstErr = txErr
+			}
+			continue
 		}
 		if expired != nil {
 			out = append(out, *expired)
 		}
 	}
-	return out, len(candidates), last.ExpireAt, last.Id, nil
+	return out, len(candidates), last.ExpireAt, last.Id, firstErr
 }
 
 // AdtyTopUpView 是用户和后台看到的一笔订单：top_ups 加扩展行。

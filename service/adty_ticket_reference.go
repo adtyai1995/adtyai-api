@@ -126,12 +126,22 @@ func ticketRequestSnapshot(tx *gorm.DB, actor adtyTicketActor, ref string, ticke
 	payerTeamID := op.PayerTeamId
 	var log model.Log
 	if model.LOG_DB != nil {
+		logDB := model.LOG_DB
+		if logDB == model.DB {
+			logDB = tx
+		} else if model.DB != nil {
+			if logSQL, err1 := logDB.DB(); err1 == nil && logSQL != nil {
+				if mainSQL, err2 := model.DB.DB(); err2 == nil && logSQL == mainSQL {
+					logDB = tx
+				}
+			}
+		}
 		if found.RowsAffected > 0 {
-			if err := model.LOG_DB.Select("user_id", "token_id", "model_name", "group", "created_at", "type", "other", "id").Where("user_id=? AND request_id=?", op.UserId, ref).Order("id DESC").Limit(1).Find(&log).Error; err != nil {
+			if err := logDB.Select("user_id", "token_id", "model_name", "group", "created_at", "type", "other", "id").Where("user_id=? AND request_id=?", op.UserId, ref).Order("id DESC").Limit(1).Find(&log).Error; err != nil {
 				return 0, err
 			}
 		} else {
-			if err := model.LOG_DB.Select("user_id", "token_id", "model_name", "group", "created_at", "type", "other", "id").Where("request_id=?", ref).Order("CASE WHEN user_id = " + strconv.Itoa(actor.User.Id) + " THEN 0 ELSE 1 END, id DESC").Limit(1).Find(&log).Error; err != nil {
+			if err := logDB.Select("user_id", "token_id", "model_name", "group", "created_at", "type", "other", "id").Where("request_id=?", ref).Order("CASE WHEN user_id = " + strconv.Itoa(actor.User.Id) + " THEN 0 ELSE 1 END, id DESC").Limit(1).Find(&log).Error; err != nil {
 				return 0, err
 			}
 		}
@@ -140,14 +150,20 @@ func ticketRequestSnapshot(tx *gorm.DB, actor adtyTicketActor, ref string, ticke
 		return 0, ErrAdtyTicketInvalid
 	}
 	if found.RowsAffected == 0 && log.Id > 0 {
-		if log.TokenId > 0 && tx.Migrator().HasTable(&model.AdtyTeamKey{}) {
-			var teamKey model.AdtyTeamKey
-			tk := tx.Select("team_id").Where("token_id = ?", log.TokenId).Limit(1).Find(&teamKey)
-			if tk.Error != nil {
-				return 0, tk.Error
+		if log.TokenId > 0 {
+			hasTeamKeyTable, tableErr := model.AdtyTableExists(tx, &model.AdtyTeamKey{})
+			if tableErr != nil {
+				return 0, tableErr
 			}
-			if tk.RowsAffected > 0 && teamKey.TeamId > 0 {
-				payerTeamID = teamKey.TeamId
+			if hasTeamKeyTable {
+				var teamKey model.AdtyTeamKey
+				tk := tx.Select("team_id").Where("token_id = ?", log.TokenId).Limit(1).Find(&teamKey)
+				if tk.Error != nil {
+					return 0, tk.Error
+				}
+				if tk.RowsAffected > 0 && teamKey.TeamId > 0 {
+					payerTeamID = teamKey.TeamId
+				}
 			}
 		}
 		own := log.UserId == actor.User.Id

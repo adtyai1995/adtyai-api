@@ -21,11 +21,16 @@ import (
 	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/sync/singleflight"
 )
 
 // https://cloud.baidu.com/doc/WENXINWORKSHOP/s/flfmc9do2
 
-var baiduTokenStore sync.Map
+var (
+	baiduTokenStore        sync.Map
+	baiduTokenRefreshGroup singleflight.Group
+	baiduTokenRefreshing   sync.Map
+)
 
 func requestOpenAI2Baidu(request dto.GeneralOpenAIRequest) *BaiduChatRequest {
 	baiduRequest := BaiduChatRequest{
@@ -264,26 +269,39 @@ func baiduEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *ht
 }
 
 func getBaiduAccessToken(apiKey string, settings dto.ChannelSettings) (string, error) {
+	now := time.Now()
 	if val, ok := baiduTokenStore.Load(apiKey); ok {
-		var accessToken BaiduAccessToken
-		if accessToken, ok = val.(BaiduAccessToken); ok {
-			// soon this will expire
-			if time.Now().Add(time.Hour).After(accessToken.ExpiresAt) {
-				go func() {
-					_, _ = getBaiduAccessTokenHelper(apiKey, settings)
-				}()
+		if accessToken, ok := val.(BaiduAccessToken); ok && accessToken.AccessToken != "" && now.Before(accessToken.ExpiresAt) {
+			// soon this will expire; deduplicate background refresh across concurrent callers
+			if now.Add(time.Hour).After(accessToken.ExpiresAt) {
+				if _, alreadyInFlight := baiduTokenRefreshing.LoadOrStore(apiKey, struct{}{}); !alreadyInFlight {
+					go func() {
+						defer baiduTokenRefreshing.Delete(apiKey)
+						_, _, _ = baiduTokenRefreshGroup.Do(apiKey, func() (any, error) {
+							return getBaiduAccessTokenHelper(apiKey, settings)
+						})
+					}()
+				}
 			}
 			return accessToken.AccessToken, nil
 		}
 	}
-	accessToken, err := getBaiduAccessTokenHelper(apiKey, settings)
+	val, err, _ := baiduTokenRefreshGroup.Do(apiKey, func() (any, error) {
+		if cached, ok := baiduTokenStore.Load(apiKey); ok {
+			if token, ok := cached.(BaiduAccessToken); ok && token.AccessToken != "" && time.Now().Before(token.ExpiresAt) {
+				return &token, nil
+			}
+		}
+		return getBaiduAccessTokenHelper(apiKey, settings)
+	})
 	if err != nil {
 		return "", err
 	}
-	if accessToken == nil {
+	accessToken, ok := val.(*BaiduAccessToken)
+	if !ok || accessToken == nil || accessToken.AccessToken == "" {
 		return "", errors.New("getBaiduAccessToken return a nil token")
 	}
-	return (*accessToken).AccessToken, nil
+	return accessToken.AccessToken, nil
 }
 
 func getBaiduAccessTokenHelper(apiKey string, settings dto.ChannelSettings) (*BaiduAccessToken, error) {

@@ -27,26 +27,34 @@ import (
 // A missing team table means no binding can exist, so personal billing continues.
 var adtyTeamTableReady sync.Map
 
-func adtyTeamTableReadyFor(tx *gorm.DB, modelValue any) bool {
+func adtyTeamTableReadyForStrict(tx *gorm.DB, modelValue any) (bool, error) {
 	if tx == nil {
-		return false
+		return false, nil
 	}
 	sqlDB, err := tx.DB()
 	if err != nil {
-		return false
+		return false, err
 	}
 	key := struct {
 		db    any
 		model reflect.Type
 	}{sqlDB, reflect.TypeOf(modelValue)}
 	if ready, ok := adtyTeamTableReady.Load(key); ok {
-		return ready.(bool)
+		return ready.(bool), nil
 	}
-	ready := tx.Migrator().HasTable(modelValue)
+	ready, err := model.AdtyTableExists(tx, modelValue)
+	if err != nil {
+		return false, err
+	}
 	if ready {
 		adtyTeamTableReady.Store(key, true)
 	}
-	return ready
+	return ready, nil
+}
+
+func adtyTeamTableReadyFor(tx *gorm.DB, modelValue any) bool {
+	ready, err := adtyTeamTableReadyForStrict(tx, modelValue)
+	return err == nil && ready
 }
 
 func init() {
@@ -2388,7 +2396,14 @@ func AdtyIsIndependentTeamEmployee(userId int) (bool, error) {
 }
 
 func adtyIsIndependentTeamEmployeeTx(db *gorm.DB, userId int) (bool, error) {
-	if userId <= 0 || db == nil || !adtyTeamTableReadyFor(db, &model.AdtyTeamMember{}) {
+	if userId <= 0 || db == nil {
+		return false, nil
+	}
+	ready, err := adtyTeamTableReadyForStrict(db, &model.AdtyTeamMember{})
+	if err != nil {
+		return false, err
+	}
+	if !ready {
 		return false, nil
 	}
 	var count int64
@@ -2404,7 +2419,14 @@ func adtyIsIndependentTeamEmployeeTx(db *gorm.DB, userId int) (bool, error) {
 // employee sub-accounts.
 func AdtyIndependentTeamEmployeeSet(userIDs []int) (map[int]bool, error) {
 	res := make(map[int]bool)
-	if len(userIDs) == 0 || model.DB == nil || !adtyTeamTableReadyFor(model.DB, &model.AdtyTeamMember{}) {
+	if len(userIDs) == 0 || model.DB == nil {
+		return res, nil
+	}
+	ready, err := adtyTeamTableReadyForStrict(model.DB, &model.AdtyTeamMember{})
+	if err != nil {
+		return nil, err
+	}
+	if !ready {
 		return res, nil
 	}
 	var matched []int

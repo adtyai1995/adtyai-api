@@ -807,16 +807,18 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 	// 为rpm和tpm创建单独的查询
 	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, COALESCE(sum(prompt_tokens), 0) + COALESCE(sum(completion_tokens), 0) tpm")
 
-	// 个人统计按用户编号精确限制。用户名里的 % 不能当成模糊匹配，否则会把别人的消费加进来。
+	// 个人统计按用户编号精确限制。不叠加 username 过滤，既避免改名后丢失历史统计，
+	// 也避免合法含 % 用户名触发模糊匹配校验失败。
 	if userID > 0 {
 		tx = tx.Where("user_id = ?", userID)
 		rpmTpmQuery = rpmTpmQuery.Where("user_id = ?", userID)
-	}
-	if tx, err = applyExplicitLogTextFilter(tx, "username", username); err != nil {
-		return stat, err
-	}
-	if rpmTpmQuery, err = applyExplicitLogTextFilter(rpmTpmQuery, "username", username); err != nil {
-		return stat, err
+	} else {
+		if tx, err = applyExplicitLogTextFilter(tx, "username", username); err != nil {
+			return stat, err
+		}
+		if rpmTpmQuery, err = applyExplicitLogTextFilter(rpmTpmQuery, "username", username); err != nil {
+			return stat, err
+		}
 	}
 	if tokenName != "" {
 		tx = tx.Where("token_name = ?", tokenName)

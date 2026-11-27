@@ -620,11 +620,17 @@ func RevokeUserSession(userID int, sid, reason string) (bool, error) {
 
 // RevokeUnretainedLoginSession 撤掉没有留下的登录会话，并在同一事务里退回备用码和 TOTP 时间步。
 func RevokeUnretainedLoginSession(userID int, sid, reason string, backupCodeID int, totpStep int64) (bool, error) {
+	return RevokeUnretainedLoginSessionWithPrevTOTP(userID, sid, reason, backupCodeID, totpStep, 0)
+}
+
+// RevokeUnretainedLoginSessionWithPrevTOTP revokes an abandoned login session
+// and restores the user's prior last_totp_step watermark atomically.
+func RevokeUnretainedLoginSessionWithPrevTOTP(userID int, sid, reason string, backupCodeID int, totpStep, prevTOTPStep int64) (bool, error) {
 	return revokeUserSession(userID, sid, reason, func(tx *gorm.DB) error {
 		if err := ReleaseConsumedBackupCodeWithTx(tx, backupCodeID); err != nil {
 			return err
 		}
-		return ReleaseTOTPStepWithTx(tx, userID, totpStep)
+		return RestoreTOTPStepWithTx(tx, userID, totpStep, prevTOTPStep)
 	})
 }
 

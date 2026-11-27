@@ -1225,7 +1225,14 @@ func rejectAdtyCustomerTokenWithDB(db *gorm.DB, token string) error {
 		(len(token) >= len(model.AccessTokenPrefix) && strings.EqualFold(token[:len(model.AccessTokenPrefix)], model.AccessTokenPrefix)) {
 		return ErrAdtyTranslationSelf
 	}
-	if db == nil || !db.Migrator().HasTable(&model.Token{}) {
+	if db == nil {
+		return nil
+	}
+	hasTokenTable, err := model.AdtyTableExists(db, &model.Token{})
+	if err != nil {
+		return err
+	}
+	if !hasTokenTable {
 		return nil
 	}
 	candidates := normalizeAdtyCustomerTokenCandidates(token)

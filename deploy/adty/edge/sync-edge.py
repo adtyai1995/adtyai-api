@@ -683,6 +683,25 @@ def prune_expired_certs(
             pass
 
 
+def _copy_cert_file(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> str:
+    src_path = pathlib.Path(src)
+    dst_path = pathlib.Path(dst)
+    create_mode = 0o600 if src_path.suffix == ".key" else 0o644
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+    fd = os.open(dst_path, flags, create_mode)
+    try:
+        with os.fdopen(fd, "wb") as out_fh, src_path.open("rb") as in_fh:
+            shutil.copyfileobj(in_fh, out_fh)
+    except Exception:
+        if dst_path.exists():
+            dst_path.unlink()
+        raise
+    shutil.copystat(src_path, dst_path)
+    if src_path.suffix == ".key":
+        os.chmod(dst_path, 0o600)
+    return str(dst_path)
+
+
 def apply_and_reload(
     cfg: EdgeConfig,
     rendered_files: dict[str, str],
@@ -695,46 +714,74 @@ def apply_and_reload(
     certs_dir = cfg.conf_dir / "certs"
     sites_dir = cfg.conf_dir / "sites"
     http80_extra_dir = cfg.conf_dir / "http80-extra"
+    certs_dir.mkdir(parents=True, exist_ok=True)
     sites_dir.mkdir(parents=True, exist_ok=True)
     http80_extra_dir.mkdir(parents=True, exist_ok=True)
 
-    for slug, (cert_pem, key_pem) in cert_files.items():
-        write_cert_pair(certs_dir, slug, cert_pem, key_pem)
-
     backup_dir = pathlib.Path(tempfile.mkdtemp(prefix="adty-edge-backup-"))
     managed_top_files = ("stream-map.conf", "http80-hosts.conf", "origin-upstream.conf")
+
+    def _rollback_snapshot() -> None:
+        for name in managed_top_files:
+            bak = backup_dir / name
+            dest = cfg.conf_dir / name
+            if bak.exists():
+                shutil.copy2(bak, dest)
+            elif dest.exists():
+                dest.unlink()
+        shutil.rmtree(sites_dir, ignore_errors=True)
+        shutil.copytree(backup_dir / "sites", sites_dir)
+        shutil.rmtree(http80_extra_dir, ignore_errors=True)
+        shutil.copytree(backup_dir / "http80-extra", http80_extra_dir)
+        shutil.rmtree(certs_dir, ignore_errors=True)
+        shutil.copytree(backup_dir / "certs", certs_dir, copy_function=_copy_cert_file)
+        for key_file in certs_dir.rglob("*.key"):
+            if key_file.is_file():
+                os.chmod(key_file, 0o600)
+
+    snapshot_ready = False
     try:
-        # Snapshot existing generated configs for atomic rollback if nginx -t fails.
+        # Snapshot existing generated configs and certs for atomic rollback before writing anything.
         for name in managed_top_files:
             src = cfg.conf_dir / name
             if src.exists():
                 shutil.copy2(src, backup_dir / name)
         shutil.copytree(sites_dir, backup_dir / "sites")
         shutil.copytree(http80_extra_dir, backup_dir / "http80-extra")
+        shutil.copytree(certs_dir, backup_dir / "certs", copy_function=_copy_cert_file)
+        snapshot_ready = True
 
-        # Write updated configs into place.
-        for rel, content in rendered_files.items():
-            dest = cfg.conf_dir / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            tmp = dest.with_suffix(dest.suffix + ".tmp")
-            tmp.write_text(content, encoding="utf-8", newline="\n")
-            os.chmod(tmp, 0o644)
-            os.replace(tmp, dest)
+        # Write updated certs and configs into place.
+        try:
+            for slug, (cert_pem, key_pem) in cert_files.items():
+                write_cert_pair(certs_dir, slug, cert_pem, key_pem)
 
-        # Remove stale site and HTTP-80 extra files not in the new render.
-        wanted_sites = {
-            pathlib.Path(rel).name for rel in rendered_files if rel.startswith("sites/")
-        }
-        for existing in list(sites_dir.glob("*.conf")):
-            if existing.name not in wanted_sites:
-                existing.unlink()
+            for rel, content in rendered_files.items():
+                dest = cfg.conf_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                tmp = dest.with_suffix(dest.suffix + ".tmp")
+                tmp.write_text(content, encoding="utf-8", newline="\n")
+                os.chmod(tmp, 0o644)
+                os.replace(tmp, dest)
 
-        wanted_http80_extra = {
-            pathlib.Path(rel).name for rel in rendered_files if rel.startswith("http80-extra/")
-        }
-        for existing in list(http80_extra_dir.glob("*.conf")):
-            if existing.name not in wanted_http80_extra:
-                existing.unlink()
+            # Remove stale site and HTTP-80 extra files not in the new render.
+            wanted_sites = {
+                pathlib.Path(rel).name for rel in rendered_files if rel.startswith("sites/")
+            }
+            for existing in list(sites_dir.glob("*.conf")):
+                if existing.name not in wanted_sites:
+                    existing.unlink()
+
+            wanted_http80_extra = {
+                pathlib.Path(rel).name for rel in rendered_files if rel.startswith("http80-extra/")
+            }
+            for existing in list(http80_extra_dir.glob("*.conf")):
+                if existing.name not in wanted_http80_extra:
+                    existing.unlink()
+        except Exception:
+            if snapshot_ready:
+                _rollback_snapshot()
+            raise
 
         test_proc = subprocess.run(
             [cfg.nginx_bin, "-t"],
@@ -744,17 +791,7 @@ def apply_and_reload(
         )
         if test_proc.returncode != 0:
             # Roll back immediately before raising.
-            for name in managed_top_files:
-                bak = backup_dir / name
-                dest = cfg.conf_dir / name
-                if bak.exists():
-                    shutil.copy2(bak, dest)
-                elif dest.exists():
-                    dest.unlink()
-            shutil.rmtree(sites_dir, ignore_errors=True)
-            shutil.copytree(backup_dir / "sites", sites_dir)
-            shutil.rmtree(http80_extra_dir, ignore_errors=True)
-            shutil.copytree(backup_dir / "http80-extra", http80_extra_dir)
+            _rollback_snapshot()
             stderr = (test_proc.stderr or test_proc.stdout or "").strip()
             raise SyncError(f"nginx -t failed; rolled back previous config: {stderr}")
 

@@ -35,7 +35,11 @@ func RejectRestrictedAdtyFundWrite(tx *gorm.DB, write AdtyFundWrite) error {
 		return nil
 	}
 	write.OrderRef = strings.TrimSpace(write.OrderRef)
-	if !tx.Migrator().HasTable(&AdtyAnomalyDisposition{}) {
+	hasTable, err := AdtyTableExists(tx, &AdtyAnomalyDisposition{})
+	if err != nil {
+		return err
+	}
+	if !hasTable {
 		return nil
 	}
 	if err := resolveAdtyFundWriteSite(tx, &write); err != nil {

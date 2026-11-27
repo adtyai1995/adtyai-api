@@ -300,7 +300,11 @@ func CreditPaymentOrphan(c *gin.Context) {
 		if (topUpLocked != nil && topUpLocked.UserId == actorID) || (extLocked != nil && extLocked.UserId == actorID) {
 			return model.ErrUserQuotaPermission
 		}
-		if !model.CanCreditPaymentOrphanEvent(orphan) {
+		canCredit, canErr := model.CanCreditPaymentOrphanEventTx(tx, orphan, topUpLocked, extLocked)
+		if canErr != nil {
+			return canErr
+		}
+		if !canCredit {
 			return model.ErrPaymentOrphanNotCredit
 		}
 		var topUps []model.TopUp
@@ -435,7 +439,11 @@ func ManualCompleteAdtyTopUp(c *gin.Context) {
 				if len(lockedOrphans) > 0 {
 					return model.ErrUserQuotaPermission
 				}
-				if tx.Migrator().HasTable(&model.PaymentOrphanEvent{}) {
+				hasOrphanTable, orphanTableErr := model.AdtyTableExists(tx, &model.PaymentOrphanEvent{})
+				if orphanTableErr != nil {
+					return orphanTableErr
+				}
+				if hasOrphanTable {
 					var nonDismissedCount int64
 					if cntErr := tx.Model(&model.PaymentOrphanEvent{}).
 						Where("reference_id = ? AND status <> ?", tradeNo, model.PaymentOrphanStatusDismissed).

@@ -239,13 +239,15 @@ func BuildAdtyEdgeManifest(ctx context.Context, now time.Time) (*AdtyEdgeManifes
 	}
 
 	type customDomainRow struct {
-		Hostname     string
-		DesiredState string
-		SiteStatus   string
+		Id            int    `gorm:"column:id"`
+		Hostname      string `gorm:"column:hostname"`
+		DesiredState  string `gorm:"column:desired_state"`
+		EdgeACMEAlias string `gorm:"column:edge_acme_alias"`
+		SiteStatus    string `gorm:"column:site_status"`
 	}
 	var domRows []customDomainRow
 	if err := model.DB.WithContext(ctx).Table("adty_site_domains").
-		Select("adty_site_domains.hostname, adty_site_domains.desired_state, adty_sites.status AS site_status").
+		Select("adty_site_domains.id, adty_site_domains.hostname, adty_site_domains.desired_state, adty_site_domains.edge_acme_alias, adty_sites.status AS site_status").
 		Joins("JOIN adty_sites ON adty_sites.id = adty_site_domains.site_id").
 		Where("adty_site_domains.managed_by <> ? AND adty_site_domains.role = ? AND adty_site_domains.status = ? AND adty_site_domains.desired_state IN ?",
 			"platform", model.AdtySiteDomainRoleSite, model.AdtySiteDomainActive, []string{"", "serve", "redirect_only"}).
@@ -299,7 +301,10 @@ func BuildAdtyEdgeManifest(ctx context.Context, now time.Time) (*AdtyEdgeManifes
 			Mode:     mode,
 			Action:   "passthrough_cf",
 		}
-		if cert, ok := readyCerts[h]; ok {
+		domainAlias := strings.ToLower(strings.TrimSpace(r.EdgeACMEAlias))
+		if cert, ok := readyCerts[h]; ok && domainAlias != "" &&
+			adtyEdgeAliasFirstLabel(cert.AliasFQDN) == domainAlias &&
+			(cert.DomainId == 0 || cert.DomainId == r.Id) {
 			keyPEM, err := model.OpenAdtyPurposeSecret(adtyEdgeCertKeyPurpose(cert.CertName), cert.KeyEncrypted)
 			if err == nil && strings.TrimSpace(keyPEM) != "" {
 				entry.Action = "terminate"

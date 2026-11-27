@@ -347,7 +347,11 @@ func GrantAdtyRootExpiringGiftWithReplayTx(tx *gorm.DB, input AdtyRootExpiringGi
 	if customer.Role >= common.RoleAdminUser || customer.StaffSiteId > 0 || (input.SiteID != nil && *input.SiteID != customer.SiteId) {
 		return nil, false, errors.New("gift target must be a customer in the selected site")
 	}
-	if tx.Migrator().HasTable(&AdtySite{}) {
+	hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
+	if err != nil {
+		return nil, false, err
+	}
+	if hasSiteTable {
 		var ownerCount int64
 		if err := tx.Model(&AdtySite{}).
 			Where("owner_user_id = ? AND status IN ?", customer.Id, []string{
@@ -359,7 +363,11 @@ func GrantAdtyRootExpiringGiftWithReplayTx(tx *gorm.DB, input AdtyRootExpiringGi
 			return nil, false, errors.New("gift target must be a customer in the selected site")
 		}
 	}
-	if tx.Migrator().HasTable(&AdtyTeamMember{}) {
+	hasTeamMemberTable, err := AdtyTableExists(tx, &AdtyTeamMember{})
+	if err != nil {
+		return nil, false, err
+	}
+	if hasTeamMemberTable {
 		var empCount int64
 		if err := tx.Model(&AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ?", customer.Id, true).Count(&empCount).Error; err != nil {
 			return nil, false, err

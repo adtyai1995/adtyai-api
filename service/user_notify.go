@@ -580,11 +580,18 @@ const adtyWatcherNoticeListLimit = 100
 // Platform watcher notices are main-host only and require live Root (for epay maintenance)
 // or enabled Admin + ChannelRead (for channel/model watcher notices) (R5-025).
 func adtyWatcherNoticeAccess(userID int, site *model.AdtySite, tokenScopes ...[]string) (canChannel bool, canEpay bool) {
-	if userID <= 0 || site != nil || model.DB == nil {
+	return adtyWatcherNoticeAccessTx(model.DB, userID, site, tokenScopes...)
+}
+
+func adtyWatcherNoticeAccessTx(db *gorm.DB, userID int, site *model.AdtySite, tokenScopes ...[]string) (canChannel bool, canEpay bool) {
+	if db == nil {
+		db = model.DB
+	}
+	if userID <= 0 || site != nil || db == nil {
 		return false, false
 	}
 	var user model.User
-	if err := model.DB.Select("id", "role", "status").Where("id = ?", userID).Limit(1).Find(&user).Error; err != nil || user.Id == 0 {
+	if err := db.Select("id", "role", "status").Where("id = ?", userID).Limit(1).Find(&user).Error; err != nil || user.Id == 0 {
 		return false, false
 	}
 	if user.Status != common.UserStatusEnabled || user.Role < common.RoleAdminUser {

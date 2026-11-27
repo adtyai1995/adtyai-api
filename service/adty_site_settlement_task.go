@@ -50,7 +50,11 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 			projectedSites[event.SiteId] = struct{}{}
 		}
 	}
-	cutoff := adtySettleCutoffDay(now)
+	loc, _, err := loadAdtyBusinessLocation()
+	if err != nil {
+		return 0, err
+	}
+	cutoff := adtySettleCutoffDay(now.In(loc))
 	var siteIds []int
 	if err := model.DB.Model(&model.AdtySiteEarningDaily{}).Distinct("site_id").
 		Where("status IN ? AND kind NOT IN ?",
@@ -471,7 +475,11 @@ func ResumeAdtySiteSettlementWithAuditForActor(siteId, operatorId, actorRole int
 		eventID = auditEvent.EventId
 		deliverAdtyCommittedAudit(*auditEvent)
 	}
-	if _, err := settleAdtySite(siteId, adtySettleCutoffDay(now), now.Unix()); err != nil {
+	loc, _, locErr := loadAdtyBusinessLocation()
+	if locErr != nil {
+		return nil, eventID, locErr
+	}
+	if _, err := settleAdtySite(siteId, adtySettleCutoffDay(now.In(loc)), now.Unix()); err != nil {
 		return nil, eventID, err
 	}
 	if _, err := ResumePendingAdtyGiftFulfillments(siteId); err != nil {

@@ -73,6 +73,9 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+		return fmt.Sprintf("%s/responses", info.ChannelBaseUrl), nil
+	}
 	fimBaseUrl := info.ChannelBaseUrl
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
@@ -84,8 +87,6 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 		switch info.RelayMode {
 		case constant.RelayModeCompletions:
 			return fmt.Sprintf("%s/completions", fimBaseUrl), nil
-		case constant.RelayModeResponses:
-			return fmt.Sprintf("%s/responses", info.ChannelBaseUrl), nil
 		case constant.RelayModeToolsSearch:
 			return fmt.Sprintf("%s/v1/tools/search", info.ChannelBaseUrl), nil
 		case constant.RelayModeToolsFetch:
@@ -287,6 +288,10 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
+	if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+		adaptor := openai.Adaptor{}
+		return adaptor.DoResponse(c, resp, info)
+	}
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
 		adaptor := claude.Adaptor{}

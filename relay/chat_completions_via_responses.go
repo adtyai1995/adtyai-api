@@ -167,6 +167,13 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 		}
 	}
 
+	if finalizer, ok := adaptor.(channel.ResponsesRequestFinalizer); ok {
+		jsonData, err = finalizer.FinalizeResponsesRequest(info, jsonData)
+		if err != nil {
+			return nil, newConvertRequestFailedError(c, info, err)
+		}
+	}
+
 	body, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())

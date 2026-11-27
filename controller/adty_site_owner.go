@@ -639,8 +639,13 @@ func GetAdtyOwnerExport(c *gin.Context) {
 				day.RevenueUSD.StringFixed(2), day.EarningUSD.StringFixed(2), day.BonusUSD.StringFixed(2), day.RefundUSD.StringFixed(2))
 		}
 	case "customers":
+		hasTeamMemberTable, tableErr := model.AdtyTableExists(model.DB, &model.AdtyTeamMember{})
+		if tableErr != nil {
+			common.ApiError(c, tableErr)
+			return
+		}
 		excludeIndependentEmp := func(q *gorm.DB) *gorm.DB {
-			if model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyTeamMember{}) {
+			if hasTeamMemberTable {
 				return q.Where("NOT EXISTS (SELECT 1 FROM adty_team_members m WHERE m.user_id = users.id AND m.independent_employee = ?)", true)
 			}
 			return q

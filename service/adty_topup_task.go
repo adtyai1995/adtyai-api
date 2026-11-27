@@ -80,7 +80,9 @@ func RunAdtyTopUpMaintenanceOnce(now int64) {
 		}
 		if err != nil {
 			common.SysError(common.LogText("expire adty topups: %s", err.Error()))
-			break
+			if scanned == 0 {
+				break
+			}
 		}
 		if scanned < 200 || (nextExpireAt == cursorExpireAt && nextID == cursorID) {
 			break

@@ -30,7 +30,14 @@ func appendAdtyOfficialAuditWithOpParamsTx(tx *gorm.DB, actorId, siteId int, obj
 	if objectType == "" || objectID == "" || action == "" || strings.TrimSpace(result) == "" {
 		return nil, nil
 	}
-	if tx == nil || !tx.Migrator().HasTable(&model.AuditIntent{}) {
+	if tx == nil {
+		return nil, nil
+	}
+	hasAuditIntentTable, err := model.AdtyTableExists(tx, &model.AuditIntent{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasAuditIntentTable {
 		return nil, nil
 	}
 	rec := model.OfficialAuditWrite{

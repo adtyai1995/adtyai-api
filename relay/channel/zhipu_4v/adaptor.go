@@ -78,39 +78,54 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	if baseURL == "" {
 		baseURL = channelconstant.GetChannelBaseURL(channelconstant.ChannelTypeZhipu_v4)
 	}
-	specialPlan, hasSpecialPlan := channelconstant.ChannelSpecialBases[baseURL]
+	if specialPlan, hasSpecialPlan := channelconstant.ChannelSpecialBases[baseURL]; hasSpecialPlan {
+		if info.RelayMode == relayconstant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+			if specialPlan.OpenAIBaseURL != "" {
+				return fmt.Sprintf("%s/responses", specialPlan.OpenAIBaseURL), nil
+			}
+			return "", fmt.Errorf("coding plan %q does not support relay mode %d", baseURL, info.RelayMode)
+		}
+		if info.RelayFormat == types.RelayFormatClaude {
+			if specialPlan.ClaudeBaseURL != "" {
+				return fmt.Sprintf("%s/v1/messages", specialPlan.ClaudeBaseURL), nil
+			}
+			return "", fmt.Errorf("coding plan %q does not support relay mode %d", baseURL, info.RelayMode)
+		}
+		if specialPlan.OpenAIBaseURL == "" {
+			return "", fmt.Errorf("coding plan %q does not support relay mode %d", baseURL, info.RelayMode)
+		}
+		switch info.RelayMode {
+		case relayconstant.RelayModeChatCompletions, relayconstant.RelayModeGemini:
+			return fmt.Sprintf("%s/chat/completions", specialPlan.OpenAIBaseURL), nil
+		case relayconstant.RelayModeEmbeddings:
+			return fmt.Sprintf("%s/embeddings", specialPlan.OpenAIBaseURL), nil
+		case relayconstant.RelayModeImagesGenerations:
+			return fmt.Sprintf("%s/images/generations", specialPlan.OpenAIBaseURL), nil
+		case relayconstant.RelayModeImagesEdits:
+			return fmt.Sprintf("%s/images/edits", specialPlan.OpenAIBaseURL), nil
+		default:
+			return "", fmt.Errorf("coding plan %q does not support relay mode %d", baseURL, info.RelayMode)
+		}
+	}
+
+	if info.RelayMode == relayconstant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+		return fmt.Sprintf("%s/api/v1/responses", baseURL), nil
+	}
 
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
-		if hasSpecialPlan && specialPlan.ClaudeBaseURL != "" {
-			return fmt.Sprintf("%s/v1/messages", specialPlan.ClaudeBaseURL), nil
-		}
 		return fmt.Sprintf("%s/api/anthropic/v1/messages", baseURL), nil
 	default:
 		switch info.RelayMode {
 		case relayconstant.RelayModeAudioTranscription:
 			return fmt.Sprintf("%s/api/paas/v4/audio/transcriptions", baseURL), nil
 		case relayconstant.RelayModeEmbeddings:
-			if hasSpecialPlan && specialPlan.OpenAIBaseURL != "" {
-				return fmt.Sprintf("%s/embeddings", specialPlan.OpenAIBaseURL), nil
-			}
 			return fmt.Sprintf("%s/api/paas/v4/embeddings", baseURL), nil
 		case relayconstant.RelayModeImagesGenerations:
-			if hasSpecialPlan && specialPlan.OpenAIBaseURL != "" {
-				return fmt.Sprintf("%s/images/generations", specialPlan.OpenAIBaseURL), nil
-			}
 			return fmt.Sprintf("%s/api/paas/v4/images/generations", baseURL), nil
 		case relayconstant.RelayModeImagesEdits:
-			if hasSpecialPlan && specialPlan.OpenAIBaseURL != "" {
-				return fmt.Sprintf("%s/images/edits", specialPlan.OpenAIBaseURL), nil
-			}
 			return fmt.Sprintf("%s/api/paas/v4/images/edits", baseURL), nil
-		case relayconstant.RelayModeResponses:
-			return fmt.Sprintf("%s/api/v1/responses", baseURL), nil
 		default:
-			if hasSpecialPlan && specialPlan.OpenAIBaseURL != "" {
-				return fmt.Sprintf("%s/chat/completions", specialPlan.OpenAIBaseURL), nil
-			}
 			return fmt.Sprintf("%s/api/paas/v4/chat/completions", baseURL), nil
 		}
 	}
@@ -158,12 +173,16 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
+	if info.RelayMode == relayconstant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+		adaptor := openai.Adaptor{}
+		return adaptor.DoResponse(c, resp, info)
+	}
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
 		adaptor := claude.Adaptor{}
 		return adaptor.DoResponse(c, resp, info)
 	default:
-		if info.RelayMode == relayconstant.RelayModeImagesGenerations {
+		if info.RelayMode == relayconstant.RelayModeImagesGenerations || info.RelayMode == relayconstant.RelayModeImagesEdits {
 			return zhipu4vImageHandler(c, resp, info)
 		}
 		adaptor := openai.Adaptor{}

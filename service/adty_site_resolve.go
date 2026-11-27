@@ -236,6 +236,101 @@ func AdtyIsApiOnlyHost(host string) bool {
 	return loadAdtySiteSnapshot().apiOnly[host]
 }
 
+// AdtyIsApiOnlyHostTx checks whether host is a subsite default API domain or an
+// active API custom domain strictly on tx without touching outer model.DB or
+// adtySiteCacheMu (R14-P1-05).
+func AdtyIsApiOnlyHostTx(tx *gorm.DB, host string) (bool, error) {
+	host = AdtyNormalizeHost(host)
+	if host == "" || tx == nil {
+		return false, nil
+	}
+	hasDomains, err := model.AdtyTableExists(tx, &model.AdtySiteDomain{})
+	if err != nil {
+		return false, err
+	}
+	if hasDomains {
+		var domainCount int64
+		if err := tx.Model(&model.AdtySiteDomain{}).
+			Where("LOWER(hostname) = ? AND role = ? AND (status = ? OR managed_by = ?)",
+				host, model.AdtySiteDomainRoleBaseURL, model.AdtySiteDomainActive, "platform").
+			Count(&domainCount).Error; err != nil {
+			return false, err
+		}
+		if domainCount > 0 {
+			return true, nil
+		}
+	}
+	hasSites, err := model.AdtyTableExists(tx, &model.AdtySite{})
+	if err != nil {
+		return false, err
+	}
+	if !hasSites {
+		return false, nil
+	}
+	var sites []model.AdtySite
+	if err := tx.Select("id", "subdomain", "root_domain").Find(&sites).Error; err != nil {
+		return false, err
+	}
+	if len(sites) == 0 {
+		return false, nil
+	}
+	byHost := make(map[string]bool, len(sites)*2)
+	byCustom := make(map[string]bool)
+	fixedBySite := make(map[int]string)
+	for i := range sites {
+		byHost[strings.ToLower(sites[i].Subdomain+"."+sites[i].RootDomain)] = true
+	}
+	if hasDomains {
+		var fixedDomains []model.AdtySiteDomain
+		if err := tx.Select("site_id", "hostname", "status", "desired_state").
+			Where("managed_by = ? AND role = ?", "platform", model.AdtySiteDomainRoleBaseURL).
+			Find(&fixedDomains).Error; err != nil {
+			return false, err
+		}
+		for _, domain := range fixedDomains {
+			h := strings.ToLower(strings.TrimSpace(domain.Hostname))
+			fixedBySite[domain.SiteId] = h
+			if domain.Status == model.AdtySiteDomainActive && domain.DesiredState == "serve" && h != "" {
+				byHost[h] = true
+			}
+		}
+		var customDomains []model.AdtySiteDomain
+		if err := tx.Select("hostname").
+			Where("status = ? AND role <> ?", model.AdtySiteDomainActive, model.AdtySiteDomainRoleBaseURL).
+			Find(&customDomains).Error; err != nil {
+			return false, err
+		}
+		for _, domain := range customDomains {
+			byCustom[strings.ToLower(strings.TrimSpace(domain.Hostname))] = true
+		}
+	}
+	cnameTarget := resellerSetting().CnameTarget
+	fallbackOrigin := resellerSetting().FallbackOrigin
+	for i := range sites {
+		site := &sites[i]
+		if fixedBySite[site.Id] != "" {
+			continue
+		}
+		label := fmt.Sprintf("api-s%d", site.Id)
+		for n := 0; ; n++ {
+			candidate := label
+			if n > 0 {
+				candidate += fmt.Sprintf("-%d", n)
+			}
+			synthHost := candidate + "." + strings.ToLower(site.RootDomain)
+			if byHost[synthHost] || byCustom[synthHost] || AdtyIsMainHost(synthHost) || synthHost == cnameTarget || synthHost == fallbackOrigin {
+				continue
+			}
+			byHost[synthHost] = true
+			if synthHost == host {
+				return true, nil
+			}
+			break
+		}
+	}
+	return false, nil
+}
+
 // AdtySiteById 从缓存取站点（只读，调用方不要改返回值）；没有返回 nil。
 func AdtySiteById(siteId int) *model.AdtySite {
 	if siteId <= 0 {

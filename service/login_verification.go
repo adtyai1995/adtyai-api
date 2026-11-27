@@ -239,6 +239,7 @@ func completeLoginVerification(token string, verification *LoginVerification, me
 	}
 	var consumedBackupID int
 	var consumedTOTPStep int64
+	var previousTOTPStep int64
 	if err := model.CreateUserSessionFromLoginFlow(token, session, func(tx *gorm.DB, flow *model.AuthFlow, state *model.UserVerificationState) error {
 		var payload loginFlowPayload
 		if flow.Id != verification.Flow.Id || common.UnmarshalJsonStr(flow.Payload, &payload) != nil || payload != verification.payload {
@@ -261,13 +262,15 @@ func completeLoginVerification(token string, verification *LoginVerification, me
 			consumedBackupID = id
 		}
 		if verification.pendingTOTPStep > 0 {
-			if err := model.ClaimTOTPStepWithTx(tx, state.UserID, verification.pendingTOTPStep); err != nil {
+			prevStep, err := model.ClaimTOTPStepWithPrevTx(tx, state.UserID, verification.pendingTOTPStep)
+			if err != nil {
 				if errors.Is(err, model.ErrTOTPReplay) {
 					return ErrVerificationFailed
 				}
 				return err
 			}
 			consumedTOTPStep = verification.pendingTOTPStep
+			previousTOTPStep = prevStep
 		}
 		return nil
 	}); err != nil {
@@ -275,11 +278,12 @@ func completeLoginVerification(token string, verification *LoginVerification, me
 	}
 	bundle, err := issueAuthBundle(session, session.SID+"."+refreshSecret, true)
 	if err != nil {
-		_, _ = model.RevokeUnretainedLoginSession(session.UserID, session.SID, "token_issue_failed", consumedBackupID, consumedTOTPStep)
+		_, _ = model.RevokeUnretainedLoginSessionWithPrevTOTP(session.UserID, session.SID, "token_issue_failed", consumedBackupID, consumedTOTPStep, previousTOTPStep)
 		return nil, err
 	}
 	bundle.consumedBackupCodeID = consumedBackupID
 	bundle.consumedTOTPStep = consumedTOTPStep
+	bundle.previousTOTPStep = previousTOTPStep
 	return bundle, nil
 }
 
@@ -287,14 +291,17 @@ func completeLoginVerification(token string, verification *LoginVerification, me
 func AbandonIssuedLogin(userID int, sid, reason string, bundle *AuthBundle) error {
 	backupID := 0
 	totpStep := int64(0)
+	prevTOTPStep := int64(0)
 	if bundle != nil {
 		backupID = bundle.consumedBackupCodeID
 		totpStep = bundle.consumedTOTPStep
+		prevTOTPStep = bundle.previousTOTPStep
 	}
-	_, err := model.RevokeUnretainedLoginSession(userID, sid, reason, backupID, totpStep)
+	_, err := model.RevokeUnretainedLoginSessionWithPrevTOTP(userID, sid, reason, backupID, totpStep, prevTOTPStep)
 	if err == nil && bundle != nil {
 		bundle.consumedBackupCodeID = 0
 		bundle.consumedTOTPStep = 0
+		bundle.previousTOTPStep = 0
 	}
 	return err
 }

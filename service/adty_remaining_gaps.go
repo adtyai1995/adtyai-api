@@ -345,7 +345,7 @@ func adtyTodoItemVisibleForUserOnSite(db *gorm.DB, userID int, site *model.AdtyS
 			return false, res.Error
 		}
 		if res.RowsAffected > 0 {
-			canChannel, canEpay := adtyWatcherNoticeAccess(userID, site, tokenScopes...)
+			canChannel, canEpay := adtyWatcherNoticeAccessTx(db, userID, site, tokenScopes...)
 			return adtyWatcherNoticePermitted(notice.NotifyType, canChannel, canEpay), nil
 		}
 	}
@@ -1573,7 +1573,11 @@ func bindSiteInviteFromIPTx(tx *gorm.DB, siteID, inviterID, inviteeID int, ipHas
 	}
 	callerIP := strings.TrimSpace(ipHash)
 	trimmedIP := callerIP
-	if trimmedIP == "" && tx.Migrator().HasTable(&model.AdtyUserFingerprint{}) {
+	hasFingerprintTable, fpTableErr := model.AdtyTableExists(tx, &model.AdtyUserFingerprint{})
+	if fpTableErr != nil {
+		return fpTableErr
+	}
+	if trimmedIP == "" && hasFingerprintTable {
 		var latestFP model.AdtyUserFingerprint
 		if err := tx.Select("ip_hash").
 			Where("user_id = ? AND ip_hash <> ''", inviteeID).
@@ -1592,7 +1596,7 @@ func bindSiteInviteFromIPTx(tx *gorm.DB, siteID, inviterID, inviteeID int, ipHas
 	if site.MarketingPolicy.SelfInviteWindowDays != nil {
 		selfInviteDays = *site.MarketingPolicy.SelfInviteWindowDays
 	}
-	if selfInviteDays > 0 && tx.Migrator().HasTable(&model.AdtyUserFingerprint{}) {
+	if selfInviteDays > 0 && hasFingerprintTable {
 		since := time.Now().Unix() - selfInviteDays*86400
 		ipSet := map[string]struct{}{}
 		deviceSet := map[string]struct{}{}
@@ -1672,11 +1676,11 @@ func refuseSiteInviteBatchTx(tx *gorm.DB, siteID, inviterID int, ipHash string) 
 	if ipHash == "" {
 		return nil
 	}
-	thresholdRaw, thresholdOK, err := model.ReadOptionFromDB(adtySiteBatchThresholdKey)
+	thresholdRaw, thresholdOK, err := model.ReadOptionInTx(tx, adtySiteBatchThresholdKey)
 	if err != nil || !thresholdOK {
 		return err
 	}
-	windowRaw, windowOK, err := model.ReadOptionFromDB(adtySiteBatchWindowKey)
+	windowRaw, windowOK, err := model.ReadOptionInTx(tx, adtySiteBatchWindowKey)
 	if err != nil || !windowOK {
 		return err
 	}

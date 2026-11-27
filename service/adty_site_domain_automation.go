@@ -510,6 +510,9 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) (bool, 
 			if res.RowsAffected != 1 {
 				return errAdtyDomainLeaseLost
 			}
+			if err := adtyInvalidateCustomEdgeCertTx(tx, row.Id, current.Hostname); err != nil {
+				return err
+			}
 			removed = true
 			row.Status = model.AdtySiteDomainRemoved
 			row.AutomationState = "removed"

@@ -320,9 +320,11 @@ func ReserveAdtySiteGiftTx(tx *gorm.DB, ext *model.AdtyTopupOrder, marginAuthori
 	rest := bonus.Sub(fromEarning)
 	fromMargin := decimal.Zero
 	if rest.IsPositive() {
-		marginAllowed := adty_setting.SiteBonusMarginFillAllowed(ext.SiteId)
+		var marginAllowed bool
 		if len(marginAuthorization) > 0 {
 			marginAllowed = marginAuthorization[0]
+		} else {
+			marginAllowed = adty_setting.SiteBonusMarginFillAllowedTx(tx, ext.SiteId)
 		}
 		if !marginAllowed {
 			return common.NewMessage("Site gift reserve is not covered by the earning wallet")

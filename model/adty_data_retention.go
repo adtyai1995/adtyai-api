@@ -93,6 +93,85 @@ func IsDataRetentionCategory(category string) bool {
 	return false
 }
 
+func adtyModelTableName(db *gorm.DB, modelOrTable any) string {
+	if s, ok := modelOrTable.(string); ok {
+		return strings.TrimSpace(s)
+	}
+	if tabler, ok := modelOrTable.(interface{ TableName() string }); ok {
+		return strings.TrimSpace(tabler.TableName())
+	}
+	if db == nil {
+		return ""
+	}
+	stmt := &gorm.Statement{DB: db}
+	if err := stmt.Parse(modelOrTable); err == nil && stmt.Schema != nil {
+		return stmt.Schema.Table
+	}
+	return ""
+}
+
+// AdtyTableExists checks table existence across PostgreSQL, MySQL, and SQLite
+// without aborting an active PostgreSQL transaction and without swallowing DB
+// errors (unlike gorm.Migrator().HasTable).
+func AdtyTableExists(db *gorm.DB, modelOrTable any) (bool, error) {
+	if db == nil {
+		return false, errors.New("database unavailable")
+	}
+	table := adtyModelTableName(db, modelOrTable)
+	if table == "" {
+		return false, nil
+	}
+	var count int64
+	var err error
+	dialector := ""
+	if db.Dialector != nil {
+		dialector = db.Dialector.Name()
+	}
+	switch dialector {
+	case "postgres":
+		err = db.Raw("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = CURRENT_SCHEMA() AND table_name = ?", table).Scan(&count).Error
+	case "mysql":
+		err = db.Raw("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?", table).Scan(&count).Error
+	default:
+		err = db.Raw("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&count).Error
+	}
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// AdtyColumnExists checks column existence across PostgreSQL, MySQL, and SQLite
+// without aborting an active PostgreSQL transaction or swallowing DB errors.
+func AdtyColumnExists(db *gorm.DB, modelOrTable any, column string) (bool, error) {
+	if db == nil {
+		return false, errors.New("database unavailable")
+	}
+	table := adtyModelTableName(db, modelOrTable)
+	column = strings.TrimSpace(column)
+	if table == "" || column == "" {
+		return false, nil
+	}
+	var count int64
+	var err error
+	dialector := ""
+	if db.Dialector != nil {
+		dialector = db.Dialector.Name()
+	}
+	switch dialector {
+	case "postgres":
+		err = db.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = CURRENT_SCHEMA() AND table_name = ? AND column_name = ?", table, column).Scan(&count).Error
+	case "mysql":
+		err = db.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?", table, column).Scan(&count).Error
+	default:
+		err = db.Raw("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", table, column).Scan(&count).Error
+	}
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func isAdtyUndefinedTableError(err error) bool {
 	if err == nil {
 		return false
@@ -153,7 +232,11 @@ func ClearAdtyDataRetentionPolicy(category string) error {
 	if DB == nil {
 		return errors.New("database unavailable")
 	}
-	if !DB.Migrator().HasTable(&AdtyDataRetentionPolicy{}) {
+	exists, err := AdtyTableExists(DB, &AdtyDataRetentionPolicy{})
+	if err != nil {
+		return err
+	}
+	if !exists {
 		return nil
 	}
 	result := DB.Where("category = ?", category).Delete(&AdtyDataRetentionPolicy{})
@@ -362,7 +445,18 @@ func DeleteDeliveredAuditIntentsByCategoriesBatch(ctx context.Context, categorie
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	if !DB.Migrator().HasTable(&AuditIntent{}) || !DB.Migrator().HasColumn(&AuditIntent{}, "category") {
+	hasTable, err := AdtyTableExists(DB, &AuditIntent{})
+	if err != nil {
+		return 0, err
+	}
+	if !hasTable {
+		return 0, nil
+	}
+	hasCol, err := AdtyColumnExists(DB, &AuditIntent{}, "category")
+	if err != nil {
+		return 0, err
+	}
+	if !hasCol {
 		return 0, nil
 	}
 	catSet := make(map[string]struct{}, len(categories))

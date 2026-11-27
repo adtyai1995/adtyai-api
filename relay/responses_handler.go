@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
+	openaichannel "github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -75,7 +76,16 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		}
 	}
 
-	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
+	var usage any
+	if !info.IsStream &&
+		info.RelayMode == relayconstant.RelayModeResponses &&
+		httpResp != nil && httpResp.StatusCode >= 200 && httpResp.StatusCode < 300 &&
+		isResponsesEventStreamContentType(httpResp.Header.Get("Content-Type")) &&
+		isOpenAIResponsesUpstream(info) {
+		usage, newAPIError = openaichannel.OaiResponsesBufferedStreamHandler(c, info, httpResp)
+	} else {
+		usage, newAPIError = adaptor.DoResponse(c, httpResp, info)
+	}
 	if newAPIError != nil {
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
@@ -108,6 +118,13 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	}
 
 	return ConsumeResponsesQuota(c, info, usageDto)
+}
+
+func isOpenAIResponsesUpstream(info *relaycommon.RelayInfo) bool {
+	if info == nil || len(info.RequestConversionChain) == 0 {
+		return false
+	}
+	return info.RequestConversionChain[len(info.RequestConversionChain)-1] == types.RelayFormatOpenAIResponses
 }
 
 func hasAudioTokenDetails(usage *dto.Usage) bool {

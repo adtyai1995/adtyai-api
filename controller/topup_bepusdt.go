@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // 从旧项目改写（任务 4.2）：按 USD 下单，站内支付窗显示地址和数量，回调以 POST JSON 为准。
@@ -160,7 +161,8 @@ func bepusdtPermanentError(err error) bool {
 		errors.Is(err, model.ErrPaymentOrphanNotCredit) ||
 		errors.Is(err, model.ErrTopUpQuotaLimitExceeded) ||
 		errors.Is(err, model.ErrInvalidTopUpQuota) ||
-		errors.Is(err, service.ErrAdtyTeamInvalid)
+		errors.Is(err, service.ErrAdtyTeamInvalid) ||
+		errors.Is(err, gorm.ErrRecordNotFound)
 }
 
 // BEpusdtTopUpNotify 处理 BEpusdt 的回调：验签、只认 status=2、入账。只看 HTTP 200 和 ok。

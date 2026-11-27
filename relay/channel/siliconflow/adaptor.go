@@ -76,6 +76,13 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	if info.RelayMode == constant.RelayModeRerank {
 		return fmt.Sprintf("%s/v1/rerank", info.ChannelBaseUrl), nil
 	}
+	if info.RelayFormat == types.RelayFormatClaude &&
+		!info.ChannelSetting.PassThroughBodyEnabled &&
+		!model_setting.GetGlobalSettings().PassThroughRequestEnabled &&
+		info.RelayMode != constant.RelayModeResponses &&
+		info.RelayMode != constant.RelayModeResponsesCompact {
+		return fmt.Sprintf("%s/v1/chat/completions", info.ChannelBaseUrl), nil
+	}
 	return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, info.RequestURLPath, info.ChannelType), nil
 }
 

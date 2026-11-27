@@ -381,12 +381,29 @@ var ErrTOTPReplay = errors.New("this verification code was already used")
 
 // ClaimTOTPStepWithTx 在调用方事务里记下已接受的时间步。时间步不比库里的新就返回 ErrTOTPReplay。
 func ClaimTOTPStepWithTx(tx *gorm.DB, userId int, step int64) error {
+	_, err := ClaimTOTPStepWithPrevTx(tx, userId, step)
+	return err
+}
+
+// ClaimTOTPStepWithPrevTx locks the user's 2FA row, verifies step > last_totp_step,
+// records step, and returns the previous last_totp_step so an abandoned login can
+// restore the prior anti-replay watermark instead of resetting it to 0.
+func ClaimTOTPStepWithPrevTx(tx *gorm.DB, userId int, step int64) (int64, error) {
 	if tx == nil || userId <= 0 || step <= 0 {
-		return ErrTOTPReplay
+		return 0, ErrTOTPReplay
 	}
+	var rows []TwoFA
+	if err := lockForUpdate(tx).Select("id", "is_enabled", "last_totp_step").
+		Where("user_id = ?", userId).Limit(1).Find(&rows).Error; err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 || !rows[0].IsEnabled || rows[0].LastTOTPStep >= step {
+		return 0, ErrTOTPReplay
+	}
+	prevStep := rows[0].LastTOTPStep
 	now := time.Now()
 	result := tx.Model(&TwoFA{}).
-		Where("user_id = ? AND is_enabled = ? AND COALESCE(last_totp_step, 0) < ?", userId, true, step).
+		Where("id = ? AND is_enabled = ? AND COALESCE(last_totp_step, 0) < ?", rows[0].Id, true, step).
 		Updates(map[string]any{
 			"last_totp_step":  step,
 			"failed_attempts": 0,
@@ -394,22 +411,31 @@ func ClaimTOTPStepWithTx(tx *gorm.DB, userId int, step int64) error {
 			"last_used_at":    now,
 		})
 	if result.Error != nil {
-		return result.Error
+		return 0, result.Error
 	}
 	if result.RowsAffected == 0 {
-		return ErrTOTPReplay
+		return 0, ErrTOTPReplay
 	}
-	return nil
+	return prevStep, nil
 }
 
 // ReleaseTOTPStepWithTx 在会话没有留下时，把这次记下的时间步清掉。
 func ReleaseTOTPStepWithTx(tx *gorm.DB, userId int, step int64) error {
+	return RestoreTOTPStepWithTx(tx, userId, step, 0)
+}
+
+// RestoreTOTPStepWithTx restores last_totp_step to prevStep only if it still
+// matches the abandoned step, preserving anti-replay protection for prior codes.
+func RestoreTOTPStepWithTx(tx *gorm.DB, userId int, step, prevStep int64) error {
 	if tx == nil || userId <= 0 || step <= 0 {
 		return nil
 	}
+	if prevStep < 0 || prevStep >= step {
+		prevStep = 0
+	}
 	return tx.Exec(
-		"UPDATE two_fas SET last_totp_step = 0 WHERE user_id = ? AND last_totp_step = ?",
-		userId, step,
+		"UPDATE two_fas SET last_totp_step = ? WHERE user_id = ? AND last_totp_step = ?",
+		prevStep, userId, step,
 	).Error
 }
 

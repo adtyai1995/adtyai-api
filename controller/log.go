@@ -229,7 +229,6 @@ func GetLogsStat(c *gin.Context) {
 }
 
 func GetLogsSelfStat(c *gin.Context) {
-	username := c.GetString("username")
 	logType, _ := strconv.Atoi(c.Query("type"))
 	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
 	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
@@ -252,7 +251,7 @@ func GetLogsSelfStat(c *gin.Context) {
 		common.ApiError(c, common.NewMessage("Invalid user"))
 		return
 	}
-	quotaNum, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, userID)
+	quotaNum, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, "", tokenName, channel, group, userID)
 	if err != nil {
 		common.ApiError(c, err)
 		return

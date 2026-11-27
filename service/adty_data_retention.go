@@ -283,7 +283,10 @@ func SaveDataRetentionPolicies(c *gin.Context, actorID int, actorName string, in
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		changes := make([]string, 0, len(mutations))
 		beforeChanges := make([]string, 0, len(mutations))
-		hasPolicyTable := tx.Migrator().HasTable(&model.AdtyDataRetentionPolicy{})
+		hasPolicyTable, tableErr := model.AdtyTableExists(tx, &model.AdtyDataRetentionPolicy{})
+		if tableErr != nil {
+			return tableErr
+		}
 		for _, m := range mutations {
 			var previous model.AdtyDataRetentionPolicy
 			if hasPolicyTable {
@@ -343,7 +346,11 @@ func SaveDataRetentionPolicies(c *gin.Context, actorID int, actorName string, in
 		if err != nil {
 			return err
 		}
-		if tx.Migrator().HasTable(&model.AuditIntent{}) {
+		hasAuditIntentTable, intentTableErr := model.AdtyTableExists(tx, &model.AuditIntent{})
+		if intentTableErr != nil {
+			return intentTableErr
+		}
+		if hasAuditIntentTable {
 			if err := model.AppendAuditIntentTx(tx, entry); err != nil {
 				return err
 			}
@@ -466,13 +473,19 @@ func dataRetentionCancelErr(ctx context.Context, systemTaskID string) error {
 			return err
 		}
 	}
-	if systemTaskID != "" && model.DB != nil && model.DB.Migrator().HasTable(&model.SystemTask{}) {
-		cancelled, err := model.SystemTaskCancelRequested(systemTaskID)
+	if systemTaskID != "" && model.DB != nil {
+		hasTaskTable, err := model.AdtyTableExists(model.DB, &model.SystemTask{})
 		if err != nil {
 			return err
 		}
-		if cancelled {
-			return context.Canceled
+		if hasTaskTable {
+			cancelled, err := model.SystemTaskCancelRequested(systemTaskID)
+			if err != nil {
+				return err
+			}
+			if cancelled {
+				return context.Canceled
+			}
 		}
 	}
 	return nil
@@ -875,7 +888,14 @@ var adtyPendingTicketAttachmentCleanupOnce sync.Once
 // CleanupPendingAdtyTicketAttachments 独立清理 delete_pending = true 的孤儿工单附件，
 // 即使工单保留天数清理未开启也可运行。返回本次成功清理数量与失败数量。
 func CleanupPendingAdtyTicketAttachments(ctx context.Context, limit int) (int64, int64, error) {
-	if model.DB == nil || !model.DB.Migrator().HasTable(&model.AdtyTicketImage{}) {
+	if model.DB == nil {
+		return 0, 0, nil
+	}
+	hasImageTable, err := model.AdtyTableExists(model.DB, &model.AdtyTicketImage{})
+	if err != nil {
+		return 0, 0, err
+	}
+	if !hasImageTable {
 		return 0, 0, nil
 	}
 	if ctx == nil {

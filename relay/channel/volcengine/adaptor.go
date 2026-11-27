@@ -257,13 +257,31 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	if baseUrl == "" {
 		baseUrl = channelconstant.GetChannelBaseURL(channelconstant.ChannelTypeVolcEngine)
 	}
-	specialPlan, hasSpecialPlan := channelconstant.ChannelSpecialBases[baseUrl]
+	if specialPlan, hasSpecialPlan := channelconstant.ChannelSpecialBases[baseUrl]; hasSpecialPlan {
+		if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+			if specialPlan.OpenAIBaseURL != "" {
+				return fmt.Sprintf("%s/responses", specialPlan.OpenAIBaseURL), nil
+			}
+			return "", fmt.Errorf("coding plan %q does not support relay mode %d", baseUrl, info.RelayMode)
+		}
+		if info.RelayFormat == types.RelayFormatClaude {
+			if specialPlan.ClaudeBaseURL != "" {
+				return fmt.Sprintf("%s/v1/messages", specialPlan.ClaudeBaseURL), nil
+			}
+			return "", fmt.Errorf("coding plan %q does not support relay mode %d", baseUrl, info.RelayMode)
+		}
+		if info.RelayMode == constant.RelayModeChatCompletions && specialPlan.OpenAIBaseURL != "" {
+			return fmt.Sprintf("%s/chat/completions", specialPlan.OpenAIBaseURL), nil
+		}
+		return "", fmt.Errorf("coding plan %q does not support relay mode %d", baseUrl, info.RelayMode)
+	}
+
+	if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+		return fmt.Sprintf("%s/api/v3/responses", baseUrl), nil
+	}
 
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
-		if hasSpecialPlan && specialPlan.ClaudeBaseURL != "" {
-			return fmt.Sprintf("%s/v1/messages", specialPlan.ClaudeBaseURL), nil
-		}
 		if strings.HasPrefix(info.UpstreamModelName, "bot") {
 			return fmt.Sprintf("%s/api/v3/bots/chat/completions", baseUrl), nil
 		}
@@ -271,9 +289,6 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	default:
 		switch info.RelayMode {
 		case constant.RelayModeChatCompletions:
-			if hasSpecialPlan && specialPlan.OpenAIBaseURL != "" {
-				return fmt.Sprintf("%s/chat/completions", specialPlan.OpenAIBaseURL), nil
-			}
 			if strings.HasPrefix(info.UpstreamModelName, "bot") {
 				return fmt.Sprintf("%s/api/v3/bots/chat/completions", baseUrl), nil
 			}
@@ -290,8 +305,6 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 		//	return fmt.Sprintf("%s/api/v3/images/edits", baseUrl), nil
 		case constant.RelayModeRerank:
 			return fmt.Sprintf("%s/api/v3/rerank", baseUrl), nil
-		case constant.RelayModeResponses:
-			return fmt.Sprintf("%s/api/v3/responses", baseUrl), nil
 		case constant.RelayModeAudioSpeech:
 			if baseUrl == channelconstant.GetChannelBaseURL(channelconstant.ChannelTypeVolcEngine) {
 				if info.IsStream {
@@ -343,7 +356,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
-	return nil, nil
+	return request, nil
 }
 
 func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.EmbeddingRequest) (any, error) {
@@ -390,6 +403,10 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
 	if info.RelayMode == constant.RelayModeEmbeddings && usesVisionEmbedding(info) {
 		return visionEmbeddingResponse(c, resp, info)
+	}
+	if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+		adaptor := openai.Adaptor{}
+		return adaptor.DoResponse(c, resp, info)
 	}
 	if info.RelayFormat == types.RelayFormatClaude {
 		if _, ok := channelconstant.ChannelSpecialBases[info.ChannelBaseUrl]; ok {

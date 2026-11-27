@@ -11,12 +11,16 @@ import (
 
 func GetAdtyOwnerPricingHistory(c *gin.Context) {
 	site, ok := adtyOwnerSiteOr403(c)
-	if !ok { return }
+	if !ok {
+		return
+	}
 	userID := 0
 	if c.Param("id") != "" {
 		var valid bool
 		userID, valid = adtyPathId(c)
-		if !valid { return }
+		if !valid {
+			return
+		}
 		var count int64
 		if err := model.DB.Model(&model.User{}).Where("id = ? AND site_id = ? AND staff_site_id = 0", userID, site.Id).Count(&count).Error; err != nil {
 			common.ApiError(c, err)
@@ -26,7 +30,12 @@ func GetAdtyOwnerPricingHistory(c *gin.Context) {
 			common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Customer not found"))
 			return
 		}
-		if model.DB.Migrator().HasTable(&model.AdtyTeamMember{}) {
+		hasTeamMemberTable, tableErr := model.AdtyTableExists(model.DB, &model.AdtyTeamMember{})
+		if tableErr != nil {
+			common.ApiError(c, tableErr)
+			return
+		}
+		if hasTeamMemberTable {
 			var empCount int64
 			if err := model.DB.Model(&model.AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ?", userID, true).Count(&empCount).Error; err != nil {
 				common.ApiError(c, err)

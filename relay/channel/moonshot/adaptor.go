@@ -49,34 +49,46 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	baseURL := info.ChannelBaseUrl
 	if specialPlan, ok := channelconstant.ChannelSpecialBases[baseURL]; ok {
-		if info.RelayFormat == types.RelayFormatClaude {
-			return fmt.Sprintf("%s/v1/messages", specialPlan.ClaudeBaseURL), nil
+		if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+			if specialPlan.OpenAIBaseURL != "" {
+				return fmt.Sprintf("%s/responses", specialPlan.OpenAIBaseURL), nil
+			}
+			return "", fmt.Errorf("coding plan %q does not support relay mode %d", baseURL, info.RelayMode)
 		}
-		if info.RelayFormat == types.RelayFormatOpenAI {
+		if info.RelayFormat == types.RelayFormatClaude {
+			if specialPlan.ClaudeBaseURL != "" {
+				return fmt.Sprintf("%s/v1/messages", specialPlan.ClaudeBaseURL), nil
+			}
+			return "", fmt.Errorf("coding plan %q does not support relay mode %d", baseURL, info.RelayMode)
+		}
+		if info.RelayMode == constant.RelayModeChatCompletions && specialPlan.OpenAIBaseURL != "" {
 			return fmt.Sprintf("%s/chat/completions", specialPlan.OpenAIBaseURL), nil
 		}
+		return "", fmt.Errorf("coding plan %q does not support relay mode %d", baseURL, info.RelayMode)
+	}
+
+	if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+		return fmt.Sprintf("%s/v1/responses", baseURL), nil
 	}
 
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
-		return fmt.Sprintf("%s/anthropic/v1/messages", info.ChannelBaseUrl), nil
+		return fmt.Sprintf("%s/anthropic/v1/messages", baseURL), nil
 	default:
 		if info.RelayMode == constant.RelayModeRerank {
-			return fmt.Sprintf("%s/v1/rerank", info.ChannelBaseUrl), nil
+			return fmt.Sprintf("%s/v1/rerank", baseURL), nil
 		} else if info.RelayMode == constant.RelayModeEmbeddings {
-			return fmt.Sprintf("%s/v1/embeddings", info.ChannelBaseUrl), nil
+			return fmt.Sprintf("%s/v1/embeddings", baseURL), nil
 		} else if info.RelayMode == constant.RelayModeChatCompletions {
-			return fmt.Sprintf("%s/v1/chat/completions", info.ChannelBaseUrl), nil
+			return fmt.Sprintf("%s/v1/chat/completions", baseURL), nil
 		} else if info.RelayMode == constant.RelayModeCompletions {
-			return fmt.Sprintf("%s/v1/completions", info.ChannelBaseUrl), nil
-		} else if info.RelayMode == constant.RelayModeResponses {
-			return fmt.Sprintf("%s/v1/responses", info.ChannelBaseUrl), nil
+			return fmt.Sprintf("%s/v1/completions", baseURL), nil
 		} else if info.RelayMode == constant.RelayModeImagesGenerations {
-			return fmt.Sprintf("%s/v1/images/generations", info.ChannelBaseUrl), nil
+			return fmt.Sprintf("%s/v1/images/generations", baseURL), nil
 		} else if info.RelayMode == constant.RelayModeImagesEdits {
-			return fmt.Sprintf("%s/v1/images/edits", info.ChannelBaseUrl), nil
+			return fmt.Sprintf("%s/v1/images/edits", baseURL), nil
 		}
-		return fmt.Sprintf("%s/v1/chat/completions", info.ChannelBaseUrl), nil
+		return fmt.Sprintf("%s/v1/chat/completions", baseURL), nil
 	}
 }
 
@@ -129,6 +141,10 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
+	if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+		adaptor := openai.Adaptor{}
+		return adaptor.DoResponse(c, resp, info)
+	}
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
 		adaptor := claude.Adaptor{}

@@ -540,6 +540,9 @@ func adtyUpsertCustomDomainTx(tx *gorm.DB, cfg *adty_setting.ResellerSetting, si
 			return model.AdtySiteDomain{}, err
 		}
 	}
+	if err := adtyInvalidateCustomEdgeCertTx(tx, domain.Id, host); err != nil {
+		return model.AdtySiteDomain{}, err
+	}
 	if err := tx.Create(&model.AdtySiteAudit{
 		SiteId:     siteId,
 		Action:     adtySiteDomainCreateAuditAction,
@@ -1465,6 +1468,9 @@ func removeAdtySiteDomainForActor(ctx context.Context, domain *model.AdtySiteDom
 			if err := tx.Where("domain_id = ?", snapshot.Id).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
 				return err
 			}
+		}
+		if err := adtyInvalidateCustomEdgeCertTx(tx, snapshot.Id, snapshot.Hostname); err != nil {
+			return err
 		}
 		updatedDomain = snapshot
 		updatedDomain.Status, updatedDomain.CFHostnameId, updatedDomain.CFCreateStartedAt, updatedDomain.TurnstileWidget = model.AdtySiteDomainRemoved, "", 0, ""

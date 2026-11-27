@@ -569,7 +569,7 @@ func AddAdtySiteSenderDomain(ctx context.Context, ownerUserId int, rawDomain str
 		}
 		// Claim the staged resource under the same site lock as the cleanup worker.
 		// Deleting the job rolls back if any subsequent binding write fails.
-		remove := tx.Where("remote_id = ? AND site_id = ?", created.ID, site.Id).Delete(&model.AdtySenderDomainCleanup{})
+		remove := tx.Where("remote_id = ? AND site_id = ? AND retry_at = ?", created.ID, site.Id, job.RetryAt).Delete(&model.AdtySenderDomainCleanup{})
 		if remove.Error != nil {
 			return remove.Error
 		}
@@ -592,7 +592,7 @@ func AddAdtySiteSenderDomain(ctx context.Context, ownerUserId int, rawDomain str
 		return tx.Create(&row).Error
 	})
 	if err != nil {
-		if updateErr := model.DB.Model(&job).Update("retry_at", now).Error; updateErr != nil {
+		if updateErr := model.DB.Model(&model.AdtySenderDomainCleanup{}).Where("remote_id = ? AND site_id = ? AND retry_at = ?", job.RemoteID, job.SiteID, job.RetryAt).Update("retry_at", now).Error; updateErr != nil {
 			return nil, errors.Join(err, updateErr)
 		}
 		if cleanupErr := cleanReplacedSenderDomains(ctx, now, site.Id); cleanupErr != nil {
@@ -715,6 +715,10 @@ func cleanReplacedSenderDomains(ctx context.Context, now int64, siteID int) erro
 		return err
 	}
 	for _, row := range rows {
+		var remoteID string
+		var claimRetryAt int64
+		// Phase 1 (short tx): lock AdtySite -> AdtySenderDomainCleanup, remove immediately if
+		// actively bound, otherwise claim a short lease and release all DB locks before HTTP.
 		if err := model.DB.Transaction(func(tx *gorm.DB) error {
 			var site model.AdtySite
 			siteMissing := false
@@ -729,7 +733,7 @@ func cleanReplacedSenderDomains(ctx context.Context, now int64, siteID int) erro
 				return nil
 			}
 			var job model.AdtySenderDomainCleanup
-			lookup := model.AdtyLockForUpdate(tx).Where("remote_id = ? AND retry_at <= ?", row.RemoteID, now).Limit(1).Find(&job)
+			lookup := model.AdtyLockForUpdate(tx).Where("remote_id = ? AND site_id = ? AND retry_at <= ?", row.RemoteID, row.SiteID, now).Limit(1).Find(&job)
 			if lookup.Error != nil || lookup.RowsAffected == 0 {
 				return lookup.Error
 			}
@@ -739,10 +743,51 @@ func cleanReplacedSenderDomains(ctx context.Context, now int64, siteID int) erro
 					return err
 				}
 			}
-			if bound == 0 {
-				if err := deleteSenderDomainIfPresent(ctx, job.RemoteID); err != nil {
-					return tx.Model(&job).Updates(map[string]any{"retry_at": now + 600, "last_error": err.Error()}).Error
+			if bound > 0 || strings.TrimSpace(job.RemoteID) == "" {
+				return tx.Delete(&job).Error
+			}
+			claimRetryAt = now + 120
+			if err := tx.Model(&job).Update("retry_at", claimRetryAt).Error; err != nil {
+				return err
+			}
+			remoteID = job.RemoteID
+			return nil
+		}); err != nil {
+			common.SysError(common.LogText("sender domain cleanup job remote_id=%s site=%d: %s", row.RemoteID, row.SiteID, err.Error()))
+			continue
+		}
+		if remoteID == "" {
+			continue
+		}
+
+		// Phase 2 (outside tx, no DB locks held): delete the remote domain via Resend API.
+		delErr := deleteSenderDomainIfPresent(ctx, remoteID)
+
+		// Phase 3 (short tx): re-lock AdtySite -> AdtySenderDomainCleanup and persist retry backoff
+		// on failure or remove the completed cleanup row on success.
+		if err := model.DB.Transaction(func(tx *gorm.DB) error {
+			var site model.AdtySite
+			siteMissing := false
+			if err := model.AdtyLockForUpdate(tx).First(&site, row.SiteID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					siteMissing = true
+				} else {
+					return err
 				}
+			}
+			if !siteMissing && site.Status == model.AdtySiteStatusDeleting {
+				return nil
+			}
+			var job model.AdtySenderDomainCleanup
+			lookup := model.AdtyLockForUpdate(tx).Where("remote_id = ? AND site_id = ?", remoteID, row.SiteID).Limit(1).Find(&job)
+			if lookup.Error != nil || lookup.RowsAffected == 0 {
+				return lookup.Error
+			}
+			if delErr != nil {
+				if job.RetryAt != claimRetryAt {
+					return nil
+				}
+				return tx.Model(&job).Updates(map[string]any{"retry_at": now + 600, "last_error": delErr.Error()}).Error
 			}
 			return tx.Delete(&job).Error
 		}); err != nil {

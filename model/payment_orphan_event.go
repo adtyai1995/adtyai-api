@@ -170,46 +170,68 @@ func ListPaymentOrphanEventsForRole(status string, pageInfo *common.PageInfo, ma
 // CanCreditPaymentOrphanEvent：只有待审核、订单还在、支付商相同、订单没入过账，并且错误不是金额或方式不符的事件，
 // 才能在对账页直接补入账。金额不符的走手动补单（任务 3.5）。
 func CanCreditPaymentOrphanEvent(orphan *PaymentOrphanEvent) bool {
+	ok, err := CanCreditPaymentOrphanEventTx(DB, orphan, nil, nil)
+	return err == nil && ok
+}
+
+// CanCreditPaymentOrphanEventTx evaluates direct-credit eligibility strictly on
+// the caller's transaction/locked snapshots and propagates database errors.
+func CanCreditPaymentOrphanEventTx(tx *gorm.DB, orphan *PaymentOrphanEvent, topUpLocked *TopUp, extLocked *AdtyTopupOrder) (bool, error) {
 	if orphan == nil || orphan.Status != PaymentOrphanStatusPendingReview || strings.TrimSpace(orphan.ReferenceID) == "" {
-		return false
+		return false, nil
 	}
 	eventType := strings.ToLower(strings.TrimSpace(orphan.EventType))
 	if eventType != "payment_callback" || strings.TrimSpace(orphan.Payload) == "" {
-		return false
+		return false, nil
 	}
 	// Hosted events have provider-specific nested signed facts. Their recovery
 	// uses provider redelivery or the explicit audited manual-completion form.
 	// Only these two legacy adapters support direct payload replay here.
 	if orphan.Provider != PaymentProviderAdtyBEpusdt && orphan.Provider != PaymentProviderAdtyEpay {
-		return false
+		return false, nil
 	}
 	errorText := strings.ToLower(orphan.Error)
 	if strings.Contains(errorText, ErrPaymentMethodMismatch.Error()) ||
 		strings.Contains(errorText, ErrPaymentAmountMismatch.Error()) ||
 		strings.Contains(errorText, ErrTopUpStatusInvalid.Error()) {
-		return false
+		return false, nil
 	}
-	var topUps []TopUp
-	if err := DB.Select("payment_provider", "status").Where("trade_no = ?", orphan.ReferenceID).Limit(1).Find(&topUps).Error; err != nil || len(topUps) == 0 {
-		return false
+	var topUp TopUp
+	if topUpLocked != nil {
+		topUp = *topUpLocked
+	} else {
+		if tx == nil {
+			return false, nil
+		}
+		var topUps []TopUp
+		if err := tx.Select("payment_provider", "status").Where("trade_no = ?", orphan.ReferenceID).Limit(1).Find(&topUps).Error; err != nil {
+			return false, err
+		}
+		if len(topUps) == 0 {
+			return false, nil
+		}
+		topUp = topUps[0]
 	}
-	topUp := topUps[0]
 	if !strings.EqualFold(topUp.PaymentProvider, orphan.Provider) {
-		return false
+		return false, nil
 	}
 	switch topUp.Status {
 	case common.TopUpStatusPending, common.TopUpStatusFailed, TopUpStatusCanceled, TopUpStatusReplaced:
 	default:
-		return false
+		return false, nil
 	}
 	var ext AdtyTopupOrder
-	if err := DB.Select("provider", "created_at", "expire_at").Where("trade_no = ?", orphan.ReferenceID).Limit(1).Find(&ext).Error; err != nil {
-		return false
+	if extLocked != nil {
+		ext = *extLocked
+	} else if tx != nil {
+		if err := tx.Select("provider", "created_at", "expire_at").Where("trade_no = ?", orphan.ReferenceID).Limit(1).Find(&ext).Error; err != nil {
+			return false, err
+		}
 	}
 	if AdtyTopupOrderIsExpired(&ext, common.GetTimestamp()) {
-		return false
+		return false, nil
 	}
-	return true
+	return true, nil
 }
 
 // LockPaymentOrphanTx 在事务里锁住一条事件。

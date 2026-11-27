@@ -334,7 +334,7 @@ func reacquireAdtySiteGiftAmountTx(tx *gorm.DB, ext *model.AdtyTopupOrder, bonus
 	rest := needed.Sub(fromEarning)
 	fromMargin := decimal.Zero
 	if rest.IsPositive() {
-		if !adty_setting.SiteBonusMarginFillAllowed(ext.SiteId) || pooledSite {
+		if !adty_setting.SiteBonusMarginFillAllowedTx(tx, ext.SiteId) || pooledSite {
 			return errGiftGuaranteeShort
 		}
 		var margin model.AdtySiteWallet

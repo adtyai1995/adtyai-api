@@ -1,9 +1,12 @@
 package openai
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -11,6 +14,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 
@@ -19,7 +23,14 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+func isResponsesEventStreamContentType(contentType string) bool {
+	return strings.Contains(strings.ToLower(contentType), "text/event-stream")
+}
+
 func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 && isResponsesEventStreamContentType(resp.Header.Get("Content-Type")) {
+		return OaiResponsesBufferedStreamHandler(c, info, resp)
+	}
 	defer service.CloseResponseBodyGracefully(resp)
 
 	// read response body
@@ -40,8 +51,10 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	responseBody = rewriteSGLangResponsesCreatedAt(info, responseBody, "created_at", responsesResponse.CreatedAt)
 	responseBody = ensureResponsesUsageReasoningDetails(responseBody, "usage")
 
-	// 写入新的 response body
-	service.IOCopyBytesGracefully(c, resp, responseBody)
+	// 写入新的 response body；若上游在非流式分离上下文下已完成而客户端已断开，仍需结算已产生的用量。
+	if !helper.ClientRequestCanceled(c) {
+		service.IOCopyBytesGracefully(c, resp, responseBody)
+	}
 
 	// compute usage
 	usage := &dto.Usage{}
@@ -86,6 +99,237 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		imageCounter.Observe(&responsesResponse.Output[i], &i)
 	}
 	imageCounter.Commit(info)
+
+	return usage, nil
+}
+
+// OaiResponsesBufferedStreamHandler drains an upstream Responses SSE stream for
+// a non-streaming /v1/responses request, collects the terminal OpenAI Responses
+// object and its billing usage, and writes a valid JSON response to the client.
+// Because the scanner reads resp.Body directly without binding to
+// c.Request.Context().Done(), it preserves detached non-stream draining when a
+// client disconnects mid-flight.
+func OaiResponsesBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp == nil || resp.Body == nil {
+		return nil, types.NewOpenAIError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	}
+	defer service.CloseResponseBodyGracefully(resp)
+
+	if info != nil {
+		info.StreamStatus = relaycommon.NewStreamStatus()
+		info.StreamStatus.RequireTerminal()
+	}
+	accumulator := relayconvert.NewResponsesBufferedAccumulator()
+	imageCounter := &relaycommon.ImageGenerationCallCounter{}
+	var finalResponse *dto.OpenAIResponsesResponse
+	var streamErr *types.NewAPIError
+	var terminalRaw []byte
+	var terminalEventType string
+	receivedValidEvent := false
+	countedItemTools := false
+
+	scanner := helper.NewStreamScanner(resp.Body)
+	scanner.Split(bufio.ScanLines)
+	for scanner.Scan() {
+		line := scanner.Text()
+		data, hasDataPrefix := strings.CutPrefix(line, "data:")
+		data = strings.TrimSpace(data)
+		if !hasDataPrefix && data != "[DONE]" {
+			continue
+		}
+		if data == "" {
+			continue
+		}
+		if data == "[DONE]" {
+			if info != nil && info.StreamStatus != nil {
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+			}
+			break
+		}
+
+		raw := common.StringToByteSlice(data)
+		if oaiErr, statusCode := extractEmbeddedOpenAIErrorRaw(raw); oaiErr != nil {
+			if statusCode < 400 || statusCode > 599 {
+				statusCode = responsesErrorTypeHTTPStatus(oaiErr.Type)
+			}
+			streamErr = types.WithOpenAIError(*oaiErr, statusCode)
+			break
+		}
+
+		var streamResp dto.ResponsesStreamResponse
+		if err := common.UnmarshalJsonStr(data, &streamResp); err != nil {
+			logger.LogError(c, common.LogText("failed to unmarshal buffered responses stream event: %s", err.Error()))
+			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+			break
+		}
+		receivedValidEvent = true
+		if info != nil {
+			info.SetFirstResponseTime()
+			info.ReceivedResponseCount++
+		}
+		if streamResp.Response != nil && info != nil {
+			info.ObserveResponseModel(streamResp.Response.Model)
+		}
+		if info != nil {
+			service.ObserveResponsesOutcome(info, &streamResp)
+		}
+		accumulator.ProcessEvent(&streamResp)
+		switch streamResp.Type {
+		case dto.ResponsesOutputTypeItemDone:
+			if streamResp.Item != nil {
+				switch streamResp.Item.Type {
+				case dto.BuildInCallWebSearchCall, dto.BuildInCallFileSearchCall, dto.BuildInCallFunctionCall:
+					if info != nil {
+						info.CountBillableToolCall(streamResp.Item.Type, streamResp.Item.Name)
+					}
+					countedItemTools = true
+				case dto.ResponsesOutputTypeImageGenerationCall:
+					imageCounter.Observe(streamResp.Item, streamResp.OutputIndex)
+				}
+			}
+		case "response.completed", "response.done", "response.incomplete":
+			terminalEventType = streamResp.Type
+			terminalRaw = append([]byte(nil), data...)
+			finalResponse = streamResp.Response
+			if streamResp.Type == "response.incomplete" {
+				if finalResponse == nil {
+					finalResponse = &dto.OpenAIResponsesResponse{}
+				}
+				if len(finalResponse.Status) == 0 {
+					finalResponse.Status = []byte(`"incomplete"`)
+				}
+			}
+		case "error", "response.failed", "response.error":
+			streamErr = extractResponsesStreamError(&streamResp, raw)
+		}
+		if streamErr != nil || finalResponse != nil {
+			if finalResponse != nil && info != nil && info.StreamStatus != nil {
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+			}
+			break
+		}
+	}
+	if streamErr != nil {
+		return nil, streamErr
+	}
+	if err := scanner.Err(); err != nil {
+		if helper.ClientRequestCanceled(c) {
+			return nil, types.NewError(err, types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry(), types.ErrOptionWithHideErrMsg("client closed request"))
+		}
+		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
+	}
+	if !receivedValidEvent {
+		return nil, types.NewOpenAIError(errors.New("empty upstream responses stream"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+	}
+
+	synthesizedFinal := false
+	if finalResponse == nil {
+		synthesizedFinal = true
+		finalResponse = &dto.OpenAIResponsesResponse{
+			ID:        helper.GetResponseID(c),
+			Object:    "response",
+			CreatedAt: dto.IntValue(time.Now().Unix()),
+			Model:     info.GetUpstreamModelName(),
+			Status:    []byte(`"completed"`),
+		}
+	}
+	hadOutput := len(finalResponse.Output) > 0
+	accumulator.SupplementResponseOutput(finalResponse)
+	if synthesizedFinal && len(finalResponse.Output) == 0 {
+		return nil, types.NewOpenAIError(errors.New("empty upstream responses stream"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
+	}
+
+	usage := &dto.Usage{}
+	service.ApplyResponsesUsage(usage, finalResponse.Usage)
+	if usage.CompletionTokens == 0 || usage.PromptTokens == 0 {
+		text := service.ExtractOutputTextFromResponses(finalResponse)
+		if text != "" || usage.PromptTokens == 0 {
+			fallback := service.ResponseText2Usage(c, text, info.GetUpstreamModelName(), info.GetEstimatePromptTokens())
+			if usage.PromptTokens == 0 {
+				usage.PromptTokens = fallback.PromptTokens
+			}
+			if usage.CompletionTokens == 0 {
+				usage.CompletionTokens = fallback.CompletionTokens
+			}
+			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+			if usage.BillingUsage != nil {
+				usage.BillingUsage = dto.CloneBillingUsageWithEstimatedCompletion(usage.BillingUsage, usage.CompletionTokens)
+			}
+		}
+	}
+
+	if synthesizedFinal && finalResponse.Usage == nil {
+		finalResponse.Usage = relayconvert.UsageFromChatUsage(usage)
+	}
+
+	var responseBody []byte
+	if !synthesizedFinal && len(terminalRaw) > 0 {
+		if rawResp := gjson.GetBytes(terminalRaw, "response"); rawResp.IsObject() {
+			responseBody = []byte(rawResp.Raw)
+			if terminalEventType == "response.incomplete" && !gjson.GetBytes(responseBody, "status").Exists() {
+				if patched, err := sjson.SetBytes(responseBody, "status", "incomplete"); err == nil {
+					responseBody = patched
+				}
+			}
+			if !hadOutput && len(finalResponse.Output) > 0 {
+				if outputJSON, err := common.Marshal(finalResponse.Output); err == nil {
+					if patched, err := sjson.SetRawBytes(responseBody, "output", outputJSON); err == nil {
+						responseBody = patched
+					} else {
+						responseBody = nil
+					}
+				} else {
+					responseBody = nil
+				}
+			}
+		}
+	}
+	if len(responseBody) == 0 {
+		var err error
+		responseBody, err = common.Marshal(finalResponse)
+		if err != nil {
+			return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
+		}
+	}
+
+	responseBody = rewriteSGLangResponsesCreatedAt(info, responseBody, "created_at", finalResponse.CreatedAt)
+	responseBody = ensureResponsesUsageReasoningDetails(responseBody, "usage")
+
+	if !countedItemTools && info != nil {
+		for _, output := range finalResponse.Output {
+			switch output.Type {
+			case dto.BuildInCallWebSearchCall:
+				info.CountBillableToolCall(dto.BuildInCallWebSearchCall, "")
+			case dto.BuildInCallFileSearchCall:
+				info.CountBillableToolCall(dto.BuildInCallFileSearchCall, "")
+			case dto.BuildInCallFunctionCall:
+				info.CountBillableToolCall(dto.BuildInCallFunctionCall, output.Name)
+			}
+		}
+	}
+	if info != nil {
+		if len(terminalRaw) > 0 {
+			info.ApplyVendorToolUsage(terminalRaw)
+		} else {
+			info.ApplyVendorToolUsage(responseBody)
+		}
+		for i := range finalResponse.Output {
+			imageCounter.Observe(&finalResponse.Output[i], &i)
+		}
+		imageCounter.Commit(info)
+	}
+
+	if !helper.ClientRequestCanceled(c) {
+		jsonResp := *resp
+		if resp.Header != nil {
+			jsonResp.Header = resp.Header.Clone()
+		} else {
+			jsonResp.Header = make(http.Header)
+		}
+		jsonResp.Header.Set("Content-Type", "application/json")
+		jsonResp.Header.Del("Transfer-Encoding")
+		service.IOCopyBytesGracefully(c, &jsonResp, responseBody)
+	}
 
 	return usage, nil
 }

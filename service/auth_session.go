@@ -49,8 +49,9 @@ type AuthBundle struct {
 	RefreshToken    string           `json:"-"`
 	// consumedBackupCodeID 是这次登录核销的备用码。会话留下之后才保留核销；会话被撤掉时还回去。
 	consumedBackupCodeID int
-	// consumedTOTPStep 是这次登录占用的验证码时间步。会话被撤掉时清掉。
+	// consumedTOTPStep 是这次登录占用的验证码时间步。会话被撤掉时恢复到 previousTOTPStep。
 	consumedTOTPStep int64
+	previousTOTPStep int64
 }
 
 func CreateLoginSession(userID int, loginMethod, ip, userAgent string) (*AuthBundle, error) {

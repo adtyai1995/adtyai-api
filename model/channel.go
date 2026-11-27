@@ -992,11 +992,6 @@ func UpdateChannelStatusWithError(channelId int, usingKey string, status int, re
 			}
 		}
 		if channel.Status == status && !overridesKeyExhaustion && !multiKeyTargetNeedsUpdate {
-			if common.MemoryCacheEnabled {
-				if channelCache, _ := CacheGetChannel(channelId); channelCache == nil || channelCache.Status != channel.Status {
-					refreshNeeded = true
-				}
-			}
 			return nil
 		}
 
@@ -1042,6 +1037,11 @@ func UpdateChannelStatusWithError(channelId int, usingKey string, status int, re
 		return false, txErr
 	}
 	if !changed || channel == nil {
+		if channel != nil && common.MemoryCacheEnabled {
+			if channelCache, _ := CacheGetChannel(channelId); channelCache == nil || channelCache.Status != channel.Status {
+				refreshNeeded = true
+			}
+		}
 		return false, nil
 	}
 	if common.MemoryCacheEnabled {

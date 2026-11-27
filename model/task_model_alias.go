@@ -66,6 +66,12 @@ func taskAliasViewFresh(view *taskAliasView, generation uint64) bool {
 	return view != nil && view.generation == generation && time.Now().Before(view.expiresAt)
 }
 
+func prewarmTaskAliasView() {
+	if g := jsplugin.DefaultRegistry.Generation(); g != nil {
+		_ = loadFreshTaskAliasView(g)
+	}
+}
+
 func rebuildTaskAliasView() {
 	taskAliasRebuildMu.Lock()
 	defer taskAliasRebuildMu.Unlock()

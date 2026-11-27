@@ -1311,7 +1311,11 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 			return err
 		}
 		if next.EdgeMainSiteEnabled && next.EdgeMainSiteHost != "" {
-			if service.AdtyIsMainAPIHost(next.EdgeMainSiteHost) || service.AdtyIsApiOnlyHost(next.EdgeMainSiteHost) {
+			isAPIOnly, apiErr := service.AdtyIsApiOnlyHostTx(tx, next.EdgeMainSiteHost)
+			if apiErr != nil {
+				return apiErr
+			}
+			if service.AdtyIsMainAPIHost(next.EdgeMainSiteHost) || isAPIOnly {
 				return common.NewMessage("Main site edge hostname cannot be an API domain")
 			}
 		}

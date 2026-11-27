@@ -112,18 +112,31 @@ func LogQuotaData(params QuotaDataLogParams) {
 
 func SaveQuotaDataCache() {
 	CacheQuotaDataLock.Lock()
-	defer CacheQuotaDataLock.Unlock()
-	failed := make(map[string]*QuotaData)
+	if len(CacheQuotaData) == 0 {
+		CacheQuotaDataLock.Unlock()
+		return
+	}
+	snapshot := CacheQuotaData
+	CacheQuotaData = make(map[string]*QuotaData)
+	CacheQuotaDataLock.Unlock()
+
+	failed := make([]*QuotaData, 0)
 	saved := 0
-	for key, quotaData := range CacheQuotaData {
+	for _, quotaData := range snapshot {
 		if err := saveOneQuotaData(quotaData); err != nil {
 			common.SysError(common.LogText("save dashboard data failed user_id=%d model_name=%s error=%q", quotaData.UserID, quotaData.ModelName, err.Error()))
-			failed[key] = quotaData
+			failed = append(failed, quotaData)
 			continue
 		}
 		saved++
 	}
-	CacheQuotaData = failed
+	if len(failed) > 0 {
+		CacheQuotaDataLock.Lock()
+		for _, quotaData := range failed {
+			logQuotaDataCache(quotaData)
+		}
+		CacheQuotaDataLock.Unlock()
+	}
 	common.SysLog(common.LogText("saved dashboard data, %d records, %d kept after write failure", saved, len(failed)))
 }
 
