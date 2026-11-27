@@ -32,6 +32,7 @@ function ReferralRoutePage() {
   const navigate = useNavigate()
   const { status } = useStatus()
   const user = useAuthStore((state) => state.auth.user)
+  const isTeamEmployee = user?.is_team_employee === true
   const userReferralEnabled = user?.adty_referral_enabled
   const hasLegacySiteCommissions =
     user?.adty_has_legacy_site_commissions === true &&
@@ -41,20 +42,24 @@ function ReferralRoutePage() {
   const isDisabled = referralEnabled === false && !hasLegacySiteCommissions
 
   useEffect(() => {
+    if (isTeamEmployee) {
+      void navigate({ to: '/my-team', replace: true })
+      return
+    }
     if (!isDisabled) return
     void navigate({
       to: '/dashboard/$section',
       params: { section: 'overview' },
       replace: true,
     })
-  }, [isDisabled, navigate])
+  }, [isDisabled, isTeamEmployee, navigate])
 
-  if (isDisabled) return null
+  if (isTeamEmployee || isDisabled) return null
   return <Referral />
 }
 
-// R-32 #21 & R-35 #15: Admins, site owners, staff, and sites with referral
-// disabled (without legacy sub-site commissions) do not use the personal referral page.
+// R-32 #21 & R-35 #15: Admins, site owners, staff, team employees, and sites with
+// referral disabled (without legacy sub-site commissions) do not use the personal referral page.
 export const Route = createFileRoute('/_authenticated/referral/')({
   beforeLoad: async ({ context }) => {
     const user = useAuthStore.getState().auth.user
@@ -73,6 +78,9 @@ export const Route = createFileRoute('/_authenticated/referral/')({
         to: '/dashboard/$section',
         params: { section: 'overview' },
       })
+    }
+    if (user.is_team_employee === true) {
+      throw redirect({ to: '/my-team', replace: true })
     }
 
     let statusReferralEnabled: boolean | undefined

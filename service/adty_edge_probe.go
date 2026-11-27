@@ -111,7 +111,15 @@ type AdtyEdgeStatusSummary struct {
 }
 
 var (
+	// adtyEdgeProbeRunMu serializes overlapping probe executions (ticker vs manual)
+	// without blocking DNS sync or manual failover while HTTPS probes are in flight.
+	adtyEdgeProbeRunMu sync.Mutex
+	// adtyEdgeProbeMu serializes all mainland edge DNS mutations, auto-failover
+	// reconciliation, and probe state writes. Global lock order:
+	//   model.ResellerWriteMu -> adtyEdgeProbeMu
+	//   adtyEdgeProbeRunMu    -> adtyEdgeProbeMu
 	adtyEdgeProbeMu       sync.Mutex
+	adtyEdgeControlEpoch  uint64
 	adtyEdgeProbeDialAddr = func(nodeIP string) string {
 		return net.JoinHostPort(nodeIP, "443")
 	}
@@ -139,7 +147,13 @@ func GetAdtyEdgeProbeState() (*AdtyEdgeProbeState, error) {
 func resetAdtyEdgeAutoFailoverState(ips []string, manualFailover bool, now time.Time) {
 	adtyEdgeProbeMu.Lock()
 	defer adtyEdgeProbeMu.Unlock()
+	resetAdtyEdgeAutoFailoverStateLocked(ips, manualFailover, now)
+}
 
+// resetAdtyEdgeAutoFailoverStateLocked resets persisted auto-failover/ejection flags.
+// Caller must hold adtyEdgeProbeMu.
+func resetAdtyEdgeAutoFailoverStateLocked(ips []string, manualFailover bool, now time.Time) {
+	adtyEdgeControlEpoch++
 	prev, err := GetAdtyEdgeProbeState()
 	if err != nil || prev == nil {
 		return
@@ -401,10 +415,17 @@ func probeSingleAdtyEdgeNode(
 // restored after AdtyEdgeAutoRecoverSuccess consecutive successes, and if all nodes are ejected
 // the mainland target automatically fails over to Cloudflare orange-cloud proxy until any node recovers.
 func RunAdtyEdgeProbeOnce(ctx context.Context, now time.Time, force bool) (*AdtyEdgeProbeState, error) {
-	adtyEdgeProbeMu.Lock()
-	defer adtyEdgeProbeMu.Unlock()
+	adtyEdgeProbeRunMu.Lock()
+	defer adtyEdgeProbeRunMu.Unlock()
 
+	// Snapshot configuration and control epoch before running network probes.
+	// Do NOT hold adtyEdgeProbeMu during HTTPS probes so manual failover and DNS
+	// sync are never blocked by slow or unreachable edge nodes.
+	adtyEdgeProbeMu.Lock()
+	startEpoch := adtyEdgeControlEpoch
 	cfg := resellerSetting()
+	adtyEdgeProbeMu.Unlock()
+
 	ips := cfg.EffectiveEdgeNodeIPs()
 	if !force && (!cfg.EdgeMainlandEnabled || !cfg.EdgeProbeEnabled || len(ips) == 0) {
 		return nil, nil
@@ -420,6 +441,29 @@ func RunAdtyEdgeProbeOnce(ctx context.Context, now time.Time, force bool) (*Adty
 	probeHost, expectedSiteID, expectedRole, err := adtySelectEdgeProbeTargetAt(ctx, cfg, now)
 	if err != nil {
 		return nil, err
+	}
+
+	nodes := make([]AdtyEdgeNodeProbeState, len(ips))
+	var wg sync.WaitGroup
+	for i, ip := range ips {
+		wg.Add(1)
+		go func(idx int, nodeIP string) {
+			defer wg.Done()
+			nodes[idx] = probeSingleAdtyEdgeNode(ctx, nodeIP, probeHost, expectedSiteID, expectedRole, cfg.EdgeACMEStaging, now)
+		}(i, ip)
+	}
+	wg.Wait()
+
+	// Acquire adtyEdgeProbeMu for state computation, DNS reconciliation, and state
+	// persistence, re-reading fresh settings and probe state to eliminate TOCTOU
+	// races with concurrent manual failover, DNS sync, or settings updates.
+	adtyEdgeProbeMu.Lock()
+	defer adtyEdgeProbeMu.Unlock()
+
+	freshCfg := resellerSetting()
+	freshIPs := freshCfg.EffectiveEdgeNodeIPs()
+	if !force && (!freshCfg.EdgeMainlandEnabled || !freshCfg.EdgeProbeEnabled || len(freshIPs) == 0) {
+		return nil, nil
 	}
 
 	prev, _ := GetAdtyEdgeProbeState()
@@ -446,16 +490,12 @@ func RunAdtyEdgeProbeOnce(ctx context.Context, now time.Time, force bool) (*Adty
 		}
 	}
 
-	nodes := make([]AdtyEdgeNodeProbeState, len(ips))
-	var wg sync.WaitGroup
-	for i, ip := range ips {
-		wg.Add(1)
-		go func(idx int, nodeIP string) {
-			defer wg.Done()
-			nodes[idx] = probeSingleAdtyEdgeNode(ctx, nodeIP, probeHost, expectedSiteID, expectedRole, cfg.EdgeACMEStaging, now)
-		}(i, ip)
-	}
-	wg.Wait()
+	origTarget := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(cfg.DomainMainlandTarget)), ".")
+	freshTarget := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(freshCfg.DomainMainlandTarget)), ".")
+	ipsChanged := !slices.Equal(freshIPs, ips)
+	targetChanged := freshTarget != origTarget
+	controlChanged := adtyEdgeControlEpoch != startEpoch
+	staleForDNS := ipsChanged || targetChanged || controlChanged
 
 	healthyCount := 0
 	var maxHealthyLatency int64
@@ -491,7 +531,7 @@ func RunAdtyEdgeProbeOnce(ctx context.Context, now time.Time, force bool) (*Adty
 			earliestCertNotAfter = nodes[i].CertNotAfter
 		}
 
-		if !cfg.EdgeAutoFailover {
+		if !freshCfg.EdgeAutoFailover || freshCfg.EdgeFailoverToCF || staleForDNS {
 			nodes[i].Ejected = false
 			nodes[i].EjectedAt = 0
 		} else if hasPrev && prevNode.Ejected {
@@ -556,15 +596,26 @@ func RunAdtyEdgeProbeOnce(ctx context.Context, now time.Time, force bool) (*Adty
 	}
 
 	prevAutoFailover := prev != nil && prev.AutoFailoverActive
-	if cfg.EdgeFailoverToCF {
+	if freshCfg.EdgeFailoverToCF {
 		state.AutoFailoverActive = false
 		state.ActiveDNSIPs = nil
-	} else if cfg.EdgeAutoFailover && cfg.EdgeMainlandEnabled && cfg.CloudflareConfigured() && strings.TrimSpace(cfg.DomainMainlandTarget) != "" {
+	} else if staleForDNS {
+		// Edge IPs, mainland target, or manual failover/DNS sync changed while
+		// probes were in flight: skip DNS reconciliation and avoid clobbering newer
+		// persisted probe state with stale measurements.
+		if prev != nil {
+			state.AutoFailoverActive = prev.AutoFailoverActive
+			state.ActiveDNSIPs = slices.Clone(prev.ActiveDNSIPs)
+		} else {
+			state.AutoFailoverActive = false
+			state.ActiveDNSIPs = slices.Clone(freshIPs)
+		}
+	} else if freshCfg.EdgeAutoFailover && freshCfg.EdgeMainlandEnabled && freshCfg.CloudflareConfigured() && strings.TrimSpace(freshCfg.DomainMainlandTarget) != "" {
 		dnsState, _ := GetAdtyEdgeDNSSyncState()
 		if len(activeIPs) > 0 {
 			needSync := dnsState == nil || dnsState.Proxied || !slices.Equal(dnsState.IPs, activeIPs) || prevAutoFailover
 			if needSync {
-				if _, syncErr := syncAdtyEdgeMainlandDNSWithIPs(ctx, cfg, activeIPs, false, true); syncErr != nil {
+				if _, syncErr := syncAdtyEdgeMainlandDNSWithIPs(ctx, freshCfg, activeIPs, false, true); syncErr != nil {
 					common.SysError(common.LogText("adty edge auto-reconcile DNS failed: %s", syncErr.Error()))
 					state.AutoFailoverActive = prevAutoFailover
 					if dnsState != nil && !dnsState.Proxied {
@@ -575,10 +626,10 @@ func RunAdtyEdgeProbeOnce(ctx context.Context, now time.Time, force bool) (*Adty
 				} else {
 					state.AutoFailoverActive = false
 					state.ActiveDNSIPs = slices.Clone(activeIPs)
-					if len(activeIPs) < len(ips) {
+					if len(activeIPs) < len(freshIPs) {
 						state.LastAutoAction = "ejected_unhealthy"
 						state.LastAutoActionAt = now.Unix()
-					} else if prevAutoFailover || (dnsState != nil && (dnsState.Proxied || len(dnsState.IPs) < len(ips))) {
+					} else if prevAutoFailover || (dnsState != nil && (dnsState.Proxied || len(dnsState.IPs) < len(freshIPs))) {
 						state.LastAutoAction = "recovered_all"
 						state.LastAutoActionAt = now.Unix()
 					}
@@ -590,7 +641,7 @@ func RunAdtyEdgeProbeOnce(ctx context.Context, now time.Time, force bool) (*Adty
 		} else {
 			needCF := !prevAutoFailover || dnsState == nil || !dnsState.Proxied
 			if needCF {
-				if _, syncErr := syncAdtyEdgeMainlandDNSWithIPs(ctx, cfg, []string{ips[0]}, true, true); syncErr != nil {
+				if _, syncErr := syncAdtyEdgeMainlandDNSWithIPs(ctx, freshCfg, []string{freshIPs[0]}, true, true); syncErr != nil {
 					common.SysError(common.LogText("adty edge auto-failover to Cloudflare failed: %s", syncErr.Error()))
 					state.AutoFailoverActive = prevAutoFailover
 					if dnsState != nil && !dnsState.Proxied {
@@ -611,6 +662,9 @@ func RunAdtyEdgeProbeOnce(ctx context.Context, now time.Time, force bool) (*Adty
 		state.AutoFailoverActive = false
 	}
 
+	if staleForDNS {
+		return &state, nil
+	}
 	if err := SaveAdtyEdgeState(model.AdtyEdgeStateKeyProbe, state, now); err != nil {
 		return &state, err
 	}

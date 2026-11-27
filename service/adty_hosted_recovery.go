@@ -193,44 +193,73 @@ func RecoverAdtyHostedPaymentForActor(ctx context.Context, ext *model.AdtyTopupO
 	return err
 }
 
-// The scan covers providers that can be queried (BEpusdt), is bounded to twenty
-// orders per minute and a seven-day recovery window. Older orders remain
-// available for audited manual completion.
+const (
+	adtyHostedPendingScanLimit        = 20
+	adtyHostedTerminalScanLimit       = 10
+	adtyHostedTerminalRecentBackoff   = 600  // 10 min for terminal orders < 1h old
+	adtyHostedTerminalExtendedBackoff = 1800 // 30 min for older terminal orders
+)
+
+// The scan covers providers that can be queried (BEpusdt), prioritizing live
+// unexpired pending orders (every 60s) in a dedicated pass so terminal orders
+// or already-queued orphans can never cause head-of-line starvation.
 func recoverAdtyHostedPayments(now int64) {
-	var orders []model.AdtyTopupOrder
-	err := model.DB.Table("adty_topup_orders AS a").Select("a.*").Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
-		Where("a.provider IN ? AND a.gateway_trade_id <> '' AND a.pay_address <> '' AND a.pay_url <> '' AND a.created_at <= ? AND a.created_at >= ? AND a.last_query_at <= ? AND t.status IN ?", []string{
-			model.PaymentProviderAdtyBEpusdt,
-		}, now-120, now-7*24*60*60, now-60, []string{common.TopUpStatusPending, common.TopUpStatusExpired, common.TopUpStatusFailed, model.TopUpStatusCanceled}).
-		Order("a.last_query_at, a.id").Limit(20).Scan(&orders).Error
-	if err != nil {
-		common.SysError(common.LogText("hosted payment recovery scan failed: %s", err.Error()))
+	hasOrphanTable := model.DB.Migrator().HasTable(&model.PaymentOrphanEvent{})
+	applyOrphanFilter := func(q *gorm.DB) *gorm.DB {
+		if !hasOrphanTable {
+			return q
+		}
+		return q.Where("NOT EXISTS (SELECT 1 FROM adty_payment_orphan_events o WHERE o.reference_id = a.trade_no AND o.provider = a.provider AND o.status <> ?)", model.PaymentOrphanStatusDismissed)
+	}
+
+	var pendingOrders []model.AdtyTopupOrder
+	pendingQ := model.DB.Table("adty_topup_orders AS a").Select("a.*").
+		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
+		Where("a.provider IN ? AND a.gateway_trade_id <> '' AND a.pay_address <> '' AND a.pay_url <> '' AND a.created_at <= ? AND a.created_at >= ? AND a.last_query_at <= ? AND t.status = ? AND (a.expire_at = 0 OR a.expire_at > ?)",
+			[]string{model.PaymentProviderAdtyBEpusdt},
+			now-120, now-7*24*60*60, now-60, common.TopUpStatusPending, now)
+	if err := applyOrphanFilter(pendingQ).Order("a.last_query_at, a.id").Limit(adtyHostedPendingScanLimit).Scan(&pendingOrders).Error; err != nil {
+		common.SysError(common.LogText("hosted payment recovery pending scan failed: %s", err.Error()))
 		return
 	}
-	for _, ext := range orders {
-		var orphanCount int64
-		if cErr := model.DB.Model(&model.PaymentOrphanEvent{}).
-			Where("reference_id = ? AND provider = ? AND status <> ?", ext.TradeNo, ext.Provider, model.PaymentOrphanStatusDismissed).
-			Count(&orphanCount).Error; cErr == nil && orphanCount > 0 {
-			continue
-		}
-		claim := model.DB.Model(&model.AdtyTopupOrder{}).Where("id = ? AND last_query_at <= ?", ext.Id, now-60).Update("last_query_at", now)
-		if claim.Error != nil || claim.RowsAffected != 1 {
-			continue
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		err := RecoverAdtyHostedPayment(ctx, &ext)
-		cancel()
-		if err != nil {
-			if errors.Is(err, ErrAdtyPaymentConfirming) {
-				common.SysLog(common.LogText("hosted payment recovery confirming on-chain trade_no=%s", ext.TradeNo))
-			} else if isPermanentAdtyTopUpCreditReject(err) {
-				common.SysLog(common.LogText("hosted payment recovery conflict queued for review trade_no=%s: %s", ext.TradeNo, err.Error()))
-			} else {
-				common.SysLog(common.LogText("hosted payment recovery transient error trade_no=%s: %s", ext.TradeNo, err.Error()))
+
+	var terminalOrders []model.AdtyTopupOrder
+	terminalQ := model.DB.Table("adty_topup_orders AS a").Select("a.*").
+		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
+		Where(`a.provider IN ? AND a.gateway_trade_id <> '' AND a.pay_address <> '' AND a.pay_url <> '' AND a.created_at <= ? AND a.created_at >= ? AND
+			((t.status = ? AND a.expire_at > 0 AND a.expire_at <= ?) OR t.status IN ?) AND
+			(a.last_query_at = 0 OR (a.created_at >= ? AND a.last_query_at <= ?) OR a.last_query_at <= ?)`,
+			[]string{model.PaymentProviderAdtyBEpusdt},
+			now-120, now-7*24*60*60,
+			common.TopUpStatusPending, now,
+			[]string{common.TopUpStatusExpired, common.TopUpStatusFailed, model.TopUpStatusCanceled},
+			now-3600, now-adtyHostedTerminalRecentBackoff, now-adtyHostedTerminalExtendedBackoff)
+	if err := applyOrphanFilter(terminalQ).Order("a.last_query_at, a.id").Limit(adtyHostedTerminalScanLimit).Scan(&terminalOrders).Error; err != nil {
+		common.SysError(common.LogText("hosted payment recovery terminal scan failed: %s", err.Error()))
+	}
+
+	runBatch := func(orders []model.AdtyTopupOrder, claimCutoff int64) {
+		for _, ext := range orders {
+			claim := model.DB.Model(&model.AdtyTopupOrder{}).Where("id = ? AND last_query_at <= ?", ext.Id, claimCutoff).Update("last_query_at", now)
+			if claim.Error != nil || claim.RowsAffected != 1 {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			err := RecoverAdtyHostedPayment(ctx, &ext)
+			cancel()
+			if err != nil {
+				if errors.Is(err, ErrAdtyPaymentConfirming) {
+					common.SysLog(common.LogText("hosted payment recovery confirming on-chain trade_no=%s", ext.TradeNo))
+				} else if isPermanentAdtyTopUpCreditReject(err) {
+					common.SysLog(common.LogText("hosted payment recovery conflict queued for review trade_no=%s: %s", ext.TradeNo, err.Error()))
+				} else {
+					common.SysLog(common.LogText("hosted payment recovery transient error trade_no=%s: %s", ext.TradeNo, err.Error()))
+				}
 			}
 		}
 	}
+	runBatch(pendingOrders, now-60)
+	runBatch(terminalOrders, now-adtyHostedTerminalRecentBackoff)
 }
 
 func init() {

@@ -45,7 +45,8 @@ export function BalanceChip() {
   const isPureSiteOwner = Boolean(
     user?.adty_site_owner && user.role < ROLE.ADMIN
   )
-  const hideBalanceChip = isSiteStaff || isPureSiteOwner
+  const isTeamEmployee = user?.is_team_employee === true
+  const hideBalanceChip = isSiteStaff || isPureSiteOwner || isTeamEmployee
   const sessionQuota = user?.quota
   const balanceQuery = useQuery({
     queryKey: adtyBalanceQueryKey,

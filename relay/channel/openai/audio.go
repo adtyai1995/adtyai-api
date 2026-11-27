@@ -48,7 +48,13 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		var lastParseErr error
 		var streamErr *types.NewAPIError
 		headersWritten := false
-		helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		clientGone := helper.ClientRequestCanceled(c)
+		detachDrain := info != nil && !info.IsChannelTest
+		scanFn := helper.StreamScannerHandler
+		if detachDrain {
+			scanFn = helper.StreamScannerHandlerDetached
+		}
+		scanFn(c, resp, info, func(data string, sr *helper.StreamResult) {
 			if len(data) > 0 {
 				if oaiErr, statusCode := ExtractEmbeddedOpenAIError(common.StringToByteSlice(data), upstreamErrorFallbackStatus(resp)); oaiErr != nil {
 					if !headersWritten && !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
@@ -102,11 +108,16 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 					usage.CompletionTokenDetails.AudioTokens = audioOut
 				}
 			}
-			if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+			if !clientGone && c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+				clientGone = true
 				if info != nil && info.StreamStatus != nil {
 					info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
 				}
-				sr.Stop(c.Request.Context().Err())
+			}
+			if clientGone {
+				if !detachDrain {
+					sr.Stop(errors.New("client closed request"))
+				}
 				return
 			}
 			if !headersWritten {
@@ -114,10 +125,13 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 				headersWritten = true
 			}
 			if err := helper.StringData(c, data); err != nil {
+				clientGone = true
 				if info != nil && info.StreamStatus != nil {
 					info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
 				}
-				sr.Stop(err)
+				if !detachDrain {
+					sr.Stop(err)
+				}
 				return
 			}
 			if info != nil {
@@ -127,8 +141,10 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		if streamErr != nil {
 			return nil, streamErr
 		}
-		if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
-			if helper.ClientRequestCanceled(c) || (info != nil && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone) {
+		clientGone = clientGone || helper.ClientRequestCanceled(c) || (info != nil && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone)
+		upstreamProduced := streamedAudioBytes > 0 || service.ValidUsage(usage) || (info != nil && info.ReceivedResponseCount > 0)
+		if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) && !(detachDrain && clientGone && upstreamProduced) {
+			if clientGone {
 				var cancelErr error
 				if info != nil && info.StreamStatus != nil && info.StreamStatus.EndError != nil {
 					cancelErr = info.StreamStatus.EndError

@@ -62,6 +62,8 @@ export interface AuthUser {
   adty_has_legacy_site_commissions?: boolean
   /** True when the user belongs to an active team or led a closed team. */
   adty_has_team?: boolean
+  /** True when the user is an independent team employee without a personal wallet or referral account. */
+  is_team_employee?: boolean
   /** Reseller sub-site id for sub-site customers; 0 for main-site accounts. */
   site_id?: number
   /** Dedicated employee identity; never grants owner or administrator authority. */

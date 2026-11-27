@@ -9,6 +9,40 @@ func BackfillAdtyCloseMailDeadline(db *gorm.DB, siteID int) error {
 	if siteID > 0 {
 		q = q.Where("site_id = ?", siteID)
 	}
+	if db.Dialector.Name() == "mysql" {
+		var rows []AdtySiteCloseMailBatch
+		if err := q.Select("id", "site_id").Find(&rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			var rev2 AdtySiteCloseMailBatch
+			var executeAt int64
+			if err := db.Select("previous_execute_at").Where("site_id = ? AND revision = 2", row.SiteId).Limit(1).Find(&rev2).Error; err != nil {
+				return err
+			}
+			if rev2.PreviousExecuteAt > 0 {
+				executeAt = rev2.PreviousExecuteAt
+			} else {
+				var newerCount int64
+				if err := db.Model(&AdtySiteCloseMailBatch{}).Where("site_id = ? AND revision > 1", row.SiteId).Count(&newerCount).Error; err != nil {
+					return err
+				}
+				if newerCount == 0 {
+					var site AdtySite
+					if err := db.Select("close_execute_at").Where("id = ? AND status IN ?", row.SiteId, []string{AdtySiteStatusClosing, AdtySiteStatusClosed}).Limit(1).Find(&site).Error; err != nil {
+						return err
+					}
+					executeAt = site.CloseExecuteAt
+				}
+			}
+			if executeAt > 0 {
+				if err := db.Model(&AdtySiteCloseMailBatch{}).Where("id = ? AND COALESCE(execute_at,0) = 0", row.Id).UpdateColumn("execute_at", executeAt).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
 	return q.UpdateColumn("execute_at", gorm.Expr(`COALESCE(
  (SELECT NULLIF(b.previous_execute_at,0) FROM adty_site_close_mail_batches b WHERE b.site_id = adty_site_close_mail_batches.site_id AND b.revision = 2),
  (SELECT s.close_execute_at FROM adty_sites s WHERE s.id = adty_site_close_mail_batches.site_id AND s.status IN ('closing','closed') AND NOT EXISTS (SELECT 1 FROM adty_site_close_mail_batches r WHERE r.site_id = s.id AND r.revision > 1)), 0)`)).Error

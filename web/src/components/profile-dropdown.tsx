@@ -50,10 +50,13 @@ export function ProfileDropdown() {
   const isPureSiteOwner = Boolean(
     user?.adty_site_owner && user.role < ROLE.ADMIN
   )
+  const isTeamEmployee = user?.is_team_employee === true
   const hideCustomerAccountLinks = isSiteStaff || isPureSiteOwner
   const isSuperAdmin = user?.role === ROLE.SUPER_ADMIN && !isSiteStaff
   const isWalletVisible =
-    useIsSidebarModuleVisible('/wallet') && !hideCustomerAccountLinks
+    useIsSidebarModuleVisible('/wallet') &&
+    !hideCustomerAccountLinks &&
+    !isTeamEmployee
   const isSecurityVisible =
     useIsSidebarModuleVisible('/security') && !isSiteStaff
   const avatarName = user?.username || displayName

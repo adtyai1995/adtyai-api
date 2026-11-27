@@ -120,6 +120,25 @@ func Login(c *gin.Context) {
 		}
 		return
 	}
+	if !service.AdtySiteLoginAllowedForUser(c, &user) {
+		lockUnavailable := false
+		if recErr := adtyRecordLoginFailureForSite(username, siteID); recErr != nil {
+			common.SysError(common.LogText("login failure lock unavailable: %s", recErr.Error()))
+			lockUnavailable = true
+		}
+		if hasCand {
+			if recErr := adtyRecordLoginFailureUser(candID); recErr != nil {
+				common.SysError(common.LogText("login failure lock unavailable: %s", recErr.Error()))
+				lockUnavailable = true
+			}
+		}
+		if lockUnavailable {
+			common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Please try again later"))
+			return
+		}
+		common.ApiError(c, adtyLoginFailureResponse())
+		return
+	}
 	adtyClearLoginFailuresForSite(username, siteID)
 	model.ClearAccountLoginFailuresForLogin(user.Id, user.Username, user.Email, user.SiteId)
 	if user.SiteId != siteID && user.Email != "" {
@@ -808,6 +827,10 @@ func buildSelfUserData(user *model.User) map[string]any {
 	if user.StaffSiteId > 0 {
 		required, version = false, "" // Staff use the dedicated workspace's site agreement gate.
 	}
+	isTeamEmployee := false
+	if teamEmployees, err := service.AdtyIndependentTeamEmployeeSet([]int{user.Id}); err == nil {
+		isTeamEmployee = teamEmployees[user.Id]
+	}
 	data := map[string]any{
 		"id":                               user.Id,
 		"username":                         user.Username,
@@ -840,6 +863,7 @@ func buildSelfUserData(user *model.User) map[string]any {
 		"adty_has_legacy_site_commissions": service.AdtyUserHasLegacySiteCommissions(user.Id),
 		"site_id":                          user.SiteId,
 		"staff_site_id":                    user.StaffSiteId,
+		"is_team_employee":                 isTeamEmployee,
 		"site_terms_required":              required,
 		"site_terms_version":               version,
 	}

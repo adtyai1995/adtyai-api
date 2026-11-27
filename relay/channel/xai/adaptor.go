@@ -63,6 +63,9 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {
 	channel.SetupApiRequestHeader(info, c, req)
+	if info != nil && info.RelayMode == constant.RelayModeImagesEdits && !info.ChannelSetting.PassThroughBodyEnabled && !model_setting.GetGlobalSettings().PassThroughRequestEnabled {
+		req.Set("Content-Type", gin.MIMEJSON)
+	}
 	req.Set("Authorization", "Bearer "+info.ApiKey)
 	return nil
 }

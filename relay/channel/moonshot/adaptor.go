@@ -71,6 +71,10 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 			return fmt.Sprintf("%s/v1/completions", info.ChannelBaseUrl), nil
 		} else if info.RelayMode == constant.RelayModeResponses {
 			return fmt.Sprintf("%s/v1/responses", info.ChannelBaseUrl), nil
+		} else if info.RelayMode == constant.RelayModeImagesGenerations {
+			return fmt.Sprintf("%s/v1/images/generations", info.ChannelBaseUrl), nil
+		} else if info.RelayMode == constant.RelayModeImagesEdits {
+			return fmt.Sprintf("%s/v1/images/edits", info.ChannelBaseUrl), nil
 		}
 		return fmt.Sprintf("%s/v1/chat/completions", info.ChannelBaseUrl), nil
 	}
@@ -108,6 +112,11 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
+	if _, ok := requestBody.(channel.ContentTypeBody); ok ||
+		(info != nil && info.RelayMode == constant.RelayModeImagesEdits &&
+			(c == nil || c.Request == nil || !strings.Contains(strings.ToLower(c.Request.Header.Get("Content-Type")), "application/json"))) {
+		return channel.DoFormRequest(a, c, info, requestBody)
+	}
 	return channel.DoApiRequest(a, c, info, requestBody)
 }
 

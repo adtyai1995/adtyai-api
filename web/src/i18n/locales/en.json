@@ -8678,6 +8678,7 @@
     "Set tag for selected channels": "Set tag for selected channels",
     "Set target total (USD)": "Set target total (USD)",
     "Set the ADTYAI_API_KEY environment variable to the API key from your token settings.": "Set the ADTYAI_API_KEY environment variable to the API key from your token settings.",
+    "Set the {{envKey}} environment variable to the API key from your token settings.": "Set the {{envKey}} environment variable to the API key from your token settings.",
     "Set the cost factor, its minimum, the markup limit and the trial credit limits before turning reseller sites on": "Set the cost factor, its minimum, the markup limit and the trial credit limits before turning reseller sites on",
     "Set the cost factor, its minimum, the markup limit, the extra bonus limit and the trial credit limits before turning reseller sites on": "Set the cost factor, its minimum, the markup limit, the extra bonus limit and the trial credit limits before turning reseller sites on",
     "Set the default commission rate before turning the referral program on": "Set the default commission rate before turning the referral program on",

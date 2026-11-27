@@ -36,16 +36,19 @@ var (
 )
 
 func checkExprDecimalBounds(d decimal.Decimal) (decimal.Decimal, error) {
-	if d.IsZero() {
-		return d, nil
-	}
 	exp := int(d.Exponent())
+	if exp > maxExprAbsExp || exp < -maxExprAbsExp {
+		return decimal.Zero, errNonFiniteExpr
+	}
+	if d.IsZero() {
+		return decimal.Zero, nil
+	}
 	coeffDigits := len(d.Coefficient().String())
 	if d.IsNegative() && coeffDigits > 0 {
 		coeffDigits--
 	}
 	// Magnitude = coeffDigits + exp (approx log10(|d|) + 1); cap both magnitude and precision.
-	if coeffDigits > maxExprIntermediateDigits*2 || exp > maxExprAbsExp || exp < -maxExprAbsExp || coeffDigits+exp > maxExprAbsExp {
+	if coeffDigits > maxExprIntermediateDigits*2 || coeffDigits+exp > maxExprAbsExp {
 		return decimal.Zero, errNonFiniteExpr
 	}
 	return d, nil
@@ -1024,9 +1027,11 @@ func evalArithmetic(op string, left, right any) (any, error) {
 		if ld.IsZero() && rd.IsNegative() {
 			return nil, errNonFiniteExpr
 		}
-		if _, err := checkExprDecimalBounds(ld); err != nil {
+		checkedLD, err := checkExprDecimalBounds(ld)
+		if err != nil {
 			return nil, err
 		}
+		ld = checkedLD
 		// Pre-check estimated magnitude before calling Pow to avoid huge big.Int allocation
 		// on chained powers like ((((2**32)**32)**32)**32) (R2-038).
 		expInt := rd.IntPart()
@@ -1264,7 +1269,8 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 			return nil, fmt.Errorf("expr run error: int expects 1 argument")
 		}
 		if d, ok := valueAsDecimal(args[0]); ok {
-			if _, err := checkExprDecimalBounds(d); err != nil {
+			d, err := checkExprDecimalBounds(d)
+			if err != nil {
 				return nil, err
 			}
 			return d.Truncate(0), nil
@@ -1278,7 +1284,8 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 			if err != nil {
 				return nil, fmt.Errorf("expr run error: int cannot parse %q", s)
 			}
-			if _, err := checkExprDecimalBounds(d); err != nil {
+			d, err = checkExprDecimalBounds(d)
+			if err != nil {
 				return nil, err
 			}
 			return d.Truncate(0), nil
@@ -1431,7 +1438,8 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("expr run error: %s requires a number, got %T", name, args[0])
 		}
-		if _, err := checkExprDecimalBounds(d); err != nil {
+		d, err := checkExprDecimalBounds(d)
+		if err != nil {
 			return nil, err
 		}
 		switch name {
@@ -1450,7 +1458,8 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("expr run error: round requires a number, got %T", args[0])
 		}
-		if _, err := checkExprDecimalBounds(d); err != nil {
+		d, err := checkExprDecimalBounds(d)
+		if err != nil {
 			return nil, err
 		}
 		if len(args) == 1 {
@@ -1510,7 +1519,8 @@ func decimalFromLocation(srcRunes []rune, loc file.Location, expected float64) (
 	if err != nil {
 		return decimal.Zero, false
 	}
-	if _, err := checkExprDecimalBounds(d); err != nil {
+	d, err = checkExprDecimalBounds(d)
+	if err != nil {
 		return decimal.Zero, false
 	}
 	if d.InexactFloat64() != expected {
@@ -1617,7 +1627,8 @@ func decimalAsInt64(v any) (int64, bool) {
 	if !ok {
 		return 0, false
 	}
-	if _, err := checkExprDecimalBounds(d); err != nil {
+	d, err := checkExprDecimalBounds(d)
+	if err != nil {
 		return 0, false
 	}
 	if !d.Equal(d.Truncate(0)) {
@@ -1635,7 +1646,8 @@ func decimalAsUint64(v any) (uint64, bool) {
 	if !ok || d.IsNegative() {
 		return 0, false
 	}
-	if _, err := checkExprDecimalBounds(d); err != nil {
+	d, err := checkExprDecimalBounds(d)
+	if err != nil {
 		return 0, false
 	}
 	if !d.Equal(d.Truncate(0)) {

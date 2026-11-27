@@ -894,7 +894,7 @@ func DeleteExpiredUserSessions(now int64) error {
 	}
 	issuanceCutoff := now - common.UserSessionIssuanceWindowSeconds
 	revokedBefore := now - int64(common.UserSessionRevokedRetentionDays)*24*60*60
-	return deleteExpiredUserSessionsBefore(now, issuanceCutoff, revokedBefore)
+	return deleteExpiredUserSessionsBefore(revokedBefore, issuanceCutoff, revokedBefore)
 }
 
 func DeleteOldRevokedUserSessions(now int64) error {

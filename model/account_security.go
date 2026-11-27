@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"gorm.io/gorm"
 )
 
@@ -13,19 +12,22 @@ import (
 // account, including subsite-scoped email lock keys for sites owned by a
 // main-site site owner (users.site_id == 0).
 func ClearAccountLoginFailures(userID int, username, email string, siteID int) {
-	clearAccountLoginFailuresWithDB(DB, userID, username, email, siteID, true)
+	clearAccountLoginFailuresWithDB(DB, userID, username, email, siteID)
 }
 
 // ClearAccountLoginFailuresForLogin clears password lockout keys on successful
-// login, skipping the owned-subsites query when reseller sites are disabled so
-// plain main-site logins incur no extra database round trip.
+// login, including any owned subsite email lock keys so lockouts cannot persist
+// across reseller.enabled toggles.
 func ClearAccountLoginFailuresForLogin(userID int, username, email string, siteID int) {
-	clearAccountLoginFailuresWithDB(DB, userID, username, email, siteID, adty_setting.GetResellerSetting().Enabled)
+	clearAccountLoginFailuresWithDB(DB, userID, username, email, siteID)
 }
 
-func clearAccountLoginFailuresWithDB(db *gorm.DB, userID int, username, email string, siteID int, clearOwnedSubsites bool) {
+func clearAccountLoginFailuresWithDB(db *gorm.DB, userID int, username, email string, siteID int) {
 	common.ClearAccountLoginFailures(userID, username, email, siteID)
-	if !clearOwnedSubsites || userID <= 0 || siteID != 0 || strings.TrimSpace(email) == "" || db == nil {
+	if userID <= 0 || siteID != 0 || strings.TrimSpace(email) == "" || db == nil {
+		return
+	}
+	if !db.Migrator().HasTable(&AdtySite{}) {
 		return
 	}
 	var ownedSiteIDs []int
@@ -57,7 +59,9 @@ func ChangeUserPassword(identity AuthSessionIdentity, update *User, firstPasswor
 	if err != nil {
 		return err
 	}
-	return DB.Transaction(func(tx *gorm.DB) error {
+	var prevUsername, targetEmail string
+	var targetSiteID int
+	err = DB.Transaction(func(tx *gorm.DB) error {
 		if err := ValidateAuthSessionWithTx(tx, identity); err != nil {
 			return err
 		}
@@ -79,11 +83,13 @@ func ChangeUserPassword(identity AuthSessionIdentity, update *User, firstPasswor
 				}
 				return ErrCurrentPasswordInvalid
 			}
-			clearAccountLoginFailuresWithDB(tx, current.Id, current.Username, current.Email, current.SiteId, true)
 		}
 		if current.Password != "" && common.ValidatePasswordAndHash(update.Password, current.Password) {
 			return common.ErrAccountPasswordSame
 		}
+		prevUsername = current.Username
+		targetEmail = current.Email
+		targetSiteID = current.SiteId
 		changes := map[string]any{"password": hash, "access_token": nil, "access_token_created_at": nil}
 		trimmedUsername := strings.TrimSpace(update.Username)
 		if trimmedUsername != "" {
@@ -112,4 +118,12 @@ func ChangeUserPassword(identity AuthSessionIdentity, update *User, firstPasswor
 		}
 		return tx.First(update, identity.UserID).Error
 	})
+	if err != nil {
+		return err
+	}
+	ClearAccountLoginFailures(update.Id, update.Username, targetEmail, targetSiteID)
+	if prevUsername != "" && !strings.EqualFold(prevUsername, update.Username) {
+		common.ClearLoginFailures(prevUsername)
+	}
+	return nil
 }

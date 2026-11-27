@@ -160,9 +160,14 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	var streamErr *types.NewAPIError
 	var lastErrorEventErr *types.NewAPIError
 	var sawErrorEvent bool
-	var clientWriteFailed bool
+	clientWriteFailed := helper.ClientRequestCanceled(c)
+	detachDrain := info != nil && !info.IsChannelTest
+	scanFn := helper.StreamScannerHandler
+	if detachDrain {
+		scanFn = helper.StreamScannerHandlerDetached
+	}
 
-	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+	scanFn(c, resp, info, func(data string, sr *helper.StreamResult) {
 		raw := common.StringToByteSlice(data)
 		lastStreamData = raw
 		if isOpenAIImageStreamErrorEvent(raw) {
@@ -192,9 +197,20 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 				completedImages++
 			}
 		}
+		if !clientWriteFailed && helper.ClientRequestCanceled(c) {
+			clientWriteFailed = true
+		}
+		if clientWriteFailed {
+			if !detachDrain {
+				sr.Stop(errors.New("client closed request"))
+			}
+			return
+		}
 		if err := writeOpenaiImageStreamChunk(c, raw); err != nil {
 			clientWriteFailed = true
-			sr.Stop(err)
+			if !detachDrain {
+				sr.Stop(err)
+			}
 			return
 		}
 		if info != nil {
@@ -231,22 +247,36 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 
 	// StreamScannerHandler consumes the upstream [DONE]; re-emit it so the
 	// client still receives a terminal data: [DONE].
-	if info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonDone {
+	if !clientGone && info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonDone {
 		helper.Done(c)
 	}
 
 	applyUsagePostProcessing(info, usage, lastStreamData)
-	// Only trust completedImages when upstream finished the stream (done/eof).
-	// On client-side aborts (client_gone, or handler_stop from a failed client
-	// write) the counter undercounts what upstream actually generated and
-	// charged, so keep the requested n — otherwise a client could pay for one
-	// image by disconnecting right after the first completed event. The abort
-	// guard only blocks lowering the charge: if completed events already
-	// exceed the recorded n, bill the higher actual count regardless.
+	// For token-billed image models (e.g. gpt-image-2*), if the client disconnected
+	// and upstream still ended without reporting usage, fall back to the request's
+	// pre-consume token estimates instead of collapsing to 1 prompt token (R12-P1-02).
+	if clientGone && !perImageBilling && !service.ValidUsage(usage) && info != nil {
+		if estPrompt := info.GetEstimatePromptTokens(); estPrompt > usage.PromptTokens {
+			usage.PromptTokens = estPrompt
+		}
+		if info.TieredBillingSnapshot != nil {
+			if info.TieredBillingSnapshot.EstimatedPromptTokens > usage.PromptTokens {
+				usage.PromptTokens = info.TieredBillingSnapshot.EstimatedPromptTokens
+			}
+			if info.TieredBillingSnapshot.EstimatedCompletionTokens > usage.CompletionTokens {
+				usage.CompletionTokens = info.TieredBillingSnapshot.EstimatedCompletionTokens
+			}
+		}
+		usage.TotalTokens = max(usage.TotalTokens, usage.PromptTokens+usage.CompletionTokens)
+	}
+	// Only trust completedImages when upstream finished the stream (done/eof) with
+	// at least one completed image on clientGone. On premature aborts the counter
+	// undercounts what upstream generated, so keep the requested n unless completed
+	// events exceed it.
 	if info.StreamStatus != nil {
 		upstreamFinished := info.StreamStatus.EndReason == relaycommon.StreamEndReasonDone ||
 			info.StreamStatus.EndReason == relaycommon.StreamEndReasonEOF
-		if upstreamFinished || completedImages > int64(info.RequestedImageCount()) {
+		if (upstreamFinished && (!clientGone || completedImages > 0)) || completedImages > int64(info.RequestedImageCount()) {
 			info.UpdateImageCount(completedImages)
 		}
 	}

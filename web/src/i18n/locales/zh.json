@@ -8678,6 +8678,7 @@
     "Set tag for selected channels": "为选定的渠道设置标签",
     "Set target total (USD)": "设定目标总额（USD）",
     "Set the ADTYAI_API_KEY environment variable to the API key from your token settings.": "将 ADTYAI_API_KEY 环境变量设为令牌设置中的 API 密钥。",
+    "Set the {{envKey}} environment variable to the API key from your token settings.": "将 {{envKey}} 环境变量设为令牌设置中的 API 密钥。",
     "Set the cost factor, its minimum, the markup limit and the trial credit limits before turning reseller sites on": "开启分站前，请先设置供货折扣、供货折扣下限、倍率上限和试用额度上限",
     "Set the cost factor, its minimum, the markup limit, the extra bonus limit and the trial credit limits before turning reseller sites on": "开启分站前，请先设置供货折扣、供货折扣下限、倍率上限、分站赠送额外上限和试用额度上限",
     "Set the default commission rate before turning the referral program on": "请先设置默认返佣比例，再开启推广返佣",

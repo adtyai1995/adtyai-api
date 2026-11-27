@@ -46,9 +46,16 @@ func adtyEpayChannelHTTPSQueryable(channel *model.AdtyEpayChannel) bool {
 	return err == nil && endpoint != nil && endpoint.Scheme == "https" && endpoint.Host != "" && endpoint.User == nil
 }
 
-// runAdtyEpayFollowUpQueries 找下单超过 query_after_seconds、距上次查询超过 1 分钟的易支付订单去查单。
-// 未过期的 pending、过期后仍在 expired_query_seconds 内的 expired、以及宽限窗口内的 canceled/failed 订单都会查。
-// 与手动补查共用 provider Query 核验订单、商户及付款凭据；只对 https 网关这样入账。
+const (
+	adtyEpayPendingScanLimit        = 50
+	adtyEpayTerminalScanLimit       = 20
+	adtyEpayTerminalRecentBackoff   = 600  // 10 min for terminal orders < 1h old
+	adtyEpayTerminalExtendedBackoff = 1800 // 30 min for older terminal orders
+)
+
+// runAdtyEpayFollowUpQueries 找下单超过 query_after_seconds 的易支付订单去查单。
+// 未过期的 pending 订单独占优先通道每分钟补查；终态订单与超期团队订单按退避频率在次级批次补查，
+// 并在 SQL 层排除已有非 dismissed 异常单与无有效网关的通道，避免队头饿死在途 pending 订单。
 func runAdtyEpayFollowUpQueries(now int64) {
 	after := int64(adty_setting.GetEpaySetting().QueryAfterSeconds)
 	if after <= 0 {
@@ -59,37 +66,74 @@ func runAdtyEpayFollowUpQueries(now int64) {
 		grace = 0
 	}
 	canceledFailedWindow := max(grace, int64(3600))
-	var exts []model.AdtyTopupOrder
-	err := model.DB.Table("adty_topup_orders AS a").Select("a.*").
+	teamLookbackWindow := max(canceledFailedWindow, int64(7*24*60*60))
+	hasOrphanTable := model.DB.Migrator().HasTable(&model.PaymentOrphanEvent{})
+	hasChannelTable := model.DB.Migrator().HasTable(&model.AdtyEpayChannel{})
+	applyCommonFilters := func(q *gorm.DB) *gorm.DB {
+		if hasChannelTable {
+			q = q.Joins("JOIN adty_epay_channels c ON c.id = a.channel_id AND TRIM(c.gateway_url) <> ''")
+		}
+		if hasOrphanTable {
+			q = q.Where("NOT EXISTS (SELECT 1 FROM adty_payment_orphan_events o WHERE o.reference_id = a.trade_no AND o.provider = a.provider AND o.status <> ?)", model.PaymentOrphanStatusDismissed)
+		}
+		return q
+	}
+
+	var pendingExts []model.AdtyTopupOrder
+	pendingQ := model.DB.Table("adty_topup_orders AS a").Select("a.*").
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
-		Where(`a.provider = ? AND a.channel_id > 0 AND a.created_at <= ? AND a.last_query_at <= ? AND (
-			(t.status = ? AND (a.expire_at > ? OR (a.expire_at <= ? AND a.expire_at > ?))) OR
+		Where("a.provider = ? AND a.channel_id > 0 AND a.created_at <= ? AND a.last_query_at <= ? AND t.status = ? AND (a.expire_at = 0 OR a.expire_at > ?)",
+			model.PaymentProviderAdtyEpay, now-after, now-60, common.TopUpStatusPending, now)
+	if err := applyCommonFilters(pendingQ).Order("a.last_query_at, a.id").Limit(adtyEpayPendingScanLimit).Scan(&pendingExts).Error; err != nil {
+		common.SysError(common.LogText("epay follow-up pending query scan: %s", err.Error()))
+		return
+	}
+
+	var terminalExts []model.AdtyTopupOrder
+	terminalQ := model.DB.Table("adty_topup_orders AS a").Select("a.*").
+		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
+		Where(`a.provider = ? AND a.channel_id > 0 AND a.created_at <= ? AND (
+			(t.status = ? AND a.expire_at > 0 AND a.expire_at <= ? AND a.expire_at > ?) OR
 			(t.status = ? AND a.expire_at <= ? AND a.expire_at > ?) OR
 			(t.status IN ? AND a.created_at >= ?) OR
-			(a.team_id>0 AND t.status IN ? AND (a.expire_at=0 OR (a.expire_at<=? AND a.last_query_at<a.expire_at)))
+			(a.team_id > 0 AND a.created_at >= ? AND t.status IN ? AND (a.expire_at = 0 OR (a.expire_at <= ? AND a.last_query_at < a.expire_at)))
+		) AND (
+			a.last_query_at = 0 OR
+			(a.team_id > 0 AND a.expire_at > 0 AND a.expire_at <= ? AND a.last_query_at < a.expire_at) OR
+			(a.created_at >= ? AND a.last_query_at <= ?) OR
+			a.last_query_at <= ?
 		)`,
-			model.PaymentProviderAdtyEpay, now-after, now-60,
-			common.TopUpStatusPending, now, now, now-grace,
+			model.PaymentProviderAdtyEpay, now-after,
+			common.TopUpStatusPending, now, now-grace,
 			common.TopUpStatusExpired, now, now-grace,
 			[]string{model.TopUpStatusCanceled, common.TopUpStatusFailed}, now-canceledFailedWindow,
-			[]string{common.TopUpStatusPending, common.TopUpStatusExpired}, now).
-		Order("a.last_query_at, a.id").Limit(50).Scan(&exts).Error
-	if err != nil {
-		common.SysError(common.LogText("epay follow-up query scan: %s", err.Error()))
-		return
+			now-teamLookbackWindow, []string{common.TopUpStatusPending, common.TopUpStatusExpired}, now,
+			now,
+			now-3600, now-adtyEpayTerminalRecentBackoff,
+			now-adtyEpayTerminalExtendedBackoff)
+	if err := applyCommonFilters(terminalQ).Order("a.last_query_at, a.id").Limit(adtyEpayTerminalScanLimit).Scan(&terminalExts).Error; err != nil {
+		common.SysError(common.LogText("epay follow-up terminal query scan: %s", err.Error()))
+	}
+
+	exts := make([]model.AdtyTopupOrder, 0, len(pendingExts)+len(terminalExts))
+	seen := make(map[string]struct{}, len(pendingExts)+len(terminalExts))
+	for _, ext := range pendingExts {
+		seen[ext.TradeNo] = struct{}{}
+		exts = append(exts, ext)
+	}
+	for _, ext := range terminalExts {
+		if _, dup := seen[ext.TradeNo]; dup {
+			continue
+		}
+		exts = append(exts, ext)
 	}
 	for _, ext := range exts {
 		if ext.ChannelId <= 0 {
 			continue
 		}
-		var orphanCount int64
-		if cErr := model.DB.Model(&model.PaymentOrphanEvent{}).
-			Where("reference_id = ? AND provider = ? AND status <> ?", ext.TradeNo, ext.Provider, model.PaymentOrphanStatusDismissed).
-			Count(&orphanCount).Error; cErr == nil && orphanCount > 0 {
-			continue
-		}
 		channel, chErr := model.GetAdtyEpayChannel(ext.ChannelId)
 		if chErr != nil || channel == nil || strings.TrimSpace(channel.GatewayURL) == "" {
+			_ = model.UpdateAdtyTopupOrderFields(ext.TradeNo, map[string]any{"last_query_at": now})
 			continue
 		}
 		httpsQueryable := adtyEpayChannelHTTPSQueryable(channel)

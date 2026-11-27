@@ -69,6 +69,8 @@ func validateAdtyEdgeMainlandDNSTarget(cfg *adty_setting.ResellerSetting) (strin
 	return target, ips, nil
 }
 
+// syncAdtyEdgeMainlandDNSWithIPs reconciles the mainland target A record(s) in Cloudflare DNS
+// and records the resulting sync state. Caller must hold adtyEdgeProbeMu.
 func syncAdtyEdgeMainlandDNSWithIPs(ctx context.Context, cfg *adty_setting.ResellerSetting, ips []string, proxied bool, autoMode bool) (*AdtyEdgeDNSSyncState, error) {
 	target, configuredIPs, err := validateAdtyEdgeMainlandDNSTarget(cfg)
 	if err != nil {
@@ -167,16 +169,22 @@ func syncAdtyEdgeMainlandDNSWithIPs(ctx context.Context, cfg *adty_setting.Resel
 // Manual sync resets any auto-ejection flags and restores all configured nodes unless manual
 // Cloudflare failover is enabled.
 func SyncAdtyEdgeMainlandDNS(ctx context.Context) (*AdtyEdgeDNSSyncState, error) {
+	adtyEdgeProbeMu.Lock()
+	defer adtyEdgeProbeMu.Unlock()
+
 	cfg := resellerSetting()
 	_, ips, err := validateAdtyEdgeMainlandDNSTarget(cfg)
 	if err != nil {
 		return nil, err
 	}
 	state, err := syncAdtyEdgeMainlandDNSWithIPs(ctx, cfg, ips, cfg.EdgeFailoverToCF, false)
+	if state != nil {
+		adtyEdgeControlEpoch++
+	}
 	if err != nil {
 		return nil, err
 	}
-	resetAdtyEdgeAutoFailoverState(ips, cfg.EdgeFailoverToCF, time.Now())
+	resetAdtyEdgeAutoFailoverStateLocked(ips, cfg.EdgeFailoverToCF, time.Now())
 	return state, nil
 }
 
@@ -184,20 +192,30 @@ func SyncAdtyEdgeMainlandDNS(ctx context.Context) (*AdtyEdgeDNSSyncState, error)
 // and Cloudflare failover proxy (orange cloud, auto TTL), updating Cloudflare DNS first so the
 // stored switch always reflects the live DNS state.
 func SetAdtyEdgeFailover(ctx context.Context, failoverToCF bool) (*AdtyEdgeDNSSyncState, error) {
+	// Enforce global lock order: model.ResellerWriteMu -> adtyEdgeProbeMu.
+	// UpdateAdtyResellerSettings holds ResellerWriteMu while calling SyncAdtyEdgeMainlandDNS
+	// (which acquires adtyEdgeProbeMu), so acquiring ResellerWriteMu first prevents AB-BA
+	// deadlocks and serializes manual failover against concurrent settings writes.
+	model.ResellerWriteMu.Lock()
+	defer model.ResellerWriteMu.Unlock()
+	adtyEdgeProbeMu.Lock()
+	defer adtyEdgeProbeMu.Unlock()
+
 	cfg := resellerSetting()
 	_, ips, err := validateAdtyEdgeMainlandDNSTarget(cfg)
 	if err != nil {
 		return nil, err
 	}
 	state, err := syncAdtyEdgeMainlandDNSWithIPs(ctx, cfg, ips, failoverToCF, false)
+	if state != nil {
+		adtyEdgeControlEpoch++
+	}
 	if err != nil {
 		return nil, err
 	}
 	key := adty_setting.ResellerSettingModule + ".edge_failover_to_cf"
 	options := map[string]string{key: strconv.FormatBool(failoverToCF)}
 
-	model.ResellerWriteMu.Lock()
-	defer model.ResellerWriteMu.Unlock()
 	if err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := model.LockResellerOptionsTx(tx); err != nil {
 			return err
@@ -210,6 +228,6 @@ func SetAdtyEdgeFailover(ctx context.Context, failoverToCF bool) (*AdtyEdgeDNSSy
 		return state, err
 	}
 	InvalidateAdtySiteCache()
-	resetAdtyEdgeAutoFailoverState(ips, failoverToCF, time.Now())
+	resetAdtyEdgeAutoFailoverStateLocked(ips, failoverToCF, time.Now())
 	return state, nil
 }

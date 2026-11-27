@@ -684,6 +684,11 @@ func SaveAdtySitePricing(input AdtySitePricingInput) (*AdtySitePricingResult, er
 			}
 		} else if input.DefaultMarkup != nil {
 			after = *input.DefaultMarkup
+			if after.GreaterThan(before) {
+				if err := EnsureAdtySiteMailConfigured(&site); err != nil {
+					return err
+				}
+			}
 			if hasDefault {
 				if err := tx.Model(&defaultRow).Updates(map[string]any{
 					"markup": after, "pending_markup": decimal.Zero, "pending_at": 0, "version": next, "updated_at": now,

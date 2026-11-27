@@ -39,14 +39,20 @@ func cleanupAuthArtifacts() {
 			int64(time.Hour/time.Second),
 		))
 	}
+	if err := model.DeleteExpiredAuthFlows(now); err != nil {
+		common.SysError(common.LogText("failed to delete expired authentication flows: %s", err.Error()))
+	}
+	// A.17.2: When Root has configured a login_security data retention period,
+	// expired/revoked sessions and expired PATs are deleted solely by the
+	// audited adty_data_retention runner so the configured window is never cut short.
+	if _, configured := ConfiguredDataRetentionDays(model.DataRetentionCategoryLoginSecurity); configured {
+		return
+	}
 	if err := model.DeleteExpiredUserSessions(now.Unix()); err != nil {
 		common.SysError(common.LogText("failed to delete expired user sessions: %s", err.Error()))
 	}
 	if err := model.DeleteOldRevokedUserSessions(now.Unix()); err != nil {
 		common.SysError(common.LogText("failed to delete old revoked user sessions: %s", err.Error()))
-	}
-	if err := model.DeleteExpiredAuthFlows(now); err != nil {
-		common.SysError(common.LogText("failed to delete expired authentication flows: %s", err.Error()))
 	}
 	accessTokenExpiredBefore := now.Unix() - int64(common.UserSessionRevokedRetentionDays)*24*60*60
 	if err := model.DeleteExpiredUserAccessTokens(accessTokenExpiredBefore); err != nil {

@@ -16,10 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
+import { useEffect } from 'react'
 import { z } from 'zod'
 
 import { Wallet } from '@/features/wallet'
+import { useAuthStore } from '@/stores/auth-store'
 
 const walletSearchSchema = z.object({
   show_history: z.boolean().optional(),
@@ -27,6 +29,12 @@ const walletSearchSchema = z.object({
 })
 
 export const Route = createFileRoute('/_authenticated/wallet/')({
+  beforeLoad: () => {
+    const user = useAuthStore.getState().auth.user
+    if (user?.is_team_employee === true) {
+      throw redirect({ to: '/my-team', replace: true })
+    }
+  },
   component: RouteComponent,
   validateSearch: walletSearchSchema,
 })
@@ -34,6 +42,17 @@ export const Route = createFileRoute('/_authenticated/wallet/')({
 function RouteComponent() {
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
+  const isTeamEmployee = useAuthStore(
+    (state) => state.auth.user?.is_team_employee === true
+  )
+
+  useEffect(() => {
+    if (!isTeamEmployee) return
+    void navigate({ to: '/my-team', replace: true })
+  }, [isTeamEmployee, navigate])
+
+  if (isTeamEmployee) return null
+
   return (
     <Wallet
       initialShowHistory={search.show_history}

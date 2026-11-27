@@ -160,10 +160,14 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
   const isStaff = useAuthStore(
     (state) => (state.auth.user?.staff_site_id ?? 0) > 0
   )
+  const isTeamEmployee = useAuthStore(
+    (state) => state.auth.user?.is_team_employee === true
+  )
   const showReferral =
     !isAdmin &&
     !isSiteOwner &&
     !isStaff &&
+    !isTeamEmployee &&
     (referralEnabled || hasLegacySiteCommissions)
   const hasTeam = useAuthStore(
     (state) => state.auth.user?.adty_has_team === true
@@ -374,11 +378,15 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
                   },
                 ]
               : []),
-            {
-              title: t('Wallet'),
-              url: '/wallet',
-              icon: Wallet,
-            },
+            ...(!isTeamEmployee
+              ? [
+                  {
+                    title: t('Wallet'),
+                    url: '/wallet',
+                    icon: Wallet,
+                  },
+                ]
+              : []),
             {
               title: t('Support Center'),
               url: '/support',
@@ -561,6 +569,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
     hasTeam,
     hasArchivedSite,
     isStaff,
+    isTeamEmployee,
     badges.modelPricing,
   ])
 }

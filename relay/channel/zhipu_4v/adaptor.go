@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
@@ -99,6 +100,11 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 				return fmt.Sprintf("%s/images/generations", specialPlan.OpenAIBaseURL), nil
 			}
 			return fmt.Sprintf("%s/api/paas/v4/images/generations", baseURL), nil
+		case relayconstant.RelayModeImagesEdits:
+			if hasSpecialPlan && specialPlan.OpenAIBaseURL != "" {
+				return fmt.Sprintf("%s/images/edits", specialPlan.OpenAIBaseURL), nil
+			}
+			return fmt.Sprintf("%s/api/paas/v4/images/edits", baseURL), nil
 		case relayconstant.RelayModeResponses:
 			return fmt.Sprintf("%s/api/v1/responses", baseURL), nil
 		default:
@@ -112,6 +118,9 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {
 	channel.SetupApiRequestHeader(info, c, req)
+	if info != nil && info.RelayMode == relayconstant.RelayModeImagesEdits && !info.ChannelSetting.PassThroughBodyEnabled && !model_setting.GetGlobalSettings().PassThroughRequestEnabled {
+		req.Set("Content-Type", gin.MIMEJSON)
+	}
 	req.Set("Authorization", "Bearer "+info.ApiKey)
 	return nil
 }

@@ -118,6 +118,18 @@ func (w *streamResponseWriter) Unwrap() http.ResponseWriter {
 }
 
 func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) {
+	streamScannerHandler(c, resp, info, dataHandler, false)
+}
+
+// StreamScannerHandlerDetached runs the SSE scanner while keeping upstream body
+// reading alive after a client disconnect (bounded by streamingTimeout and the
+// detached upstream request context) so billable image/TTS streams can drain
+// terminal usage events instead of dropping billing on ClientGone (R-36 #5).
+func StreamScannerHandlerDetached(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) {
+	streamScannerHandler(c, resp, info, dataHandler, true)
+}
+
+func streamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult), detachClientCancel bool) {
 
 	if resp == nil || dataHandler == nil {
 		return
@@ -188,13 +200,15 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	defer cleanup()
 
 	scanner.Split(bufio.ScanLines)
-	copyCodexSSEHeaders(c, resp)
-	SetEventStreamHeaders(c)
+	if !detachClientCancel || !ClientRequestCanceled(c) {
+		copyCodexSSEHeaders(c, resp)
+		SetEventStreamHeaders(c)
+	}
 
 	ctx = context.WithValue(ctx, "stop_chan", stopChan)
 
 	// Handle ping data sending with improved error handling
-	if pingEnabled && pingTicker != nil {
+	if pingEnabled && pingTicker != nil && (!detachClientCancel || !ClientRequestCanceled(c)) {
 		wg.Add(1)
 		gopool.Go(func() {
 			defer func() {
@@ -223,6 +237,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					}()
 					if err != nil {
 						logger.LogError(c, common.LogText("ping data error: %s", err.Error()))
+						if detachClientCancel {
+							return
+						}
 						info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
 						stop()
 						return
@@ -338,12 +355,16 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	})
 
 	// 主循环等待完成或超时
+	var clientDone <-chan struct{}
+	if !detachClientCancel && c != nil && c.Request != nil && c.Request.Context() != nil {
+		clientDone = c.Request.Context().Done()
+	}
 	select {
 	case <-ticker.C:
 		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, nil)
 	case <-stopChan:
 		// EndReason already set by the goroutine that triggered stopChan
-	case <-c.Request.Context().Done():
+	case <-clientDone:
 		// 客户端断开：立即 cleanup 关闭上游 resp.Body，解除 scanner 阻塞并让上游停止生成，
 		// 避免为已放弃的请求继续消费上游 token。
 		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())

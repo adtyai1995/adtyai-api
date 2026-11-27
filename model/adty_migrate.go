@@ -78,10 +78,19 @@ func MigrateAdtyTablesOn(db *gorm.DB) error {
 	}
 	// Repair the scope on previous releases' team anomalies from the original
 	// order. Preserve their disposition, operator and review notes.
-	if err := db.Exec(`UPDATE adty_anomaly_dispositions SET
+	var repairAnomalySQL string
+	if db.Dialector.Name() == "mysql" {
+		repairAnomalySQL = `UPDATE adty_anomaly_dispositions a
+		JOIN adty_topup_orders o ON a.ref = o.trade_no
+		SET a.site_id = o.site_id, a.team_id = o.team_id, a.order_ref = o.trade_no, a.account_id = o.user_id
+		WHERE o.team_id > 0 AND a.team_id = 0 AND a.kind IN ('closed_team_topup', 'team_principal_review')`
+	} else {
+		repairAnomalySQL = `UPDATE adty_anomaly_dispositions SET
 		site_id = o.site_id, team_id = o.team_id, order_ref = o.trade_no, account_id = o.user_id
 		FROM adty_topup_orders o WHERE adty_anomaly_dispositions.ref = o.trade_no AND o.team_id > 0
-		AND adty_anomaly_dispositions.team_id = 0 AND adty_anomaly_dispositions.kind IN ('closed_team_topup', 'team_principal_review')`).Error; err != nil {
+		AND adty_anomaly_dispositions.team_id = 0 AND adty_anomaly_dispositions.kind IN ('closed_team_topup', 'team_principal_review')`
+	}
+	if err := db.Exec(repairAnomalySQL).Error; err != nil {
 		return err
 	}
 	if err := backfillAdtyLegacyBatchRegisterAnomalies(db); err != nil {

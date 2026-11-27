@@ -362,6 +362,26 @@ func validateMinMaxArgTypeDepth(name string, arg ast.Node, depth int) error {
 	if cn, ok := arg.(*ast.ConstantNode); ok {
 		return validateMinMaxConstantValue(name, cn.Value, depth)
 	}
+	if ch, ok := arg.(*ast.ChainNode); ok {
+		return validateMinMaxArgTypeDepth(name, ch.Node, depth+1)
+	}
+	if cond, ok := arg.(*ast.ConditionalNode); ok {
+		if err := validateMinMaxArgTypeDepth(name, cond.Exp1, depth+1); err != nil {
+			return err
+		}
+		return validateMinMaxArgTypeDepth(name, cond.Exp2, depth+1)
+	}
+	if bin, ok := arg.(*ast.BinaryNode); ok && bin.Operator == "??" {
+		if _, leftNil := bin.Left.(*ast.NilNode); !leftNil && !bin.Left.Nature().Nil {
+			if err := validateMinMaxArgTypeDepth(name, bin.Left, depth+1); err != nil {
+				return err
+			}
+		}
+		return validateMinMaxArgTypeDepth(name, bin.Right, depth+1)
+	}
+	if sl, ok := arg.(*ast.SliceNode); ok {
+		return validateMinMaxArgTypeDepth(name, sl.Node, depth+1)
+	}
 	t := arg.Type()
 	if t == nil {
 		return nil
@@ -483,6 +503,7 @@ func compileEntryFromCacheByHash(exprStr, hash string) (*cachedEntry, error) {
 		compileOpts = append(compileOpts, expr.EnableBuiltin(builtinName))
 	}
 	compileOpts = append(compileOpts,
+		expr.Optimize(false),
 		expr.Patch(lenBuiltinPatcher{}),
 		expr.Patch(&requestRulePatcher{}),
 		roundCompileOption,

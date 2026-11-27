@@ -42,6 +42,8 @@ import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useApiBaseUrl } from '@/features/adty-site/api'
 import { useStatus } from '@/hooks/use-status'
+import { ADTY_BRAND_SLUG } from '@/lib/adty-brand'
+import { subsiteDocument } from '@/lib/subsite-document'
 
 import {
   buildSupportedParameters,
@@ -196,7 +198,7 @@ function buildSample(lang: Lang, ctx: SampleContext): string | null {
   const authValue = authPrefix ? `\`${authPrefix}\${apiKey}\`` : 'apiKey'
   return [
     `const apiKey = process.env.${ctx.apiKeyEnv}`,
-    'if (!apiKey) throw new Error("Set ADTYAI_API_KEY to your API key")',
+    `if (!apiKey) throw new Error("Set ${ctx.apiKeyEnv} to your API key")`,
     '',
     `const response = await fetch(${JSON.stringify(url)}, {`,
     `  method: ${JSON.stringify(ctx.method)},`,
@@ -269,9 +271,12 @@ function CodeSamplesSection(props: {
     return null
   }
 
+  const tenant = subsiteDocument()
+  const apiKeyEnv = `${(tenant ? `site${tenant.id}` : ADTY_BRAND_SLUG).toUpperCase()}_API_KEY`
+
   const code = buildSample(lang, {
     baseUrl,
-    apiKeyEnv: 'ADTYAI_API_KEY',
+    apiKeyEnv,
     modelName: props.model.model_name || '',
     endpointType: activeEndpoint.type,
     endpointPath: activeEndpoint.path,
@@ -335,7 +340,8 @@ function CodeSamplesSection(props: {
       {code && (
         <p className='text-muted-foreground mt-2 text-xs'>
           {t(
-            'Set the ADTYAI_API_KEY environment variable to the API key from your token settings.'
+            'Set the {{envKey}} environment variable to the API key from your token settings.',
+            { envKey: apiKeyEnv }
           )}
         </p>
       )}

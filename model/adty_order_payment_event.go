@@ -60,6 +60,16 @@ func RecordAdtyPaymentAttempt(tradeNo, provider, source, outcome string, operato
 	if err != nil || len(rows) == 0 {
 		return err
 	}
+	// Avoid writing redundant immutable "unpaid" rows on every background poll;
+	// manual operator queries and state transitions are always recorded.
+	if operatorID == 0 && source == AdtyPaymentSourceQuery && outcome == "unpaid" {
+		var latest []AdtyOrderPaymentEvent
+		if qErr := DB.Select("outcome").
+			Where("trade_no = ? AND provider = ? AND source = ?", tradeNo, provider, source).
+			Order("id DESC").Limit(1).Find(&latest).Error; qErr == nil && len(latest) > 0 && latest[0].Outcome == "unpaid" {
+			return nil
+		}
+	}
 	return appendAdtyPaymentEventTx(DB, &rows[0], source, outcome, operatorID)
 }
 

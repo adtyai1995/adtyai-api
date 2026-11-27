@@ -64,6 +64,7 @@ export function useTopNavLinks(): TopNavLink[] {
   const isSiteOwner = user?.adty_site_owner === true
   const isPureSiteOwner = isSiteOwner && !isAdmin
   const isStaff = (user?.staff_site_id ?? 0) > 0
+  const isTeamEmployee = user?.is_team_employee === true
 
   const links: TopNavLink[] = []
 
@@ -135,6 +136,7 @@ export function useTopNavLinks(): TopNavLink[] {
     !isSubsite &&
     !isAdmin &&
     !isSiteOwner &&
+    !isTeamEmployee &&
     referralEnabled === true &&
     modules?.affiliate !== false
   ) {
