@@ -534,7 +534,7 @@ describe('Frontend payment, wallet, team, and admin hardening', () => {
         'This method cannot take this amount. Choose another method or amount.'
       )
     ).toBeTruthy()
-    expect(screen.getByTestId('team-topup-pay').textContent).toBe('¥0.00')
+    expect(screen.getByTestId('team-topup-pay').textContent).toBe('$0.00')
     expect(
       (
         screen.getByRole('button', {

@@ -26,7 +26,6 @@ import {
   ArrowDown,
   ShieldAlert,
   Link2,
-  Gift,
   KeyRound,
 } from 'lucide-react'
 import { useState } from 'react'
@@ -62,7 +61,6 @@ import {
 import { getUserActionMessage } from '../lib'
 import type { User } from '../types'
 import { UserBindingDialog } from './dialogs/user-binding-dialog'
-import { RootGiftDialog } from './user-quota-dialog'
 import { useUsers } from './users-provider'
 
 const MANAGE_ACTION_TITLES: Record<AdminUserManageAction, string> = {
@@ -97,7 +95,6 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   } = useUsers()
   const [resetTwoFAOpen, setResetTwoFAOpen] = useState(false)
   const [bindingDialogOpen, setBindingDialogOpen] = useState(false)
-  const [giftOpen, setGiftOpen] = useState(false)
 
   const handleEdit = () => {
     setCurrentRow(user)
@@ -184,13 +181,6 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
     (user.staff_site_id ?? 0) === 0 &&
     !user.is_team_employee &&
     !isActiveSiteOwner(user)
-  const canGrantGift =
-    operatorIsRoot &&
-    !isAdmin &&
-    user.status === USER_STATUS.ENABLED &&
-    (user.staff_site_id ?? 0) === 0 &&
-    !user.is_team_employee &&
-    !isActiveSiteOwner(user)
   const canResetPassword =
     canWrite &&
     !isRoot &&
@@ -273,15 +263,6 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           </DropdownMenuShortcut>
         </DropdownMenuItem>
 
-        {canGrantGift && (
-          <DropdownMenuItem onClick={() => setGiftOpen(true)}>
-            {t('Grant expiring gift')}
-            <DropdownMenuShortcut>
-              <Gift size={16} />
-            </DropdownMenuShortcut>
-          </DropdownMenuItem>
-        )}
-
         <DropdownMenuSeparator />
 
         <DropdownMenuItem
@@ -339,15 +320,6 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         userId={user.id}
         onUnbindSuccess={triggerRefresh}
       />
-      {giftOpen && (
-        <RootGiftDialog
-          key={user.id}
-          open
-          onOpenChange={setGiftOpen}
-          userId={user.id}
-          onSuccess={triggerRefresh}
-        />
-      )}
     </div>
   )
 }

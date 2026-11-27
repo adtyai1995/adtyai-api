@@ -474,3 +474,31 @@ func TestUserLedgerAndClosedSiteWithdrawalsPopulateActorUsernames(t *testing.T) 
 	assert.Equal(t, failer.Username, row.FailureByUsername)
 	assert.Equal(t, legacyActor.Username, row.LegacyDecisionByUsername)
 }
+
+func TestPostAdtyRootExpiringGiftRetired(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("root gets 410 Gone", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/api/adty/admin/users/42/expiring-gifts", nil)
+		ctx.Set("role", common.RoleRootUser)
+
+		PostAdtyRootExpiringGift(ctx)
+
+		assert.Equal(t, http.StatusGone, rec.Code)
+		assert.Contains(t, rec.Body.String(), "Expiring trial gifts have been retired")
+	})
+
+	t.Run("non-root is rejected", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/api/adty/admin/users/42/expiring-gifts", nil)
+		ctx.Set("role", common.RoleAdminUser)
+
+		PostAdtyRootExpiringGift(ctx)
+
+		assert.NotEqual(t, http.StatusGone, rec.Code)
+		assert.Contains(t, rec.Body.String(), "permission")
+	})
+}

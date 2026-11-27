@@ -10,7 +10,7 @@ Open **Wallet** in the console at [https://www.adtyai.com](https://www.adtyai.co
 
 1. Enter your target top-up amount in USD (or choose a preset package).
 2. Select one of the active payment methods shown above.
-3. Review the checkout summary—including any exchange conversion and automatic Recharge Bonus—and complete payment.
+3. Review the checkout summary—including the USD amount due and any automatic Recharge Bonus—and complete payment.
 4. Once payment confirms, the USD credit posts to your wallet balance automatically.
 
 ### Pending Order Reuse & Unpaid Order Limit

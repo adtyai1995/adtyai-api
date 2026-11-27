@@ -18,75 +18,14 @@ import (
 	"gorm.io/gorm"
 )
 
-// PostAdtyRootExpiringGift credits a trial gift using one bound Root proof.
+// PostAdtyRootExpiringGift has been retired (R-44): expiring trial gifts are no
+// longer issued; existing historical lots remain read-only/auditable.
 func PostAdtyRootExpiringGift(c *gin.Context) {
 	if c.GetInt("role") != common.RoleRootUser {
 		common.ApiErrorT(c, "You do not have permission to perform this action.")
 		return
 	}
-	userID, err := strconv.Atoi(c.Param("id"))
-	var input service.AdtyRootGiftContext
-	if err != nil || userID <= 0 || c.ShouldBindJSON(&input) != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	input.UserID = userID
-	operation := service.AdtyRootGiftOperation(input)
-	if _, err := service.BindVerificationOperation(operation); err != nil {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	if middleware.RequireSecurityProof(c, operation) == nil {
-		return
-	}
-	amount, _ := decimal.NewFromString(input.AmountUSD)
-	var batch *model.AdtyFundBatch
-	var replayed bool
-	var audit model.AuditLog
-	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		var err error
-		batch, replayed, err = model.GrantAdtyRootExpiringGiftWithReplayTx(tx, model.AdtyRootExpiringGiftGrantInput{
-			UserID: userID, OperatorID: c.GetInt("id"), OperatorRole: c.GetInt("role"),
-			AmountUSD: amount, ExpiresAt: input.ExpiresAt, Reason: input.Reason, IdempotencyKey: input.IdempotencyKey,
-		})
-		if err != nil {
-			return err
-		}
-		if replayed {
-			return nil
-		}
-		audit, err = model.PrepareOfficialAuditLog(c, model.OfficialAuditWrite{
-			UserId: c.GetInt("id"), ActorRole: common.RoleRootUser, SiteID: batch.SiteId,
-			ObjectType: "gift", ObjectID: strconv.FormatInt(batch.Id, 10), Action: "adty.root_gift.grant",
-			Category: model.AuditCategoryOperation, Reason: input.Reason, Before: nil, After: batch,
-			Result: model.AuditResultSuccess, Success: true,
-		})
-		if err != nil {
-			return err
-		}
-		return model.AppendAuditIntentTx(tx, audit)
-	})
-	if err != nil {
-		_ = c.Error(err)
-		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
-			common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("This request was already used for another operation"))
-			return
-		}
-		common.ApiErrorT(c, "Failed to grant expiring gift")
-		return
-	}
-	if !replayed {
-		model.AdtySyncUserQuotaCache(userID, "root_expiring_gift")
-		_ = model.PublishUserAuthCache(userID)
-		if audit.EventId != "" {
-			_ = model.DeliverAuditIntent(c.Request.Context(), audit.EventId)
-			rememberPreparedAuditEvent(c, audit.EventId)
-			markAuditLogged(c)
-		}
-	} else {
-		markIdempotentReplayNoAudit(c)
-	}
-	common.ApiSuccess(c, batch)
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Expiring trial gifts have been retired"))
 }
 
 // QueryAdtyTopUp may credit a verified payment, so its route requires the same

@@ -25,6 +25,7 @@ import { useTranslation } from 'react-i18next'
 import { Dialog } from '@/components/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button, buttonVariants } from '@/components/ui/button'
+import { toIntlLocale } from '@/i18n/languages'
 import { handleServerError } from '@/lib/handle-server-error'
 import { getServerErrorMessage } from '@/lib/server-error-message'
 import { useAdtyUiStore } from '@/stores/adty-ui-store'
@@ -35,6 +36,7 @@ import { formatCountdown, useNowSeconds } from '../lib/countdown'
 import { detectPayDevice } from '../lib/device'
 import {
   creditedUsdAmount,
+  formatUsd,
   giftFulfillmentStatusLabelKey,
   isGiftBonusWithheld,
 } from '../lib/money'
@@ -66,7 +68,8 @@ type EpayPayDialogProps = {
 
 /** Alipay / WeChat payment: QR code on desktop, jump to the app on phones. */
 export function EpayPayDialog(props: EpayPayDialogProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const device = props.device ?? detectPayDevice()
   const [tradeNo, setTradeNo] = useState<string | undefined>(props.tradeNo)
   const setPaymentDialogOpen = useAdtyUiStore(
@@ -343,7 +346,10 @@ export function EpayPayDialog(props: EpayPayDialogProps) {
       {ext && isActivePending && (
         <div className='flex flex-col items-center gap-3'>
           <p className='text-2xl font-semibold' data-testid='epay-amount'>
-            ¥{Number(ext.pay_amount).toFixed(2)}
+            {formatUsd(
+              Number(ext.face_usd) > 0 ? Number(ext.face_usd) : props.amount,
+              locale
+            )}
           </p>
           <p className='text-muted-foreground text-sm'>
             {t('You get ${{amount}}', {

@@ -36,7 +36,6 @@ export function WalletLotProjectionLines(props: {
   if (!props.projection) return null
   const principal = formatOfficialUsd(props.projection.principal_usd)
   const bonus = formatOfficialUsd(props.projection.bonus_usd)
-  const expiring = formatOfficialUsd(props.projection.expiring_bonus_usd ?? '0')
   if (props.compact) {
     return (
       <div className='text-muted-foreground text-xs'>
@@ -45,10 +44,6 @@ export function WalletLotProjectionLines(props: {
         </div>
         <div>
           {t('Permanent bonus')}: <span className='tabular-nums'>{bonus}</span>
-        </div>
-        <div>
-          {t('Expiring bonus')}:{' '}
-          <span className='tabular-nums'>{expiring}</span>
         </div>
       </div>
     )
@@ -62,10 +57,6 @@ export function WalletLotProjectionLines(props: {
       <div>
         {t('Remaining permanent bonus')}:{' '}
         <span className='text-foreground tabular-nums'>{bonus}</span>
-      </div>
-      <div>
-        {t('Remaining expiring bonus')}:{' '}
-        <span className='text-foreground tabular-nums'>{expiring}</span>
       </div>
       {props.showNote !== false && (
         <div className='text-muted-foreground/70'>

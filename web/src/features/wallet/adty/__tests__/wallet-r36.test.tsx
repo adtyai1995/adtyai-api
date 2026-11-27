@@ -35,6 +35,7 @@ import { ROLE } from '@/lib/roles'
 import { Route as BillingSectionRoute } from '@/routes/_authenticated/system-settings/billing/$section'
 import { useAuthStore } from '@/stores/auth-store'
 
+import { WalletLotProjectionLines } from '../../components/wallet-lot-projection'
 import {
   formatBonusRateFraction,
   formatBonusRatePercent,
@@ -427,6 +428,9 @@ describe('R-36 Items 2, 3, and 4', () => {
       expect(screen.getByText(/\(\+0\.5%\)/)).toBeTruthy()
     })
     expect(screen.queryByText(/\(\+50%\)/)).toBeNull()
+    expect(screen.getByTestId('adty-pay').textContent).toBe('$100.00')
+    expect(screen.queryByText(/1 USD =/)).toBeNull()
+    expect(screen.queryByText(/¥/)).toBeNull()
   })
 
   it('scales decimal quote.bonus_rate 0.05 to +5% in AdtyRechargeCard (R2-01)', async () => {
@@ -483,5 +487,30 @@ describe('R-36 Items 2, 3, and 4', () => {
     }
     render(<Probe />)
     expect(personalUrls).toContain('/referral')
+  })
+
+  it('omits expiring bonus rows in WalletLotProjectionLines (R-44)', () => {
+    const projection = {
+      principal_quota: 5_000_000,
+      principal_usd: '10.00',
+      bonus_quota: 1_000_000,
+      bonus_usd: '2.00',
+      expiring_bonus_quota: 500_000,
+      expiring_bonus_usd: '1.00',
+      total_quota: 6_500_000,
+      total_usd: '13.00',
+    }
+
+    const { rerender } = render(
+      <WalletLotProjectionLines projection={projection} />
+    )
+    expect(screen.getByText(/Remaining principal/)).toBeTruthy()
+    expect(screen.getByText(/Remaining permanent bonus/)).toBeTruthy()
+    expect(screen.queryByText(/expiring/i)).toBeNull()
+
+    rerender(<WalletLotProjectionLines projection={projection} compact />)
+    expect(screen.getByText(/Principal/)).toBeTruthy()
+    expect(screen.getByText(/Permanent bonus/)).toBeTruthy()
+    expect(screen.queryByText(/expiring/i)).toBeNull()
   })
 })

@@ -335,17 +335,20 @@ export function TeamPanel(
     Boolean(teamQuote) &&
     teamQuoteAvailable &&
     !teamQuoteQuery.isError
-  let teamPayAmountText = isTeamUsdtChannel ? '0.00 USDT' : '¥0.00'
+  let teamPayAmountText = isTeamUsdtChannel ? '0.00 USDT' : formatUsd(0, locale)
   let teamPayRateHint = ''
   if (hasEstimatedTeamPay && teamQuote) {
     if (teamQuote.pay_currency === 'USDT') {
       teamPayAmountText = `${formatFixedPayAmount(teamQuote.pay_amount)} USDT`
       teamPayRateHint = t('1 USDT = 1 USD')
     } else if (teamQuote.pay_currency === 'CNY') {
-      teamPayAmountText = `¥${Number(teamQuote.pay_amount).toFixed(2)}`
-      teamPayRateHint = t('1 USD = {{rate}} CNY', {
-        rate: Number(teamQuote.price_cny_per_usd).toFixed(2),
-      })
+      teamPayAmountText = formatUsd(
+        Number(teamQuote.face_usd) > 0
+          ? Number(teamQuote.face_usd)
+          : parsedTopupAmount,
+        locale
+      )
+      teamPayRateHint = ''
     } else {
       teamPayAmountText = formatPaymentAmount(
         teamQuote.pay_amount,
@@ -1363,9 +1366,16 @@ export function TeamPanel(
                       className: 'text-right',
                       cellClassName: 'text-right tabular-nums',
                       cell: (row) => {
+                        const curr = (
+                          row.paid_currency ||
+                          row.pay_currency ||
+                          ''
+                        ).toUpperCase()
+                        if (curr === 'CNY') {
+                          return formatUsd(Number(row.face_usd), locale)
+                        }
                         const paid = Number(row.paid_amount)
                         const val = paid > 0 ? row.paid_amount : row.pay_amount
-                        const curr = row.paid_currency || row.pay_currency
                         return val && curr ? `${val} ${curr}` : '—'
                       },
                     },

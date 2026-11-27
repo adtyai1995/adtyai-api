@@ -256,6 +256,8 @@ describe('EpayPayDialog official payment logos', () => {
     await waitFor(() => {
       expect(screen.getByTestId('epay-qr')).toBeTruthy()
     })
+    expect(screen.getByTestId('epay-amount').textContent).toBe('$10.00')
+    expect(screen.queryByText(/¥/)).toBeNull()
   })
 
   it('transitions immediately to expired view when local expire_at has passed', async () => {

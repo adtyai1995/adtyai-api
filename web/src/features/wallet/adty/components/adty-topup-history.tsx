@@ -346,6 +346,14 @@ export function AdtyTopupHistory(props: {
               cellClassName: 'text-right tabular-nums',
               cell: (row) => {
                 if (!row.ext) return '—'
+                const currency = (
+                  row.ext.paid_currency ||
+                  row.ext.pay_currency ||
+                  ''
+                ).toUpperCase()
+                if (currency === 'CNY') {
+                  return formatUsd(Number(row.ext.face_usd), locale)
+                }
                 const paid = Number(row.ext.paid_amount)
                 const value =
                   paid > 0 ? row.ext.paid_amount : row.ext.pay_amount

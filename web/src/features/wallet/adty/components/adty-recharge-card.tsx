@@ -229,17 +229,15 @@ export function AdtyRechargeCard(props: AdtyRechargeCardProps) {
       methods.length > 0 && methods.every((item) => item.kind === 'usdt')
   }
 
-  let payAmountText = isUsdtChannel ? '0.00 USDT' : '¥0.00'
+  let payAmountText = isUsdtChannel ? '0.00 USDT' : formatUsd(0, locale)
   let payRateHint = ''
   if (quote) {
     if (quote.pay_currency === 'USDT') {
       payAmountText = `${formatFixedPayAmount(quote.pay_amount)} USDT`
       payRateHint = t('1 USDT = 1 USD')
     } else if (quote.pay_currency === 'CNY') {
-      payAmountText = `¥${Number(quote.pay_amount).toFixed(2)}`
-      payRateHint = t('1 USD = {{rate}} CNY', {
-        rate: Number(quote.price_cny_per_usd).toFixed(2),
-      })
+      payAmountText = formatUsd(principalUsd, locale)
+      payRateHint = ''
     } else {
       payAmountText = formatPaymentAmount(
         quote.pay_amount,
