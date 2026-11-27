@@ -1309,7 +1309,6 @@ web/src/features/adty-marketing/lib/signup-source.ts
 web/src/features/adty-notifications/__tests__/draft-validation.test.tsx
 web/src/features/adty-notifications/__tests__/publishing.test.tsx
 web/src/features/adty-notifications/__tests__/todo-item-card.test.tsx
-web/src/features/adty-payment-channels/__tests__/payment-channels.test.tsx
 web/src/features/adty-payment-scenes/__tests__/manager.test.tsx
 web/src/features/adty-payment-scenes/retired-providers.ts
 web/src/features/adty-promo/
