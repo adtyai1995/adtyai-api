@@ -64,6 +64,11 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 
 	c.Set(contextKeyResponseFormat, encoding)
 
+	upstreamModel := info.UpstreamModelName
+	if upstreamModel == "" {
+		upstreamModel = info.OriginModelName
+	}
+
 	volcRequest := VolcengineTTSRequest{
 		App: VolcengineTTSApp{
 			AppID:   appID,
@@ -83,7 +88,7 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 			ReqID:     generateRequestID(),
 			Text:      request.Input,
 			Operation: "submit",
-			Model:     info.OriginModelName,
+			Model:     upstreamModel,
 		},
 	}
 
@@ -97,10 +102,7 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 		volcRequest.App.Token = token
 		volcRequest.Request.ReqID = generateRequestID()
 		volcRequest.Request.Text = request.Input
-		volcRequest.Request.Model = info.UpstreamModelName
-		if volcRequest.Request.Model == "" {
-			volcRequest.Request.Model = info.OriginModelName
-		}
+		volcRequest.Request.Model = upstreamModel
 	}
 
 	c.Set(contextKeyTTSRequest, volcRequest)

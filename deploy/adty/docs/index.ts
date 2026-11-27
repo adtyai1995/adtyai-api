@@ -22,7 +22,12 @@ import type { Theme } from 'vitepress'
 import DefaultTheme from 'vitepress/theme'
 import { nextTick, onMounted, onUnmounted, watch } from 'vue'
 
-import { applyBrandToDOM, resolveSiteBrand, type SiteBrand } from './brand'
+import {
+  applyBrandToDOM,
+  installSearchBoxWhiteLabelObserver,
+  resolveSiteBrand,
+  type SiteBrand,
+} from './brand'
 import MainSiteOnly from './components/MainSiteOnly.vue'
 import PaymentMethodsList from './components/PaymentMethodsList.vue'
 import ReferralSummary from './components/ReferralSummary.vue'
@@ -41,28 +46,36 @@ export default {
     const route = useRoute()
     let activeBrand: SiteBrand | null = null
     let applyTimer: number | null = null
+    let stopSearchObserver: (() => void) | null = null
+    let unmounted = false
 
     const runApply = () => {
-      if (!activeBrand) return
+      if (!activeBrand || unmounted) return
       void nextTick(() => {
-        if (!activeBrand) return
+        if (!activeBrand || unmounted) return
         applyBrandToDOM(activeBrand)
         if (applyTimer !== null) {
           window.clearTimeout(applyTimer)
         }
         applyTimer = window.setTimeout(() => {
           applyTimer = null
-          if (activeBrand) applyBrandToDOM(activeBrand)
+          if (activeBrand && !unmounted) applyBrandToDOM(activeBrand)
         }, 120)
       })
     }
 
     onMounted(async () => {
+      stopSearchObserver = installSearchBoxWhiteLabelObserver()
       activeBrand = await resolveSiteBrand()
-      runApply()
+      if (!unmounted) {
+        runApply()
+      }
     })
 
     onUnmounted(() => {
+      unmounted = true
+      stopSearchObserver?.()
+      stopSearchObserver = null
       if (applyTimer !== null) {
         window.clearTimeout(applyTimer)
         applyTimer = null

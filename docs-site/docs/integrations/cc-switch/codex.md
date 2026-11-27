@@ -34,11 +34,11 @@ CC Switch manages both Codex configuration files together. Before saving, review
 ### `~/.codex/config.toml`
 
 ```toml
-model_provider = "adty"
+model_provider = "gateway"
 model = "gpt-5.4"
 model_reasoning_effort = "high"
 
-[model_providers.adty]
+[model_providers.gateway]
 name = "ADTY AI"
 base_url = "https://api.adtyai.com/v1"
 wire_api = "responses"

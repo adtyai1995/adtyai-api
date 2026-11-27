@@ -66,6 +66,11 @@ export const DEFAULT_REFERRAL: PublicReferralInfo = {
 }
 
 export const SUBSITE_API_BASE_PLACEHOLDER = 'https://YOUR_API_DOMAIN'
+const SUBSITE_API_HOST_PLACEHOLDER = 'YOUR_API_DOMAIN'
+const DEFAULT_API_HOST = 'api.adtyai.com'
+const DEFAULT_SITE_HOST = 'www.adtyai.com'
+const BLOCK_BOUNDARY_SELECTOR =
+  'p, div, li, ul, ol, tr, td, th, h1, h2, h3, h4, h5, h6, pre, blockquote, dt, dd, section, article, header, footer, aside, nav, .title, .line'
 
 export const DEFAULT_BRAND: SiteBrand = {
   loaded: false,
@@ -278,10 +283,24 @@ export async function resolveSiteBrand(): Promise<SiteBrand> {
   return pending
 }
 
+function extractOriginHost(origin: string): string {
+  if (!origin) return ''
+  if (origin === SUBSITE_API_BASE_PLACEHOLDER) {
+    return SUBSITE_API_HOST_PLACEHOLDER
+  }
+  try {
+    return new URL(origin).host
+  } catch {
+    return ''
+  }
+}
+
 function containsDefaultBrandToken(value: string): boolean {
   return (
     value.includes(DEFAULT_BRAND.apiBase) ||
     value.includes(DEFAULT_BRAND.siteUrl) ||
+    value.includes(DEFAULT_API_HOST) ||
+    value.includes(DEFAULT_SITE_HOST) ||
     value.includes(DEFAULT_BRAND.name)
   )
 }
@@ -296,30 +315,56 @@ function resolveReplacementApiBase(brand: SiteBrand): string {
   return ''
 }
 
-function replaceBrandText(input: string, brand: SiteBrand): string {
+interface BrandReplacementMatcher {
+  regex: RegExp
+  lookup: Map<string, string>
+}
+
+function buildBrandReplacementMatcher(
+  brand: SiteBrand
+): BrandReplacementMatcher | null {
   const replacements: Array<[string, string]> = []
   const effectiveApiBase = resolveReplacementApiBase(brand)
   if (effectiveApiBase && effectiveApiBase !== DEFAULT_BRAND.apiBase) {
     replacements.push([DEFAULT_BRAND.apiBase, effectiveApiBase])
   }
-  if (
-    brand.siteUrl &&
-    brand.siteUrl !== DEFAULT_BRAND.siteUrl &&
-    isSafeHttpOrigin(brand.siteUrl)
-  ) {
-    replacements.push([DEFAULT_BRAND.siteUrl, normalizeOrigin(brand.siteUrl)])
+  const effectiveSiteUrl =
+    brand.siteUrl && isSafeHttpOrigin(brand.siteUrl)
+      ? normalizeOrigin(brand.siteUrl)
+      : ''
+  if (effectiveSiteUrl && effectiveSiteUrl !== DEFAULT_BRAND.siteUrl) {
+    replacements.push([DEFAULT_BRAND.siteUrl, effectiveSiteUrl])
+  }
+  const effectiveApiHost = extractOriginHost(effectiveApiBase)
+  if (effectiveApiHost && effectiveApiHost !== DEFAULT_API_HOST) {
+    replacements.push([DEFAULT_API_HOST, effectiveApiHost])
+  }
+  const effectiveSiteHost = extractOriginHost(effectiveSiteUrl)
+  if (effectiveSiteHost && effectiveSiteHost !== DEFAULT_SITE_HOST) {
+    replacements.push([DEFAULT_SITE_HOST, effectiveSiteHost])
   }
   if (brand.name && brand.name !== DEFAULT_BRAND.name) {
     replacements.push([DEFAULT_BRAND.name, brand.name])
   }
-  if (replacements.length === 0) return input
+  if (replacements.length === 0) return null
 
-  const pattern = new RegExp(
+  replacements.sort((a, b) => b[0].length - a[0].length)
+
+  const regex = new RegExp(
     replacements.map(([from]) => escapeRegExp(from)).join('|'),
     'g'
   )
   const lookup = new Map(replacements)
-  return input.replace(pattern, (match) => lookup.get(match) ?? match)
+  return { regex, lookup }
+}
+
+function replaceBrandText(input: string, brand: SiteBrand): string {
+  const matcher = buildBrandReplacementMatcher(brand)
+  if (!matcher) return input
+  return input.replace(
+    matcher.regex,
+    (match) => matcher.lookup.get(match) ?? match
+  )
 }
 
 function replaceOriginPrefix(
@@ -340,6 +385,19 @@ function replaceOriginPrefix(
   return null
 }
 
+function matchesGuideRoute(href: string, guidePath: string): boolean {
+  const idx = href.indexOf(guidePath)
+  if (idx === -1) return false
+  const after = href.charAt(idx + guidePath.length)
+  return (
+    after === '' ||
+    after === '#' ||
+    after === '?' ||
+    after === '/' ||
+    after === '.'
+  )
+}
+
 function toggleNavItemVisibility(pathNeedle: string, hidden: boolean): void {
   const anchors = document.querySelectorAll<HTMLAnchorElement>(
     `nav a[href*="${pathNeedle}"], aside a[href*="${pathNeedle}"], .VPNav a[href*="${pathNeedle}"], .VPSidebar a[href*="${pathNeedle}"], .VPDocFooter a[href*="${pathNeedle}"]`
@@ -353,6 +411,301 @@ function toggleNavItemVisibility(pathNeedle: string, hidden: boolean): void {
       anchor
     container.style.display = hidden ? 'none' : ''
   })
+}
+
+function rewriteAnchorsInRoot(root: ParentNode, brand: SiteBrand): void {
+  const safeSiteUrl = isSafeHttpOrigin(brand.siteUrl)
+    ? normalizeOrigin(brand.siteUrl)
+    : ''
+  const safeApiBase = resolveReplacementApiBase(brand)
+
+  root.querySelectorAll<HTMLAnchorElement>('a[href]').forEach((anchor) => {
+    if (anchor.closest('[data-adty-keep-raw="true"]')) return
+    const currentHref = anchor.getAttribute('href') || ''
+    const prev = anchorHrefState.get(anchor)
+    const template =
+      prev && currentHref === prev.rendered ? prev.template : currentHref
+
+    let nextHref: string | null = null
+    if (safeSiteUrl) {
+      nextHref = replaceOriginPrefix(
+        template,
+        DEFAULT_BRAND.siteUrl,
+        safeSiteUrl
+      )
+    }
+    if (nextHref === null && safeApiBase) {
+      nextHref = replaceOriginPrefix(
+        template,
+        DEFAULT_BRAND.apiBase,
+        safeApiBase
+      )
+    }
+
+    if (nextHref !== null && isSafeHttpOrigin(nextHref)) {
+      if (currentHref !== nextHref) {
+        anchor.setAttribute('href', nextHref)
+      }
+      anchorHrefState.set(anchor, { template, rendered: nextHref })
+    } else if (prev && currentHref !== prev.rendered) {
+      anchorHrefState.delete(anchor)
+    }
+  })
+}
+
+function rewriteTextNodesInRoot(root: Node, brand: SiteBrand): void {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let node = walker.nextNode() as Text | null
+  while (node) {
+    const parentEl = node.parentElement
+    const parentTag = parentEl?.tagName
+    if (
+      parentTag !== 'SCRIPT' &&
+      parentTag !== 'STYLE' &&
+      !parentEl?.closest('[data-adty-keep-raw="true"]') &&
+      !parentEl?.closest('.VPLocalSearchBox .no-results')
+    ) {
+      const currentVal = node.nodeValue
+      if (currentVal) {
+        const prev = textNodeState.get(node)
+        const template =
+          prev && currentVal === prev.rendered ? prev.template : currentVal
+        if (containsDefaultBrandToken(template)) {
+          const next = replaceBrandText(template, brand)
+          if (next !== currentVal) {
+            node.nodeValue = next
+          }
+          textNodeState.set(node, { template, rendered: next })
+        } else if (prev && currentVal !== prev.rendered) {
+          textNodeState.delete(node)
+        }
+      }
+    }
+    node = walker.nextNode() as Text | null
+  }
+}
+
+function replaceBrandAcrossSplitNodes(
+  root: HTMLElement,
+  brand: SiteBrand
+): void {
+  const raw = root.textContent
+  if (!raw || !containsDefaultBrandToken(raw)) return
+
+  const matcher = buildBrandReplacementMatcher(brand)
+  if (!matcher) return
+
+  const segments: Array<{ node: Text; start: number; end: number }> = []
+  let fullText = ''
+  let prevBoundary: Element | null = null
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let current = walker.nextNode() as Text | null
+  while (current) {
+    const parentEl = current.parentElement
+    const parentTag = parentEl?.tagName
+    if (
+      parentTag !== 'SCRIPT' &&
+      parentTag !== 'STYLE' &&
+      !parentEl?.closest('[data-adty-keep-raw="true"]') &&
+      !parentEl?.closest('.VPLocalSearchBox .no-results')
+    ) {
+      const val = current.nodeValue || ''
+      if (val.length > 0) {
+        const boundary = parentEl?.closest(BLOCK_BOUNDARY_SELECTOR) ?? root
+        if (prevBoundary !== null && boundary !== prevBoundary) {
+          fullText += '\u0000'
+        }
+        prevBoundary = boundary
+        const start = fullText.length
+        fullText += val
+        segments.push({ node: current, start, end: fullText.length })
+      }
+    }
+    current = walker.nextNode() as Text | null
+  }
+
+  if (segments.length === 0 || !containsDefaultBrandToken(fullText)) return
+
+  const matches: Array<{ start: number; end: number; replacement: string }> = []
+  matcher.regex.lastIndex = 0
+  let match = matcher.regex.exec(fullText)
+  while (match !== null) {
+    const matched = match[0]
+    const replacement = matcher.lookup.get(matched) ?? matched
+    if (replacement !== matched) {
+      matches.push({
+        start: match.index,
+        end: match.index + matched.length,
+        replacement,
+      })
+    }
+    match = matcher.regex.exec(fullText)
+  }
+
+  if (matches.length === 0) return
+
+  const emptyMarks = new Set<HTMLElement>()
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const m = matches[i]
+    let placed = false
+    for (const seg of segments) {
+      if (seg.end <= m.start || seg.start >= m.end) continue
+      const val = seg.node.nodeValue || ''
+      const localStart = Math.max(0, m.start - seg.start)
+      const localEnd = Math.min(val.length, m.end - seg.start)
+      const before = val.slice(0, localStart)
+      const after = val.slice(localEnd)
+      if (!placed) {
+        seg.node.nodeValue = before + m.replacement + after
+        placed = true
+      } else {
+        seg.node.nodeValue = before + after
+      }
+      textNodeState.delete(seg.node)
+      const markEl = seg.node.parentElement
+      if (
+        seg.node.nodeValue === '' &&
+        markEl?.tagName === 'MARK' &&
+        markEl.textContent === ''
+      ) {
+        emptyMarks.add(markEl)
+      }
+    }
+  }
+  emptyMarks.forEach((markEl) => {
+    if (markEl.textContent === '') {
+      markEl.remove()
+    }
+  })
+}
+
+function shouldPatchSearchBox(brand: SiteBrand): boolean {
+  return (
+    brand.isWhiteLabel ||
+    brand.isSubsite ||
+    (brand.loaded && !brand.referral.enabled)
+  )
+}
+
+function patchSearchBoxElement(searchBox: HTMLElement, brand: SiteBrand): void {
+  const hidePartner = brand.isSubsite
+  const hideReferral = brand.loaded && !brand.referral.enabled
+
+  const resultAnchors = searchBox.querySelectorAll<HTMLAnchorElement>(
+    'a.result[href], li[role="option"] > a[href], li.result > a[href]'
+  )
+  const seenAnchors = new Set<HTMLAnchorElement>()
+  resultAnchors.forEach((anchor) => {
+    if (seenAnchors.has(anchor) || anchor.closest('.excerpt')) return
+    seenAnchors.add(anchor)
+
+    const href = anchor.getAttribute('href') || ''
+    const hidden =
+      (hidePartner && matchesGuideRoute(href, '/guides/partner')) ||
+      (hideReferral && matchesGuideRoute(href, '/guides/referral'))
+    const container =
+      anchor.closest<HTMLElement>('li[role="option"]') ||
+      anchor.closest<HTMLElement>('li') ||
+      anchor
+    const nextDisplay = hidden ? 'none' : ''
+    if (container.style.display !== nextDisplay) {
+      container.style.display = nextDisplay
+    }
+    if (hidden) {
+      if (container.getAttribute('aria-hidden') !== 'true') {
+        container.setAttribute('aria-hidden', 'true')
+      }
+    } else if (container.hasAttribute('aria-hidden')) {
+      container.removeAttribute('aria-hidden')
+    }
+
+    if (brand.isWhiteLabel) {
+      const ariaLabel = anchor.getAttribute('aria-label')
+      if (ariaLabel && containsDefaultBrandToken(ariaLabel)) {
+        const nextLabel = replaceBrandText(ariaLabel, brand)
+        if (nextLabel !== ariaLabel) {
+          anchor.setAttribute('aria-label', nextLabel)
+        }
+      }
+    }
+  })
+
+  if (!brand.isWhiteLabel) return
+
+  rewriteAnchorsInRoot(searchBox, brand)
+  rewriteTextNodesInRoot(searchBox, brand)
+
+  searchBox
+    .querySelectorAll<HTMLElement>('li[role="option"], li.result')
+    .forEach((item) => {
+      replaceBrandAcrossSplitNodes(item, brand)
+    })
+}
+
+function patchOpenSearchBoxes(brand: SiteBrand): void {
+  if (typeof document === 'undefined' || !shouldPatchSearchBox(brand)) return
+  document
+    .querySelectorAll<HTMLElement>('.VPLocalSearchBox')
+    .forEach((searchBox) => {
+      patchSearchBoxElement(searchBox, brand)
+    })
+}
+
+export function installSearchBoxWhiteLabelObserver(): () => void {
+  if (
+    typeof document === 'undefined' ||
+    typeof MutationObserver === 'undefined'
+  ) {
+    return () => {}
+  }
+
+  let active = true
+  let scheduled = false
+  let isPatchingSearch = false
+
+  const flush = () => {
+    scheduled = false
+    if (!active) return
+    const brand = brandState.value
+    if (!shouldPatchSearchBox(brand)) return
+    if (!document.querySelector('.VPLocalSearchBox')) return
+    isPatchingSearch = true
+    try {
+      patchOpenSearchBoxes(brand)
+    } finally {
+      observer.takeRecords()
+      isPatchingSearch = false
+    }
+  }
+
+  const schedule = () => {
+    if (scheduled || isPatchingSearch || !active) return
+    const brand = brandState.value
+    if (!shouldPatchSearchBox(brand)) return
+    if (!document.querySelector('.VPLocalSearchBox')) return
+    scheduled = true
+    queueMicrotask(flush)
+  }
+
+  const observer = new MutationObserver(() => {
+    schedule()
+  })
+
+  if (document.body) {
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    })
+  }
+
+  schedule()
+
+  return () => {
+    active = false
+    observer.disconnect()
+  }
 }
 
 export function applyBrandToDOM(brand: SiteBrand): void {
@@ -388,7 +741,10 @@ export function applyBrandToDOM(brand: SiteBrand): void {
     effectiveBrand.loaded && !effectiveBrand.referral.enabled
   )
 
-  if (!effectiveBrand.isWhiteLabel) return
+  if (!effectiveBrand.isWhiteLabel) {
+    patchOpenSearchBoxes(effectiveBrand)
+    return
+  }
 
   if (document.title) {
     const currentTitle = document.title
@@ -439,62 +795,7 @@ export function applyBrandToDOM(brand: SiteBrand): void {
     }
   }
 
-  const safeSiteUrl = isSafeHttpOrigin(effectiveBrand.siteUrl)
-    ? normalizeOrigin(effectiveBrand.siteUrl)
-    : ''
-  const safeApiBase = resolveReplacementApiBase(effectiveBrand)
-
-  document.querySelectorAll<HTMLAnchorElement>('a[href]').forEach((anchor) => {
-    if (anchor.closest('[data-adty-keep-raw="true"]')) return
-    const currentHref = anchor.getAttribute('href') || ''
-    const prev = anchorHrefState.get(anchor)
-    const template =
-      prev && currentHref === prev.rendered ? prev.template : currentHref
-
-    let nextHref: string | null = null
-    if (safeSiteUrl) {
-      nextHref = replaceOriginPrefix(template, DEFAULT_BRAND.siteUrl, safeSiteUrl)
-    }
-    if (nextHref === null && safeApiBase) {
-      nextHref = replaceOriginPrefix(template, DEFAULT_BRAND.apiBase, safeApiBase)
-    }
-
-    if (nextHref !== null && isSafeHttpOrigin(nextHref)) {
-      if (currentHref !== nextHref) {
-        anchor.setAttribute('href', nextHref)
-      }
-      anchorHrefState.set(anchor, { template, rendered: nextHref })
-    } else if (prev && currentHref !== prev.rendered) {
-      anchorHrefState.delete(anchor)
-    }
-  })
-
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
-  let node = walker.nextNode() as Text | null
-  while (node) {
-    const parentEl = node.parentElement
-    const parentTag = parentEl?.tagName
-    if (
-      parentTag !== 'SCRIPT' &&
-      parentTag !== 'STYLE' &&
-      !parentEl?.closest('[data-adty-keep-raw="true"]')
-    ) {
-      const currentVal = node.nodeValue
-      if (currentVal) {
-        const prev = textNodeState.get(node)
-        const template =
-          prev && currentVal === prev.rendered ? prev.template : currentVal
-        if (containsDefaultBrandToken(template)) {
-          const next = replaceBrandText(template, effectiveBrand)
-          if (next !== currentVal) {
-            node.nodeValue = next
-          }
-          textNodeState.set(node, { template, rendered: next })
-        } else if (prev && currentVal !== prev.rendered) {
-          textNodeState.delete(node)
-        }
-      }
-    }
-    node = walker.nextNode() as Text | null
-  }
+  rewriteAnchorsInRoot(document, effectiveBrand)
+  rewriteTextNodesInRoot(document.body, effectiveBrand)
+  patchOpenSearchBoxes(effectiveBrand)
 }

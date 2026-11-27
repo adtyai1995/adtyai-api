@@ -59,6 +59,7 @@ import {
   notificationKindLabels,
 } from '@/features/adty-notifications/lib/schema'
 import { resolveLocalizedAnnouncement } from '@/features/dashboard/lib/text'
+import { useStatus } from '@/hooks/use-status'
 import { getAnnouncementDetail } from '@/lib/api'
 import { getAnnouncementColorClass } from '@/lib/colors'
 import { formatDateTimeObject } from '@/lib/time'
@@ -321,10 +322,12 @@ function EmptyState({
 function NoticeContent({
   notice,
   loading,
+  plainText,
   t,
 }: {
   notice: string
   loading: boolean
+  plainText?: boolean
   t: TFunction
 }) {
   if (loading) {
@@ -345,7 +348,13 @@ function NoticeContent({
 
   return (
     <ScrollArea className='h-[min(52vh,28rem)] pr-3'>
-      <RichContent breaks content={notice} />
+      {plainText ? (
+        <div className='text-sm leading-relaxed break-words whitespace-pre-wrap'>
+          {notice}
+        </div>
+      ) : (
+        <RichContent breaks content={notice} />
+      )}
     </ScrollArea>
   )
 }
@@ -539,6 +548,8 @@ export function NotificationPopover({
   hidingAnnouncement,
 }: NotificationPopoverProps) {
   const { t, i18n } = useTranslation()
+  const { status } = useStatus()
+  const isSubsite = Boolean(status?.adty_site)
   const staffSiteId = useAuthStore((state) => state.auth.user?.staff_site_id ?? 0)
   const currentLanguage = i18n.resolvedLanguage || i18n.language
   return (
@@ -598,7 +609,12 @@ export function NotificationPopover({
             </TabsList>
 
             <TabsContent value='notice' className='mt-2'>
-              <NoticeContent notice={notice} loading={loading} t={t} />
+              <NoticeContent
+                notice={notice}
+                loading={loading}
+                plainText={isSubsite}
+                t={t}
+              />
             </TabsContent>
 
             <TabsContent value='announcements' className='mt-2'>

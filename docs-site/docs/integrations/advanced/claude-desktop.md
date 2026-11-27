@@ -82,6 +82,6 @@ If an MCP server starts in your terminal but fails inside Claude Desktop, provid
 ## 4. Troubleshooting Proxy & TLS Issues
 
 - **TLS / Corporate Certificate Errors (`UNABLE_TO_VERIFY_LEAF_SIGNATURE`, `CERT_HAS_EXPIRED`)**: If your network uses a corporate HTTPS inspection proxy, export `NODE_EXTRA_CA_CERTS` pointing to your organization's PEM certificate bundle and restart Claude Desktop. Do not disable TLS verification in production environments.
-- **System Proxy Conflicts**: If you run a local proxy tool, confirm it is not intercepting `https://api.adtyai.com` with an invalid certificate or forcing an unreachable `HTTPS_PROXY` address. Try bypassing `api.adtyai.com` in your proxy rules to isolate the cause.
+- **System Proxy Conflicts**: If you run a local proxy tool, confirm it is not intercepting `https://api.adtyai.com` with an invalid certificate or forcing an unreachable `HTTPS_PROXY` address. Try bypassing `https://api.adtyai.com` in your proxy rules to isolate the cause.
 - **Auth Conflicts**: Ensure you do not have both an outdated `ANTHROPIC_API_KEY` and a different `ANTHROPIC_AUTH_TOKEN` set simultaneously across shell profiles and `~/.claude/settings.json`.
 - **Prompt Cache Misses**: If you notice lower-than-expected prompt cache hits in Claude Code sessions, review [Claude Code Cache Fix](/integrations/cli/cache-fix) and the [Claude Code FAQ](/faq/claude-code).

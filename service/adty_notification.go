@@ -2403,6 +2403,11 @@ func adtyCurrentNotificationInbox(site *model.AdtySite) (AdtyNotificationInbox, 
 	inbox := AdtyNotificationInbox{Announcements: []map[string]any{}, ReadKeys: []string{}}
 	keys := []string{}
 	if site != nil {
+		inbox.Notice = strings.TrimSpace(AdtyBrandFor(site).Notice)
+		if inbox.Notice != "" {
+			inbox.NoticeKey = adtyNotificationVersion(fmt.Sprintf("site:%d:notice:%s", site.Id, inbox.Notice))
+			keys = append(keys, inbox.NoticeKey)
+		}
 		return inbox, keys, nil
 	}
 	common.OptionMapRWMutex.RLock()

@@ -59,21 +59,21 @@ Kimi Code stores provider and model definitions in:
 Create or update `~/.kimi/config.toml` with an **ADTY AI** provider pointing to `https://api.adtyai.com/v1`:
 
 ```toml
-default_model = "adty-kimi"
+default_model = "gateway-kimi"
 
-[providers.adty_openai]
+[providers.gateway_openai]
 type = "openai_legacy"
 base_url = "https://api.adtyai.com/v1"
 api_key = "sk-your-api-key"
 
-[models.adty-kimi]
-provider = "adty_openai"
+[models.gateway-kimi]
+provider = "gateway_openai"
 model = "kimi-k2.5"
 max_context_size = 262144
 ```
 
 ::: tip Adding Extra Models
-You can declare additional `[models.<alias>]` entries referencing the same `[providers.adty_openai]` block—or an Anthropic provider block below—and switch between them anytime with `kimi --model <alias>`. Always confirm exact model IDs at [https://www.adtyai.com/pricing](https://www.adtyai.com/pricing).
+You can declare additional `[models.<alias>]` entries referencing the same `[providers.gateway_openai]` block—or an Anthropic provider block below—and switch between them anytime with `kimi --model <alias>`. Always confirm exact model IDs at [https://www.adtyai.com/pricing](https://www.adtyai.com/pricing).
 :::
 
 ### Anthropic-Compatible Configuration (Alternative)
@@ -81,15 +81,15 @@ You can declare additional `[models.<alias>]` entries referencing the same `[pro
 If you prefer Kimi Code to speak the Anthropic Messages protocol (for example, when calling Claude models or Anthropic-compatible routes on **ADTY AI**), point `base_url` to `https://api.adtyai.com` **without** `/v1`:
 
 ```toml
-default_model = "adty-claude"
+default_model = "gateway-claude"
 
-[providers.adty_anthropic]
+[providers.gateway_anthropic]
 type = "anthropic"
 base_url = "https://api.adtyai.com"
 api_key = "sk-your-api-key"
 
-[models.adty-claude]
-provider = "adty_anthropic"
+[models.gateway-claude]
+provider = "gateway_anthropic"
 model = "claude-sonnet-4-6"
 max_context_size = 200000
 ```

@@ -168,7 +168,8 @@ func detectExistingAdtyFundAnomalies(siteID int) ([]adtyFundAnomalyItem, error) 
 			operating = wallet.Balance
 		}
 		if wallet.Kind == model.AdtySiteWalletMargin && wallet.CycleTierUSD.IsPositive() {
-			over := wallet.CycleUsedUSD.Sub(AdtyMarginCycleLimit(wallet.CycleTierUSD))
+			ceiling := decimal.Max(AdtyMarginCycleLimit(wallet.CycleTierUSD), wallet.CycleCarryFrozenUSD)
+			over := wallet.CycleUsedUSD.Sub(ceiling)
 			if over.IsPositive() {
 				marginGap = over
 			}

@@ -94,21 +94,22 @@ func (AdtySiteTierPrincipalAdjustment) BeforeDelete(*gorm.DB) error {
 }
 
 type AdtySiteWallet struct {
-	Id              int64            `json:"id"`
-	SiteId          int              `json:"site_id" gorm:"uniqueIndex:idx_adty_site_wallet;index"`
-	Kind            string           `json:"kind" gorm:"uniqueIndex:idx_adty_site_wallet;type:varchar(16)"`
-	Currency        string           `json:"currency" gorm:"type:varchar(16)"`
-	Balance         decimal.Decimal  `json:"balance" gorm:"type:decimal(28,8);not null;default:0"`
-	FrozenUSD       decimal.Decimal  `json:"frozen_usd" gorm:"type:decimal(28,8);not null;default:0"`
-	ExcessFrozenUSD decimal.Decimal  `json:"excess_frozen_usd" gorm:"type:decimal(28,8);not null;default:0"`
-	RequiredBalance decimal.Decimal  `json:"required_balance" gorm:"type:decimal(28,8);not null;default:0"`
-	CycleTierUSD    decimal.Decimal  `json:"cycle_tier_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	CycleUsedUSD    decimal.Decimal  `json:"cycle_used_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	CycleNumber     int64            `json:"cycle_number" gorm:"not null;default:0"`
-	CycleStartedAt  int64            `json:"cycle_started_at" gorm:"not null;default:0"`
-	CycleInitialUSD *decimal.Decimal `json:"cycle_initial_usd" gorm:"type:decimal(28,8)"`
-	CreatedAt       int64            `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt       int64            `json:"updated_at" gorm:"autoUpdateTime"`
+	Id                  int64            `json:"id"`
+	SiteId              int              `json:"site_id" gorm:"uniqueIndex:idx_adty_site_wallet;index"`
+	Kind                string           `json:"kind" gorm:"uniqueIndex:idx_adty_site_wallet;type:varchar(16)"`
+	Currency            string           `json:"currency" gorm:"type:varchar(16)"`
+	Balance             decimal.Decimal  `json:"balance" gorm:"type:decimal(28,8);not null;default:0"`
+	FrozenUSD           decimal.Decimal  `json:"frozen_usd" gorm:"type:decimal(28,8);not null;default:0"`
+	ExcessFrozenUSD     decimal.Decimal  `json:"excess_frozen_usd" gorm:"type:decimal(28,8);not null;default:0"`
+	RequiredBalance     decimal.Decimal  `json:"required_balance" gorm:"type:decimal(28,8);not null;default:0"`
+	CycleTierUSD        decimal.Decimal  `json:"cycle_tier_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	CycleUsedUSD        decimal.Decimal  `json:"cycle_used_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	CycleCarryFrozenUSD decimal.Decimal  `json:"-" gorm:"type:decimal(20,8);not null;default:0"`
+	CycleNumber         int64            `json:"cycle_number" gorm:"not null;default:0"`
+	CycleStartedAt      int64            `json:"cycle_started_at" gorm:"not null;default:0"`
+	CycleInitialUSD     *decimal.Decimal `json:"cycle_initial_usd" gorm:"type:decimal(28,8)"`
+	CreatedAt           int64            `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt           int64            `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 func (AdtySiteWallet) TableName() string { return "adty_site_wallets" }

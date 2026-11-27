@@ -312,6 +312,7 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 	totalFrozenAfter := frozenAfter.Add(excessFrozenAfter)
 	cycleUsed := wallet.CycleUsedUSD
 	cycleTier := wallet.CycleTierUSD
+	cycleCarryFrozen := wallet.CycleCarryFrozenUSD
 	if kind == model.AdtySiteWalletMargin && change.MarginExcessOnly {
 		// Excess-margin funding (owner manual customer/team balance top-up,
 		// approved staff balance increase, and site vouchers) preserves 100%
@@ -401,6 +402,12 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 		}
 		cycleUsed = decimal.Zero
 	}
+	if kind == model.AdtySiteWalletMargin && !change.MarginExcessOnly && delta.IsZero() && change.HoldDelta.IsNegative() && cycleCarryFrozen.IsPositive() {
+		cycleCarryFrozen = cycleCarryFrozen.Sub(change.HoldDelta.Abs())
+		if cycleCarryFrozen.IsNegative() {
+			cycleCarryFrozen = decimal.Zero
+		}
+	}
 	if kind == model.AdtySiteWalletMargin && delta.IsPositive() && change.ReleaseCycleUsed.IsPositive() && !change.OpenMarginCycle {
 		cycleUsed = cycleUsed.Sub(change.ReleaseCycleUsed)
 		if cycleUsed.IsNegative() {
@@ -408,7 +415,8 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 		}
 	}
 	updates := map[string]any{
-		"balance": after, "frozen_usd": frozenAfter, "excess_frozen_usd": excessFrozenAfter, "cycle_tier_usd": cycleTier, "cycle_used_usd": cycleUsed,
+		"balance": after, "frozen_usd": frozenAfter, "excess_frozen_usd": excessFrozenAfter,
+		"cycle_tier_usd": cycleTier, "cycle_used_usd": cycleUsed, "cycle_carry_frozen_usd": cycleCarryFrozen,
 	}
 	if backfillRequired != nil {
 		updates["required_balance"] = *backfillRequired
@@ -422,14 +430,16 @@ func applyAdtySiteWalletChangeTx(tx *gorm.DB, siteID int, kind string, delta dec
 		}
 		current := wallet
 		current.Balance, current.FrozenUSD, current.ExcessFrozenUSD = after, frozenAfter, excessFrozenAfter
-		current.CycleTierUSD, current.CycleUsedUSD = cycleTier, cycleUsed
+		current.CycleTierUSD, current.CycleUsedUSD, current.CycleCarryFrozenUSD = cycleTier, cycleUsed, cycleCarryFrozen
 		if delta.IsPositive() && change.OpenMarginCycle {
 			current.CycleNumber++
 			current.CycleStartedAt = time.Now().Unix()
 			current.CycleInitialUSD = &after
+			current.CycleCarryFrozenUSD = frozenAfter
 			updates["cycle_number"] = current.CycleNumber
 			updates["cycle_started_at"] = current.CycleStartedAt
 			updates["cycle_initial_usd"] = after
+			updates["cycle_carry_frozen_usd"] = frozenAfter
 		}
 		cycleAfter, err = snapshotAdtyMarginCycle(current)
 		if err != nil {

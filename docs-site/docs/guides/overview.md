@@ -58,7 +58,7 @@ curl -sS https://api.adtyai.com/v1/chat/completions \
 ### Windows PowerShell
 
 ```powershell
-curl.exe -sS https://api.adtyai.com/v1/chat/completions `
+curl.exe -sS "https://api.adtyai.com/v1/chat/completions" `
   -H "Content-Type: application/json" `
   -H "Authorization: Bearer <YOUR_API_KEY>" `
   -d "{\"model\":\"gpt-5.4\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK and nothing else.\"}],\"max_tokens\":32}"

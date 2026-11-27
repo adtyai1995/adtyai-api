@@ -20,13 +20,13 @@ If you have not already created an ADTY AI Codex profile, follow [Codex CLI Setu
 - **Wire API**: `responses`
 - **Model**: e.g., `gpt-5.4` (verify live model IDs at [https://www.adtyai.com/pricing](https://www.adtyai.com/pricing))
 
-Confirm that `~/.codex/config.toml` contains `requires_openai_auth = true` under `[model_providers.adty]` and that `~/.codex/auth.json` contains your `OPENAI_API_KEY`:
+Confirm that `~/.codex/config.toml` contains `requires_openai_auth = true` under `[model_providers.gateway]` and that `~/.codex/auth.json` contains your `OPENAI_API_KEY`:
 
 ```toml
-model_provider = "adty"
+model_provider = "gateway"
 model = "gpt-5.4"
 
-[model_providers.adty]
+[model_providers.gateway]
 name = "ADTY AI"
 base_url = "https://api.adtyai.com/v1"
 wire_api = "responses"

@@ -37,6 +37,51 @@ interface TurnstileProps {
   className?: string
 }
 
+const TURNSTILE_SCRIPT_ID = 'cf-turnstile'
+const TURNSTILE_SCRIPT_SRC =
+  'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
+
+function ensureTurnstileScript(): HTMLScriptElement {
+  const existing = document.querySelector<HTMLScriptElement>(
+    `#${TURNSTILE_SCRIPT_ID}`
+  )
+  if (existing) {
+    if (existing.dataset.turnstileState === 'loading') {
+      return existing
+    }
+    existing.remove()
+  }
+
+  const script = document.createElement('script')
+  script.id = TURNSTILE_SCRIPT_ID
+  script.src = TURNSTILE_SCRIPT_SRC
+  script.async = true
+  script.defer = true
+  script.dataset.turnstileState = 'loading'
+  script.addEventListener(
+    'load',
+    () => {
+      if (window.turnstile) {
+        script.dataset.turnstileState = 'loaded'
+      } else {
+        script.dataset.turnstileState = 'error'
+        script.remove()
+      }
+    },
+    { once: true }
+  )
+  script.addEventListener(
+    'error',
+    () => {
+      script.dataset.turnstileState = 'error'
+      script.remove()
+    },
+    { once: true }
+  )
+  document.head.append(script)
+  return script
+}
+
 export function Turnstile({
   siteKey,
   onVerify,
@@ -85,13 +130,18 @@ export function Turnstile({
       }
     }
 
+    const handleScriptLoad = () => {
+      if (window.turnstile) {
+        render()
+      } else if (!cancelled) {
+        rendered = false
+        onExpireRef.current?.()
+      }
+    }
+
     const handleScriptError = () => {
-      scriptEl?.removeEventListener('load', render)
-      scriptEl?.removeEventListener('error', handleScriptError)
-      scriptEl?.remove()
-      scriptEl = null
-      rendered = false
       if (!cancelled) {
+        rendered = false
         onExpireRef.current?.()
       }
     }
@@ -99,29 +149,14 @@ export function Turnstile({
     if (window.turnstile) {
       render()
     } else {
-      const scriptId = 'cf-turnstile'
-      const existing = document.querySelector<HTMLScriptElement>(`#${scriptId}`)
-      if (existing) {
-        scriptEl = existing
-        existing.addEventListener('load', render)
-        existing.addEventListener('error', handleScriptError)
-      } else {
-        const s = document.createElement('script')
-        s.id = scriptId
-        s.src =
-          'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
-        s.async = true
-        s.defer = true
-        scriptEl = s
-        s.addEventListener('load', render)
-        s.addEventListener('error', handleScriptError)
-        document.head.append(s)
-      }
+      scriptEl = ensureTurnstileScript()
+      scriptEl.addEventListener('load', handleScriptLoad)
+      scriptEl.addEventListener('error', handleScriptError)
     }
 
     return () => {
       cancelled = true
-      scriptEl?.removeEventListener('load', render)
+      scriptEl?.removeEventListener('load', handleScriptLoad)
       scriptEl?.removeEventListener('error', handleScriptError)
       if (widgetId !== undefined) {
         try {

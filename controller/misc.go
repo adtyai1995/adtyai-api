@@ -193,8 +193,8 @@ func GetStatus(c *gin.Context) {
 }
 
 func GetNotice(c *gin.Context) {
-	if service.AdtySiteForRequest(c) != nil {
-		serveRevalidatedJSON(c, "")
+	if site := service.AdtySiteForRequest(c); site != nil {
+		serveRevalidatedJSON(c, strings.TrimSpace(service.AdtyBrandFor(site).Notice))
 		return
 	}
 	common.OptionMapRWMutex.RLock()

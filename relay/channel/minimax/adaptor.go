@@ -41,8 +41,13 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 	speed := lo.FromPtrOr(request.Speed, 0.0)
 	outputFormat := request.ResponseFormat
 
+	upstreamModel := info.UpstreamModelName
+	if upstreamModel == "" {
+		upstreamModel = info.OriginModelName
+	}
+
 	minimaxRequest := MiniMaxTTSRequest{
-		Model: info.OriginModelName,
+		Model: upstreamModel,
 		Text:  request.Input,
 		VoiceSetting: VoiceSetting{
 			VoiceID: voiceID,
@@ -59,13 +64,15 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 		if err := common.Unmarshal(request.Metadata, &minimaxRequest); err != nil {
 			return nil, fmt.Errorf("error unmarshalling metadata to minimax request: %w", err)
 		}
-		// R5-013: Restore billing-critical model and text fields after metadata merge.
-		minimaxRequest.Model = info.UpstreamModelName
-		if minimaxRequest.Model == "" {
-			minimaxRequest.Model = info.OriginModelName
+		if minimaxRequest.Stream {
+			return nil, types.NewErrorWithStatusCode(errors.New("streaming is not supported for minimax tts"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
+		// R5-013: Restore billing-critical model and text fields after metadata merge.
+		minimaxRequest.Model = upstreamModel
 		minimaxRequest.Text = request.Input
 	}
+	minimaxRequest.Stream = false
+	minimaxRequest.StreamOptions = nil
 
 	jsonData, err := common.Marshal(minimaxRequest)
 	if err != nil {

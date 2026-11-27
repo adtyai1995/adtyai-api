@@ -98,14 +98,29 @@ func adtyPaymentScopeIdentity(db *gorm.DB, user *model.User, scopes []AdtyPaymen
 }
 
 // ResolveAdtyOwnerTopupSiteID resolves the active owned site ID for owner
-// margin top-up flows on both the main host (requestSiteID == 0) and subsite
-// hosts (requestSiteID > 0), verifying active status and current ownership.
+// margin top-up checkout flows on both the main host (requestSiteID == 0) and
+// subsite hosts (requestSiteID > 0), verifying active status and current ownership.
 func ResolveAdtyOwnerTopupSiteID(userID, requestSiteID int) int {
-	if userID <= 0 || model.DB == nil {
+	return resolveAdtyOwnerTopupSiteIDWithStatuses(userID, requestSiteID, []string{model.AdtySiteStatusActive})
+}
+
+// ResolveAdtyOwnerTopupReadSiteID resolves the owned site ID for read-only
+// owner margin top-up history and payment gateway return lookup, matching
+// AdtyOwnerSite and AdtyPayResultTarget (active, paused, or closing).
+func ResolveAdtyOwnerTopupReadSiteID(userID, requestSiteID int) int {
+	return resolveAdtyOwnerTopupSiteIDWithStatuses(userID, requestSiteID, []string{
+		model.AdtySiteStatusActive,
+		model.AdtySiteStatusPaused,
+		model.AdtySiteStatusClosing,
+	})
+}
+
+func resolveAdtyOwnerTopupSiteIDWithStatuses(userID, requestSiteID int, statuses []string) int {
+	if userID <= 0 || model.DB == nil || len(statuses) == 0 {
 		return 0
 	}
 	var site model.AdtySite
-	query := model.DB.Select("id").Where("owner_user_id = ? AND status = ?", userID, model.AdtySiteStatusActive)
+	query := model.DB.Select("id").Where("owner_user_id = ? AND status IN ?", userID, statuses)
 	if requestSiteID > 0 {
 		query = query.Where("id = ?", requestSiteID)
 	}

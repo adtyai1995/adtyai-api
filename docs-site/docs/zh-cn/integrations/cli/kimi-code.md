@@ -59,21 +59,21 @@ Kimi Code 默认读取以下路径的配置文件：
 创建或编辑 `~/.kimi/config.toml`，将 `base_url` 指向 `https://api.adtyai.com/v1`：
 
 ```toml
-default_model = "adty-kimi"
+default_model = "gateway-kimi"
 
-[providers.adty_openai]
+[providers.gateway_openai]
 type = "openai_legacy"
 base_url = "https://api.adtyai.com/v1"
 api_key = "sk-your-api-key"
 
-[models.adty-kimi]
-provider = "adty_openai"
+[models.gateway-kimi]
+provider = "gateway_openai"
 model = "kimi-k2.5"
 max_context_size = 262144
 ```
 
 ::: tip 配置多个模型别名
-你可以在同一份配置中追加多个 `[models.<别名>]` 区块复用 `[providers.adty_openai]`（或下方的 Anthropic 供应商），启动时用 `kimi --model <别名>` 快速切换。具体模型 ID 请以 [https://www.adtyai.com/pricing](https://www.adtyai.com/pricing) 为准。
+你可以在同一份配置中追加多个 `[models.<别名>]` 区块复用 `[providers.gateway_openai]`（或下方的 Anthropic 供应商），启动时用 `kimi --model <别名>` 快速切换。具体模型 ID 请以 [https://www.adtyai.com/pricing](https://www.adtyai.com/pricing) 为准。
 :::
 
 ### Anthropic 兼容协议配置（备选）
@@ -81,15 +81,15 @@ max_context_size = 262144
 如果你希望 Kimi Code 通过 Anthropic Messages 协议调用（例如配合 Claude 模型或 Anthropic 兼容链路），请使用 `https://api.adtyai.com`（**不要**带 `/v1`）：
 
 ```toml
-default_model = "adty-claude"
+default_model = "gateway-claude"
 
-[providers.adty_anthropic]
+[providers.gateway_anthropic]
 type = "anthropic"
 base_url = "https://api.adtyai.com"
 api_key = "sk-your-api-key"
 
-[models.adty-claude]
-provider = "adty_anthropic"
+[models.gateway-claude]
+provider = "gateway_anthropic"
 model = "claude-sonnet-4-6"
 max_context_size = 200000
 ```

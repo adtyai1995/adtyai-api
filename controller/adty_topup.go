@@ -463,7 +463,7 @@ func GetAdtyTopUpSelf(c *gin.Context) {
 		return
 	}
 	if filter.Business == model.AdtyBusinessOwnerSelfUseTopup || filter.Business == model.AdtyBusinessOwnerMarginTopup {
-		filter.OwnerSiteID = service.ResolveAdtyOwnerTopupSiteID(userID, service.AdtyRequestSiteID(c))
+		filter.OwnerSiteID = service.ResolveAdtyOwnerTopupReadSiteID(userID, service.AdtyRequestSiteID(c))
 		if filter.OwnerSiteID <= 0 {
 			filter.OwnerSiteID = -1
 		}

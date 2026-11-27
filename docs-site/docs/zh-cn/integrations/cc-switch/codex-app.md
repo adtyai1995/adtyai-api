@@ -23,10 +23,10 @@ Codex CLI 与 Codex 桌面应用都从以下两个文件读取当前供应商与
 确认 `~/.codex/config.toml` 中包含 `requires_openai_auth = true`，且 `~/.codex/auth.json` 已写入你的 API Key：
 
 ```toml
-model_provider = "adty"
+model_provider = "gateway"
 model = "gpt-5.4"
 
-[model_providers.adty]
+[model_providers.gateway]
 name = "ADTY AI"
 base_url = "https://api.adtyai.com/v1"
 wire_api = "responses"

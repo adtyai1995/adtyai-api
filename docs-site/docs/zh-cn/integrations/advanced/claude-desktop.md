@@ -82,6 +82,6 @@ Claude Desktop 的 MCP 配置文件位于：
 ## 4. 代理与 TLS 证书问题排查
 
 - **企业网络证书校验报错（`UNABLE_TO_VERIFY_LEAF_SIGNATURE` / `CERT_HAS_EXPIRED`）**：若公司网络部署了 HTTPS 审计代理，请将企业根证书 PEM 文件路径配置到环境变量 `NODE_EXTRA_CA_CERTS` 并彻底重启 Claude Desktop；生产环境请勿关闭 TLS 证书校验。
-- **本地代理工具冲突**：如本机运行了代理软件，确认它没有对 `https://api.adtyai.com` 进行异常 TLS 拦截，也没有残留失效的 `HTTPS_PROXY` 环境变量；可尝试在代理规则中将 `api.adtyai.com` 设为直连以排除干扰。
+- **本地代理工具冲突**：如本机运行了代理软件，确认它没有对 `https://api.adtyai.com` 进行异常 TLS 拦截，也没有残留失效的 `HTTPS_PROXY` 环境变量；可尝试在代理规则中将 `https://api.adtyai.com` 设为直连以排除干扰。
 - **认证变量冲突**：检查系统环境变量、Shell 配置与 `~/.claude/settings.json` 中是否同时存在旧的 `ANTHROPIC_API_KEY` 与新的 `ANTHROPIC_AUTH_TOKEN`，避免鉴权覆盖。
 - **提示词缓存命中异常**：如发现 Claude Code 会话缓存命中率偏低，请参考 [Claude Code 缓存命中修复](/zh-cn/integrations/cli/cache-fix) 及 [Claude Code 排查](/zh-cn/faq/claude-code)。
