@@ -1301,47 +1301,55 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 		}
 		return strings.Trim(s, cutset), nil
 	case "max", "min":
-		if len(args) == 1 {
-			rv := reflect.ValueOf(args[0])
-			if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
-				if rv.Len() == 0 {
-					return nil, fmt.Errorf("expr run error: %s cannot operate on empty array", name)
-				}
-				best, ok := valueAsDecimal(normalizeMemberValue(rv.Index(0).Interface()))
-				if !ok {
-					return nil, fmt.Errorf("expr run error: %s requires numbers", name)
-				}
-				for i := 1; i < rv.Len(); i++ {
-					cur, ok := valueAsDecimal(normalizeMemberValue(rv.Index(i).Interface()))
-					if !ok {
-						return nil, fmt.Errorf("expr run error: %s requires numbers", name)
-					}
-					if name == "max" {
-						best = decimal.Max(best, cur)
-					} else {
-						best = decimal.Min(best, cur)
-					}
-				}
-				return best, nil
-			}
+		if len(args) == 0 {
+			return nil, fmt.Errorf("expr run error: %s expects at least 1 argument", name)
 		}
-		if len(args) < 2 {
-			return nil, fmt.Errorf("expr run error: %s expects 2 arguments", name)
-		}
-		best, ok := valueAsDecimal(args[0])
-		if !ok {
-			return nil, fmt.Errorf("expr run error: %s requires numbers, got %T and %T", name, args[0], args[1])
-		}
-		for i := 1; i < len(args); i++ {
-			cur, ok := valueAsDecimal(args[i])
-			if !ok {
-				return nil, fmt.Errorf("expr run error: %s requires numbers, got %T and %T", name, args[0], args[i])
+		var best decimal.Decimal
+		hasBest := false
+		updateBest := func(cur decimal.Decimal) {
+			if !hasBest {
+				best = cur
+				hasBest = true
+				return
 			}
 			if name == "max" {
 				best = decimal.Max(best, cur)
 			} else {
 				best = decimal.Min(best, cur)
 			}
+		}
+		for _, arg := range args {
+			if isNilValue(arg) {
+				return nil, fmt.Errorf("expr run error: %s requires numbers, got %T", name, arg)
+			}
+			rv := reflect.ValueOf(arg)
+			for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+				if rv.IsNil() {
+					return nil, fmt.Errorf("expr run error: %s requires numbers, got %T", name, arg)
+				}
+				rv = rv.Elem()
+			}
+			if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+				if rv.Len() == 0 {
+					return nil, fmt.Errorf("expr run error: %s cannot operate on empty array", name)
+				}
+				for i := 0; i < rv.Len(); i++ {
+					cur, ok := valueAsDecimal(normalizeMemberValue(rv.Index(i).Interface()))
+					if !ok {
+						return nil, fmt.Errorf("expr run error: %s requires numbers", name)
+					}
+					updateBest(cur)
+				}
+				continue
+			}
+			cur, ok := valueAsDecimal(arg)
+			if !ok {
+				return nil, fmt.Errorf("expr run error: %s requires numbers, got %T", name, arg)
+			}
+			updateBest(cur)
+		}
+		if !hasBest {
+			return nil, fmt.Errorf("expr run error: %s cannot operate on empty array", name)
 		}
 		return best, nil
 	case "abs", "ceil", "floor":

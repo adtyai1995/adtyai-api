@@ -2144,6 +2144,7 @@ func resetUserPasswordWithOutcome(user *User, password string) (PasswordResetOut
 	if err != nil {
 		return outcome, err
 	}
+	var currentUsername string
 	readyToCommit := false
 	err = DB.Transaction(func(tx *gorm.DB) error {
 		var current User
@@ -2156,6 +2157,7 @@ func resetUserPasswordWithOutcome(user *User, password string) (PasswordResetOut
 		if NormalizeEmail(current.Email) != NormalizeEmail(email) || current.SiteId != siteID || current.Status != common.UserStatusEnabled {
 			return ErrEmailNotFound
 		}
+		currentUsername = current.Username
 		outcome.UserID, outcome.Role = current.Id, current.Role
 		outcome.Email, outcome.Language = current.Email, current.GetSetting().Language
 		if _, err := IncrementUserAuthVersionWithTx(tx, user.Id); err != nil {
@@ -2191,6 +2193,7 @@ func resetUserPasswordWithOutcome(user *User, password string) (PasswordResetOut
 	if _, revokeErr := RevokeAllUserSessions(user.Id, "password_reset"); revokeErr != nil {
 		common.SysError(common.LogText("failed to revoke sessions after password reset for user %d: %v", user.Id, revokeErr))
 	}
+	common.ClearAccountLoginFailures(user.Id, currentUsername, outcome.Email, siteID)
 	return outcome, nil
 }
 

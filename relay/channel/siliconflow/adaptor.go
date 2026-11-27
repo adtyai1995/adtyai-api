@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relay/channel"
@@ -31,6 +32,10 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 }
 
 func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.AudioRequest) (io.Reader, error) {
+	if info != nil && info.RelayMode == constant.RelayModeAudioSpeech &&
+		(info.IsStream || strings.EqualFold(strings.TrimSpace(request.StreamFormat), "sse")) {
+		return nil, types.NewErrorWithStatusCode(errors.New("streaming is not supported for siliconflow tts"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
 	adaptor := openai.Adaptor{}
 	return adaptor.ConvertAudioRequest(c, info, request)
 }
@@ -99,6 +104,14 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
+	if info != nil && info.IsStream {
+		if info.RelayMode == constant.RelayModeAudioSpeech {
+			return nil, types.NewErrorWithStatusCode(errors.New("streaming is not supported for siliconflow tts"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+		if info.RelayMode == constant.RelayModeImagesGenerations || info.RelayMode == constant.RelayModeImagesEdits {
+			return nil, types.NewErrorWithStatusCode(errors.New("streaming image generation is not supported for this channel"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+	}
 	adaptor := openai.Adaptor{}
 	return adaptor.DoRequest(c, info, requestBody)
 }

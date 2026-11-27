@@ -81,7 +81,7 @@ func Login(c *gin.Context) {
 	}
 	siteID := service.AdtyRequestSiteID(c)
 	candID, hasCand := model.LookupLoginCandidateUserID(username, siteID)
-	if adtyLoginLocked(username) || (hasCand && adtyLoginLockedUser(candID)) {
+	if adtyLoginLockedForSite(username, siteID) || (hasCand && adtyLoginLockedUser(candID)) {
 		common.ApiError(c, adtyLoginFailureResponse())
 		return
 	}
@@ -102,7 +102,7 @@ func Login(c *gin.Context) {
 			common.ApiErrorStatus(c, http.StatusOK, common.NewMessage(model.EmailAmbiguousPrompt), gin.H{"code": model.EmailAmbiguousCode})
 		default:
 			lockUnavailable := false
-			if recErr := adtyRecordLoginFailure(username); recErr != nil {
+			if recErr := adtyRecordLoginFailureForSite(username, siteID); recErr != nil {
 				common.SysError(common.LogText("login failure lock unavailable: %s", recErr.Error()))
 				lockUnavailable = true
 			}
@@ -120,10 +120,10 @@ func Login(c *gin.Context) {
 		}
 		return
 	}
-	adtyClearLoginFailures(username)
-	adtyClearLoginFailuresUser(user.Id)
-	if user.Username != "" {
-		adtyClearLoginFailures(user.Username)
+	adtyClearLoginFailuresForSite(username, siteID)
+	common.ClearAccountLoginFailures(user.Id, user.Username, user.Email, user.SiteId)
+	if user.SiteId != siteID && user.Email != "" {
+		adtyClearLoginFailuresForSite(user.Email, siteID)
 	}
 
 	setupLogin(&user, c)
@@ -809,39 +809,39 @@ func buildSelfUserData(user *model.User) map[string]any {
 		required, version = false, "" // Staff use the dedicated workspace's site agreement gate.
 	}
 	data := map[string]any{
-		"id":                       user.Id,
-		"username":                 user.Username,
-		"display_name":             user.DisplayName,
-		"has_password":             user.HasPassword,
-		"role":                     user.Role,
-		"status":                   user.Status,
-		"email":                    user.Email,
-		"github_id":                user.GitHubId,
-		"discord_id":               user.DiscordId,
-		"oidc_id":                  user.OidcId,
-		"wechat_id":                user.WeChatId,
-		"telegram_id":              user.TelegramId,
-		"group":                    user.Group,
-		"quota":                    user.ToBaseUser().Quota,
-		"used_quota":               user.UsedQuota,
-		"request_count":            user.RequestCount,
-		"linux_do_id":              user.LinuxDOId,
-		"setting":                  sanitizedSetting,
-		"has_webhook_secret":       hasWebhookSecret,
-		"has_bark_url":             hasBarkUrl,
-		"has_gotify_token":         hasGotifyToken,
-		"stripe_customer":          user.StripeCustomer,
-		"sidebar_modules":          userSetting.SidebarModules, // 正确提取sidebar_modules字段
-		"permissions":              permissions,
-		"adty_archived_site_owner":        service.AdtyHasArchivedSite(user.Id),
-		"adty_site_owner":                 service.AdtyIsSiteOwner(user.Id), // 二开：侧边栏只对站长显示站长中心（任务 11.6）
-		"adty_has_team":                   service.AdtyUserHasTeam(user.Id),
-		"adty_referral_enabled":           service.IsAdtyReferralEnabledForSite(user.SiteId),
+		"id":                               user.Id,
+		"username":                         user.Username,
+		"display_name":                     user.DisplayName,
+		"has_password":                     user.HasPassword,
+		"role":                             user.Role,
+		"status":                           user.Status,
+		"email":                            user.Email,
+		"github_id":                        user.GitHubId,
+		"discord_id":                       user.DiscordId,
+		"oidc_id":                          user.OidcId,
+		"wechat_id":                        user.WeChatId,
+		"telegram_id":                      user.TelegramId,
+		"group":                            user.Group,
+		"quota":                            user.ToBaseUser().Quota,
+		"used_quota":                       user.UsedQuota,
+		"request_count":                    user.RequestCount,
+		"linux_do_id":                      user.LinuxDOId,
+		"setting":                          sanitizedSetting,
+		"has_webhook_secret":               hasWebhookSecret,
+		"has_bark_url":                     hasBarkUrl,
+		"has_gotify_token":                 hasGotifyToken,
+		"stripe_customer":                  user.StripeCustomer,
+		"sidebar_modules":                  userSetting.SidebarModules, // 正确提取sidebar_modules字段
+		"permissions":                      permissions,
+		"adty_archived_site_owner":         service.AdtyHasArchivedSite(user.Id),
+		"adty_site_owner":                  service.AdtyIsSiteOwner(user.Id), // 二开：侧边栏只对站长显示站长中心（任务 11.6）
+		"adty_has_team":                    service.AdtyUserHasTeam(user.Id),
+		"adty_referral_enabled":            service.IsAdtyReferralEnabledForSite(user.SiteId),
 		"adty_has_legacy_site_commissions": service.AdtyUserHasLegacySiteCommissions(user.Id),
-		"site_id":                  user.SiteId,
-		"staff_site_id":            user.StaffSiteId,
-		"site_terms_required":      required,
-		"site_terms_version":       version,
+		"site_id":                          user.SiteId,
+		"staff_site_id":                    user.StaffSiteId,
+		"site_terms_required":              required,
+		"site_terms_version":               version,
 	}
 	attachWalletLotProjection(data, user)
 	return data
@@ -1161,7 +1161,8 @@ func AdminResetUserPassword(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	var targetUsername string
+	var targetUsername, targetEmail string
+	var targetSiteID int
 	var auditEvent model.AuditLog
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := model.PreLockScopedEmployeeRowsTx(tx, id); err != nil {
@@ -1195,6 +1196,8 @@ func AdminResetUserPassword(c *gin.Context) {
 			return err
 		}
 		targetUsername = current.Username
+		targetEmail = current.Email
+		targetSiteID = current.SiteId
 		auditParams := map[string]any{
 			"id":                  current.Id,
 			"username":            current.Username,
@@ -1219,6 +1222,7 @@ func AdminResetUserPassword(c *gin.Context) {
 	if _, err := model.RevokeAllUserSessions(id, "admin_user_password_reset"); err != nil {
 		common.SysError(common.LogText("failed to revoke sessions after admin password reset: user=%d err=%v", id, err))
 	}
+	common.ClearAccountLoginFailures(id, targetUsername, targetEmail, targetSiteID)
 	setAuthNoStore(c)
 	common.ApiSuccess(c, gin.H{
 		"user_id":            id,

@@ -112,6 +112,20 @@ func loginLockNameKey(username string) string {
 	return "name:" + norm
 }
 
+func loginLockIdentifierKey(identifier string, siteID int) string {
+	norm := strings.ToLower(strings.TrimSpace(identifier))
+	if norm == "" {
+		return ""
+	}
+	if strings.Contains(norm, "@") {
+		if siteID < 0 {
+			siteID = 0
+		}
+		return fmt.Sprintf("site:%d:email:%s", siteID, norm)
+	}
+	return "name:" + norm
+}
+
 func loginLockUserKey(userID int) string {
 	if userID <= 0 {
 		return ""
@@ -264,6 +278,38 @@ func ClearLoginFailures(username string) {
 // ClearLoginFailuresUser 在一个口令验证成功之后清掉该账号 ID 的失败计数。
 func ClearLoginFailuresUser(userID int) {
 	clearLoginFailuresScoped(loginLockUserKey(userID))
+}
+
+// LoginLockedForSite reports whether this login identifier has exhausted its
+// password attempts. Email identifiers are scoped by siteID (DEC-022 / A.15)
+// while globally unique usernames use the username namespace.
+func LoginLockedForSite(identifier string, siteID int) bool {
+	return loginLockedScoped(loginLockIdentifierKey(identifier, siteID))
+}
+
+// RecordLoginFailureForSite records one failed password attempt for identifier,
+// scoping email-shaped identifiers by siteID so cross-site accounts cannot bleed lockout.
+func RecordLoginFailureForSite(identifier string, siteID int) error {
+	return recordLoginFailureScoped(loginLockIdentifierKey(identifier, siteID))
+}
+
+// ClearLoginFailuresForSite clears failed password attempts for identifier on siteID.
+func ClearLoginFailuresForSite(identifier string, siteID int) {
+	clearLoginFailuresScoped(loginLockIdentifierKey(identifier, siteID))
+}
+
+// ClearAccountLoginFailures clears all password lockout counters associated with
+// one account (user ID, username, and site-scoped email).
+func ClearAccountLoginFailures(userID int, username, email string, siteID int) {
+	if userID > 0 {
+		ClearLoginFailuresUser(userID)
+	}
+	if strings.TrimSpace(username) != "" {
+		ClearLoginFailures(username)
+	}
+	if strings.TrimSpace(email) != "" {
+		ClearLoginFailuresForSite(email, siteID)
+	}
 }
 
 // ResetLoginFailuresForTest 清空进程内的失败计数（测试用，等价于换一个进程）。

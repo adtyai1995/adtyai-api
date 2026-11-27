@@ -801,8 +801,8 @@ func AdtyOverrideStatus(c *gin.Context, data map[string]any) {
 	}
 }
 
-// AdtySiteLoginAllowed 是 site_login_only 的检查（11.2）：开着时分站客户只能在自己的分站登录，
-// 主站用户只能在主站登录，固定站长也可在本人分站登录。会话仍绑定签发站点。
+// AdtySiteLoginAllowed 按 A.15 / DEC-023 始终强制站点域名登录绑定：
+// 主站用户只能在主站登录，分站客户与分站员工只能在所属分站登录，站长可在主站或本人服务中分站登录。
 // 只在建会话的入口调用（密码、二次验证、Passkey），API 令牌不受影响。
 // 分站功能关着时中间件不识别站点，所有请求都算主站，这里不查库直接放行（上游测试数登录的查询次数）。
 func AdtySiteLoginAllowed(c *gin.Context, userId int) bool {
@@ -817,7 +817,16 @@ func AdtySiteLoginAllowed(c *gin.Context, userId int) bool {
 	if err := model.DB.Select("id", "site_id", "staff_site_id").Where("id = ?", userId).Limit(1).Find(&users).Error; err != nil || len(users) == 0 {
 		return false
 	}
+	current := 0
+	var reqSite *model.AdtySite
+	if site := AdtySiteForRequest(c); site != nil {
+		reqSite = site
+		current = site.Id
+	}
 	if users[0].StaffSiteId > 0 {
+		if current != users[0].StaffSiteId {
+			return false
+		}
 		var staffSite model.AdtySite
 		if err := model.DB.Select("id", "owner_user_id", "status").First(&staffSite, users[0].StaffSiteId).Error; err != nil || !AdtySiteServesCustomers(&staffSite) {
 			return false
@@ -830,16 +839,10 @@ func AdtySiteLoginAllowed(c *gin.Context, userId int) bool {
 		if err := model.DB.Model(&model.AdtySiteStaff{}).Where("user_id = ? AND site_id = ? AND owner_user_id = ? AND status = ?", userId, staffSite.Id, staffSite.OwnerUserId, "enabled").Count(&staffCount).Error; err != nil || staffCount == 0 {
 			return false
 		}
+		return users[0].SiteId == current
 	}
-	if !cfg.SiteLoginOnly {
+	if reqSite != nil && users[0].SiteId == 0 && reqSite.OwnerUserId == userId && AdtySiteServesCustomers(reqSite) {
 		return true
-	}
-	current := 0
-	if site := AdtySiteForRequest(c); site != nil {
-		current = site.Id
-		if users[0].SiteId == 0 && site.OwnerUserId == userId && AdtySiteServesCustomers(site) {
-			return true
-		}
 	}
 	return users[0].SiteId == current
 }

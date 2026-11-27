@@ -564,6 +564,8 @@ func ResetAdtyTeamEmployeePassword(leaderId int, teamId int64, memberUserId int,
 		return err
 	}
 	var event model.AuditLog
+	var memberUsername, memberEmail string
+	var memberSiteID int
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		team, err := lockActiveTeam(tx, teamId)
 		if err != nil {
@@ -588,6 +590,7 @@ func ResetAdtyTeamEmployeePassword(leaderId int, teamId int64, memberUserId int,
 		if user.SiteId != team.SiteId || user.StaffSiteId != 0 || user.Role != common.RoleCommonUser {
 			return ErrAdtyTeamForbidden
 		}
+		memberUsername, memberEmail, memberSiteID = user.Username, user.Email, user.SiteId
 		// R3-021: Only advance disabled_auth_version if the current disabled state was
 		// owned by the team leader (matching prior disabled_auth_version), never after an admin ban.
 		keepTeamDisabledVersion := member.Status == model.AdtyTeamMemberDisabled &&
@@ -621,6 +624,7 @@ func ResetAdtyTeamEmployeePassword(leaderId int, teamId int64, memberUserId int,
 		return err
 	}
 	revokeTeamEmployeeSessionsBestEffort([]int{memberUserId}, "team_employee_password_reset")
+	common.ClearAccountLoginFailures(memberUserId, memberUsername, memberEmail, memberSiteID)
 	deliverAdtyCommittedAudit(event)
 	return nil
 }

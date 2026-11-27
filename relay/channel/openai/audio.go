@@ -41,7 +41,8 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 
 	usage := &dto.Usage{}
 
-	if info.IsStream {
+	isEventStream := info.IsStream && strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
+	if isEventStream {
 		var streamedAudioBytes int
 		var lastParseErr error
 		var streamErr *types.NewAPIError

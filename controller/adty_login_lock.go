@@ -34,6 +34,18 @@ func adtyClearLoginFailuresUser(userID int) {
 	common.ClearLoginFailuresUser(userID)
 }
 
+func adtyLoginLockedForSite(identifier string, siteID int) bool {
+	return common.LoginLockedForSite(identifier, siteID)
+}
+
+func adtyRecordLoginFailureForSite(identifier string, siteID int) error {
+	return common.RecordLoginFailureForSite(identifier, siteID)
+}
+
+func adtyClearLoginFailuresForSite(identifier string, siteID int) {
+	common.ClearLoginFailuresForSite(identifier, siteID)
+}
+
 func adtyLoginFailureResponse() *common.Message {
 	return common.NewMessage("Username or password is incorrect, or user has been banned")
 }

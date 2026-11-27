@@ -3,6 +3,7 @@ package billingexpr
 import (
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -152,11 +153,6 @@ var compileEnvPrototypeV1 = map[string]any{
 	"param":       func(string) any { return nil },
 	"u":           func(string) any { return nil },
 	"has":         func(any, string) bool { return false },
-	"hour":        func(...string) int { return 0 },
-	"minute":      func(...string) int { return 0 },
-	"weekday":     func(...string) int { return 0 },
-	"month":       func(...string) int { return 0 },
-	"day":         func(...string) int { return 0 },
 	"abs":         math.Abs,
 	"ceil":        math.Ceil,
 	"floor":       math.Floor,
@@ -187,15 +183,154 @@ var roundCompileOption = expr.Function(
 	func(params ...any) (any, error) { return float64(0), nil },
 	new(func(float64) float64),
 	new(func(int) float64),
-	new(func(any) float64),
 	new(func(float64, int) float64),
 	new(func(int, int) float64),
-	new(func(any, int) float64),
 	new(func(float64, float64) float64),
-	new(func(any, float64) float64),
-	new(func(float64, any) float64),
-	new(func(any, any) float64),
+	new(func(int, float64) float64),
 )
+
+func newTimezoneCompileOption(name string) expr.Option {
+	return expr.Function(
+		name,
+		func(params ...any) (any, error) { return 0, nil },
+		new(func() int),
+		new(func(string) int),
+	)
+}
+
+var supportedCompileBuiltins = []string{
+	"len", "min", "max", "int", "float", "string", "lower", "upper", "trim",
+}
+
+var supportedExprCallNames = map[string]bool{
+	"tier": true, "fixed": true, "header": true, "param": true, "u": true, "has": true,
+	"hour": true, "minute": true, "weekday": true, "month": true, "day": true,
+	"max": true, "min": true, "abs": true, "ceil": true, "floor": true, "round": true,
+	"len": true, "int": true, "float": true, "string": true, "lower": true, "upper": true, "trim": true,
+}
+
+var supportedExprBuiltinNames = map[string]bool{
+	"len": true, "min": true, "max": true, "int": true, "float": true, "string": true,
+	"lower": true, "upper": true, "trim": true, "round": true, "abs": true, "ceil": true, "floor": true,
+}
+
+type exprTreeValidator struct {
+	err error
+}
+
+func (v *exprTreeValidator) Visit(node *ast.Node) {
+	if v.err != nil || node == nil || *node == nil {
+		return
+	}
+	switch n := (*node).(type) {
+	case *ast.NilNode, *ast.BoolNode, *ast.StringNode, *ast.BytesNode, *ast.ConstantNode,
+		*ast.IntegerNode, *ast.FloatNode, *ast.ConditionalNode, *ast.ChainNode,
+		*ast.MemberNode, *ast.ArrayNode, *ast.MapNode, *ast.PairNode, *ast.SliceNode:
+		return
+	case *ast.IdentifierNode:
+		if n.Value == "$env" {
+			v.err = fmt.Errorf("identifier %q is not supported", n.Value)
+		}
+	case *ast.UnaryNode:
+		switch n.Operator {
+		case "!", "not", "+", "-":
+		default:
+			v.err = fmt.Errorf("unsupported unary operator %q", n.Operator)
+		}
+	case *ast.BinaryNode:
+		switch n.Operator {
+		case "&&", "and", "||", "or", "??",
+			"==", "!=", "<", "<=", ">", ">=",
+			"+", "-", "*", "/", "%", "**", "^",
+			"in", "not in", "contains", "startsWith", "endsWith", "matches":
+		default:
+			v.err = fmt.Errorf("unsupported operator %q", n.Operator)
+		}
+	case *ast.BuiltinNode:
+		if !supportedExprBuiltinNames[n.Name] {
+			v.err = fmt.Errorf("unsupported builtin %q", n.Name)
+		}
+	case *ast.CallNode:
+		ident, ok := n.Callee.(*ast.IdentifierNode)
+		if !ok {
+			v.err = fmt.Errorf("unsupported call target %T", n.Callee)
+			return
+		}
+		if !supportedExprCallNames[ident.Value] {
+			v.err = fmt.Errorf("unsupported function %q", ident.Value)
+		}
+	default:
+		v.err = fmt.Errorf("unsupported expression syntax %T", *node)
+	}
+}
+
+func validateSupportedExprTree(root ast.Node) error {
+	v := &exprTreeValidator{}
+	ast.Walk(&root, v)
+	return v.err
+}
+
+func isNumericReflectKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateMinMaxArgType(name string, arg ast.Node) error {
+	if _, isNil := arg.(*ast.NilNode); isNil {
+		return fmt.Errorf("invalid argument for %s (type nil)", name)
+	}
+	t := arg.Type()
+	if t == nil {
+		return nil
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if isNumericReflectKind(t.Kind()) || t.Kind() == reflect.Interface {
+		return nil
+	}
+	if t.Kind() == reflect.Slice || t.Kind() == reflect.Array {
+		elem := t.Elem()
+		for elem.Kind() == reflect.Pointer {
+			elem = elem.Elem()
+		}
+		if isNumericReflectKind(elem.Kind()) || elem.Kind() == reflect.Interface {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid argument for %s (type %s)", name, t)
+}
+
+func validateCompiledMinMaxArgs(root ast.Node) error {
+	var err error
+	ast.Find(root, func(node ast.Node) bool {
+		if err != nil {
+			return true
+		}
+		bn, ok := node.(*ast.BuiltinNode)
+		if !ok || (bn.Name != "min" && bn.Name != "max") {
+			return false
+		}
+		if len(bn.Arguments) == 0 {
+			err = fmt.Errorf("not enough arguments to call %s", bn.Name)
+			return true
+		}
+		for _, arg := range bn.Arguments {
+			if argErr := validateMinMaxArgType(bn.Name, arg); argErr != nil {
+				err = argErr
+				return true
+			}
+		}
+		return false
+	})
+	return err
+}
 
 func getCompileEnv(version int) map[string]any {
 	switch version {
@@ -242,6 +377,9 @@ func compileEntryFromCacheByHash(exprStr, hash string) (*cachedEntry, error) {
 	if err := validateExponentNodes(tree.Node); err != nil {
 		return nil, fmt.Errorf("expr compile error: %w", err)
 	}
+	if err := validateSupportedExprTree(tree.Node); err != nil {
+		return nil, fmt.Errorf("expr compile error: %w", err)
+	}
 	fixedPricing := ast.Find(tree.Node, func(node ast.Node) bool {
 		identifier, ok := node.(*ast.IdentifierNode)
 		return ok && identifier.Value == "fixed"
@@ -259,15 +397,30 @@ func compileEntryFromCacheByHash(exprStr, hash string) (*cachedEntry, error) {
 	// Compile still type-checks and accepts the same programs; financial
 	// evaluation uses the patched parse tree with exact decimals instead of
 	// the float64 VM program.
-	prog, err := expr.Compile(
-		body,
+	compileOpts := make([]expr.Option, 0, len(supportedCompileBuiltins)+11)
+	compileOpts = append(compileOpts,
 		expr.Env(getCompileEnv(version)),
+		expr.DisableAllBuiltins(),
+	)
+	for _, builtinName := range supportedCompileBuiltins {
+		compileOpts = append(compileOpts, expr.EnableBuiltin(builtinName))
+	}
+	compileOpts = append(compileOpts,
 		expr.Patch(lenBuiltinPatcher{}),
 		expr.Patch(&requestRulePatcher{}),
 		roundCompileOption,
+		newTimezoneCompileOption("hour"),
+		newTimezoneCompileOption("minute"),
+		newTimezoneCompileOption("weekday"),
+		newTimezoneCompileOption("month"),
+		newTimezoneCompileOption("day"),
 		expr.AsFloat64(),
 	)
+	prog, err := expr.Compile(body, compileOpts...)
 	if err != nil {
+		return nil, fmt.Errorf("expr compile error: %w", err)
+	}
+	if err := validateCompiledMinMaxArgs(prog.Node()); err != nil {
 		return nil, fmt.Errorf("expr compile error: %w", err)
 	}
 

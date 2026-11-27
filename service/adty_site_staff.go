@@ -181,6 +181,7 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 		}
 	}
 	var staff model.AdtySiteStaff
+	var staffUsername, staffEmail string
 	var ticketAudits []model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		ticketAudits = nil
@@ -196,7 +197,7 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 			return ErrAdtyStaffConflict
 		}
 		var lockedUsers []model.User
-		if err := model.AdtyLockForUpdate(tx).Select("id", "status", "auth_version", "staff_site_id").
+		if err := model.AdtyLockForUpdate(tx).Select("id", "username", "email", "status", "auth_version", "staff_site_id").
 			Where("id IN ?", adtySortedUniqueIDs(ownerID, staff.UserId)).Order("id ASC").Find(&lockedUsers).Error; err != nil {
 			return err
 		}
@@ -212,6 +213,7 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 		if !ok || targetUser.StaffSiteId != siteID {
 			return gorm.ErrRecordNotFound
 		}
+		staffUsername, staffEmail = targetUser.Username, targetUser.Email
 		before := AdtyStaffViewOf(staff)
 		previousStaffStatus := staff.Status
 		userUpdates := map[string]any{}
@@ -332,6 +334,9 @@ func MutateAdtyStaff(ownerID, siteID, staffID int, action string, input AdtyStaf
 	}
 	if err := model.InvalidateUserTokensCache(staff.UserId); err != nil {
 		common.SysError("Failed to invalidate staff tokens cache")
+	}
+	if action == AdtySiteOwnerActionStaffPassword {
+		common.ClearAccountLoginFailures(staff.UserId, staffUsername, staffEmail, siteID)
 	}
 	view := AdtyStaffViewOf(staff)
 	return &view, nil

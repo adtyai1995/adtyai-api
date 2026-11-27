@@ -340,6 +340,9 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
+	if info != nil && (info.RelayMode == constant.RelayModeImagesGenerations || info.RelayMode == constant.RelayModeImagesEdits) && info.IsStream {
+		return nil, types.NewErrorWithStatusCode(errors.New("streaming image generation is not supported for this channel"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
 	if info != nil && strings.HasPrefix(info.UpstreamModelName, "imagen") && info.IsStream && !info.IsChannelTest {
 		nonStreamInfo := *info
 		nonStreamInfo.IsStream = false

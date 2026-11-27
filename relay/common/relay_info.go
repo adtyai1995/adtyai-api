@@ -673,7 +673,9 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 
 	if request != nil &&
 		relayMode != relayconstant.RelayModeAudioTranscription &&
-		relayMode != relayconstant.RelayModeAudioTranslation {
+		relayMode != relayconstant.RelayModeAudioTranslation &&
+		relayMode != relayconstant.RelayModeModerations &&
+		relayMode != relayconstant.RelayModeEdits {
 		isStream = request.IsStream(c.Request)
 	}
 	c.Set(string(constant.ContextKeyIsStream), isStream)

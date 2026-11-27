@@ -723,8 +723,7 @@ func VerifySecurityInput(identity AuthIdentity, input VerificationInput) (*Secur
 			}
 			return nil, ErrVerificationFailed
 		}
-		common.ClearLoginFailuresUser(user.Id)
-		common.ClearLoginFailures(user.Username)
+		common.ClearAccountLoginFailures(user.Id, user.Username, user.Email, user.SiteId)
 	case VerificationMethodTwoFA:
 		if input.Scope == VerificationScopeTwoFABackupCodes {
 			if _, err := common.ValidateNumericCode(input.Code); err != nil {

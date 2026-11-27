@@ -504,10 +504,16 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 		}
 	case relayconstant.RelayModeEmbeddings:
 	case relayconstant.RelayModeModerations:
+		if textRequest.IsStream(c.Request) {
+			return nil, types.NewErrorWithStatusCode(errors.New("streaming is not supported for this endpoint"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
 		if textRequest.Input == nil || textRequest.Input == "" {
 			return nil, errors.New("field input is required")
 		}
 	case relayconstant.RelayModeEdits:
+		if textRequest.IsStream(c.Request) {
+			return nil, types.NewErrorWithStatusCode(errors.New("streaming is not supported for this endpoint"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
 		if textRequest.Instruction == "" {
 			return nil, errors.New("field instruction is required")
 		}

@@ -125,6 +125,9 @@ func (b *jimengCancelBody) Close() error {
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
+	if info != nil && (info.RelayMode == relayconstant.RelayModeImagesGenerations || info.RelayMode == relayconstant.RelayModeImagesEdits) && info.IsStream {
+		return nil, types.NewErrorWithStatusCode(errors.New("streaming image generation is not supported for this channel"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
 	if c == nil || c.Request == nil {
 		return nil, errors.New("client request is missing")
 	}

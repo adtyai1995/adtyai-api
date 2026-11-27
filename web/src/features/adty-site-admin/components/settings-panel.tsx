@@ -875,9 +875,11 @@ export function SettingsPanel(props: {
               <SwitchRow
                 key={key}
                 label={switchLabels[key]}
-                checked={drafts[key]}
-                disabled={disabled}
-                onCheckedChange={(value) => set(key, value)}
+                checked={key === 'site_login_only' ? true : drafts[key]}
+                disabled={disabled || key === 'site_login_only'}
+                onCheckedChange={(value) => {
+                  if (key !== 'site_login_only') set(key, value)
+                }}
               />
             ))}
           </fieldset>

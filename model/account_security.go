@@ -48,8 +48,7 @@ func ChangeUserPassword(identity AuthSessionIdentity, update *User, firstPasswor
 				}
 				return ErrCurrentPasswordInvalid
 			}
-			common.ClearLoginFailuresUser(current.Id)
-			common.ClearLoginFailures(current.Username)
+			common.ClearAccountLoginFailures(current.Id, current.Username, current.Email, current.SiteId)
 		}
 		if current.Password != "" && common.ValidatePasswordAndHash(update.Password, current.Password) {
 			return common.ErrAccountPasswordSame

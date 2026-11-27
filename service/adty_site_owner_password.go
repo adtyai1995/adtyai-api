@@ -37,6 +37,7 @@ func ResetAdtySiteCustomerPassword(siteID, ownerUserID, customerID int, manualPa
 		return "", "", err
 	}
 
+	var targetEmail string
 	var auditEvent *model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		// Canonical lock order: AdtySite -> User.
@@ -99,6 +100,7 @@ func ResetAdtySiteCustomerPassword(siteID, ownerUserID, customerID int, manualPa
 		}
 
 		targetUsername = customer.Username
+		targetEmail = customer.Email
 		auditBefore := map[string]any{
 			"site_id":     siteID,
 			"customer_id": customer.Id,
@@ -127,6 +129,7 @@ func ResetAdtySiteCustomerPassword(siteID, ownerUserID, customerID int, manualPa
 	if _, err := model.RevokeAllUserSessions(customerID, "site_owner_customer_password_reset"); err != nil {
 		common.SysError(common.LogText("failed to revoke customer sessions after password reset: user=%d err=%v", customerID, err))
 	}
+	common.ClearAccountLoginFailures(customerID, targetUsername, targetEmail, siteID)
 	if auditEvent != nil && auditEvent.EventId != "" {
 		deliverAdtyCommittedAudit(*auditEvent)
 	}

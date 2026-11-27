@@ -399,6 +399,9 @@ func ValidateResellerPatch(s *ResellerSetting, resendConfigured bool, changed ma
 	if touches("unknown_host_mode") && s.UnknownHostMode != ResellerUnknownHostMain && s.UnknownHostMode != ResellerUnknownHostReject {
 		return common.NewMessage("Invalid parameters")
 	}
+	if touches("site_login_only") && !s.SiteLoginOnly {
+		return common.NewMessage("Invalid value for {{key}}", map[string]any{"key": "site_login_only"})
+	}
 	if touches("cost_factor", "min_cost_factor") && s.CostFactor != nil && !validPositiveMultiplier(s.CostFactor) {
 		return common.NewMessage("The cost factor must be greater than 0")
 	}

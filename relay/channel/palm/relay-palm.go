@@ -83,11 +83,13 @@ func palmStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 
 	helper.SetEventStreamHeaders(c)
 	if err := helper.ObjectData(c, fullTextResponse); err != nil {
-		if !helper.HasWrittenStreamPayload(c) && (info == nil || info.SendResponseCount == 0) {
-			if helper.ClientRequestCanceled(c) {
-				return types.NewError(c.Request.Context().Err(), types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry()), ""
+		// Upstream PaLM :generateMessage already generated and returned the full
+		// completion synchronously; record client disconnect without refunding.
+		if info != nil {
+			if info.StreamStatus == nil {
+				info.StreamStatus = relaycommon.NewStreamStatus()
 			}
-			return types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError), ""
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
 		}
 		return nil, responseText
 	}
