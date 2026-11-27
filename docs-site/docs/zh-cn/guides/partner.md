@@ -1,6 +1,11 @@
-# 分站合作介绍
+---
+outline: false
+title: 文档中心
+---
 
-<MainSiteOnly>
+<MainSiteOnly page-title="分站合作介绍">
+
+# 分站合作介绍
 
 依托 ADTY AI 成熟的底层网关、上游路由与计费体系，快速上线属于你自己的独立白标大模型 API 平台，无需从零开发网关转发、支付对账与控制台系统。
 

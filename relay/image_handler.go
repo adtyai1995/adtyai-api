@@ -103,16 +103,18 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		// This is a different trust boundary from ingress: channel overrides
 		// and pass-through bodies can change the quantity actually submitted.
 		var outbound struct {
-			N *uint `json:"n"`
+			N          *uint                       `json:"n"`
+			Parameters *dto.ImageBillingParameters `json:"parameters"`
 		}
 		if err := common.Unmarshal(jsonData, &outbound); err != nil {
 			return types.NewErrorWithStatusCode(fmt.Errorf("invalid image billing parameters: %w", err), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
-		quantityRequest := dto.ImageRequest{N: outbound.N}
-		if quantityRequest.N == nil {
+		useProviderParams := outbound.Parameters != nil && outbound.Parameters.N != nil
+		quantityRequest := dto.ImageRequest{N: outbound.N, BillingParameters: outbound.Parameters}
+		if quantityRequest.N == nil && !useProviderParams {
 			quantityRequest.N = common.GetPointer(uint(imageCount))
 		}
-		imageCount, err = quantityRequest.ImageCount(false)
+		imageCount, err = quantityRequest.ImageCount(useProviderParams)
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}

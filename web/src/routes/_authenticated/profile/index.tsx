@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import { Profile } from '@/features/profile'
+import { useAuthStore } from '@/stores/auth-store'
 
 function normalizeTicketRedirectHash(hash: string): string | null {
   const clean = hash.replace(/^#/, '')
@@ -35,6 +36,10 @@ function normalizeTicketRedirectHash(hash: string): string | null {
 
 export const Route = createFileRoute('/_authenticated/profile/')({
   beforeLoad: ({ location }) => {
+    const user = useAuthStore.getState().auth.user
+    if ((user?.staff_site_id ?? 0) > 0) {
+      throw redirect({ to: '/site-staff' })
+    }
     const ticketHash = normalizeTicketRedirectHash(location.hash)
     if (ticketHash) {
       throw redirect({

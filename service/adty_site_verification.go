@@ -311,9 +311,14 @@ func adtyIsSiteOwnerScope(scope string) bool {
 	return scope == VerificationScopeAdtySiteOwnerManage
 }
 
+func adtyIsSiteOwnerManagementScope(scope string) bool {
+	return scope == VerificationScopeAdtySiteOwnerManage ||
+		scope == VerificationScopeAdtyOwnerOrderRefund ||
+		scope == VerificationScopeAdtyOwnerOrderRefundStep
+}
+
 func adtyIsSiteVerificationScope(scope string) bool {
-	return adtyIsSiteOwnerScope(scope) || scope == VerificationScopeAdtyStaffCustomerManage ||
-		scope == VerificationScopeAdtyOwnerOrderRefund || scope == VerificationScopeAdtyOwnerOrderRefundStep
+	return adtyIsSiteOwnerManagementScope(scope) || scope == VerificationScopeAdtyStaffCustomerManage
 }
 
 // adtyBindSiteOwnerOperation 校验并规范化站长操作的上下文（BindVerificationOperation 调用）。

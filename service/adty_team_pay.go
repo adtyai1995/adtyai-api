@@ -746,7 +746,7 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 				}
 				return err
 			}
-			if ch.Status != model.AdtyEpayStatusEnabled || !ch.HasCredentials() || !adtyEpayMethodAllowsAmount(ch.MethodFor(ext.Method), ext.PayAmount) {
+			if ch.Status != model.AdtyEpayStatusEnabled || !ch.HasCredentials() || !adtyEpayMethodAllowsAmount(ch.MethodFor(ext.Method), ext.PayAmount) || !model.AdtyEpayOrderMatchesChannelIdentity(ext, ch) {
 				return ErrAdtyEpayChosenChannelUnavailable
 			}
 			epayChannel = ch
@@ -842,6 +842,18 @@ func ResumeAdtyTeamTopupPayment(leaderID int, teamID int64, tradeNo, clientIP st
 			discarded = true
 			alreadyReady = true
 			return nil
+		}
+		if extSnapshot.Provider == model.PaymentProviderAdtyEpay && IsAdtyEpayMethod(extSnapshot.Method) {
+			var latestCh model.AdtyEpayChannel
+			if err := tx.Preload("Methods").First(&latestCh, cur.ChannelId).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAdtyEpayChosenChannelUnavailable
+				}
+				return err
+			}
+			if latestCh.Status != model.AdtyEpayStatusEnabled || !latestCh.HasCredentials() || !model.AdtyEpayOrderMatchesChannelIdentity(&cur, &latestCh) {
+				return ErrAdtyEpayChosenChannelUnavailable
+			}
 		}
 		if extSnapshot.Provider == model.PaymentProviderAdtyBEpusdt {
 			if payAmount, ok := fields["pay_amount"].(decimal.Decimal); ok {
@@ -945,7 +957,7 @@ func recoverTeamCheckout(ctx context.Context, ext *model.AdtyTopupOrder, channel
 		return nil, ErrAdtyEpayChosenChannelUnavailable
 	}
 	method := channel.MethodFor(ext.Method)
-	if channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || !adtyEpayMethodAllowsAmount(method, ext.PayAmount) {
+	if channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || !adtyEpayMethodAllowsAmount(method, ext.PayAmount) || !model.AdtyEpayOrderMatchesChannelIdentity(ext, channel) {
 		return nil, ErrAdtyEpayChosenChannelUnavailable
 	}
 	var gatewayTradeNo string

@@ -341,6 +341,12 @@ func ValidateResellerPatch(s *ResellerSetting, resendConfigured bool, changed ma
 	if touches("domain_mainland_target") && strings.TrimSpace(s.DomainMainlandTarget) != "" && !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.DomainMainlandTarget))) {
 		return common.NewMessage("Invalid value for {{key}}", map[string]any{"key": "domain_mainland_target"})
 	}
+	if touches("cname_target") && strings.TrimSpace(s.CnameTarget) != "" && !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.CnameTarget))) {
+		return common.NewMessage("Invalid value for {{key}}", map[string]any{"key": "cname_target"})
+	}
+	if touches("fallback_origin") && strings.TrimSpace(s.FallbackOrigin) != "" && !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.FallbackOrigin))) {
+		return common.NewMessage("Invalid value for {{key}}", map[string]any{"key": "fallback_origin"})
+	}
 	if touches("domain_automation_enabled", "cloudflare_apiToken", "cloudflare_zone_id", "aliyun_domain", "root_domains", "aliyun_access_key_id", "aliyun_access_key_Secret", "domain_mainland_target", "cname_target", "fallback_origin") && s.DomainAutomationEnabled && (!s.CloudflareConfigured() || !resellerDomainPattern.MatchString(s.AliyunDomain) || !slices.Contains(s.RootDomains, s.AliyunDomain) || strings.TrimSpace(s.AliyunAccessKeyID) == "" || strings.TrimSpace(s.AliyunAccessKeySecret) == "" || (strings.TrimSpace(s.DomainMainlandTarget) != "" && !resellerDomainPattern.MatchString(s.DomainMainlandTarget)) || !resellerDomainPattern.MatchString(s.CnameTarget) || !resellerDomainPattern.MatchString(s.FallbackOrigin)) {
 		return common.NewMessage("Configure Cloudflare, AliDNS credentials, an allowed root domain and routing targets before enabling domain automation")
 	}
@@ -364,8 +370,8 @@ func ValidateResellerPatch(s *ResellerSetting, resendConfigured bool, changed ma
 	if touches("edge_auto_failover", "edge_probe_enabled") && s.EdgeAutoFailover && !s.EdgeProbeEnabled {
 		return common.NewMessage("Enable origin HTTPS health probe before turning on automatic node failover")
 	}
-	if touches("edge_mainland_enabled", "cloudflare_apiToken", "cloudflare_zone_id", "cname_target", "domain_mainland_target", "edge_acme_alias_suffix") && s.EdgeMainlandEnabled {
-		if !s.CloudflareConfigured() || !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.DomainMainlandTarget))) || !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.EdgeACMEAliasSuffix))) {
+	if touches("edge_mainland_enabled", "cloudflare_apiToken", "cloudflare_zone_id", "cname_target", "fallback_origin", "domain_mainland_target", "edge_acme_alias_suffix") && s.EdgeMainlandEnabled {
+		if !s.CloudflareConfigured() || !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.CnameTarget))) || !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.FallbackOrigin))) || !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.DomainMainlandTarget))) || !resellerDomainPattern.MatchString(strings.ToLower(strings.TrimSpace(s.EdgeACMEAliasSuffix))) {
 			return common.NewMessage("Configure Cloudflare, the mainland CNAME target, and the ACME verification alias suffix before enabling mainland acceleration")
 		}
 	}

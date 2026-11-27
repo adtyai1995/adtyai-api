@@ -1160,7 +1160,6 @@ export interface ModelDetailsContentProps {
   groupRatio: Record<string, number>
   usableGroup: Record<string, PricingUsableGroupValue>
   endpointMap: Record<string, { path?: string; method?: string }>
-  autoGroups?: string[]
   priceRate: number
   usdExchangeRate: number
   tokenUnit: TokenUnit

@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { USDT_NETWORKS, type UsdtNetwork } from '@/features/referral/lib/address'
 
-import type { ReferralSettings, ReferralSettingsUpdate } from '../api'
+import type { ReferralSettings } from '../api'
 
 export const CASH_WITHDRAW_METHODS = ['usdt', 'alipay'] as const
 export type CashWithdrawMethod = (typeof CASH_WITHDRAW_METHODS)[number]
@@ -73,31 +73,4 @@ export function toDrafts(settings: ReferralSettings): Drafts {
   }
   for (const key of RULE_KEYS) drafts[key] = String(settings[key])
   return drafts
-}
-
-/** Builds the PUT body: changed fields only; an emptied money field is sent in clear. */
-export function buildSettingsUpdate(
-  saved: ReferralSettings,
-  drafts: Drafts,
-  enabled: boolean
-): ReferralSettingsUpdate {
-  const body: ReferralSettingsUpdate = {}
-  const clear: MoneyKey[] = []
-  for (const key of MONEY_KEYS) {
-    const draft = drafts[key].trim()
-    if (draft === '') {
-      if (saved[key] !== null && saved[key] !== undefined) clear.push(key)
-    } else if (Number(draft) !== saved[key]) {
-      body[key] = Number(draft)
-    }
-  }
-  for (const key of RULE_KEYS) {
-    if (Number(drafts[key]) !== saved[key]) body[key] = Number(drafts[key])
-  }
-  if (clear.length > 0) body.clear = clear
-  if (enabled !== saved.enabled) body.enabled = enabled
-  if (drafts.cny_rate.trim() !== saved.withdraw_cny_rate) {
-    body.withdraw_cny_rate = drafts.cny_rate.trim()
-  }
-  return body
 }

@@ -1,7 +1,6 @@
 package model
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sort"
@@ -9,7 +8,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -250,174 +248,6 @@ func CreateAdtyExpiringBonusBatchTx(tx *gorm.DB, userID int, siteID *int, source
 		return nil, createErr
 	}
 	return &row, nil
-}
-
-// AdtyRootExpiringGiftGrantInput describes a manual Root expiring gift grant (DEC-031).
-type AdtyRootExpiringGiftGrantInput struct {
-	UserID         int
-	OperatorID     int
-	OperatorRole   int
-	SiteID         *int
-	AmountUSD      decimal.Decimal
-	Quota          int64
-	ExpiresAt      int64
-	Reason         string
-	IdempotencyKey string
-}
-
-// GrantAdtyRootExpiringGift issues a time-limited Root gift lot to a customer
-// in a single database transaction and refreshes the user cache.
-func GrantAdtyRootExpiringGift(input AdtyRootExpiringGiftGrantInput) (*AdtyFundBatch, error) {
-	if DB == nil {
-		return nil, errors.New("database is not initialized")
-	}
-	var batch *AdtyFundBatch
-	err := DB.Transaction(func(tx *gorm.DB) error {
-		var txErr error
-		batch, txErr = GrantAdtyRootExpiringGiftTx(tx, input)
-		return txErr
-	})
-	if err != nil {
-		return nil, err
-	}
-	_ = invalidateUserCache(input.UserID)
-	_ = PublishUserAuthCache(input.UserID)
-	return batch, nil
-}
-
-// GrantAdtyRootExpiringGiftTx issues a time-limited Root gift lot inside tx,
-// crediting the customer's wallet and writing an immutable balance ledger entry.
-func GrantAdtyRootExpiringGiftTx(tx *gorm.DB, input AdtyRootExpiringGiftGrantInput) (*AdtyFundBatch, error) {
-	batch, _, err := GrantAdtyRootExpiringGiftWithReplayTx(tx, input)
-	return batch, err
-}
-
-// GrantAdtyRootExpiringGiftWithReplayTx issues a time-limited Root gift lot
-// inside tx and reports whether the request matched an existing idempotent grant.
-func GrantAdtyRootExpiringGiftWithReplayTx(tx *gorm.DB, input AdtyRootExpiringGiftGrantInput) (*AdtyFundBatch, bool, error) {
-	if tx == nil {
-		return nil, false, errors.New("transaction is required")
-	}
-	if input.OperatorID <= 0 || input.OperatorRole != common.RoleRootUser {
-		return nil, false, errors.New("only Root can issue expiring gifts")
-	}
-	if input.UserID <= 0 {
-		return nil, false, errors.New("invalid user id")
-	}
-	if input.ExpiresAt <= 0 {
-		return nil, false, errors.New("expires_at is required for expiring gift")
-	}
-	idemKey := strings.TrimSpace(input.IdempotencyKey)
-	if idemKey == "" || len(idemKey) > 255 {
-		return nil, false, errors.New("idempotency key is required")
-	}
-	quota := input.Quota
-	if quota <= 0 && input.AmountUSD.IsPositive() {
-		converted, err := common.WalletQuotaFromDecimalStrict(input.AmountUSD.Mul(common.QuotaPerUnitDecimal()))
-		if err != nil || converted <= 0 {
-			return nil, false, errors.New("invalid gift amount")
-		}
-		quota = int64(converted)
-	}
-	if quota <= 0 || quota > int64(common.MaxWalletQuota) {
-		return nil, false, errors.New("gift quota must be positive")
-	}
-	reason := strings.TrimSpace(input.Reason)
-	if reason == "" {
-		reason = "root expiring gift"
-	}
-	if len(reason) > 1024 {
-		return nil, false, errors.New("gift reason is too long")
-	}
-	sum := sha256.Sum256([]byte(idemKey))
-	source := fmt.Sprintf("root_gift:%x", sum[:24])
-	// The same user lock serializes grants, charging and expiration. Recheck
-	// idempotency only after acquiring it so a concurrent replay sees the commit.
-	balanceBefore, _, _, err := loadLockedUserLogicalQuotaTx(tx, input.UserID)
-	if err != nil {
-		return nil, false, err
-	}
-	var customer User
-	if err := tx.Select("id", "site_id", "staff_site_id", "role", "status").First(&customer, input.UserID).Error; err != nil {
-		return nil, false, err
-	}
-	if customer.Status != common.UserStatusEnabled {
-		return nil, false, errors.New("gift target must be an active customer")
-	}
-	if customer.Role >= common.RoleAdminUser || customer.StaffSiteId > 0 || (input.SiteID != nil && *input.SiteID != customer.SiteId) {
-		return nil, false, errors.New("gift target must be a customer in the selected site")
-	}
-	hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
-	if err != nil {
-		return nil, false, err
-	}
-	if hasSiteTable {
-		var ownerCount int64
-		if err := tx.Model(&AdtySite{}).
-			Where("owner_user_id = ? AND status IN ?", customer.Id, []string{
-				AdtySiteStatusActive, AdtySiteStatusPaused, AdtySiteStatusClosing, AdtySiteStatusDeleting,
-			}).Count(&ownerCount).Error; err != nil {
-			return nil, false, err
-		}
-		if ownerCount > 0 {
-			return nil, false, errors.New("gift target must be a customer in the selected site")
-		}
-	}
-	hasTeamMemberTable, err := AdtyTableExists(tx, &AdtyTeamMember{})
-	if err != nil {
-		return nil, false, err
-	}
-	if hasTeamMemberTable {
-		var empCount int64
-		if err := tx.Model(&AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ?", customer.Id, true).Count(&empCount).Error; err != nil {
-			return nil, false, err
-		}
-		if empCount > 0 {
-			return nil, false, errors.New("gift target must be a customer in the selected site")
-		}
-	}
-	siteID := AdtyFundBatchSiteID(customer.SiteId)
-
-	existingLedger, err := FindAdtyBalanceLedgerByKeyTx(tx, source)
-	if err != nil {
-		return nil, false, err
-	}
-	if existingLedger != nil {
-		if existingLedger.UserId != input.UserID || existingLedger.Type != AdtyLedgerTypeRootExpiringGift || existingLedger.DeltaQuota != quota || existingLedger.Reason != reason || existingLedger.OperatorId != input.OperatorID {
-			return nil, false, ErrAdtyIdempotencyConflict
-		}
-		batch, err := CreateAdtyExpiringBonusBatchTx(tx, input.UserID, siteID, source, quota, input.ExpiresAt)
-		return batch, true, err
-	}
-	loc := AdtyBusinessLocation(tx)
-	todayStart := AdtyGiftExpiryMidnightUnix(common.GetTimestamp(), loc)
-	minExpiresAt := time.Unix(todayStart, 0).In(loc).AddDate(0, 0, 1).Unix()
-	if input.ExpiresAt < minExpiresAt {
-		return nil, false, errors.New("gift expiry must be at least tomorrow in business timezone")
-	}
-	batch, err := CreateAdtyExpiringBonusBatchTx(tx, input.UserID, siteID, source, quota, input.ExpiresAt)
-	if err != nil {
-		return nil, false, err
-	}
-	if _, err := AdtyCreditUserQuotaTx(tx, input.UserID, quota); err != nil {
-		return nil, false, err
-	}
-	ledgerKey := source
-	if err := RecordAdtyBalanceLedgerTx(tx, &AdtyBalanceLedger{
-		UserId:         input.UserID,
-		DeltaQuota:     quota,
-		BalanceBefore:  balanceBefore,
-		BalanceAfter:   balanceBefore + quota,
-		Type:           AdtyLedgerTypeRootExpiringGift,
-		RefType:        "root_gift",
-		RefId:          source,
-		Reason:         reason,
-		OperatorId:     input.OperatorID,
-		IdempotencyKey: &ledgerKey,
-	}); err != nil {
-		return nil, false, err
-	}
-	return batch, false, nil
 }
 
 // AdtyGiftExpirationItem summarizes one expired gift batch cleared by the daily task.

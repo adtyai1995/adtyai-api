@@ -156,7 +156,6 @@ export type SiteWithdrawRules = {
   configured: boolean
   min_usd?: string
   fee_usd?: string
-  alipay_cny_rate?: string
   usdt_usd_rate?: string
   methods: string[]
 }
@@ -1050,10 +1049,16 @@ export async function saveOwnerSiteAuthConfig(
   return requireServerSuccess(res.data).data
 }
 
-/** Triggers an immediate DNS & verification check for one pending custom domain. */
-export async function checkDomainNow(id: number): Promise<SiteDomain> {
+export type DomainCheckMode = 'dns' | 'edge_cert'
+
+/** Triggers an immediate DNS or edge certificate check for one custom domain. */
+export async function checkDomainNow(
+  id: number,
+  mode?: DomainCheckMode
+): Promise<SiteDomain> {
   const res = await api.post<ApiResponse<SiteDomain>>(
-    `${BASE}/domains/${id}/check`
+    `${BASE}/domains/${id}/check`,
+    mode ? { mode } : undefined
   )
   return requireServerSuccess(res.data).data
 }

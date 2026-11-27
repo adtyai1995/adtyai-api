@@ -7,6 +7,8 @@ import (
 	"gorm.io/gorm"
 )
 
+const ownerTransfer = "owner_self_use_transfer"
+
 var ErrAdtyOwnerWalletReview = common.NewMessage("Contact the platform to reconcile this historical site account")
 
 // Pooled balances and before/after ledger snapshots have no personal owner.

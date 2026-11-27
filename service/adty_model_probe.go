@@ -572,34 +572,54 @@ func adtyImageAnyEntryHasImage(item any) bool {
 
 func verifyAdtyOpenAIImagePayload(raw []byte) bool {
 	var decoded struct {
-		Data []struct {
-			URL     string `json:"url"`
-			B64JSON string `json:"b64_json"`
-		} `json:"data"`
-		Images []any `json:"images"`
-		Output struct {
-			Results []struct {
-				URL     string `json:"url"`
-				B64JSON string `json:"b64_json"`
-			} `json:"results"`
-		} `json:"output"`
+		Data   common.RawMessage `json:"data"`
+		Images common.RawMessage `json:"images"`
+		Output common.RawMessage `json:"output"`
 	}
 	if err := common.Unmarshal(raw, &decoded); err != nil {
 		return false
 	}
-	for _, item := range decoded.Data {
-		if strings.TrimSpace(item.URL) != "" || strings.TrimSpace(item.B64JSON) != "" {
-			return true
+	if dataRaw := bytes.TrimSpace(decoded.Data); len(dataRaw) > 0 {
+		switch dataRaw[0] {
+		case '[':
+			var items []any
+			if err := common.Unmarshal(dataRaw, &items); err == nil {
+				for _, item := range items {
+					if adtyImageAnyEntryHasImage(item) {
+						return true
+					}
+				}
+			}
+		case '{':
+			var item map[string]any
+			if err := common.Unmarshal(dataRaw, &item); err == nil && adtyImageAnyEntryHasImage(item) {
+				return true
+			}
 		}
 	}
-	for _, item := range decoded.Output.Results {
-		if strings.TrimSpace(item.URL) != "" || strings.TrimSpace(item.B64JSON) != "" {
-			return true
+	if outputRaw := bytes.TrimSpace(decoded.Output); len(outputRaw) > 0 && outputRaw[0] == '{' {
+		var output struct {
+			Results []struct {
+				URL     string `json:"url"`
+				B64JSON string `json:"b64_json"`
+			} `json:"results"`
+		}
+		if err := common.Unmarshal(outputRaw, &output); err == nil {
+			for _, item := range output.Results {
+				if strings.TrimSpace(item.URL) != "" || strings.TrimSpace(item.B64JSON) != "" {
+					return true
+				}
+			}
 		}
 	}
-	for _, item := range decoded.Images {
-		if adtyImageAnyEntryHasImage(item) {
-			return true
+	if imagesRaw := bytes.TrimSpace(decoded.Images); len(imagesRaw) > 0 && imagesRaw[0] == '[' {
+		var images []any
+		if err := common.Unmarshal(imagesRaw, &images); err == nil {
+			for _, item := range images {
+				if adtyImageAnyEntryHasImage(item) {
+					return true
+				}
+			}
 		}
 	}
 	return false

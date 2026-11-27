@@ -7,7 +7,6 @@ import (
 	openaichannel "github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
-	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -96,26 +95,6 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	if !ok || usageDto == nil {
 		return types.NewError(fmt.Errorf("unexpected usage type %T", usage), types.ErrorCodeBadResponseBody)
 	}
-	if info.RelayMode == relayconstant.RelayModeResponsesCompact {
-		originModelName := info.OriginModelName
-		originPriceData := info.PriceData
-
-		_, err := helper.ModelPriceHelper(c, info, info.GetEstimatePromptTokens(), &types.TokenCountMeta{})
-		if err != nil {
-			info.OriginModelName = originModelName
-			info.PriceData = originPriceData
-			return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry(), types.ErrOptionWithStatusCode(http.StatusBadRequest))
-		}
-		if err := service.PostTextConsumeQuota(c, info, usageDto, nil); err != nil {
-			info.OriginModelName = originModelName
-			info.PriceData = originPriceData
-			return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
-		}
-
-		info.OriginModelName = originModelName
-		info.PriceData = originPriceData
-		return nil
-	}
 
 	return ConsumeResponsesQuota(c, info, usageDto)
 }
@@ -157,7 +136,8 @@ func shouldConsumeAudioQuota(info *relaycommon.RelayInfo, usage *dto.Usage) bool
 }
 
 // ConsumeResponsesQuota applies the same settlement dispatch to HTTP and
-// WebSocket Responses usage. Compact requests keep their separate repricing.
+// WebSocket Responses usage (including Responses Compact, which reuses the
+// pricing resolved before upstream dispatch).
 // A non-nil error means the wallet adjustment did not commit and the pre-charge
 // must be refunded by the caller.
 func ConsumeResponsesQuota(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage) *types.NewAPIError {

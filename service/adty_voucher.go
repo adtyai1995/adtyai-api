@@ -872,10 +872,6 @@ func adtyVoucherIntentMatches(existing model.AdtyVoucher, input AdtyVoucherIssue
 	}
 }
 
-func RedeemAdtyVoucher(userId int, code string) (*AdtyVoucherRedeemed, error) {
-	return RedeemAdtyVoucherWithScope(userId, 0, code, nil)
-}
-
 func checkAdtyVoucherPurposeScope(purpose string, allowedPurposes []string) error {
 	if len(allowedPurposes) == 0 {
 		return nil

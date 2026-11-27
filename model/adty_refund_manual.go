@@ -905,9 +905,8 @@ func adtyEnsureCreditedOrder(topUp *TopUp, ext *AdtyTopupOrder) error {
 		return common.NewMessage("Only credited orders can be refunded")
 	}
 	// 人工退款的职责是「把收到过的钱退回去」，不是修正入账。
-	// 团队充值单和兑换码订单都是**额度入账**：钱从来没进平台账户，
-	// 团队共享额度和兑换码本金是平台承担或已冻结的权益，不是收到的现金。
-	// 对它们退现金等于凭空付出这笔钱，而额度本身还能继续花。
+	// 兑换码订单和无实付金额的入账属于非现金权益入账，钱从未进入平台账户；
+	// 外部现金充值的团队订单可按实付本金走人工退款并从团队共享余额回收。
 	if ext == nil {
 		return ErrAdtyRefundNotCashBacked
 	}
@@ -924,8 +923,8 @@ func adtyEnsureCreditedOrder(topUp *TopUp, ext *AdtyTopupOrder) error {
 	return nil
 }
 
-// ErrAdtyRefundNotCashBacked 表示这笔订单不是用收到过的现金入账的，
-// 因此不能走人工现金退款：团队充值、兑换码这类是额度入账，钱从未进入平台账户。
+// ErrAdtyRefundNotCashBacked 表示这笔订单不是用收到过的现金入账的（如兑换码等非现金入账），
+// 因此不能走人工现金退款。
 var ErrAdtyRefundNotCashBacked = common.NewMessage("This order was credited without a cash payment and cannot be refunded in cash")
 
 func adtyRequireApprovedManualRefund(row *AdtyManualRefund) error {

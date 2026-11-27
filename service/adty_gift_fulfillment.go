@@ -67,10 +67,10 @@ var adtyNotifyGiftFulfillmentFulfilled = func(row *model.AdtyGiftFulfillment, qu
 	}
 	setting := customer.GetSetting()
 	subject := "Gift fulfilled"
-	content := "The site gift for order " + row.TradeNo + " is credited: +" + usd + " USD (" + strconv.FormatInt(quota, 10) + " quota)."
+	content := "The recharge bonus for order " + row.TradeNo + " has been credited: +" + usd + " USD (" + strconv.FormatInt(quota, 10) + " quota)."
 	if stringsHasZH(notifyDeliveryLanguage(setting)) {
 		subject = "赠金已履约"
-		content = "订单 " + row.TradeNo + " 的站长赠金已到账：+" + usd + " USD（" + strconv.FormatInt(quota, 10) + " 额度）。"
+		content = "订单 " + row.TradeNo + " 的充值赠金已到账：+" + usd + " USD（" + strconv.FormatInt(quota, 10) + " 额度）。"
 	}
 	if err := NotifyUser(customer.Id, customer.Email, setting, dto.NewNotify(dto.NotifyTypeChannelUpdate, subject, content, nil)); err != nil {
 		common.SysLog(common.LogText("gift fulfillment: notify customer %d: %s", customer.Id, err.Error()))

@@ -310,6 +310,37 @@ func SiteInviteCommissionWithdrawable(row *model.AdtySiteInviteCommission, now t
 	return siteInviteCommissionFree(row).IsPositive()
 }
 
+// SiteInviteCommissionWithdrawableAmount returns the customer-neutral withdrawable
+// remainder for one commission row without exposing owner-internal wallet splits.
+func SiteInviteCommissionWithdrawableAmount(row *model.AdtySiteInviteCommission, now time.Time) decimal.Decimal {
+	if !SiteInviteCommissionWithdrawable(row, now) {
+		return decimal.Zero
+	}
+	return siteInviteCommissionFree(row)
+}
+
+// RequireAdtySiteCommissionCustomerTx enforces that only regular customer accounts
+// (never admins, subsite staff, or independent team employees) can access subsite
+// customer commission lists, quotes, withdrawals, or conversions (R1-036).
+func RequireAdtySiteCommissionCustomerTx(tx *gorm.DB, userID int) (*model.User, error) {
+	if tx == nil || userID <= 0 {
+		return nil, common.NewMessage("No permission to perform this action")
+	}
+	var user model.User
+	if err := tx.Select("id", "site_id", "staff_site_id", "role", "status").First(&user, userID).Error; err != nil {
+		return nil, err
+	}
+	if user.Role >= common.RoleAdminUser || user.StaffSiteId > 0 {
+		return nil, common.NewMessage("This feature is only available to regular customer accounts")
+	}
+	if isEmp, err := adtyIsIndependentTeamEmployeeTx(tx, userID); err != nil {
+		return nil, err
+	} else if isEmp {
+		return nil, common.NewMessage("This feature is only available to regular customer accounts")
+	}
+	return &user, nil
+}
+
 // RecordAdtySiteInviteCommissionTx snapshots one site invite commission.
 // It does not spend a wallet. Team top-ups and missing invites record nothing.
 func RecordAdtySiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder, now time.Time) error {
@@ -1286,6 +1317,9 @@ func ListAdtySiteInviteCommissions(inviterID int, now time.Time) ([]model.AdtySi
 	if inviterID <= 0 {
 		return nil, common.NewMessage("Invalid parameters")
 	}
+	if _, err := RequireAdtySiteCommissionCustomerTx(model.DB, inviterID); err != nil {
+		return nil, err
+	}
 	var rows []model.AdtySiteInviteCommission
 	err := model.DB.Where("inviter_id = ?", inviterID).Order("id").Find(&rows).Error
 	return rows, err
@@ -1314,8 +1348,16 @@ func ConvertAdtySiteInviteCommission(inviterID int, commissionID int64, amount d
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		// R1-045 global lock order: lock User before AdtySiteInviteCommission and AdtySiteWallet.
 		var inviter model.User
-		if err := model.AdtyLockForUpdate(tx).Select("id").First(&inviter, inviterID).Error; err != nil {
+		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id", "staff_site_id", "role", "status").First(&inviter, inviterID).Error; err != nil {
 			return err
+		}
+		if inviter.Role >= common.RoleAdminUser || inviter.StaffSiteId > 0 {
+			return common.NewMessage("This feature is only available to regular customer accounts")
+		}
+		if isEmp, empErr := adtyIsIndependentTeamEmployeeTx(tx, inviterID); empErr != nil {
+			return empErr
+		} else if isEmp {
+			return common.NewMessage("This feature is only available to regular customer accounts")
 		}
 		var row model.AdtySiteInviteCommission
 		if err := model.AdtyLockForUpdate(tx).Where("inviter_id = ?", inviterID).First(&row, commissionID).Error; err != nil {

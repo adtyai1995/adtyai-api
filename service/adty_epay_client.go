@@ -57,10 +57,50 @@ func epayRawString(raw common.RawMessage) string {
 }
 
 var adtyEpayHTTPClient = func() *http.Client {
-	if client := GetHttpClient(); client != nil {
-		return client
+	return GetVerifiedNoRedirectSSRFProtectedHTTPClient(30 * time.Second)
+}
+
+var adtyEpayGatewaySSRF = &common.SSRFProtection{
+	AllowPrivateIp:   false,
+	DomainFilterMode: false,
+	IpFilterMode:     false,
+}
+
+// ValidateEpayGatewayURL trims and validates an Epay channel gateway URL:
+// requires http:// or https:// with a non-empty public host, and rejects
+// credentials (userinfo), query strings, fragments, whitespace/control chars,
+// localhost, and private/loopback/link-local/metadata IP literals.
+func ValidateEpayGatewayURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || strings.ContainsAny(trimmed, " \t\r\n") {
+		return "", common.NewMessage("The gateway address must be a valid public http:// or https:// URL without credentials, query, or fragment")
 	}
-	return http.DefaultClient
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed == nil ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		strings.TrimSpace(parsed.Hostname()) == "" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", common.NewMessage("The gateway address must be a valid public http:// or https:// URL without credentials, query, or fragment")
+	}
+	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(parsed.Hostname()), "."))
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return "", common.NewMessage("The gateway address cannot target a local or private network address")
+	}
+	port := 443
+	if parsed.Scheme == "http" {
+		port = 80
+	}
+	if portStr := strings.TrimSpace(parsed.Port()); portStr != "" {
+		parsedPort, pErr := strconv.Atoi(portStr)
+		if pErr != nil || parsedPort < 1 || parsedPort > 65535 {
+			return "", common.NewMessage("The gateway address must be a valid public http:// or https:// URL without credentials, query, or fragment")
+		}
+		port = parsedPort
+	}
+	if err := adtyEpayGatewaySSRF.ValidateNetworkTarget(host, port); err != nil {
+		return "", common.NewMessage("The gateway address cannot target a local or private network address")
+	}
+	return trimmed, nil
 }
 
 func adtyEpayEndpoint(channel *model.AdtyEpayChannel, path string) string {
@@ -97,7 +137,7 @@ func adtyEpayOrderParams(channel *model.AdtyEpayChannel, method *model.AdtyEpayC
 // CreateAdtyEpayOrder 下单。MD5 使用 mapi.php / submit.php；RSA 使用 /api/pay/create / /api/pay/submit。
 func CreateAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, method *model.AdtyEpayChannelMethod, req AdtyEpayCreateRequest) (*AdtyEpayCreateResult, error) {
 	if channel == nil || channel.Status == model.AdtyEpayStatusRevoked || !channel.HasCredentials() {
-		return nil, common.NewMessage("This payment channel has been permanently revoked")
+		return nil, common.NewMessage("This payment channel's credentials have been revoked")
 	}
 	params := adtyEpayOrderParams(channel, method, req)
 	if channel.OrderMode == model.AdtyEpayOrderModeSubmit {
@@ -377,7 +417,7 @@ func isEpayOrderAbsentMsg(msg string) bool {
 // QueryAdtyEpayOrder 按我们的订单号查单。MD5 走 api.php?act=order；RSA 走 POST /api/pay/query 并验签。
 func QueryAdtyEpayOrder(ctx context.Context, channel *model.AdtyEpayChannel, outTradeNo string) (*AdtyEpayQueryResult, error) {
 	if channel == nil || channel.Status == model.AdtyEpayStatusRevoked || !channel.HasCredentials() {
-		return nil, common.NewMessage("This payment channel has been permanently revoked")
+		return nil, common.NewMessage("This payment channel's credentials have been revoked")
 	}
 	if channel.IsRSA() {
 		return queryAdtyEpayOrderRSA(ctx, channel, outTradeNo)
@@ -524,7 +564,7 @@ func queryAdtyEpayOrderRSA(ctx context.Context, channel *model.AdtyEpayChannel, 
 // HTTP 200 并且返回 JSON 就算通（查不到订单的 code=-1 也算网关正常）。
 func ProbeAdtyEpayChannel(ctx context.Context, channel *model.AdtyEpayChannel) error {
 	if channel == nil || channel.Status == model.AdtyEpayStatusRevoked || !channel.HasCredentials() {
-		return common.NewMessage("This payment channel has been permanently revoked")
+		return common.NewMessage("This payment channel's credentials have been revoked")
 	}
 	if channel.IsRSA() {
 		path := "/api/pay/query"

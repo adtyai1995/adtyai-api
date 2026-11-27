@@ -36,6 +36,13 @@ func AdtyOwnerSite(userId int) (*model.AdtySite, error) {
 	return &sites[0], nil
 }
 
+var adtySiteOwnerStrictStatuses = []string{
+	model.AdtySiteStatusActive,
+	model.AdtySiteStatusPaused,
+	model.AdtySiteStatusClosing,
+	model.AdtySiteStatusDeleting,
+}
+
 // AdtyIsSiteOwnerStrict reports whether userId owns an open or hard-deleting
 // subsite (active, paused, closing, or deleting) independently of the global
 // reseller switch. Security/isolation callers MUST use this and fail closed
@@ -48,11 +55,35 @@ func AdtyIsSiteOwnerStrict(userId int) (bool, error) {
 		return false, errors.New("database is unavailable")
 	}
 	var count int64
-	if err := model.DB.Model(&model.AdtySite{}).Where("owner_user_id = ? AND status IN ?", userId,
-		[]string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing, model.AdtySiteStatusDeleting}).Count(&count).Error; err != nil {
+	if err := model.DB.Model(&model.AdtySite{}).Where("owner_user_id = ? AND status IN ?", userId, adtySiteOwnerStrictStatuses).Count(&count).Error; err != nil {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// AdtySiteOwnerIDSet returns the set of userIDs that currently own an open or
+// hard-deleting subsite using the same authoritative status list as
+// AdtyIsSiteOwnerStrict.
+func AdtySiteOwnerIDSet(userIDs []int) (map[int]bool, error) {
+	result := map[int]bool{}
+	if len(userIDs) == 0 || model.DB == nil {
+		return result, nil
+	}
+	hasSiteTable, err := model.AdtyTableExists(model.DB, &model.AdtySite{})
+	if err != nil || !hasSiteTable {
+		return result, err
+	}
+	var ownerIDs []int
+	if err := model.DB.Model(&model.AdtySite{}).
+		Where("owner_user_id IN ? AND status IN ?", userIDs, adtySiteOwnerStrictStatuses).
+		Distinct("owner_user_id").
+		Pluck("owner_user_id", &ownerIDs).Error; err != nil {
+		return nil, err
+	}
+	for _, oid := range ownerIDs {
+		result[oid] = true
+	}
+	return result, nil
 }
 
 // AdtyIsActiveSiteOwnerStrict reports whether userId currently owns an active,

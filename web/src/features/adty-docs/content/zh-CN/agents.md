@@ -23,4 +23,4 @@ response = client.chat.completions.create(
 print(response.choices[0].message)
 ```
 
-这把密钥按普通 API 密钥计费。它不能读取钱包、修改分站，也不能当作登录凭证。
+这把密钥按普通 API 密钥计费。它不能读取钱包、修改站点设置，也不能当作登录凭证。

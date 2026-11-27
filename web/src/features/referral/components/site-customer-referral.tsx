@@ -61,7 +61,6 @@ export type SiteCustomerReferralProfile = {
   rate?: string
   rate_percent?: string
   observation_days?: number
-  pending_coverage_cap?: string
   invite_code: string
   invite_url: string
   invited_count: number
@@ -256,6 +255,7 @@ export function SiteCustomerReferral() {
           <Card>
             <CardContent className='pt-6'>
               <SiteCommissionPanel
+                legacyMode={false}
                 onConverted={() => {
                   void queryClient.invalidateQueries({
                     queryKey: siteReferralProfileKey,

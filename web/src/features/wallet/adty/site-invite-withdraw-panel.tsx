@@ -212,12 +212,23 @@ function freeAmountMicros(row: SiteCommission, nowSeconds: number): bigint {
   ) {
     return 0n
   }
-  const earningsHold =
-    parseUsdMicros(row.earnings_hold_usd, { overflow: 'truncate' }) ?? 0n
-  const marginHold =
-    parseUsdMicros(row.margin_hold_usd, { overflow: 'truncate' }) ?? 0n
-  const frozen = parseUsdMicros(row.frozen_usd, { overflow: 'truncate' }) ?? 0n
-  const free = earningsHold + marginHold - frozen
+  const explicitWithdrawable = parseUsdMicros(row.withdrawable_usd, {
+    overflow: 'truncate',
+  })
+  if (explicitWithdrawable !== null) {
+    return explicitWithdrawable > 0n ? explicitWithdrawable : 0n
+  }
+  const amount = parseUsdMicros(row.amount_usd, { overflow: 'truncate' }) ?? 0n
+  const converted =
+    parseUsdMicros(row.converted_usd, { overflow: 'truncate' }) ?? 0n
+  const withdrawn =
+    parseUsdMicros(row.withdrawn_usd, { overflow: 'truncate' }) ?? 0n
+  const pendingWithdrawal =
+    parseUsdMicros(row.pending_withdrawal_usd ?? row.frozen_usd, {
+      overflow: 'truncate',
+    }) ?? 0n
+  const clawed = parseUsdMicros(row.clawed_usd, { overflow: 'truncate' }) ?? 0n
+  const free = amount - converted - withdrawn - pendingWithdrawal - clawed
   return free > 0n ? free : 0n
 }
 
@@ -243,14 +254,16 @@ function statusLabel(status: string): string {
 export function SiteInviteWithdrawPanel(props: {
   rows: SiteCommission[]
   onChanged: () => void
+  legacyMode?: boolean
 }) {
   const { t } = useTranslation()
+  const legacyMode = props.legacyMode === true
   const sites = [...new Set(props.rows.map((row) => row.site_id ?? 0))]
   const [selected, setSelected] = useState(sites[0])
   const current = sites.includes(selected) ? selected : sites[0]
   return (
     <>
-      {sites.some((id) => id > 0) && (
+      {legacyMode && sites.some((id) => id > 0) && (
         <NativeSelect
           aria-label={t('Site')}
           value={current}
@@ -267,6 +280,7 @@ export function SiteInviteWithdrawPanel(props: {
         key={current}
         siteId={current ?? 0}
         rows={props.rows.filter((row) => (row.site_id ?? 0) === current)}
+        legacyMode={legacyMode}
         onChanged={props.onChanged}
       />
     </>
@@ -275,6 +289,7 @@ export function SiteInviteWithdrawPanel(props: {
 function SiteWithdrawForm(props: {
   siteId: number
   rows: SiteCommission[]
+  legacyMode: boolean
   onChanged: () => void
 }) {
   const { t, i18n } = useTranslation()
@@ -760,7 +775,7 @@ function SiteWithdrawForm(props: {
             >
               <div className='flex flex-wrap items-center justify-between gap-2'>
                 <span>
-                  {row.site_id && (
+                  {props.legacyMode && Boolean(row.site_id) && (
                     <>
                       {t('Site')} #{row.site_id} ·{' '}
                     </>

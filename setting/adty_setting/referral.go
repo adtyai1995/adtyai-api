@@ -46,7 +46,7 @@ var (
 	canonicalReferralWithdrawUSDTNetworks = []string{"TRC20", "BEP20", "POLYGON", "XLAYER"}
 )
 
-// AllReferralWithdrawUSDTNetworks 返回全部 4 条支持的 USDT 提现链（与 BEpusdt 充值链一致）。
+// AllReferralWithdrawUSDTNetworks 返回全部 4 条支持的 USDT 提现链（提现固定 4 链；BEpusdt 充值另支持 ERC20 共 5 链）。
 func AllReferralWithdrawUSDTNetworks() []string {
 	return slices.Clone(canonicalReferralWithdrawUSDTNetworks)
 }

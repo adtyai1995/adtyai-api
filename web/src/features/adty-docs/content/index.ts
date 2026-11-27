@@ -58,6 +58,29 @@ export type DocSlug = (typeof DOC_PAGES)[number]
 
 export const DEFAULT_DOC_SLUG: DocSlug = 'quickstart'
 
+const MAIN_SITE_ONLY_DOC_SLUGS: readonly DocSlug[] = ['roles']
+
+export function isMainSiteOnlyDocSlug(slug: DocSlug): boolean {
+  return MAIN_SITE_ONLY_DOC_SLUGS.includes(slug)
+}
+
+export function getVisibleDocPages(
+  isSubsite = Boolean(subsiteDocument())
+): DocSlug[] {
+  return isSubsite
+    ? DOC_PAGES.filter((slug) => !isMainSiteOnlyDocSlug(slug))
+    : [...DOC_PAGES]
+}
+
+export function isDocPageVisible(
+  value: string,
+  isSubsite = Boolean(subsiteDocument())
+): value is DocSlug {
+  if (!isDocSlug(value)) return false
+  if (isSubsite && isMainSiteOnlyDocSlug(value)) return false
+  return true
+}
+
 /** Markdown by content language; docs-complete.test.ts checks both languages. */
 const DOC_CONTENT: Record<ContentLang, Record<DocSlug, string>> = {
   en: {

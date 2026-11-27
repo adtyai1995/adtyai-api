@@ -48,7 +48,7 @@ func RequireSecurityProof(c *gin.Context, operation service.VerificationOperatio
 		securityProofError(c, "SECURITY_PROOF_REQUIRED", "Additional verification required")
 		return nil
 	}
-	authorization, err := service.ConsumeOperationProof(raw, identity, operation)
+	authorization, err := service.ConsumeOperationProofForSite(raw, identity, operation, service.AdtyRequestSiteID(c))
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrAuthTokenExpired):

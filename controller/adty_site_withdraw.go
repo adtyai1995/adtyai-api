@@ -162,10 +162,6 @@ func PostAdtySiteWithdrawalQR(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if site.Status == model.AdtySiteStatusClosed {
-		common.ApiErrorStatus(c, http.StatusForbidden, service.ErrAdtySiteNotOwner)
-		return
-	}
 	header, err := c.FormFile("file")
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
@@ -266,7 +262,7 @@ func PostAdtySiteWithdrawal(c *gin.Context) {
 		"method":          method,
 		"network":         network,
 		"account_no":      accountNo,
-		"account_name":    strings.TrimSpace(body.AccountName),
+		"account_name":    "",
 		"qr_image_url":    "",
 		"expected_rate":   expected.String(),
 		"idempotency_key": idempotencyKey,

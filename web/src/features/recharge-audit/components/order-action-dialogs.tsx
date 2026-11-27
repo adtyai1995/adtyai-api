@@ -777,7 +777,11 @@ export function RefundDialog(
         />
       </div>
       {hasActivePreview && preview.data && (
-        <CommissionRefundPreviewDetails preview={preview.data} t={t} />
+        <CommissionRefundPreviewDetails
+          preview={preview.data}
+          siteId={facts?.site_id ?? props.order?.site_id ?? 0}
+          t={t}
+        />
       )}
       {!props.ownerMode && pendingReversalOrphans.length > 0 && (
         <div className='space-y-2'>
@@ -1063,38 +1067,85 @@ export function RefundDialog(
 }
 
 function isPositiveAmount(value?: string) {
-  return !!value && value !== '0'
+  const trimmed = value?.trim()
+  if (!trimmed) return false
+  const num = Number(trimmed)
+  return Number.isFinite(num) ? num > 0 : trimmed !== '0'
 }
 
 function CommissionRefundPreviewDetails(props: {
   preview: TopupRefundResult
+  siteId: number
   t: (key: string) => string
 }) {
   const commission = props.preview.commission ?? props.preview.facts?.commission
   const t = props.t
-  if (!commission && !props.preview.commission_issued_usd) {
+  const issuedUsd = commission?.issued_usd || props.preview.commission_issued_usd
+  const expectedClawbackUsd =
+    commission?.expected_clawback_usd || props.preview.commission_clawback_usd
+  const withdrawnUsd =
+    commission?.withdrawn_usd || props.preview.commission_withdrawn_usd
+  if (
+    !commission &&
+    !isPositiveAmount(issuedUsd) &&
+    !isPositiveAmount(expectedClawbackUsd) &&
+    !isPositiveAmount(withdrawnUsd)
+  ) {
     return null
   }
-  const expected = commission
-    ? [
-        [t('Expected release'), commission.expected_release_usd],
-        [
-          t('Expected clawback from balance'),
-          commission.expected_converted_clawback_usd,
-        ],
-        [t('Expected recovery'), commission.expected_withdrawn_recovery_usd],
-        [
-          t('Expected pending-coverage reduction'),
-          commission.expected_pending_coverage_cancel_usd,
-        ],
-      ]
-    : []
+  const isSubsiteOrder = props.siteId > 0
+  const expected: [string, string][] = []
+  if (commission) {
+    if (
+      commission.expected_release_usd !== undefined &&
+      commission.expected_release_usd !== ''
+    ) {
+      expected.push([t('Expected release'), commission.expected_release_usd])
+    }
+    if (
+      commission.expected_converted_clawback_usd !== undefined &&
+      commission.expected_converted_clawback_usd !== ''
+    ) {
+      expected.push([
+        t('Expected clawback from balance'),
+        commission.expected_converted_clawback_usd,
+      ])
+    }
+    if (
+      commission.expected_withdrawn_recovery_usd !== undefined &&
+      commission.expected_withdrawn_recovery_usd !== ''
+    ) {
+      expected.push([
+        t('Expected recovery'),
+        commission.expected_withdrawn_recovery_usd,
+      ])
+    }
+    if (
+      commission.expected_pending_coverage_cancel_usd !== undefined &&
+      commission.expected_pending_coverage_cancel_usd !== '' &&
+      (isSubsiteOrder ||
+        isPositiveAmount(commission.expected_pending_coverage_cancel_usd))
+    ) {
+      expected.push([
+        t('Expected pending-coverage reduction'),
+        commission.expected_pending_coverage_cancel_usd,
+      ])
+    }
+  }
+  const hasDetailedExpected = expected.some(([, amount]) =>
+    isPositiveAmount(amount)
+  )
+  const hasWithdrawnState = Boolean(
+    commission?.states?.some(
+      (item) =>
+        item.state === 'withdrawn_released' && isPositiveAmount(item.amount_usd)
+    )
+  )
   return (
     <div className='space-y-1 text-sm'>
-      {(commission?.issued_usd || props.preview.commission_issued_usd) && (
+      {issuedUsd && (
         <p className='tabular-nums'>
-          {t('Issued commission')}:{' '}
-          {commission?.issued_usd ?? props.preview.commission_issued_usd} USD
+          {t('Issued commission')}: {issuedUsd} USD
         </p>
       )}
       {commission?.states?.map((item) => (
@@ -1107,6 +1158,16 @@ function CommissionRefundPreviewDetails(props: {
           {label}: {amount} USD
         </p>
       ))}
+      {!hasDetailedExpected && isPositiveAmount(expectedClawbackUsd) && (
+        <p className='tabular-nums'>
+          {t('Commission clawback')}: {expectedClawbackUsd} USD
+        </p>
+      )}
+      {!hasWithdrawnState && isPositiveAmount(withdrawnUsd) && (
+        <p className='tabular-nums'>
+          {t('Withdrawn commission')}: {withdrawnUsd} USD
+        </p>
+      )}
       {commission?.withdrawn_recovery_liable === 'inviter' &&
         isPositiveAmount(commission.expected_withdrawn_recovery_usd) && (
           <p>{t('Recovery liable party: inviter')}</p>

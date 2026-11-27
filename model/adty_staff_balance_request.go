@@ -1,11 +1,6 @@
 package model
 
 import (
-	"errors"
-	"fmt"
-	"strconv"
-	"strings"
-
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
@@ -25,12 +20,6 @@ const (
 	AdtyStaffRecoverySourcePrincipalBatch = "principal_batch"
 	AdtyStaffRecoverySourceBonusBatch     = "bonus_batch"
 	AdtyStaffRecoverySourceFIFO           = "fifo_batches"
-)
-
-var (
-	ErrAdtyStaffBalanceBusinessRefRequired   = errors.New("staff balance request business reference is required")
-	ErrAdtyStaffBalanceFundingSourceRequired = errors.New("staff balance request funding or recovery source is required")
-	ErrAdtyStaffBalanceInvalidState          = errors.New("staff balance request is not pending")
 )
 
 // AdtyStaffBalanceRequest is an employee request to change a customer balance.
@@ -64,105 +53,7 @@ type AdtyStaffBalanceRequest struct {
 	ReviewedAt     int64           `json:"reviewed_at"`
 }
 
-type AdtyStaffBalanceProvenance struct {
-	Reason        string `json:"reason"`
-	OrderRef      string `json:"order_ref"`
-	FundingSource string `json:"funding_source"`
-	BatchKind     string `json:"batch_kind"`
-	BatchSource   string `json:"batch_source"`
-}
-
 func (AdtyStaffBalanceRequest) TableName() string { return "adty_staff_balance_requests" }
-
-// NormalizeProvenance canonicalizes whitespace and keeps BusinessRef/OrderRef
-// and FundingSource/RecoverySource synchronized.
-func (r *AdtyStaffBalanceRequest) NormalizeProvenance() {
-	if r == nil {
-		return
-	}
-	r.Direction = strings.TrimSpace(r.Direction)
-	r.Reason = strings.TrimSpace(r.Reason)
-	r.BusinessRef = strings.TrimSpace(r.BusinessRef)
-	r.OrderRef = strings.TrimSpace(r.OrderRef)
-	r.FundingSource = strings.TrimSpace(r.FundingSource)
-	r.RecoverySource = strings.TrimSpace(r.RecoverySource)
-	r.BatchKind = strings.TrimSpace(r.BatchKind)
-	r.BatchSource = strings.TrimSpace(r.BatchSource)
-	r.ReviewNote = strings.TrimSpace(r.ReviewNote)
-	if r.BusinessRef == "" && r.OrderRef != "" {
-		r.BusinessRef = r.OrderRef
-	}
-	if r.OrderRef == "" && r.BusinessRef != "" {
-		r.OrderRef = r.BusinessRef
-	}
-	if r.Direction == AdtyStaffBalanceIncrease && r.FundingSource == "" {
-		r.FundingSource = AdtyStaffFundingSourceAuto
-	}
-	if r.Direction == AdtyStaffBalanceDecrease {
-		if r.FundingSource == "" && r.RecoverySource != "" {
-			r.FundingSource = r.RecoverySource
-		}
-		if r.RecoverySource == "" && r.FundingSource != "" {
-			r.RecoverySource = r.FundingSource
-		}
-	}
-}
-
-// ValidateProvenance enforces that a staff balance request carries a concrete
-// reason, an associated business/order reference, and a funding/recovery source (A.12.4).
-func (r *AdtyStaffBalanceRequest) ValidateProvenance() error {
-	if r == nil {
-		return ErrInvalidUserQuotaAdjustment
-	}
-	r.NormalizeProvenance()
-	if r.Reason == "" {
-		return ErrAdtyAdjustReasonRequired
-	}
-	if r.BusinessRef == "" {
-		return ErrAdtyStaffBalanceBusinessRefRequired
-	}
-	if r.FundingSource == "" {
-		return ErrAdtyStaffBalanceFundingSourceRequired
-	}
-	return nil
-}
-
-// LedgerReason returns the concrete audit reason recorded on AdtyBalanceLedger
-// when this staff balance request is approved.
-func (r AdtyStaffBalanceRequest) LedgerReason() string {
-	r.NormalizeProvenance()
-	if r.Reason == "" && r.BusinessRef == "" && r.FundingSource == "" {
-		return "staff balance request"
-	}
-	parts := make([]string, 0, 4)
-	if r.Reason != "" {
-		parts = append(parts, r.Reason)
-	}
-	if r.BusinessRef != "" {
-		parts = append(parts, "ref="+r.BusinessRef)
-	}
-	if r.FundingSource != "" {
-		parts = append(parts, "source="+r.FundingSource)
-	}
-	if r.ReviewNote != "" {
-		parts = append(parts, "review="+r.ReviewNote)
-	}
-	return strings.Join(parts, " | ")
-}
-
-// LedgerRefID returns the structured reference ID recorded on AdtyBalanceLedger.
-func (r AdtyStaffBalanceRequest) LedgerRefID() string {
-	r.NormalizeProvenance()
-	idStr := strconv.FormatInt(r.Id, 10)
-	if r.BusinessRef == "" && r.FundingSource == "" {
-		return idStr
-	}
-	ref := fmt.Sprintf("req:%s|ref:%s|src:%s", idStr, r.BusinessRef, r.FundingSource)
-	if len(ref) > 128 {
-		ref = ref[:128]
-	}
-	return ref
-}
 
 // AdtyPriceRevision records one price change. It is append-only history.
 type AdtyPriceRevision struct {

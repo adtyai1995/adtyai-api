@@ -164,8 +164,8 @@ export function TelegramAdminPanel() {
     }
   }
 
-  // A test checks the token with Telegram and sends a test notice to the bot
-  // this Root account has bound; without a binding only the token is checked.
+  // A test requires an active binding for this purpose on the current account,
+  // verifies the bot token with Telegram, and sends a test notice to that binding.
   const test = async (purpose: BotPurpose) => {
     const proof = await verification.requestVerification({
       scope: 'adty.notice.configure',

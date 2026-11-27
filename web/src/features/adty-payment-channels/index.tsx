@@ -31,6 +31,7 @@ import { SectionPageLayout } from '@/components/layout/components/section-page-l
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { paymentScenesKey } from '@/features/adty-payment-scenes/api'
+import { sceneBusinessLabels } from '@/features/adty-payment-scenes/schema'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
@@ -453,7 +454,12 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
   const deleteDesc = (() => {
     if (!deleting) return ''
     const hasOrders = (deleting.order_count ?? 0) > 0
-    const sceneNames = deleting.scene_names ?? []
+    const sceneNames = (deleting.scene_names ?? [])
+      .map((name) => {
+        const trimmed = name.trim()
+        return trimmed ? t(sceneBusinessLabels[trimmed] || trimmed) : ''
+      })
+      .filter(Boolean)
     if (hasOrders && sceneNames.length > 0) {
       return t(
         'Delete {{name}}? It has {{count}} historical orders and is referenced by payment scenes ({{scenes}}). Historical orders will keep the channel name snapshot, unpaid orders will stop automatic callbacks and queries, and referencing scenes will be updated safely. Use Replace if you want to migrate scenes to another channel.',
@@ -512,7 +518,7 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
         onOpenChange={(open) => !open && setRevoking(null)}
         title={t('Revoke credentials')}
         desc={t(
-          'Permanently revoke {{name}}? This erases its key and blocks late callbacks and automatic queries. Reconcile old payments manually with evidence. This cannot be undone.',
+          'Revoke credentials for {{name}}? This clears its existing keys and blocks automatic callbacks and queries for existing orders. Reconcile old payments manually with evidence. To use this channel again, configure valid credentials in Edit to restore it to disabled status.',
           { name: revoking?.name ?? '' }
         )}
         destructive

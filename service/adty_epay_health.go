@@ -307,11 +307,17 @@ func countAdtyEpayUnpaid(tradeNos []string) {
 		if result.Error != nil || result.RowsAffected == 0 {
 			continue
 		}
-		if err := model.DB.Model(&model.AdtyEpayChannel{}).Where("id = ?", ext.ChannelId).
-			Update("unpaid_streak", model.DB.Raw("unpaid_streak + 1")).Error; err != nil {
+		channel, err := model.GetAdtyEpayChannel(ext.ChannelId)
+		if err != nil || !model.AdtyEpayOrderMatchesChannelIdentity(&ext, channel) {
 			continue
 		}
-		channel, err := model.GetAdtyEpayChannel(ext.ChannelId)
+		upd := model.DB.Model(&model.AdtyEpayChannel{}).
+			Where("id = ? AND config_version = ?", ext.ChannelId, ext.ChannelConfigVersion).
+			Update("unpaid_streak", model.DB.Raw("unpaid_streak + 1"))
+		if upd.Error != nil || upd.RowsAffected == 0 {
+			continue
+		}
+		channel, err = model.GetAdtyEpayChannel(ext.ChannelId)
 		if err != nil {
 			continue
 		}
@@ -339,7 +345,9 @@ func resetAdtyEpayUnpaid(topUp *model.TopUp, ext *model.AdtyTopupOrder) {
 	if ext == nil || ext.Provider != model.PaymentProviderAdtyEpay || ext.ChannelId == 0 {
 		return
 	}
-	_ = model.DB.Model(&model.AdtyEpayChannel{}).Where("id = ?", ext.ChannelId).Update("unpaid_streak", 0).Error
+	_ = model.DB.Model(&model.AdtyEpayChannel{}).
+		Where("id = ? AND config_version = ?", ext.ChannelId, ext.ChannelConfigVersion).
+		Update("unpaid_streak", 0).Error
 }
 
 // runAdtyEpayProbes 探活（默认关）：失败标维护（原因 probe）；原因是 probe 的通道连续 3 次正常就恢复。
@@ -465,7 +473,7 @@ func (adtyEpayProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder) (*
 		return nil, err
 	}
 	if channel.Status == model.AdtyEpayStatusRevoked {
-		return nil, common.NewMessage("This payment channel has been permanently revoked")
+		return nil, common.NewMessage("This payment channel's credentials have been revoked")
 	}
 	if !model.AdtyEpayOrderMatchesChannelMerchantGateway(ext, channel) {
 		return nil, errors.Join(model.ErrPaymentMethodMismatch, errors.New("channel merchant or gateway changed"))

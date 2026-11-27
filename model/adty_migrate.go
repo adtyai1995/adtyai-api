@@ -227,6 +227,18 @@ func migrateAdtySiteTablesOn(db *gorm.DB) error {
 	if err := db.Exec(`UPDATE adty_site_domains SET bound_by = (SELECT a.operator_id FROM adty_site_audits a WHERE a.site_id = adty_site_domains.site_id AND a.action = 'domain_create' AND a.new_value = adty_site_domains.hostname AND a.created_at = adty_site_domains.created_at ORDER BY a.id DESC LIMIT 1) WHERE COALESCE(bound_by,0) = 0 AND managed_by <> 'platform' AND EXISTS (SELECT 1 FROM adty_site_audits a WHERE a.site_id = adty_site_domains.site_id AND a.action = 'domain_create' AND a.new_value = adty_site_domains.hostname AND a.created_at = adty_site_domains.created_at)`).Error; err != nil {
 		return err
 	}
+	// Backfill custom-domain ownership continuity (R1-001): active domains record their
+	// verified site; pending rows whose verify_records already require TXT preserve the flag.
+	if err := db.Model(&AdtySiteDomain{}).
+		Where("verified_site_id = 0 AND site_id > 0 AND status = ?", AdtySiteDomainActive).
+		Update("verified_site_id", gorm.Expr("site_id")).Error; err != nil {
+		return err
+	}
+	if err := db.Model(&AdtySiteDomain{}).
+		Where("require_ownership_txt = ? AND status = ? AND verify_records LIKE ?", false, AdtySiteDomainPending, `%"type":"TXT"%`).
+		Update("require_ownership_txt", true).Error; err != nil {
+		return err
+	}
 	if err := BackfillAdtyCloseMailDeadline(db, 0); err != nil {
 		return err
 	}

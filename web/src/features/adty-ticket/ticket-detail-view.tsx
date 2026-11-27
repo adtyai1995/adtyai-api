@@ -461,10 +461,12 @@ export function TicketDetailView(props: {
               const rawRoleKey =
                 TICKET_AUTHOR_ROLE_LABELS[message.author_role ?? ''] ??
                 'Historical author role unconfirmed'
+              const isCustomerView =
+                props.scope === 'personal' ||
+                props.scope === 'team' ||
+                !detail.can_manage
               const roleLabel = t(
-                props.scope === 'personal' && isSupport
-                  ? 'Support staff'
-                  : rawRoleKey
+                isCustomerView && isSupport ? 'Support staff' : rawRoleKey
               )
               const messageImages = (detail.images ?? []).filter(
                 (image) =>

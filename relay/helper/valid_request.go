@@ -330,15 +330,6 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 				imageRequest.Image, _ = common.Marshal(imageValue)
 			}
 
-			if imageRequest.Model == "gpt-image-1" {
-				if imageRequest.Quality == "" {
-					imageRequest.Quality = "standard"
-				}
-			}
-			if imageRequest.N == nil || *imageRequest.N == 0 {
-				imageRequest.N = common.GetPointer(uint(1))
-			}
-
 			hasWatermark := formData.Has("watermark")
 			if hasWatermark {
 				watermark := formData.Get("watermark") == "true"
@@ -378,35 +369,29 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 		if err != nil {
 			return nil, err
 		}
+	}
 
-		if imageRequest.Model == "" {
-			return nil, errors.New("model is required")
-		}
+	if imageRequest.Model == "" {
+		return nil, errors.New("model is required")
+	}
 
-		if strings.Contains(imageRequest.Size, "×") {
-			return nil, errors.New("size an unexpected error occurred in the parameter, please use 'x' instead of the multiplication sign '×'")
-		}
+	if strings.Contains(imageRequest.Size, "×") {
+		return nil, errors.New("size an unexpected error occurred in the parameter, please use 'x' instead of the multiplication sign '×'")
+	}
 
-		if imageRequest.N != nil && *imageRequest.N > dto.MaxImageN {
-			return nil, fmt.Errorf("n must be an integer between 1 and %d", dto.MaxImageN)
-		}
+	if imageRequest.N != nil && *imageRequest.N > dto.MaxImageN {
+		return nil, fmt.Errorf("n must be an integer between 1 and %d", dto.MaxImageN)
+	}
 
-		if err := imageRequest.NormalizeLegacyDalleImageRequest(); err != nil {
-			return nil, err
-		}
-		if imageRequest.Model == "gpt-image-1" {
-			if imageRequest.Quality == "" {
-				imageRequest.Quality = "auto"
-			}
-		}
+	if err := imageRequest.NormalizeLegacyDalleImageRequest(); err != nil {
+		return nil, err
+	}
+	if imageRequest.Model == "gpt-image-1" && imageRequest.Quality == "" {
+		imageRequest.Quality = "auto"
+	}
 
-		//if imageRequest.Prompt == "" {
-		//	return nil, errors.New("prompt is required")
-		//}
-
-		if imageRequest.N == nil || *imageRequest.N == 0 {
-			imageRequest.N = common.GetPointer(uint(1))
-		}
+	if imageRequest.N == nil || *imageRequest.N == 0 {
+		imageRequest.N = common.GetPointer(uint(1))
 	}
 
 	// Provider parameters can override the top-level count. Validate before

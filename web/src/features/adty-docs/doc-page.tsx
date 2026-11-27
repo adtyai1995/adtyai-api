@@ -25,23 +25,27 @@ import { PublicLayout } from '@/components/layout'
 import { RichContent } from '@/components/rich-content'
 import { Button } from '@/components/ui/button'
 import { useApiBaseUrl } from '@/features/adty-site/api'
+import { useStatus } from '@/hooks/use-status'
 import { toContentLang } from '@/lib/adty-lang'
+import { subsiteDocument } from '@/lib/subsite-document'
 import { cn } from '@/lib/utils'
 
 import {
   DEFAULT_DOC_SLUG,
-  DOC_PAGES,
   fillDocPlaceholders,
   getDocMarkdown,
-  isDocSlug,
+  getVisibleDocPages,
+  isDocPageVisible,
   type DocSlug,
 } from './content'
 
 /** One integration guide with the doc navigation beside it. */
 export function DocPage(props: { slug: string }) {
   const { t, i18n } = useTranslation()
+  const { status } = useStatus()
   const baseUrl = useApiBaseUrl()
   const lang = toContentLang(i18n.resolvedLanguage || i18n.language)
+  const isSubsite = Boolean(subsiteDocument() || status?.adty_site)
   // Client and SDK names are product names and stay untranslated.
   const titles: Record<DocSlug, string> = {
     quickstart: t('Quick start'),
@@ -56,8 +60,9 @@ export function DocPage(props: { slug: string }) {
     faq: t('FAQ'),
   }
   const slug = props.slug
-  const known = isDocSlug(slug)
-  const markdown = isDocSlug(slug)
+  const visiblePages = getVisibleDocPages(isSubsite)
+  const visible = isDocPageVisible(slug, isSubsite)
+  const markdown = isDocPageVisible(slug, isSubsite)
     ? fillDocPlaceholders(getDocMarkdown(slug, lang), baseUrl)
     : ''
 
@@ -69,7 +74,7 @@ export function DocPage(props: { slug: string }) {
           className='md:w-[180px] md:shrink-0'
         >
           <ul className='flex gap-1 overflow-x-auto md:sticky md:top-[104px] md:flex-col md:gap-0.5 md:overflow-visible'>
-            {DOC_PAGES.map((page) => {
+            {visiblePages.map((page) => {
               const active = page === props.slug
               return (
                 <li key={page} className='shrink-0'>
@@ -93,7 +98,7 @@ export function DocPage(props: { slug: string }) {
           </ul>
         </nav>
         <article className='max-w-[680px] min-w-0 flex-1'>
-          {known ? (
+          {visible ? (
             <RichContent
               mode='markdown'
               content={markdown}

@@ -62,6 +62,7 @@ import { resolveLocalizedAnnouncement } from '@/features/dashboard/lib/text'
 import { useStatus } from '@/hooks/use-status'
 import { getAnnouncementDetail } from '@/lib/api'
 import { getAnnouncementColorClass } from '@/lib/colors'
+import { ROLE } from '@/lib/roles'
 import { subsiteDocument } from '@/lib/subsite-document'
 import { formatDateTimeObject } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -370,6 +371,7 @@ function AnnouncementsContent({
   language,
   onHide,
   hiding,
+  recipientReaderMode,
 }: {
   announcements: AnnouncementItem[]
   loading: boolean
@@ -377,6 +379,7 @@ function AnnouncementsContent({
   language?: string
   onHide?: (readKey: string) => void
   hiding?: string
+  recipientReaderMode: 'admin' | 'customer'
 }) {
   if (loading) {
     return (
@@ -425,7 +428,9 @@ function AnnouncementsContent({
             contentMode === 'html'
               ? sanitizeNotificationHtml(displayContent)
               : displayContent
-          const recipientSummary = formatNotificationRecipients(item, t)
+          const recipientSummary = formatNotificationRecipients(item, t, {
+            readerMode: recipientReaderMode,
+          })
 
           return (
             <div key={announcementKey}>
@@ -553,7 +558,17 @@ export function NotificationPopover({
   const plainTextNotice = Boolean(
     subsiteDocument() || !status || status.adty_site
   )
-  const staffSiteId = useAuthStore((state) => state.auth.user?.staff_site_id ?? 0)
+  const user = useAuthStore((state) => state.auth.user)
+  const staffSiteId = user?.staff_site_id ?? 0
+  const isAdminReader = Boolean(
+    user &&
+      (user.role >= ROLE.ADMIN ||
+        user.adty_site_owner === true ||
+        staffSiteId > 0)
+  )
+  const recipientReaderMode: 'admin' | 'customer' = isAdminReader
+    ? 'admin'
+    : 'customer'
   const currentLanguage = i18n.resolvedLanguage || i18n.language
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
@@ -628,6 +643,7 @@ export function NotificationPopover({
                 language={currentLanguage}
                 onHide={onHideAnnouncement}
                 hiding={hidingAnnouncement}
+                recipientReaderMode={recipientReaderMode}
               />
               {hasMore && (
                 <Button

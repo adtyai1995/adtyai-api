@@ -16,12 +16,12 @@ type EpaySetting struct {
 	ProbeIntervalMinutes int  `json:"probe_interval_minutes"` // 探活间隔
 	QueryAfterSeconds    int  `json:"query_after_seconds"`    // 下单多久还没回调就补查
 	ExpiredQuerySeconds  int  `json:"expired_query_seconds"`  // 过期后还继续补查多久，0 表示过期后不再查
-	// 换通道的时限（任务 3.6）：单个通道等多久，一次下单最多等多久。保存时校验 单通道 ≤ 总时长 ≤ 30。
+	// 下单请求超时配置（不自动换通道，见 DEC-027）：单次通道请求超时与一次下单总时长上限，保存时校验 1 ≤ 单通道 ≤ 总时长 ≤ 30。
 	ChannelTimeoutSeconds int `json:"channel_timeout_seconds"`
 	TotalTimeoutSeconds   int `json:"total_timeout_seconds"`
 }
 
-// 换通道时限的配置键，保存前要校验（controller/option.go）。
+// 下单请求超时的配置键，保存前要校验（controller/option.go）。
 const (
 	EpaySettingKeyChannelTimeout     = "adty_epay_setting.channel_timeout_seconds"
 	EpaySettingKeyTotalTimeout       = "adty_epay_setting.total_timeout_seconds"
@@ -57,7 +57,7 @@ func GetEpaySetting() *EpaySetting {
 	return &snap
 }
 
-// IsEpayTimeoutKey 判断配置键是否属于易支付换通道时限。
+// IsEpayTimeoutKey 判断配置键是否属于易支付下单超时设置。
 func IsEpayTimeoutKey(key string) bool {
 	return key == EpaySettingKeyChannelTimeout || key == EpaySettingKeyTotalTimeout
 }
@@ -135,7 +135,7 @@ func SyncEpayTimeouts(channelSeconds, totalSeconds int) {
 	common.OptionMapRWMutex.Unlock()
 }
 
-// ValidateEpayTimeout 校验换通道时限的一个键：优先使用权威读取器获取另一个键的当前值，满足 1 ≤ 单通道 ≤ 总时长 ≤ 30。
+// ValidateEpayTimeout 校验易支付下单超时的一个键：优先使用权威读取器获取另一个键的当前值，满足 1 ≤ 单通道 ≤ 总时长 ≤ 30。
 func ValidateEpayTimeout(key, value string) error {
 	epayTimeoutReaderMu.RLock()
 	reader := epayTimeoutReader

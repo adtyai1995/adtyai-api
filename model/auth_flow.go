@@ -125,6 +125,7 @@ type AuthFlowAuthorization struct {
 	Scope       string `json:"scope"`
 	ContextHash string `json:"context_hash"`
 	Method      string `json:"method"`
+	SiteID      int    `json:"site_id,omitempty"`
 }
 
 // ValidateAuthSessionWithTx rechecks the authoritative identity while holding the

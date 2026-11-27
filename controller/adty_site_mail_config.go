@@ -21,8 +21,8 @@ func GetAdtySiteMailConfig(c *gin.Context) {
 	common.ApiSuccess(c, cfg)
 }
 
-// PutAdtySiteMailConfig validates and persists the site owner's outbound email
-// configuration (platform default, custom SMTP, or Resend API).
+// PutAdtySiteMailConfig validates and persists the site owner's own outbound
+// email configuration (smtp or resend only).
 func PutAdtySiteMailConfig(c *gin.Context) {
 	site, ok := adtyOwnerSiteOr403(c)
 	if !ok {

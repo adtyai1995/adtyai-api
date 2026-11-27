@@ -21,7 +21,22 @@ import type { TFunction } from 'i18next'
 const DOMAIN_HTTP_ERROR_RE = /^Domain returned HTTP (\d+)$/
 const CLOUDFLARE_HTTP_ERROR_RE = /^Cloudflare returned HTTP (\d+)$/
 const EDGE_ADD_CNAME_RE = /^add CNAME (\S+) -> (\S+)$/
-const EDGE_CNAME_MISMATCH_RE = /^(\S+) currently points to (\S+) instead of (\S+)$/
+const EDGE_CNAME_MISMATCH_RE =
+  /^(\S+) currently points to (\S+) instead of (\S+)$/
+const DNS_CNAME_CHECK_FAILED_RE = /^DNS CNAME check failed for ([^:]+)$/
+const EDGE_CERT_MISMATCH_RE = /^Issued edge certificate does not match (.+)$/
+const ACME_ERROR_RE = /^ACME error \((\d+)\)(?::\s*.+)?$/
+
+const EXACT_ERROR_KEYS: Record<string, string> = {
+  'ACME authorization does not offer dns-01 challenge':
+    'Certificate authority did not offer DNS-01 verification. Please retry later.',
+  'ACME server returned empty certificate chain':
+    'Certificate authority returned an empty certificate chain. Please retry later.',
+  'Failed to parse issued edge certificate':
+    'Failed to parse the issued edge certificate. Please retry later.',
+  'Certificate check timed out. Please try again later.':
+    'Certificate check timed out. Please try again later.',
+}
 
 export function formatDomainLastError(
   raw: string | null | undefined,
@@ -59,6 +74,37 @@ export function formatDomainLastError(
       actual: edgeMismatchMatch[2],
       expected: edgeMismatchMatch[3],
     })
+  }
+
+  const dnsCnameMatch = DNS_CNAME_CHECK_FAILED_RE.exec(trimmed)
+  if (dnsCnameMatch) {
+    return t(
+      'DNS CNAME check failed for {{host}}. Please verify the CNAME record and try again.',
+      { host: dnsCnameMatch[1].trim() }
+    )
+  }
+
+  const edgeCertMismatchMatch = EDGE_CERT_MISMATCH_RE.exec(trimmed)
+  if (edgeCertMismatchMatch) {
+    return t(
+      'Issued edge certificate does not match {{host}}. Please retry later.',
+      { host: edgeCertMismatchMatch[1].trim() }
+    )
+  }
+
+  const acmeMatch = ACME_ERROR_RE.exec(trimmed)
+  if (acmeMatch) {
+    return t(
+      'Certificate issuance failed (ACME {{status}}). Please verify your CNAME record and retry later.',
+      { status: acmeMatch[1] }
+    )
+  }
+
+  const exactKey = Object.hasOwn(EXACT_ERROR_KEYS, trimmed)
+    ? EXACT_ERROR_KEYS[trimmed]
+    : undefined
+  if (exactKey) {
+    return t(exactKey)
   }
 
   return t(trimmed, { defaultValue: trimmed })

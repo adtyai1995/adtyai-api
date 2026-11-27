@@ -396,6 +396,16 @@ func updatePaymentScenesForChannelTx(tx *gorm.DB, oldID, replacementID, actorID 
 // 允许修改已有订单或已撤销通道的全部配置（名称、地址、商户 ID、密钥、签名方式、下单方式、支付方式等）：
 // 修改支付凭据或网关身份前会先把旧通道名/商户号/网关快照到历史订单，并递增配置版本、重置故障计数。
 func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
+	if channel != nil && channel.Id != 0 {
+		var pre AdtyEpayChannel
+		if err := DB.First(&pre, channel.Id).Error; err == nil {
+			if err := backfillAdtyEpayOrderSnapshotsTx(DB, &pre, true); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
 	return DB.Transaction(func(tx *gorm.DB) error {
 		channel.SignType = channel.EffectiveSignType()
 		methods := channel.Methods
@@ -416,32 +426,45 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 				// Clear inactive MD5 key so stale/corrupted columns never poison an RSA channel.
 				channel.MerchantKey = ""
 				if channel.MerchantPrivateKey == "" {
+					if existing.Status == AdtyEpayStatusRevoked {
+						return common.NewMessage("The Epay merchant private key is missing or invalid")
+					}
 					if existing.CredentialDecryptErr && existing.IsRSA() && existing.MerchantPrivateKey == "" {
 						keepCorruptedPrivateKey = true
 					}
 					channel.MerchantPrivateKey = existing.MerchantPrivateKey
 				}
 				if channel.PlatformPublicKey == "" {
+					if existing.Status == AdtyEpayStatusRevoked {
+						return common.NewMessage("The Epay platform public key is missing or invalid")
+					}
 					keepPublicKey = true
 					channel.PlatformPublicKey = existing.PlatformPublicKey
+				}
+				if !keepCorruptedPrivateKey && !channel.HasCredentials() {
+					if strings.TrimSpace(channel.MerchantPrivateKey) == "" {
+						return common.NewMessage("The Epay merchant private key is missing or invalid")
+					}
+					return common.NewMessage("The Epay platform public key is missing or invalid")
 				}
 			} else {
 				// Clear inactive RSA columns so stale/corrupted columns never poison an MD5 channel.
 				channel.MerchantPrivateKey = ""
 				channel.PlatformPublicKey = ""
 				if keepKey {
+					if existing.Status == AdtyEpayStatusRevoked {
+						return common.NewMessage("The merchant key is required")
+					}
 					if existing.CredentialDecryptErr && !existing.IsRSA() && existing.MerchantKey == "" {
 						keepCorruptedKey = true
 					}
 					channel.MerchantKey = existing.MerchantKey
 				}
-			}
-			identityChanged = existing.Status == AdtyEpayStatusRevoked || !existing.SamePaymentIdentity(channel)
-			if identityChanged || existing.Name != channel.Name {
-				if err := backfillAdtyEpayOrderSnapshotsTx(tx, &existing, identityChanged); err != nil {
-					return err
+				if !keepCorruptedKey && !channel.HasCredentials() {
+					return common.NewMessage("The merchant key is required")
 				}
 			}
+			identityChanged = existing.Status == AdtyEpayStatusRevoked || !existing.SamePaymentIdentity(channel)
 			if identityChanged {
 				channel.ConfigVersion = existing.ConfigVersion + 1
 				channel.UnpaidStreak = 0
@@ -538,6 +561,14 @@ func DeleteAdtyEpayChannel(id int) error {
 // name onto historical orders and cleaning up payment scene references in one
 // transaction (canonical lock order: adty_payment_scene_configs -> adty_epay_channels).
 func DeleteAdtyEpayChannelWithActor(id, actorID int) (*AdtyEpayChannelDeleteResult, error) {
+	var pre AdtyEpayChannel
+	if err := DB.First(&pre, id).Error; err == nil {
+		if err := backfillAdtyEpayOrderSnapshotsTx(DB, &pre, true); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
 	var res *AdtyEpayChannelDeleteResult
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		updatedScenes, disabledScenes, err := updatePaymentScenesForChannelTx(tx, id, 0, actorID)
@@ -549,9 +580,6 @@ func DeleteAdtyEpayChannelWithActor(id, actorID int) (*AdtyEpayChannelDeleteResu
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrAdtyEpayChannelNotFound
 			}
-			return err
-		}
-		if err := backfillAdtyEpayOrderSnapshotsTx(tx, &channel, true); err != nil {
 			return err
 		}
 		if err := tx.Where("channel_id = ?", id).Delete(&AdtyEpayChannelMethod{}).Error; err != nil {
@@ -602,6 +630,16 @@ func ReplaceAdtyEpayChannel(oldID int, opts AdtyEpayChannelReplaceOptions) (*Adt
 	}
 	if hasTarget && opts.TargetChannelID == oldID {
 		return nil, common.NewMessage("Cannot replace a payment channel with itself")
+	}
+	if opts.DeleteOld {
+		var pre AdtyEpayChannel
+		if err := DB.First(&pre, oldID).Error; err == nil {
+			if err := backfillAdtyEpayOrderSnapshotsTx(DB, &pre, true); err != nil {
+				return nil, err
+			}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
 	}
 	var result *AdtyEpayChannelReplaceResult
 	err := DB.Transaction(func(tx *gorm.DB) error {
@@ -697,9 +735,6 @@ func ReplaceAdtyEpayChannel(oldID int, opts AdtyEpayChannelReplaceOptions) (*Adt
 		}
 
 		if opts.DeleteOld {
-			if err := backfillAdtyEpayOrderSnapshotsTx(tx, &oldChannel, true); err != nil {
-				return err
-			}
 			if err := tx.Where("channel_id = ?", oldID).Delete(&AdtyEpayChannelMethod{}).Error; err != nil {
 				return err
 			}
@@ -751,7 +786,9 @@ func CountAdtyEpayOrdersByChannel() (map[int]int64, error) {
 
 // SetAdtyEpayChannelStatus 改通道状态和原因；启用时清零连续未付和探活计数。
 func SetAdtyEpayChannelStatus(id int, status, reason string) error {
-	return setAdtyEpayChannelStatus(DB, id, status, reason)
+	return DB.Transaction(func(tx *gorm.DB) error {
+		return setAdtyEpayChannelStatus(tx, id, status, reason)
+	})
 }
 
 // RevokeAdtyEpayChannelWithAudit commits permanent credential removal together
@@ -783,6 +820,27 @@ func RevokeAdtyEpayChannelWithAudit(id int, event AuditLog) error {
 }
 
 func setAdtyEpayChannelStatus(tx *gorm.DB, id int, status, reason string) error {
+	var current AdtyEpayChannel
+	if err := AdtyLockForUpdate(tx).First(&current, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrAdtyEpayChannelNotFound
+		}
+		return err
+	}
+	if current.Status == AdtyEpayStatusRevoked {
+		if status == AdtyEpayStatusRevoked {
+			return nil
+		}
+		return common.NewMessage("This payment channel's credentials have been revoked. Re-enter valid credentials to restore it")
+	}
+	if status == AdtyEpayStatusEnabled {
+		if current.CredentialDecryptErr {
+			return common.NewMessage("Cannot enable this payment channel because its stored credentials cannot be decrypted. Re-enter the credentials first")
+		}
+		if !current.HasCredentials() {
+			return common.NewMessage("Cannot enable this payment channel because its credentials are incomplete")
+		}
+	}
 	updates := map[string]any{"status": status, "status_reason": reason}
 	if status == AdtyEpayStatusRevoked {
 		updates["merchant_key"] = ""
@@ -796,24 +854,7 @@ func setAdtyEpayChannelStatus(tx *gorm.DB, id int, status, reason string) error 
 		updates["probe_fail_count"] = 0
 		updates["probe_ok_count"] = 0
 	}
-	result := tx.Model(&AdtyEpayChannel{}).Where("id = ? AND status <> ?", id, AdtyEpayStatusRevoked).Updates(updates)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		var channel AdtyEpayChannel
-		if err := tx.First(&channel, id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrAdtyEpayChannelNotFound
-			}
-			return err
-		}
-		if status == AdtyEpayStatusRevoked && channel.Status == AdtyEpayStatusRevoked {
-			return nil
-		}
-		return common.NewMessage("This payment channel has been permanently revoked")
-	}
-	return nil
+	return tx.Model(&AdtyEpayChannel{}).Where("id = ?", id).Updates(updates).Error
 }
 
 // UpdateAdtyEpayMethodReturnType 记下这种方式实际返回的是二维码、链接还是 scheme。
@@ -832,16 +873,37 @@ func adtyEpayDayStart(tx *gorm.DB, now int64) int64 {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc).Unix()
 }
 
+func adtyEpayChannelIdentityScope(tx *gorm.DB, channelID int) (merchant, gateway string) {
+	if tx == nil || channelID <= 0 {
+		return "", ""
+	}
+	var ch struct {
+		MerchantId string
+		GatewayURL string
+	}
+	if err := tx.Table("adty_epay_channels").Select("merchant_id, gateway_url").Where("id = ?", channelID).Take(&ch).Error; err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(ch.MerchantId), strings.TrimRight(strings.TrimSpace(ch.GatewayURL), "/")
+}
+
 func sumAdtyEpayCommittedTodayTx(tx *gorm.DB, channelID int, method string, now int64) (decimal.Decimal, error) {
 	dayStart := adtyEpayDayStart(tx, now)
+	merchant, gateway := adtyEpayChannelIdentityScope(tx, channelID)
 	var total decimal.Decimal
-	err := tx.Table("adty_topup_orders AS a").
+	q := tx.Table("adty_topup_orders AS a").
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
 		Where("a.channel_id = ? AND a.method = ? AND ((t.status = ? AND (t.complete_time >= ? OR t.create_time >= ?)) OR (t.status = ? AND t.create_time >= ? AND (a.expire_at = 0 OR a.expire_at > ?)))",
 			channelID, method,
 			common.TopUpStatusSuccess, dayStart, dayStart,
-			common.TopUpStatusPending, dayStart, now).
-		Select("COALESCE(SUM(a.pay_amount), 0)").Scan(&total).Error
+			common.TopUpStatusPending, dayStart, now)
+	if merchant != "" {
+		q = q.Where("(a.provider_merchant_id = '' OR a.provider_merchant_id = ?)", merchant)
+	}
+	if gateway != "" {
+		q = q.Where("(a.checkout_gateway = '' OR a.checkout_gateway = ?)", gateway)
+	}
+	err := q.Select("COALESCE(SUM(a.pay_amount), 0)").Scan(&total).Error
 	return total, err
 }
 
@@ -874,10 +936,17 @@ func SumAdtyEpayCommittedToday(channelID int, method string, now int64) (decimal
 
 // SumAdtyEpayPaidToday 统计一个通道某种方式当天已到账的人民币（每日限额用）。
 func SumAdtyEpayPaidToday(channelId int, method string, dayStart int64) (decimal.Decimal, error) {
+	merchant, gateway := adtyEpayChannelIdentityScope(DB, channelId)
 	var total decimal.Decimal
-	err := DB.Table("adty_topup_orders AS a").
+	q := DB.Table("adty_topup_orders AS a").
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
-		Where("a.channel_id = ? AND a.method = ? AND t.status = ? AND t.complete_time >= ?", channelId, method, common.TopUpStatusSuccess, dayStart).
-		Select("COALESCE(SUM(a.pay_amount), 0)").Scan(&total).Error
+		Where("a.channel_id = ? AND a.method = ? AND t.status = ? AND t.complete_time >= ?", channelId, method, common.TopUpStatusSuccess, dayStart)
+	if merchant != "" {
+		q = q.Where("(a.provider_merchant_id = '' OR a.provider_merchant_id = ?)", merchant)
+	}
+	if gateway != "" {
+		q = q.Where("(a.checkout_gateway = '' OR a.checkout_gateway = ?)", gateway)
+	}
+	err := q.Select("COALESCE(SUM(a.pay_amount), 0)").Scan(&total).Error
 	return total, err
 }

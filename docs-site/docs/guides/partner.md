@@ -1,6 +1,11 @@
-# Subsite Partnership
+---
+outline: false
+title: Documentation
+---
 
-<MainSiteOnly>
+<MainSiteOnly page-title="Subsite Partnership">
+
+# Subsite Partnership
 
 Launch your own independent, white-label AI API platform powered by ADTY AI infrastructure—without building gateway routing, upstream billing, or console software from scratch.
 

@@ -41,8 +41,8 @@ export type CommissionAmountFields = {
   converted_clawed_usd?: string
   withdrawn_usd?: string
   frozen_usd?: string
-  earnings_hold_usd?: string
-  margin_hold_usd?: string
+  pending_withdrawal_usd?: string
+  withdrawable_usd?: string
   official_states?: OfficialCommissionStateAmount[]
 }
 
@@ -64,9 +64,10 @@ export function officialCommissionStates(
   if (row.official_states && row.official_states.length > 0) {
     return row.official_states
   }
-  const hold = decimalOrZero(row.earnings_hold_usd) + decimalOrZero(row.margin_hold_usd)
-  const pendingWithdrawal = Math.max(decimalOrZero(row.frozen_usd), 0)
-  const onHold = Math.max(hold - pendingWithdrawal, 0)
+  const pendingWithdrawal = Math.max(
+    decimalOrZero(row.pending_withdrawal_usd ?? row.frozen_usd),
+    0
+  )
   const convertedLive = Math.max(
     decimalOrZero(row.converted_usd) - decimalOrZero(row.converted_clawed_usd),
     0
@@ -75,14 +76,29 @@ export function officialCommissionStates(
     withdrawnLiveUsd === undefined
       ? Math.max(decimalOrZero(row.withdrawn_usd), 0)
       : Math.max(decimalOrZero(withdrawnLiveUsd), 0)
-  const uncovered = Math.max(
-    decimalOrZero(row.amount_usd) -
-      decimalOrZero(row.clawed_usd) -
-      hold -
-      convertedLive -
-      withdrawnLive,
-    0
-  )
+  const hasExplicitWithdrawable =
+    row.withdrawable_usd !== undefined && row.withdrawable_usd.trim() !== ''
+  const onHold = hasExplicitWithdrawable
+    ? Math.max(decimalOrZero(row.withdrawable_usd), 0)
+    : Math.max(
+        decimalOrZero(row.amount_usd) -
+          decimalOrZero(row.clawed_usd) -
+          convertedLive -
+          withdrawnLive -
+          pendingWithdrawal,
+        0
+      )
+  const uncovered = hasExplicitWithdrawable
+    ? Math.max(
+        decimalOrZero(row.amount_usd) -
+          decimalOrZero(row.clawed_usd) -
+          onHold -
+          pendingWithdrawal -
+          convertedLive -
+          withdrawnLive,
+        0
+      )
+    : 0
   const states: OfficialCommissionStateAmount[] = []
   const append = (state: OfficialCommissionState, amount: number) => {
     if (amount > 0) states.push({ state, amount_usd: formatAmount(amount) })

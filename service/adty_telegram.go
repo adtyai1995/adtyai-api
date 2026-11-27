@@ -887,10 +887,8 @@ func QueueAdtyTelegramNotice(userId int, purpose, body, eventKey string) error {
 
 // QueueAdtyPublicTelegram 把一条对外公告排进公开频道队列。
 //
-// channel 是目标频道（`@name` 或 `-100…`）。bot 是按 purpose 存的，没有站点维度：
-// 主站公告走 admin bot，分站公告走 user bot，站点之间的区别落在 channel 上——
-// 那个 bot 必须是目标频道的管理员。以前 purpose 写死成 admin，分站公告只能借用
-// 主站 bot，而主站 bot 未必在分站频道里。
+// channel 是目标频道（`@name` 或 `-100…`）。公开频道公告仅支持主站通过 admin bot 发送，
+// admin bot 必须是目标频道的管理员；分站公告不允许推送共享公开频道，非 admin purpose 会被拒绝。
 //
 // 正文先脱敏再入队，不因命中敏感串就拒——和工单那四个字段同一条口径：拒单既不
 // 告诉管理员哪句有问题，也挡住了正常发布。私有词（订单/退款/保证金…）仍然拒，

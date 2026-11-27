@@ -153,6 +153,7 @@ export function Referral() {
       </CardHeader>
       <CardContent>
         <SiteCommissionPanel
+          legacyMode={true}
           onConverted={() => {
             void queryClient.invalidateQueries({
               queryKey: ['adty-site-commissions'],

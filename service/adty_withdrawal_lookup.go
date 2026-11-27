@@ -44,6 +44,9 @@ func LookupSiteInviteWithdrawal(userID, siteID int, key string) (int64, error) {
 	if userID <= 0 || siteID <= 0 {
 		return 0, common.NewMessage("Invalid parameters")
 	}
+	if _, err := RequireAdtySiteCommissionCustomerTx(model.DB, userID); err != nil {
+		return 0, err
+	}
 	trimmed := strings.TrimSpace(key)
 	return withdrawalReceiptIDAny(
 		model.DB.Model(&model.AdtySiteInviteWithdrawal{}).Where("user_id = ? AND site_id = ?", userID, siteID),
@@ -72,6 +75,9 @@ func LookupSiteCommissionConversion(userID, siteID int, commissionID int64, key 
 	key = strings.TrimSpace(key)
 	if userID <= 0 || siteID <= 0 || commissionID <= 0 || key == "" || len(key) > 40 {
 		return 0, common.NewMessage("Invalid parameters")
+	}
+	if _, err := RequireAdtySiteCommissionCustomerTx(model.DB, userID); err != nil {
+		return 0, err
 	}
 	commission := model.DB.Model(&model.AdtySiteInviteCommission{}).Select("1").Where("id = ? AND site_id = ? AND inviter_id = ?", commissionID, siteID, userID)
 	return withdrawalReceiptIDAny(model.DB.Model(&model.AdtyBalanceLedger{}).Where("user_id = ? AND type = ? AND EXISTS (?)", userID, model.AdtyLedgerTypeCommissionTransfer, commission), siteCommissionConversionKey(commissionID, key))

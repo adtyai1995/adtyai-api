@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -39,6 +39,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { sceneBusinessLabels } from '@/features/adty-payment-scenes/schema'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -83,14 +84,30 @@ export function ReplaceChannelDrawer(props: ReplaceChannelDrawerProps) {
   const [enableTarget, setEnableTarget] = useState<boolean>(true)
   const [deleteOld, setDeleteOld] = useState<boolean>(false)
 
+  const channelId = props.channel?.id ?? null
+  const channelRef = useRef(props.channel)
+  channelRef.current = props.channel
+  const candidatesRef = useRef(candidates)
+  candidatesRef.current = candidates
+
   useEffect(() => {
-    if (!props.open || !props.channel) return
+    if (!props.open || channelId === null) return
+    const currentChannel = channelRef.current
+    if (!currentChannel || currentChannel.id !== channelId) return
     setMode('new')
-    setTargetId(candidates[0] ? String(candidates[0].id) : '')
-    setNewInput(toReplacementChannelInput(props.channel))
-    setEnableTarget(props.channel.status === 'enabled')
+    setTargetId(
+      candidatesRef.current[0] ? String(candidatesRef.current[0].id) : ''
+    )
+    setNewInput(toReplacementChannelInput(currentChannel))
+    setEnableTarget(currentChannel.status === 'enabled')
     setDeleteOld(false)
-  }, [props.open, props.channel, candidates])
+  }, [props.open, channelId])
+
+  useEffect(() => {
+    if (!props.open || mode !== 'existing') return
+    if (candidates.some((item) => String(item.id) === targetId)) return
+    setTargetId(candidates[0] ? String(candidates[0].id) : '')
+  }, [props.open, mode, targetId, candidates])
 
   const replace = useMutation({
     mutationFn: async () => {
@@ -131,7 +148,12 @@ export function ReplaceChannelDrawer(props: ReplaceChannelDrawerProps) {
     onError: (error) => handleServerError(error),
   })
 
-  const sceneNames = props.channel?.scene_names ?? []
+  const sceneNames = (props.channel?.scene_names ?? [])
+    .map((name) => {
+      const trimmed = name.trim()
+      return trimmed ? t(sceneBusinessLabels[trimmed] || trimmed) : ''
+    })
+    .filter(Boolean)
   const newChannelInvalid =
     mode === 'new' &&
     (newInput.name.trim() === '' ||

@@ -479,7 +479,7 @@ func revokeAdtyTeamRegistrationWithAudit(actorId, siteId int, linkId int64) (*Ad
 	var auditEvent *model.AuditLog
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if siteId > 0 {
-			if _, err := verifyOwnerSiteWritableTx(tx, siteId, actorId); err != nil {
+			if _, err := verifyOwnerSiteActiveTx(tx, siteId, actorId); err != nil {
 				return err
 			}
 		}

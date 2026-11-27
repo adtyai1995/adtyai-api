@@ -174,7 +174,7 @@ var (
 	ErrAdtyTopUpNotCancel       = errors.New("adty topup cannot be canceled")
 	ErrAdtyDuplicatePayment     = errors.New("duplicate payment on a completed order")
 	ErrAdtyOwnerTopupReview     = errors.New("owner self-use payment requires review for the original closed site")
-	ErrAdtyEpayChannelRevoked   = common.NewMessage("This payment channel has been permanently revoked")
+	ErrAdtyEpayChannelRevoked   = common.NewMessage("This payment channel's credentials have been revoked")
 	ErrAdtyTooManyPendingOrders = common.NewMessage("Too many pending payment orders. Please complete or cancel an existing order first")
 )
 

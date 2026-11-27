@@ -23,7 +23,7 @@ const (
 	// AdtySiteDomainRoleSite 是站点域名：放行所有页面和账号接口，客户在它上面浏览、登录、充值。
 	AdtySiteDomainRoleSite = "site"
 	// AdtySiteDomainRoleBaseURL 是 API 地址（页面上叫「API 地址」，和 Base URL 一个意思）：
-	// 只放行 /v1、/v1beta、/mj、/pg 和几个探活接口，其余一律拒绝。
+	// 只放行受允许的 API 调用与探活路径，其余一律拒绝。
 	AdtySiteDomainRoleBaseURL = "base_url"
 )
 
@@ -49,9 +49,11 @@ type AdtySiteDomain struct {
 	Id                int    `json:"id"`
 	SiteId            int    `json:"site_id" gorm:"index"`
 	Hostname          string `json:"hostname" gorm:"uniqueIndex;type:varchar(253)"`
-	Role              string `json:"role" gorm:"type:varchar(16);default:site;index"` // site=站点域名，base_url=API 地址
-	OwnershipToken    string `json:"-" gorm:"type:varchar(64)"`                       // TXT 归属令牌，通过后才在 Cloudflare 建主机名
-	CFHostnameId      string `json:"cf_hostname_id" gorm:"type:varchar(64)"`
+	Role                string `json:"role" gorm:"type:varchar(16);default:site;index"` // site=站点域名，base_url=API 地址
+	OwnershipToken      string `json:"-" gorm:"type:varchar(64)"`                       // TXT 归属令牌，跨站重用或孤立历史域名须验证通过后才在 Cloudflare 建主机名
+	VerifiedSiteId      int    `json:"-" gorm:"default:0;index"`                        // 最近一次完成归属验证并激活的站点 ID，防悬挂 CNAME 跨站劫持
+	RequireOwnershipTXT bool   `json:"-" gorm:"default:false"`                          // 本次绑定是否必须通过 TXT 归属验证（激活前不可靠删后重加绕过）
+	CFHostnameId        string `json:"cf_hostname_id" gorm:"type:varchar(64)"`
 	Status            string `json:"status" gorm:"type:varchar(16);index"`
 	SSLStatus         string `json:"ssl_status" gorm:"type:varchar(32)"`
 	VerifyRecords     string `json:"verify_records" gorm:"type:text"` // 给站长看的 DNS 记录（JSON 数组）

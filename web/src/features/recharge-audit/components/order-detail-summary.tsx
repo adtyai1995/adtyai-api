@@ -48,6 +48,34 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
   } else if (order.business === 'owner_margin_topup') {
     businessLabel = t('Owner margin top-up')
   }
+  const refund = props.detail.refund
+  const isSubsiteOrder = (order.site_id ?? 0) > 0
+  const issuedCommissionUsd = positiveUsd(refund.commission?.issued_usd)
+  const recoveredUsd = isSubsiteOrder
+    ? positiveUsd(
+        refund.commission?.recovered_usd,
+        refund.commission_recovered_usd
+      )
+    : undefined
+  const convertedClawedUsd = positiveUsd(refund.commission?.converted_clawed_usd)
+  const clawedUsd = positiveUsd(
+    refund.commission_clawed_usd,
+    refund.commission?.clawed_usd
+  )
+  const recoveryUsd = positiveUsd(
+    refund.commission_recovery_usd,
+    refund.commission?.recovery_usd
+  )
+  const withdrawnUsd = positiveUsd(
+    refund.commission_withdrawn_usd,
+    refund.commission?.withdrawn_usd
+  )
+  const hasWithdrawnState = Boolean(
+    refund.commission?.states?.some(
+      (item) =>
+        item.state === 'withdrawn_released' && positiveUsd(item.amount_usd)
+    )
+  )
   return (
     <>
       <dl className='grid grid-cols-1 gap-3 text-sm break-words sm:grid-cols-3'>
@@ -105,66 +133,54 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
           {t('Payment proof')}: {order.paid_tx_hash}
         </p>
       )}
-      {props.detail.refund.refunded_at > 0 && (
+      {refund.refunded_at > 0 && (
         <div className='rounded-md border p-3 text-sm'>
           <p>
-            {t('Refund')}: {props.detail.refund.refund_amount}{' '}
-            {props.detail.refund.currency} ·{' '}
-            {formatTimestamp(props.detail.refund.refunded_at)}
+            {t('Refund')}: {refund.refund_amount} {refund.currency} ·{' '}
+            {formatTimestamp(refund.refunded_at)}
           </p>
           <p>
             {t('Refund principal quota')}:{' '}
-            {formatNumber(props.detail.refund.refund_quota, locale)}
+            {formatNumber(refund.refund_quota, locale)}
           </p>
-          {props.detail.refund.reason && (
-            <p className='break-words'>{props.detail.refund.reason}</p>
-          )}
-          {props.detail.refund.commission?.issued_usd && (
+          {refund.reason && <p className='break-words'>{refund.reason}</p>}
+          {issuedCommissionUsd && (
             <p className='tabular-nums'>
-              {t('Issued commission')}: {props.detail.refund.commission.issued_usd} USD
+              {t('Issued commission')}: {issuedCommissionUsd} USD
             </p>
           )}
-          {props.detail.refund.commission?.states?.map((item) => (
+          {refund.commission?.states?.map((item) => (
             <p key={item.state} className='tabular-nums'>
-              {t(officialCommissionStateLabel(item.state))}: {item.amount_usd} USD
-            </p>
-          ))}
-          {positiveUsd(
-            props.detail.refund.commission?.recovered_usd,
-            props.detail.refund.commission_recovered_usd
-          ) && (
-            <p className='tabular-nums'>
-              {t('Returned to site wallets')}:{' '}
-              {positiveUsd(
-                props.detail.refund.commission?.recovered_usd,
-                props.detail.refund.commission_recovered_usd
-              )}{' '}
+              {t(officialCommissionStateLabel(item.state))}: {item.amount_usd}{' '}
               USD
             </p>
-          )}
-          {positiveUsd(props.detail.refund.commission?.converted_clawed_usd) && (
+          ))}
+          {recoveredUsd && (
             <p className='tabular-nums'>
-              {t('Clawback from balance')}:{' '}
-              {props.detail.refund.commission?.converted_clawed_usd} USD
+              {t('Returned to site wallets')}: {recoveredUsd} USD
             </p>
           )}
-          {positiveUsd(props.detail.refund.commission_recovery_usd) && (
+          {convertedClawedUsd && (
             <p className='tabular-nums'>
-              {t('Recovery liability')}: {props.detail.refund.commission_recovery_usd} USD
+              {t('Clawback from balance')}: {convertedClawedUsd} USD
             </p>
           )}
-          {!props.detail.refund.commission &&
-            positiveUsd(props.detail.refund.commission_clawed_usd) && (
+          {clawedUsd &&
+            (!isSubsiteOrder || (!recoveredUsd && !convertedClawedUsd)) && (
               <p className='tabular-nums'>
-                {t('Commission clawback')}: {props.detail.refund.commission_clawed_usd} USD
+                {t('Commission clawback')}: {clawedUsd} USD
               </p>
             )}
-          {!props.detail.refund.commission &&
-            positiveUsd(props.detail.refund.commission_withdrawn_usd) && (
-              <p className='tabular-nums'>
-                {t('Withdrawn commission')}: {props.detail.refund.commission_withdrawn_usd} USD
-              </p>
-            )}
+          {recoveryUsd && (
+            <p className='tabular-nums'>
+              {t('Recovery liability')}: {recoveryUsd} USD
+            </p>
+          )}
+          {withdrawnUsd && !hasWithdrawnState && (
+            <p className='tabular-nums'>
+              {t('Withdrawn commission')}: {withdrawnUsd} USD
+            </p>
+          )}
           <p className='text-muted-foreground'>
             {t(
               'This records the wallet refund. Return the payment offline through the original payment provider.'
@@ -178,7 +194,12 @@ export function OrderDetailSummary(props: { detail: OrderTrace }) {
 
 function positiveUsd(...values: (string | undefined)[]) {
   for (const value of values) {
-    if (value && value !== '0') return value
+    const trimmed = value?.trim()
+    if (!trimmed) continue
+    const num = Number(trimmed)
+    if (Number.isFinite(num) ? num > 0 : trimmed !== '0') {
+      return trimmed
+    }
   }
   return undefined
 }

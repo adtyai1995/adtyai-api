@@ -277,6 +277,23 @@ func GetHomePageContent(c *gin.Context) {
 
 func SendEmailVerification(c *gin.Context) {
 	reqSite := service.AdtySiteForRequest(c)
+	authCfg := service.AdtyEffectiveAuthSettingsForSite(reqSite)
+	if !authCfg.RegisterEnabled {
+		common.ApiErrorT(c, "New user registration has been disabled by administrator")
+		return
+	}
+	if !authCfg.PasswordRegisterEnabled {
+		common.ApiErrorT(c, "Password registration has been disabled by administrator")
+		return
+	}
+	if !authCfg.EmailVerificationEnabled {
+		common.ApiErrorT(c, "Email verification is not enabled on this site")
+		return
+	}
+	if _, registrable := service.AdtyRegisterSiteId(c); !registrable {
+		common.ApiErrorT(c, "New user registration has been disabled by administrator")
+		return
+	}
 	email, err := service.ValidateAccountEmailForSite(reqSite, c.Query("email"))
 	if err != nil {
 		writeSecurityOperationError(c, err)

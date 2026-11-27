@@ -255,6 +255,7 @@ interface ProbeGroupCardProps {
   allModels: string[]
   groupModels: string[]
   isProbing: boolean
+  hasUnsavedChanges: boolean
   onToggleExpand: () => void
   onChange: (next: EditableProbeGroup) => void
   onDelete: () => void
@@ -411,7 +412,14 @@ function ProbeGroupCard(props: ProbeGroupCardProps) {
             variant='outline'
             size='sm'
             onClick={props.onProbeGroup}
-            disabled={props.isProbing || !props.group.groupId}
+            disabled={
+              props.isProbing || !props.group.groupId || props.hasUnsavedChanges
+            }
+            title={
+              props.hasUnsavedChanges
+                ? t('Please save settings before probing')
+                : undefined
+            }
             className='h-8 gap-1.5 text-xs'
           >
             {props.isProbing ? (
@@ -970,6 +978,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
   }
 
   const handleProbeNow = async () => {
+    if (hasChanges) return
     setProbingAll(true)
     try {
       const res = requireServerSuccess(await triggerUptimeProbe())
@@ -983,6 +992,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
   }
 
   const handleProbeGroup = async (group: EditableProbeGroup) => {
+    if (hasChanges) return
     const groupId = group.groupId.trim()
     if (!groupId) return
     setProbingGroupIds((prev) => ({ ...prev, [group.localId]: true }))
@@ -1348,7 +1358,10 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
             variant='outline'
             size='sm'
             onClick={() => void handleProbeNow()}
-            disabled={probingAll || saving}
+            disabled={probingAll || saving || hasChanges}
+            title={
+              hasChanges ? t('Please save settings before probing') : undefined
+            }
           >
             {probingAll ? (
               <Loader2 className='size-4 animate-spin' aria-hidden='true' />
@@ -1357,6 +1370,11 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
             )}
             {probingAll ? t('Probing...') : t('Probe Now')}
           </Button>
+          {hasChanges && (
+            <span className='text-muted-foreground text-xs'>
+              {t('Please save settings before probing')}
+            </span>
+          )}
         </div>
       </SettingsSection>
 
@@ -1439,6 +1457,7 @@ export function UptimeKumaSection(props: UptimeKumaSectionProps) {
                 isProbing={
                   Boolean(probingGroupIds[group.localId]) || probingAll
                 }
+                hasUnsavedChanges={hasChanges}
                 onToggleExpand={() =>
                   setExpandedIds((prev) => ({
                     ...prev,

@@ -2,7 +2,10 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -83,15 +86,29 @@ func AddAdtySiteDomainPair(c *gin.Context) {
 	common.ApiSuccess(c, domains)
 }
 
-// CheckAdtySiteDomainNow 站长立即检测自定义域名 DNS 并触发一次对账：POST /api/adty/site/domains/:id/check。
+// CheckAdtySiteDomainNow 站长立即检测自定义域名 DNS 或边缘证书并触发一次对账：POST /api/adty/site/domains/:id/check。
 func CheckAdtySiteDomainNow(c *gin.Context) {
 	id, ok := siteIdParam(c)
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	var body struct {
+		Mode string `json:"mode"`
+	}
+	if c.Request.Body != nil {
+		if err := common.DecodeJson(c.Request.Body, &body); err != nil && !errors.Is(err, io.EOF) {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+	}
+	mode := strings.ToLower(strings.TrimSpace(body.Mode))
+	if mode != "" && mode != "dns" && mode != "edge_cert" {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 75*time.Second)
 	defer cancel()
-	domain, err := service.CheckAdtySiteDomainNow(ctx, c.GetInt("id"), id)
+	domain, err := service.CheckAdtySiteDomainNowWithMode(ctx, c.GetInt("id"), id, mode)
 	if err != nil {
 		common.ApiError(c, err)
 		return

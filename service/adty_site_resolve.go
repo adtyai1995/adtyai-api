@@ -53,7 +53,7 @@ var (
 var AdtyLoadCustomDomains func() (map[string]int, error)
 
 // AdtyLoadApiOnlyDomains 由 11.8 注册：返回已经 active、用途是 API 地址（role=base_url）的自定义域名。
-// 这些主机只放行 relay 路径（/v1 等），页面和账号接口一律拒绝，让站长给客户的「API 地址」是个纯接口。
+// 这些主机同时支持模型中转 API 与本站首页/控制台，并强制 noindex 与 robots.txt 禁止收录（DEC-023 / R-31）。
 var AdtyLoadApiOnlyDomains func() (map[string]bool, error)
 
 // AdtySiteNames returns display names without exposing the sites' financial or private settings.
@@ -408,6 +408,11 @@ func ValidateMainSiteDomainSeparation(serverAddress, apiBaseURL string) error {
 	if siteHost != "" && apiHost == siteHost {
 		return common.NewMessage("API base URL must use a different domain from the website server address")
 	}
+	if cfg := resellerSetting(); cfg != nil && cfg.EdgeMainSiteEnabled {
+		if edgeMainHost := AdtyNormalizeHost(cfg.EdgeMainSiteHost); edgeMainHost != "" && apiHost == edgeMainHost {
+			return common.NewMessage("API base URL must use a different domain from the main site edge hostname")
+		}
+	}
 	return nil
 }
 
@@ -519,7 +524,7 @@ func AdtySiteForHostWithError(host string) (*model.AdtySite, error) {
 	// the local branding cache. A database failure must not serve stale business
 	// nor trigger a false 404 logout on subsites (R-32 #26).
 	var current model.AdtySite
-	if err := model.DB.Select("id", "status", "close_transfer_to", "brand", "home_page_content", "legal_docs", "archived_hidden_at").First(&current, site.Id).Error; err != nil {
+	if err := model.DB.Select("id", "status", "close_transfer_to", "brand", "home_page_content", "legal_docs", "auth_config", "seo_index", "archived_hidden_at").First(&current, site.Id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -540,6 +545,8 @@ func AdtySiteForHostWithError(host string) (*model.AdtySite, error) {
 	copy.Brand = current.Brand
 	copy.HomePageContent = current.HomePageContent
 	copy.LegalDocs = current.LegalDocs
+	copy.AuthConfig = current.AuthConfig
+	copy.SeoIndex = current.SeoIndex
 	copy.ArchivedHiddenAt = current.ArchivedHiddenAt
 	return &copy, nil
 }
@@ -634,7 +641,7 @@ func AdtySitePublicBaseURL(site *model.AdtySite) string {
 }
 
 // adtyPreferredCustomHost 挑一个站点对外露出的自定义域名：只取用途是站点域名（role=site）的那些，
-// 按创建顺序取第一个。API 地址域名（role=base_url）不能拿来当跳回地址——那种域名不给人看页面。
+// 按创建顺序取第一个。API 地址域名（role=base_url）虽然也支持打开首页和控制台，但邮件链接与支付跳回优先指向网站域名（role=site）。
 // 没有已激活的站点域名时返回空，调用方退回平台子域名。
 func adtyPreferredCustomHost(siteId int) string {
 	return adtyAdvertisedDomain(siteId, model.AdtySiteDomainRoleSite)

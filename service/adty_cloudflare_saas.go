@@ -512,12 +512,15 @@ func adtyUpsertCustomDomainTx(tx *gorm.DB, cfg *adty_setting.ResellerSetting, si
 	if err != nil {
 		return model.AdtySiteDomain{}, err
 	}
-	// Fresh domains and same-site re-binds only require CNAME pointing to cname_target;
-	// reclaiming a hostname previously bound by another site strictly requires a fresh TXT
-	// record to prevent dangling-CNAME cross-tenant hijacking.
-	requireTXT := found && existing != nil && existing.SiteId != siteId
+	// Fresh domains and same-site re-binds of a site's own verified domain only
+	// require CNAME pointing to cname_target; reclaiming a hostname previously
+	// bound or verified by another site (or orphaned by a hard-delete tombstone)
+	// strictly requires a fresh TXT record until ownership is re-verified (R1-001).
+	requireTXT := found && existing != nil && (existing.RequireOwnershipTXT ||
+		(existing.VerifiedSiteId > 0 && existing.VerifiedSiteId != siteId) ||
+		(existing.VerifiedSiteId == 0 && existing.SiteId != siteId))
 	domain := model.AdtySiteDomain{
-		SiteId: siteId, BoundBy: ownerUserId, Hostname: host, Role: role, OwnershipToken: token, Status: model.AdtySiteDomainPending,
+		SiteId: siteId, BoundBy: ownerUserId, Hostname: host, Role: role, OwnershipToken: token, RequireOwnershipTXT: requireTXT, Status: model.AdtySiteDomainPending,
 		ManagedBy: "owner", DesiredState: "serve", ProviderZone: cfg.CloudflareZoneId, DNSTarget: cfg.CnameTarget,
 		VerifyRecords: adtyOwnershipRecordsForMode(host, token, strings.TrimSpace(cfg.CnameTarget), requireTXT),
 		LastCheckedAt: now, CreatedAt: now,
@@ -555,8 +558,9 @@ func adtyUpsertCustomDomainTx(tx *gorm.DB, cfg *adty_setting.ResellerSetting, si
 			}
 		}
 		domain.EdgeACMEAlias = alias
+		domain.VerifiedSiteId = existing.VerifiedSiteId
 		if err := tx.Model(&model.AdtySiteDomain{}).Where("id = ?", existing.Id).Updates(map[string]any{
-			"site_id": siteId, "bound_by": ownerUserId, "role": role, "ownership_token": token, "cf_hostname_id": "", "status": model.AdtySiteDomainPending,
+			"site_id": siteId, "bound_by": ownerUserId, "role": role, "ownership_token": token, "require_ownership_txt": requireTXT, "cf_hostname_id": "", "status": model.AdtySiteDomainPending,
 			"ssl_status": "", "verify_records": domain.VerifyRecords, "turnstile_widget": "",
 			"last_error": "", "last_checked_at": now, "created_at": now,
 			"edge_acme_alias": alias, "edge_cert_status": "", "edge_cert_error": "", "edge_cert_not_after": 0,
@@ -618,7 +622,8 @@ func adtyCloudflareUserError(err error) error {
 	return ErrAdtyCloudflareFailed
 }
 
-// AddAdtySiteDomain 给站长的站绑定一个自定义域名。先发归属 TXT，查到令牌才在 Cloudflare 建主机名。
+// AddAdtySiteDomain 给站长的站绑定一个自定义域名。首次绑定或同站重绑验证 CNAME 指向目标
+// （跨站重用或孤立历史域名须验证归属 TXT）后再在 Cloudflare 建主机名。
 // 别的站 pending、active、failed 的主机名算占用。removed 可以重加，但必须换新令牌并重新验证。
 func AddAdtySiteDomain(ctx context.Context, ownerUserId int, rawHost string) (*model.AdtySiteDomain, error) {
 	return AddAdtySiteDomainWithRole(ctx, ownerUserId, rawHost, model.AdtySiteDomainRoleSite)
@@ -909,10 +914,6 @@ func adtyOwnershipTXTName(host string) string {
 	return "_cf-custom-hostname." + host
 }
 
-func adtyOwnershipRecords(host, token, cnameTarget string) string {
-	return adtyOwnershipRecordsForMode(host, token, cnameTarget, true)
-}
-
 func adtyOwnershipRecordsForMode(host, token, cnameTarget string, requireTXT bool) string {
 	var records []adtyVerifyRecord
 	if requireTXT && token != "" {
@@ -924,7 +925,13 @@ func adtyOwnershipRecordsForMode(host, token, cnameTarget string, requireTXT boo
 }
 
 func adtyDomainRequiresOwnershipTXT(domain *model.AdtySiteDomain) bool {
-	if domain == nil || strings.TrimSpace(domain.OwnershipToken) == "" || strings.TrimSpace(domain.VerifyRecords) == "" {
+	if domain == nil {
+		return false
+	}
+	if domain.RequireOwnershipTXT {
+		return true
+	}
+	if strings.TrimSpace(domain.OwnershipToken) == "" || strings.TrimSpace(domain.VerifyRecords) == "" {
 		return false
 	}
 	var records []adtyVerifyRecord
@@ -1021,7 +1028,7 @@ func adtyOwnershipTXTMatches(ctx context.Context, host, token string) (bool, err
 	return false, nil
 }
 
-// adtyAttachCustomHostname 在归属 TXT 对上以后才向 Cloudflare 建主机名。
+// adtyDomainSnapshotQuery 构造按当前域名快照精确匹配的条件，避免覆盖并发变更后的行。
 func adtyDomainSnapshotQuery(tx *gorm.DB, domain *model.AdtySiteDomain) *gorm.DB {
 	return tx.Model(&model.AdtySiteDomain{}).Where(
 		"id = ? AND site_id = ? AND hostname = ? AND status = ? AND ownership_token = ? AND cf_hostname_id = ?",
@@ -1978,6 +1985,8 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 			updates["last_error"] = adtyDomainAutomationUserError(err).Error()
 		} else {
 			updates["status"], updates["ssl_status"], updates["last_error"], updates["attempts"] = model.AdtySiteDomainActive, detail.SSL.Status, "", 0
+			updates["verified_site_id"] = domain.SiteId
+			updates["require_ownership_txt"] = false
 		}
 	default:
 		updates["ssl_status"] = detail.SSL.Status
@@ -2003,6 +2012,8 @@ func adtyCheckDomainSnapshot(ctx context.Context, snapshot *model.AdtySiteDomain
 		domain.SSLStatus = detail.SSL.Status
 		domain.LastError = ""
 		domain.Attempts = 0
+		domain.VerifiedSiteId = domain.SiteId
+		domain.RequireOwnershipTXT = false
 		if err := adtyAssignCheckedDomainTurnstile(ctx, &domain, leaseToken); err != nil {
 			return changed, err
 		}

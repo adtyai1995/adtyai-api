@@ -350,8 +350,7 @@ describe('referral withdraw config helpers (R-36 #1)', () => {
               converted_usd: '0',
               withdrawn_usd: '0',
               frozen_usd: '0',
-              earnings_hold_usd: '50',
-              margin_hold_usd: '0',
+              withdrawable_usd: '50',
               available_at: 1000,
             },
           ]}

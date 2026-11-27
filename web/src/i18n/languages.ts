@@ -25,9 +25,9 @@ export const INTERFACE_LANGUAGE_OPTIONS = [
 
 /**
  * Interface language packs the app can load. The product offers Simplified
- * Chinese and English only (A.20.1); leftover JSON files may still sit on disk
- * but `i18n/config.ts` no longer ships loaders for them, so they can never
- * become the running language.
+ * Chinese and English only (A.20.1); only `en.json` and `zh.json` exist in
+ * `src/i18n/locales/` and `i18n/config.ts` only ships loaders for `zhCN` and
+ * `en`, so no other language pack can ever become the running language.
  */
 export const LOADABLE_INTERFACE_LANGUAGE_CODES = ['zhCN', 'en'] as const
 

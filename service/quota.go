@@ -500,10 +500,13 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	modelPrice = quotaInfo.ModelPrice
 	usePrice = quotaInfo.UsePrice
 
-	quota, clamp := calculateAudioQuota(quotaInfo)
-	noteQuotaClamp(relayInfo, clamp)
+	var quota int
 	if tieredOk {
 		quota = tieredQuota
+	} else {
+		var clamp *common.QuotaClamp
+		quota, clamp = calculateAudioQuota(quotaInfo)
+		noteQuotaClamp(relayInfo, clamp)
 	}
 
 	totalTokens := max(usage.TotalTokens, usage.InputTokens+usage.OutputTokens, textInputTokens+textOutTokens+audioInputTokens+audioOutTokens)
@@ -553,7 +556,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	logContent = append(logContent, extraContent...)
 	other := GenerateWssOtherInfo(ctx, relayInfo, usage, modelRatio, groupRatio,
 		completionRatio.InexactFloat64(), audioRatio.InexactFloat64(), audioCompletionRatio.InexactFloat64(), modelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
-	if tieredResult != nil {
+	if tieredOk {
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
@@ -807,7 +810,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		completionRatio.InexactFloat64(), audioRatio.InexactFloat64(), audioCompletionRatio.InexactFloat64(), modelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
 	appendUsageBillingPathForLog(other, common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens), originUsage)
 	appendToolSurchargeLogInfo(other, toolSummary.ToolSurchargeItems)
-	if tieredResult != nil {
+	if tieredOk {
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
@@ -947,7 +950,9 @@ func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int, preCon
 		// R3-058: Apply Root-customized quota_exceed template when configured.
 		threshold := common.GetQuotaRemindThreshold()
 		if userSetting.QuotaWarningThreshold != 0 {
-			threshold = int(userSetting.QuotaWarningThreshold)
+			if parsedThreshold, clamp := common.WalletQuotaRoundChecked(userSetting.QuotaWarningThreshold); clamp == nil && parsedThreshold > 0 {
+				threshold = parsedThreshold
+			}
 		}
 		customTitle, customContent := ResolveAdtyNoticeTemplateForNotify(
 			dto.NotifyTypeQuotaExceed, lang, prompt, "", []any{logger.FormatQuota(balanceAfter), logger.FormatQuota(threshold)},

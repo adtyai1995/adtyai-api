@@ -13,10 +13,7 @@ import (
 	"gorm.io/gorm"
 )
 
-var (
-	ErrAdtySiteCustomerNotFound      = common.NewMessage("Customer not found")
-	ErrAdtyOwnerAutoFundingShortfall = common.NewMessage("Insufficient available earnings and excess margin above the level floor")
-)
+var ErrAdtySiteCustomerNotFound = common.NewMessage("Customer not found")
 
 // AdtySiteTierPrincipalAdjustResult is returned after Root adjusts a site's
 // tier-evaluation cumulative customer recharge total.

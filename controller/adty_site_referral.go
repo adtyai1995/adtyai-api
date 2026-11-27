@@ -166,14 +166,39 @@ func PutAdtyOwnerSiteReferral(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"saved": true})
 }
 
+// adtySiteCommissionCustomerItem is the customer-facing commission DTO (R1-035).
+// Owner-internal funding fields (earnings_hold_usd, margin_hold_usd, covered_usd,
+// recovered_usd, pending_coverage_cap, pending_payout_claw_usd) are intentionally omitted.
 type adtySiteCommissionCustomerItem struct {
-	model.AdtySiteInviteCommissionView
-	InviterUsername string `json:"inviter_username"`
-	InviteeUsername string `json:"invitee_username"`
+	Id                   int64                                 `json:"id"`
+	SiteId               int                                   `json:"site_id"`
+	InviterId            int                                   `json:"inviter_id"`
+	InviteeId            int                                   `json:"invitee_id"`
+	TradeNo              string                                `json:"trade_no"`
+	FaceUSD              decimal.Decimal                       `json:"face_usd"`
+	Rate                 decimal.Decimal                       `json:"rate"`
+	AmountUSD            decimal.Decimal                       `json:"amount_usd"`
+	ClawedUSD            decimal.Decimal                       `json:"clawed_usd"`
+	ConvertedUSD         decimal.Decimal                       `json:"converted_usd"`
+	ConvertedClawedUSD   decimal.Decimal                       `json:"converted_clawed_usd"`
+	WithdrawnUSD         decimal.Decimal                       `json:"withdrawn_usd"`
+	FrozenUSD            decimal.Decimal                       `json:"frozen_usd"`
+	PendingWithdrawalUSD decimal.Decimal                       `json:"pending_withdrawal_usd"`
+	WithdrawableUSD      decimal.Decimal                       `json:"withdrawable_usd"`
+	RecoveryUSD          decimal.Decimal                       `json:"recovery_usd"`
+	Status               string                                `json:"status"`
+	ObservationDays      int64                                 `json:"observation_days"`
+	CoveredAt            int64                                 `json:"covered_at"`
+	AvailableAt          int64                                 `json:"available_at"`
+	CreatedAt            int64                                 `json:"created_at"`
+	OfficialStates       []model.AdtySiteCommissionStateAmount `json:"official_states"`
+	InviterUsername      string                                `json:"inviter_username"`
+	InviteeUsername      string                                `json:"invitee_username"`
 }
 
 func GetAdtySiteCommissions(c *gin.Context) {
-	rows, err := service.ListAdtySiteInviteCommissions(c.GetInt("id"), time.Now())
+	now := time.Now()
+	rows, err := service.ListAdtySiteInviteCommissions(c.GetInt("id"), now)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -190,10 +215,35 @@ func GetAdtySiteCommissions(c *gin.Context) {
 	names := model.LookupUsernamesByIDs(model.DB, ids)
 	items := make([]adtySiteCommissionCustomerItem, len(views))
 	for i, view := range views {
+		pendingWithdrawal := view.FrozenUSD.Sub(view.PendingPayoutClawUSD)
+		if pendingWithdrawal.IsNegative() {
+			pendingWithdrawal = decimal.Zero
+		}
 		items[i] = adtySiteCommissionCustomerItem{
-			AdtySiteInviteCommissionView: view,
-			InviterUsername:              names[view.InviterId],
-			InviteeUsername:              names[view.InviteeId],
+			Id:                   view.Id,
+			SiteId:               view.SiteId,
+			InviterId:            view.InviterId,
+			InviteeId:            view.InviteeId,
+			TradeNo:              view.TradeNo,
+			FaceUSD:              view.FaceUSD,
+			Rate:                 view.Rate,
+			AmountUSD:            view.AmountUSD,
+			ClawedUSD:            view.ClawedUSD,
+			ConvertedUSD:         view.ConvertedUSD,
+			ConvertedClawedUSD:   view.ConvertedClawedUSD,
+			WithdrawnUSD:         view.WithdrawnUSD,
+			FrozenUSD:            view.FrozenUSD,
+			PendingWithdrawalUSD: pendingWithdrawal,
+			WithdrawableUSD:      service.SiteInviteCommissionWithdrawableAmount(&view.AdtySiteInviteCommission, now),
+			RecoveryUSD:          view.RecoveryUSD,
+			Status:               view.Status,
+			ObservationDays:      view.ObservationDays,
+			CoveredAt:            view.CoveredAt,
+			AvailableAt:          view.AvailableAt,
+			CreatedAt:            view.CreatedAt,
+			OfficialStates:       view.OfficialStates,
+			InviterUsername:      names[view.InviterId],
+			InviteeUsername:      names[view.InviteeId],
 		}
 	}
 	common.ApiSuccess(c, gin.H{"items": items})

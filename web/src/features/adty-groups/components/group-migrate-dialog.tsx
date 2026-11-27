@@ -87,7 +87,7 @@ export function GroupMigrateDialog(props: GroupMigrateDialogProps) {
       }}
       title={t('Migrate group')}
       description={t(
-        'Move all users, keys, channels and sites of {{group}} to another group. Then the group can be deleted.',
+        'Move all users, keys, channels and sites of {{group}} to another group.',
         { group: from ? display.adminLabel(from.id) : '' }
       )}
       contentHeight='auto'

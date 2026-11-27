@@ -764,7 +764,10 @@ func GetAdtyTicket(userId int, ticketId int64, workspace ...string) (*AdtyTicket
 	if !actor.isHandling() {
 		ticket.AssigneeId = 0
 		for i := range messages {
-			if ticketSupportAuthor(messages[i].AuthorRole) || (messages[i].AuthorRole != "customer" && messages[i].AuthorId != actor.User.Id) {
+			if ticketSupportAuthor(messages[i].AuthorRole) {
+				messages[i].AuthorRole = "support"
+				messages[i].AuthorId = 0
+			} else if messages[i].AuthorRole != "customer" && messages[i].AuthorId != actor.User.Id {
 				messages[i].AuthorId = 0
 			}
 		}
@@ -2925,7 +2928,7 @@ func sanitizeAdtyTicketImage(data []byte, policy model.AdtyTicketPolicy) ([]byte
 		if buf.Len() <= policy.MaxBytes {
 			return buf.Bytes(), "image/png", config.Width, config.Height, nil
 		}
-		if len(data) <= 10<<20 {
+		if len(data) <= policy.MaxBytes {
 			buf.Reset()
 			if err := jpeg.Encode(&buf, decoded, &jpeg.Options{Quality: 88}); err != nil {
 				return nil, "", 0, 0, ErrAdtyTicketImage

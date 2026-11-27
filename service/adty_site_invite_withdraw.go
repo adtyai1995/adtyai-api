@@ -65,8 +65,16 @@ func CreateAdtySiteInviteWithdrawal(input AdtySiteInviteWithdrawalInput) (*model
 	var credit int
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var user model.User
-		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id").First(&user, input.UserID).Error; err != nil {
+		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id", "staff_site_id", "role", "status").First(&user, input.UserID).Error; err != nil {
 			return err
+		}
+		if user.Role >= common.RoleAdminUser || user.StaffSiteId > 0 {
+			return common.NewMessage("This feature is only available to regular customer accounts")
+		}
+		if isEmp, empErr := adtyIsIndependentTeamEmployeeTx(tx, input.UserID); empErr != nil {
+			return empErr
+		} else if isEmp {
+			return common.NewMessage("This feature is only available to regular customer accounts")
 		}
 		// R7-29: Scope idempotency keys per (site, user) so callers cannot collide
 		// with or probe another user's withdrawal keys, while keeping compatibility
@@ -888,8 +896,8 @@ func LoadAdtyCustomerSiteInviteWithdrawRules(userID int, requested ...int) (Adty
 		Methods:      adtySiteInviteWithdrawMethods(false),
 		USDTNetworks: []string{},
 	}
-	var user model.User
-	if err := model.DB.Select("site_id").First(&user, userID).Error; err != nil {
+	user, err := RequireAdtySiteCommissionCustomerTx(model.DB, userID)
+	if err != nil {
 		return view, err
 	}
 	if len(requested) > 0 && requested[0] > 0 {
@@ -926,6 +934,9 @@ func LoadAdtyCustomerSiteInviteWithdrawRules(userID int, requested ...int) (Adty
 
 // ListAdtySiteInviteWithdrawals returns the applicant's own requests.
 func ListAdtySiteInviteWithdrawals(userID int) ([]model.AdtySiteInviteWithdrawal, error) {
+	if _, err := RequireAdtySiteCommissionCustomerTx(model.DB, userID); err != nil {
+		return nil, err
+	}
 	var rows []model.AdtySiteInviteWithdrawal
 	err := model.DB.Where("user_id = ?", userID).Order("id DESC").Find(&rows).Error
 	return rows, err
@@ -969,6 +980,9 @@ func pageCommissionWithdrawals(query *gorm.DB, status string, page *common.PageI
 
 // CancelAdtySiteInviteWithdrawal lets the applicant cancel a pending request inside the main-site cancel window.
 func CancelAdtySiteInviteWithdrawal(userID int, withdrawalID int64, now int64) error {
+	if _, err := RequireAdtySiteCommissionCustomerTx(model.DB, userID); err != nil {
+		return err
+	}
 	return model.DB.Transaction(func(tx *gorm.DB) error {
 		lockedRow, err := lockSiteInviteWithdrawalCanonicalTx(tx, withdrawalID, 0, false, userID)
 		if err != nil {

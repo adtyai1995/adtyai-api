@@ -66,8 +66,12 @@ func StartEmailBinding(identity AuthIdentity, authorization *model.AuthFlowAutho
 	if err != nil {
 		return nil, err
 	}
-	email, err = ValidateAccountEmailForSite(AdtySiteById(user.SiteId), email)
+	targetSite := AdtySiteById(user.SiteId)
+	email, err = ValidateAccountEmailForSite(targetSite, email)
 	if err != nil {
+		return nil, err
+	}
+	if err := EnsureAdtyRequestMailConfigured(targetSite); err != nil {
 		return nil, err
 	}
 	context, err := common.Marshal(AccountBindingContext{Provider: "email", Email: email})
@@ -91,7 +95,7 @@ func StartEmailBinding(identity AuthIdentity, authorization *model.AuthFlowAutho
 	if err := sendEmailBindingCodes(state, codes); err != nil {
 		// A partially delivered pair must not leave a usable change request.
 		_, _ = model.ConsumeAuthFlow(token, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeEmailBinding, UserId: identity.UserID, SessionId: identity.SessionID})
-		if errors.Is(err, ErrAdtySiteMailNotConfigured) {
+		if errors.Is(err, ErrAdtySiteMailNotConfigured) || errors.Is(err, ErrAdtyMainSiteMailNotConfigured) {
 			return nil, err
 		}
 		return nil, ErrEmailBindingDelivery
@@ -121,6 +125,9 @@ func ResendAccountEmailBinding(identity AuthIdentity, token string, _ string, or
 	if state.FailedAttempts >= model.EmailBindingMaxAttempts {
 		return nil, model.ErrEmailBindingLocked
 	}
+	if err := EnsureAdtyRequestMailConfigured(AdtySiteById(state.SiteID)); err != nil {
+		return nil, err
+	}
 	codes, err := generateEmailBindingCodes(state.OldCodeHash != "")
 	if err != nil {
 		return nil, err
@@ -131,7 +138,7 @@ func ResendAccountEmailBinding(identity AuthIdentity, token string, _ string, or
 	}
 	if err := sendEmailBindingCodes(*state, codes); err != nil {
 		_, _ = model.ConsumeAuthFlow(token, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeEmailBinding, UserId: identity.UserID, SessionId: identity.SessionID})
-		if errors.Is(err, ErrAdtySiteMailNotConfigured) {
+		if errors.Is(err, ErrAdtySiteMailNotConfigured) || errors.Is(err, ErrAdtyMainSiteMailNotConfigured) {
 			return nil, err
 		}
 		return nil, ErrEmailBindingDelivery

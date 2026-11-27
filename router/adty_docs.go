@@ -30,6 +30,13 @@ func appendRawQuery(target, rawQuery string) string {
 	return target + "?" + rawQuery
 }
 
+func isMainSiteOnlyDocPath(relClean string) bool {
+	trimmed := strings.TrimSuffix(strings.ToLower(strings.Trim(relClean, "/")), "/")
+	trimmed = strings.TrimSuffix(trimmed, "/index.html")
+	trimmed = strings.TrimSuffix(trimmed, ".html")
+	return trimmed == "guides/partner" || trimmed == "zh-cn/guides/partner"
+}
+
 func openRegularInRoot(root *os.Root, rel string) (*os.File, os.FileInfo, bool) {
 	if rel == "" {
 		return nil, nil, false
@@ -118,6 +125,21 @@ func AdtyStaticDocs() gin.HandlerFunc {
 		}
 
 		relClean := strings.TrimPrefix(pathpkg.Clean("/"+rawRel), "/")
+		if site != nil && isMainSiteOnlyDocPath(relClean) {
+			c.Header("Cache-Control", "no-cache")
+			if nf, _, found404 := openRegularInRoot(root, "404.html"); found404 {
+				defer func() { _ = nf.Close() }()
+				c.Header("Content-Type", "text/html; charset=utf-8")
+				c.Status(http.StatusNotFound)
+				if c.Request.Method != http.MethodHead {
+					_, _ = io.Copy(c.Writer, nf)
+				}
+				c.Abort()
+				return
+			}
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
 		var (
 			file      *os.File
 			info      os.FileInfo

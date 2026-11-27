@@ -379,9 +379,16 @@ func adtyApplyTeamProtocolPriceDecimal(c *gin.Context, userId int, groupRatio, m
 	}
 	var nextDec decimal.Decimal
 	var supply decimal.Decimal
+	var teamSiteID int
+	var teamSiteOwnerID int
+	var teamCostFactor decimal.Decimal
 	effectiveK := storedK
 	floorApplied := false
 	if team.SiteId > 0 {
+		if !resellerSetting().Enabled {
+			c.Set(AdtyTeamPriceBlockedKey, true)
+			return marked, storedK
+		}
 		var site model.AdtySite
 		if err := model.DB.First(&site, team.SiteId).Error; err != nil || !AdtySiteServesCustomers(&site) {
 			c.Set(AdtyTeamPriceBlockedKey, true)
@@ -392,6 +399,15 @@ func adtyApplyTeamProtocolPriceDecimal(c *gin.Context, userId int, groupRatio, m
 			c.Set(AdtyTeamPriceBlockedKey, true)
 			return marked, storedK
 		}
+		ownerID, ownerErr := model.CurrentAdtySiteFinancialOwnerTx(model.DB, site.Id)
+		if ownerErr != nil || ownerID <= 0 {
+			common.SysError("Request earning owner snapshot unavailable for team site billing")
+			c.Set(AdtyTeamPriceBlockedKey, true)
+			return marked, storedK
+		}
+		teamSiteID = site.Id
+		teamSiteOwnerID = ownerID
+		teamCostFactor = d
 		supply = groupRatio.Mul(d)
 		nextDec = decimal.Max(supply, supply.Mul(factorDec))
 		floorApplied = true
@@ -409,6 +425,9 @@ func adtyApplyTeamProtocolPriceDecimal(c *gin.Context, userId int, groupRatio, m
 	}
 	if floorApplied {
 		storedK = effectiveK
+		c.Set(AdtySiteIdContextKey, teamSiteID)
+		c.Set(AdtySiteOwnerContextKey, teamSiteOwnerID)
+		c.Set(AdtySiteCostFactorContextKey, teamCostFactor.InexactFloat64())
 		c.Set(AdtySiteMarkupContextKey, storedK.InexactFloat64())
 	}
 	c.Set(AdtyTeamDiscountContextKey, factorDec.InexactFloat64())
@@ -422,6 +441,11 @@ func adtyApplyTeamProtocolPriceDecimal(c *gin.Context, userId int, groupRatio, m
 	factors.TeamApplied = true
 	factors.TeamPayRatio = factorDec
 	if floorApplied {
+		factors.MainSite = false
+		factors.SiteId = teamSiteID
+		factors.SiteOwnerUserId = teamSiteOwnerID
+		factors.CostFactor = teamCostFactor
+		factors.SupplyPrice = supply
 		factors.StoredK = storedK
 		factors.MarkupRatio = adtyStoredMarkupRatio(storedK)
 		factors.FloorApplied = true
@@ -961,28 +985,6 @@ func adtyOnConsumeLog(c *gin.Context, userId int, params *model.RecordConsumeLog
 
 // AdtyRecordConsumeEarning 由 11.5 的收益记账注册。
 var AdtyRecordConsumeEarning func(c *gin.Context, userId int, params *model.RecordConsumeLogParams)
-
-// adtySiteMonthRevenue 是上个月每个站的客户消费额（美元）：usage 和 refund 行的 Revenue 合计，不算作废行。
-func adtySiteMonthRevenue(month string) (map[int]decimal.Decimal, error) {
-	start, err := time.ParseInLocation("2006-01", month, time.Local)
-	if err != nil {
-		return nil, err
-	}
-	var rows []model.AdtySiteEarningDaily
-	err = model.DB.Select("site_id", "revenue").
-		Where("kind IN ? AND status <> ? AND day >= ? AND day < ?",
-			[]string{model.AdtySiteEarningUsage, model.AdtySiteEarningRefund}, model.AdtySiteEarningVoid,
-			start.Format("2006-01-02"), start.AddDate(0, 1, 0).Format("2006-01-02")).
-		Find(&rows).Error
-	if err != nil {
-		return nil, err
-	}
-	revenue := map[int]decimal.Decimal{}
-	for _, row := range rows {
-		revenue[row.SiteId] = revenue[row.SiteId].Add(row.Revenue)
-	}
-	return revenue, nil
-}
 
 // RunAdtySiteCostTierAssignment is retired: supply discounts are governed by site levels (AdtySiteTier).
 func RunAdtySiteCostTierAssignment(now time.Time) error {

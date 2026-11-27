@@ -42,6 +42,7 @@ import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 import { siteWithdrawalStatusLabel } from '@/features/adty-ledger/site-wallet-labels'
 import { PageSwitcher } from '@/features/referral/components/page-switcher'
+import { usdtNetworkLabel } from '@/features/referral/lib/address'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { formatTimestamp } from '@/lib/format'
 import { formatUserIdentity } from '@/lib/format-user-identity'
@@ -288,7 +289,7 @@ export function SiteWithdrawalsPanel() {
                       <div className='flex flex-col gap-0.5'>
                         <span className='font-medium'>
                           {row.method === 'usdt'
-                            ? `USDT · ${row.network}`
+                            ? `USDT · ${usdtNetworkLabel(row.network)}`
                             : t('Alipay')}
                         </span>
                         {row.account_no && (

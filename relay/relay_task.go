@@ -463,7 +463,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		if info.PriceData.UsePrice {
 			baseDec = info.PriceData.BilledModelPrice().Mul(common.QuotaPerUnitDecimal()).Mul(info.PriceData.GroupRatioInfo.BilledGroupRatio())
 		} else {
-			baseDec = decimal.NewFromInt(int64(info.PriceData.Quota))
+			baseDec = info.PriceData.BilledModelRatio().Div(decimal.NewFromInt(2)).Mul(common.QuotaPerUnitDecimal()).Mul(info.PriceData.GroupRatioInfo.BilledGroupRatio())
 		}
 		quota, clamp := common.QuotaFromDecimalChecked(info.PriceData.ApplyOtherRatiosToDecimal(baseDec))
 		info.PriceData.Quota = quota
@@ -642,7 +642,7 @@ func recalcQuotaFromRatios(info *relaycommon.RelayInfo, ratios map[string]float6
 	if info.PriceData.UsePrice {
 		baseDec = info.PriceData.BilledModelPrice().Mul(common.QuotaPerUnitDecimal()).Mul(info.PriceData.GroupRatioInfo.BilledGroupRatio())
 	} else {
-		baseDec = decimal.NewFromFloat(info.PriceData.RemoveOtherRatiosFromFloat(float64(info.PriceData.Quota)))
+		baseDec = info.PriceData.BilledModelRatio().Div(decimal.NewFromInt(2)).Mul(common.QuotaPerUnitDecimal()).Mul(info.PriceData.GroupRatioInfo.BilledGroupRatio())
 	}
 	priceData := info.PriceData
 	if !priceData.ReplaceOtherRatios(ratios) {

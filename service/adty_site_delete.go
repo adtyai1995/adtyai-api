@@ -20,7 +20,9 @@ import (
 //     vouchers, tickets, commissions, or non-zero wallets): hard-deleted atomically
 //     after reserving the site and its domain automation leases, cleaning up any
 //     provisioned Cloudflare/AliDNS/Turnstile resources so the subdomain can be
-//     safely reused, and removing/revoking any standalone empty owner.
+//     safely reused, tombstoning custom domains so future cross-site reuse still
+//     requires TXT verification, and preserving the standalone owner account as
+//     a regular main-site user.
 //   - Sites with existing business or financial records: must be closed & migrated
 //     first; once closed, soft-archived/hidden from the active site list while
 //     preserving accounting ledgers, audit trails, and closed-site redirects.
@@ -238,6 +240,38 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 					return err
 				}
 			}
+			// Preserve removed tombstones for owner-managed custom domains with
+			// require_ownership_txt=true so another site cannot hijack a dangling
+			// CNAME after this zero-data site is hard-deleted (R1-001).
+			if err := tx.Model(&model.AdtySiteDomain{}).
+				Where("site_id = ? AND managed_by <> ?", siteID, "platform").
+				Updates(map[string]any{
+					"site_id":               0,
+					"bound_by":              0,
+					"status":                model.AdtySiteDomainRemoved,
+					"desired_state":         "removed",
+					"automation_state":      "removed",
+					"cf_hostname_id":        "",
+					"turnstile_widget":      "",
+					"ssl_status":            "",
+					"verify_records":        "",
+					"last_error":            "",
+					"edge_cert_status":      "",
+					"edge_cert_error":       "",
+					"edge_cert_not_after":   0,
+					"verified_site_id":      0,
+					"require_ownership_txt": true,
+					"lease_token":           "",
+					"lease_until":           0,
+					"next_run_at":           0,
+					"cf_create_started_at":  0,
+					"generation":            gorm.Expr("generation + 1"),
+				}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("site_id = ? AND managed_by = ?", siteID, "platform").Delete(&model.AdtySiteDomain{}).Error; err != nil {
+				return err
+			}
 		}
 		hasTransHeadTable, err := model.AdtyTableExists(tx, &model.AdtyTranslationHead{})
 		if err != nil {
@@ -284,7 +318,6 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 		}
 		for _, tableModel := range []any{
 			&model.AdtySiteWallet{},
-			&model.AdtySiteDomain{},
 			&model.AdtySitePrice{},
 			&model.AdtySitePriceScope{},
 			&model.AdtySiteReferralRate{},

@@ -183,6 +183,17 @@ func verifyOwnerSiteReadable(siteID, ownerID int) (*model.AdtySite, error) {
 	return &site, nil
 }
 
+func verifyOwnerSiteActiveTx(tx *gorm.DB, siteID, ownerID int) (*model.AdtySite, error) {
+	site, err := verifyOwnerSiteWritableTx(tx, siteID, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	if site.Status != model.AdtySiteStatusActive {
+		return nil, common.NewMessage("Site is not active")
+	}
+	return site, nil
+}
+
 func verifyOwnerSiteWritableTx(tx *gorm.DB, siteID, ownerID int) (*model.AdtySite, error) {
 	db := tx
 	if db == nil {
@@ -496,7 +507,7 @@ func SaveAdtyOwnerSiteTeamDiscount(siteID, ownerID int, teamID int64, raw string
 	}
 	var event model.AuditLog
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		if _, err := verifyOwnerSiteWritableTx(tx, siteID, ownerID); err != nil {
+		if _, err := verifyOwnerSiteActiveTx(tx, siteID, ownerID); err != nil {
 			return err
 		}
 		var team model.AdtyTeam
@@ -573,10 +584,9 @@ type AdtySiteCustomerReferralProfile struct {
 	AffiliateDisabled  bool                              `json:"affiliate_disabled,omitempty"`
 	RateConfigured     bool                              `json:"rate_configured"`
 	Rate               string                            `json:"rate,omitempty"`
-	RatePercent        string                            `json:"rate_percent,omitempty"`
-	ObservationDays    *int64                            `json:"observation_days,omitempty"`
-	PendingCoverageCap *decimal.Decimal                  `json:"pending_coverage_cap,omitempty"`
-	InviteCode         string                            `json:"invite_code"`
+	RatePercent       string                            `json:"rate_percent,omitempty"`
+	ObservationDays   *int64                            `json:"observation_days,omitempty"`
+	InviteCode        string                            `json:"invite_code"`
 	InviteURL          string                            `json:"invite_url"`
 	InvitedCount       int64                             `json:"invited_count"`
 	Invites            []AdtySiteCustomerReferralInvitee `json:"invites"`
@@ -671,10 +681,10 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 		return nil, common.NewMessage("No permission to perform this action")
 	}
 	var user model.User
-	if err := model.DB.Select("id", "site_id", "staff_site_id", "status").First(&user, userID).Error; err != nil {
+	if err := model.DB.Select("id", "site_id", "staff_site_id", "role", "status").First(&user, userID).Error; err != nil {
 		return nil, err
 	}
-	if user.SiteId <= 0 || user.StaffSiteId > 0 || user.Status != common.UserStatusEnabled {
+	if user.SiteId <= 0 || user.StaffSiteId > 0 || user.Role >= common.RoleAdminUser || user.Status != common.UserStatusEnabled {
 		return nil, common.NewMessage("This invitation feature is only available to eligible accounts on this site")
 	}
 	if isEmp, empErr := AdtyIsIndependentTeamEmployee(userID); empErr != nil {
@@ -779,10 +789,9 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 		SiteStatus:         site.Status,
 		Enabled:            enabled,
 		AffiliateDisabled:  affiliateDisabled,
-		RateConfigured:     rateConfigured,
-		ObservationDays:    site.MarketingPolicy.ObservationDays,
-		PendingCoverageCap: site.MarketingPolicy.PendingCoverageCap,
-		InviteCode:         code,
+		RateConfigured:    rateConfigured,
+		ObservationDays:   site.MarketingPolicy.ObservationDays,
+		InviteCode:        code,
 		InviteURL:          inviteURL,
 		InvitedCount:       invitedCount,
 		Invites:            invites,
@@ -1012,10 +1021,10 @@ func BindAdtySiteInviteByCodeForUser(userID int, code, ipHash string) error {
 		return common.NewMessage("No permission to perform this action")
 	}
 	var user model.User
-	if err := model.DB.Select("id", "site_id", "staff_site_id", "status").First(&user, userID).Error; err != nil {
+	if err := model.DB.Select("id", "site_id", "staff_site_id", "role", "status").First(&user, userID).Error; err != nil {
 		return err
 	}
-	if user.SiteId <= 0 || user.StaffSiteId > 0 || user.Status != common.UserStatusEnabled {
+	if user.SiteId <= 0 || user.StaffSiteId > 0 || user.Role >= common.RoleAdminUser || user.Status != common.UserStatusEnabled {
 		return common.NewMessage("This invitation feature is only available to eligible accounts on this site")
 	}
 	if isEmp, empErr := AdtyIsIndependentTeamEmployee(userID); empErr != nil {

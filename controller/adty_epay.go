@@ -286,7 +286,7 @@ func AdtyEpayNotify(c *gin.Context) {
 		c.String(http.StatusOK, "fail")
 		return
 	}
-	if ext != nil && ext.ChannelId == channel.Id {
+	if ext != nil && model.AdtyEpayOrderMatchesChannelMerchantGateway(ext, channel) {
 		eventType := "payment.unpaid"
 		if params["trade_status"] == "TRADE_SUCCESS" {
 			eventType = "payment.succeeded"

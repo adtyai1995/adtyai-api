@@ -58,13 +58,17 @@ func SendAccountDeletionCode(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Please try again later"))
 		return
 	}
+	site := service.AdtySiteForRequest(c)
+	if err := service.EnsureAdtyRequestMailConfigured(site); err != nil {
+		common.ApiError(c, service.AdtyCustomerMailError(err))
+		return
+	}
 	code := common.GenerateVerificationCode(6)
 	key := accountDeletionCodeKey(user.Id, email)
 	if err := common.RegisterVerificationCodeWithKey(key, code, common.AccountDeletionPurpose); err != nil {
 		common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Please try again later"))
 		return
 	}
-	site := service.AdtySiteForRequest(c)
 	subject := service.AdtyBrandFor(site).Name + " account deletion confirmation"
 	content := service.AdtyRenderMail(site, service.AdtyMailMessage{
 		Title:    "Confirm account deletion",

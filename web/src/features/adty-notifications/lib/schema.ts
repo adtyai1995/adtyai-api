@@ -431,6 +431,29 @@ export function resolveInitialTargets(
   return { target_audiences: ['main_users'], target_site_ids: [] }
 }
 
+const customerAudienceLabels: Record<string, string> = {
+  all_users: 'All users',
+  all_sites: 'All users',
+  site: 'All users',
+  main_users: 'All users',
+  site_users: 'All users',
+  team: 'Team',
+  main_teams: 'Team',
+  site_teams: 'Team',
+  user: 'Specific user',
+  all_site_owners: 'Announcement',
+  all: 'All users',
+  multi: 'All users',
+}
+
+export interface FormatNotificationRecipientsOptions {
+  /**
+   * White-label reader mode for end-user notification popovers/inboxes:
+   * hides platform-subsite hierarchy and cross-site names/IDs.
+   */
+  readerMode?: 'admin' | 'customer'
+}
+
 export function formatNotificationRecipients(
   row: {
     audience?: string
@@ -441,9 +464,31 @@ export function formatNotificationRecipients(
     target_team_id?: number
     target_user_id?: number
   },
-  t: TFunction
+  t: TFunction,
+  options?: FormatNotificationRecipientsOptions
 ): string {
   const parsedAudiences = parseTargetStringList(row.target_audiences)
+  if (options?.readerMode === 'customer') {
+    if (parsedAudiences.length > 0) {
+      const labels: string[] = []
+      for (const aud of parsedAudiences) {
+        const key = Object.hasOwn(customerAudienceLabels, aud)
+          ? customerAudienceLabels[aud]
+          : 'Announcement'
+        const label = t(key)
+        if (!labels.includes(label)) {
+          labels.push(label)
+        }
+      }
+      return labels.join(' · ')
+    }
+    if (!row.audience) return ''
+    if (Object.hasOwn(customerAudienceLabels, row.audience)) {
+      return t(customerAudienceLabels[row.audience])
+    }
+    return t('Announcement')
+  }
+
   const parsedSiteIds = parseTargetSiteIdList(row.target_site_ids)
   if (parsedAudiences.length > 0) {
     const labels = parsedAudiences.map((aud) => {

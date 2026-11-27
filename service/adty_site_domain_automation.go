@@ -84,8 +84,8 @@ func RunAdtyDomainAutomationOnce(ctx context.Context, now time.Time) error {
 	var rows []model.AdtySiteDomain
 	nonDeletingSites := model.DB.Model(&model.AdtySite{}).Select("id").Where("status <> ?", model.AdtySiteStatusDeleting)
 	if err := model.DB.WithContext(ctx).
-		Where("automation_state <> ? AND status <> ? AND next_run_at <= ? AND lease_until <= ? AND site_id IN (?)",
-			"", model.AdtySiteDomainRemoved, now.Unix(), now.Unix(), nonDeletingSites).
+		Where("automation_state NOT IN ? AND status <> ? AND next_run_at <= ? AND lease_until <= ? AND site_id IN (?)",
+			[]string{"", "failed", "removed"}, model.AdtySiteDomainRemoved, now.Unix(), now.Unix(), nonDeletingSites).
 		Order("next_run_at, id").Limit(50).Find(&rows).Error; err != nil {
 		return err
 	}
@@ -131,6 +131,19 @@ func RunAdtyDomainAutomationOnce(ctx context.Context, now time.Time) error {
 			changed = true
 		}
 		finished := now.Add(time.Since(started))
+		if row.ManagedBy != "platform" && row.DesiredState == "serve" && row.Status == model.AdtySiteDomainPending &&
+			row.CreatedAt > 0 && finished.Sub(time.Unix(row.CreatedAt, 0)) > adtyCustomDomainTimeout {
+			failCtx, failCancel := context.WithTimeout(ctx, time.Minute)
+			failChanged, failErr := adtyFailTimedOutAutomatedCustomDomain(failCtx, row, err, finished)
+			failCancel()
+			if failChanged {
+				changed = true
+			}
+			if failErr == nil {
+				continue
+			}
+			err = errors.Join(err, failErr)
+		}
 		updates := map[string]any{"lease_token": "", "lease_until": 0, "last_checked_at": finished.Unix(), "next_run_at": finished.Add(5 * time.Minute).Unix()}
 		if err != nil {
 			safeErr := adtyDomainAutomationUserError(err)
@@ -162,10 +175,25 @@ func RunAdtyDomainAutomationOnce(ctx context.Context, now time.Time) error {
 }
 
 // CheckAdtySiteDomainNow runs a single immediate DNS/Cloudflare verification check
-// for an owner's pending custom domain, bypassing retry backoff while preserving
-// ownership checks, active-site checks, per-domain cooldown, and lease isolation.
+// (and opportunistic or explicit Mainland China edge certificate check) for an
+// owner's custom domain, bypassing retry backoff while preserving ownership checks,
+// active-site checks, per-domain cooldown, and lease isolation.
 func CheckAdtySiteDomainNow(ctx context.Context, ownerUserID int, domainID int) (*model.AdtySiteDomain, error) {
+	return CheckAdtySiteDomainNowWithMode(ctx, ownerUserID, domainID, "")
+}
+
+// CheckAdtySiteDomainNowWithMode runs an immediate verification check for an owner's
+// custom domain with an optional explicit mode:
+//   - "dns": check DNS/Cloudflare verification only
+//   - "edge_cert": check Mainland China ACME CNAME and issue edge certificate only
+//     (supported for both pending and active custom website domains)
+//   - "": legacy default (DNS check + opportunistic edge cert on pending; edge cert on active)
+func CheckAdtySiteDomainNowWithMode(ctx context.Context, ownerUserID int, domainID int, mode string) (*model.AdtySiteDomain, error) {
 	if domainID <= 0 {
+		return nil, common.NewMessage("Invalid parameters")
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode != "" && mode != "dns" && mode != "edge_cert" {
 		return nil, common.NewMessage("Invalid parameters")
 	}
 	site, err := AdtyOwnerSite(ownerUserID)
@@ -177,6 +205,15 @@ func CheckAdtySiteDomainNow(ctx context.Context, ownerUserID int, domainID int) 
 	}
 	if site.Status != model.AdtySiteStatusActive {
 		return nil, ErrAdtySiteStatus
+	}
+	reloadDomain := func(id int) (*model.AdtySiteDomain, error) {
+		dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer dbCancel()
+		var updated model.AdtySiteDomain
+		if err := model.DB.WithContext(dbCtx).Where("id = ? AND site_id = ?", id, site.Id).First(&updated).Error; err != nil {
+			return nil, err
+		}
+		return &updated, nil
 	}
 	var row model.AdtySiteDomain
 	if err := model.DB.WithContext(ctx).
@@ -193,9 +230,39 @@ func CheckAdtySiteDomainNow(ctx context.Context, ownerUserID int, domainID int) 
 	if row.Status == model.AdtySiteDomainRemoved || row.DesiredState == "removed" {
 		return nil, common.NewMessage("Domain not found")
 	}
-	if row.Status == model.AdtySiteDomainActive {
+	isSiteRole := adtyNormalizeDomainRole(row.Role) == model.AdtySiteDomainRoleSite
+	if mode == "edge_cert" {
+		if row.Status != model.AdtySiteDomainPending && row.Status != model.AdtySiteDomainActive {
+			return nil, common.NewMessage("This domain failed verification. Delete it and add it again.")
+		}
 		cfg := resellerSetting()
-		if row.Role == model.AdtySiteDomainRoleSite && cfg.EdgeMainlandEnabled && row.EdgeCertStatus != model.AdtyEdgeCertStatusReady {
+		if !isSiteRole || !cfg.EdgeMainlandEnabled {
+			return &row, nil
+		}
+		now := time.Now()
+		hasEdgeCheckHistory := row.LastCheckedAt > 0 &&
+			(row.LastCheckedAt > row.CreatedAt || strings.TrimSpace(row.EdgeCertStatus) != "" || strings.TrimSpace(row.EdgeCertError) != "")
+		if hasEdgeCheckHistory && adtyOwnerDomainCheckCooldown > 0 {
+			cooldownSec := int64(adtyOwnerDomainCheckCooldown / time.Second)
+			elapsed := now.Unix() - row.LastCheckedAt
+			if elapsed >= 0 && elapsed < cooldownSec {
+				return nil, common.NewMessage("Please wait {{seconds}} seconds before checking DNS again", map[string]any{"seconds": cooldownSec - elapsed})
+			}
+		}
+		runctx, cancel := context.WithTimeout(ctx, 50*time.Second)
+		edgeErr := CheckAdtyCustomEdgeCertNow(runctx, &row, false)
+		cancel()
+		if edgeErr != nil {
+			return nil, edgeErr
+		}
+		return reloadDomain(row.Id)
+	}
+	if row.Status == model.AdtySiteDomainActive {
+		if mode == "dns" {
+			return &row, nil
+		}
+		cfg := resellerSetting()
+		if isSiteRole && cfg.EdgeMainlandEnabled && row.EdgeCertStatus != model.AdtyEdgeCertStatusReady {
 			now := time.Now()
 			if adtyOwnerDomainCheckCooldown > 0 && row.LastCheckedAt > 0 {
 				cooldownSec := int64(adtyOwnerDomainCheckCooldown / time.Second)
@@ -204,17 +271,13 @@ func CheckAdtySiteDomainNow(ctx context.Context, ownerUserID int, domainID int) 
 					return nil, common.NewMessage("Please wait {{seconds}} seconds before checking DNS again", map[string]any{"seconds": cooldownSec - elapsed})
 				}
 			}
-			runctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			runctx, cancel := context.WithTimeout(ctx, 50*time.Second)
 			edgeErr := CheckAdtyCustomEdgeCertNow(runctx, &row, false)
 			cancel()
 			if edgeErr != nil {
 				return nil, edgeErr
 			}
-			var updated model.AdtySiteDomain
-			if err := model.DB.WithContext(ctx).Where("id = ? AND site_id = ?", row.Id, site.Id).First(&updated).Error; err != nil {
-				return &row, nil
-			}
-			return &updated, nil
+			return reloadDomain(row.Id)
 		}
 		return &row, nil
 	}
@@ -248,19 +311,17 @@ func CheckAdtySiteDomainNow(ctx context.Context, ownerUserID int, domainID int) 
 		if checkErr != nil {
 			return nil, adtyDomainAutomationUserError(checkErr)
 		}
-		var updated model.AdtySiteDomain
-		if err := model.DB.WithContext(ctx).Where("id = ? AND site_id = ?", row.Id, site.Id).First(&updated).Error; err != nil {
-			return &row, nil
+		updated, err := reloadDomain(row.Id)
+		if err != nil {
+			return nil, err
 		}
-		if updated.Role == model.AdtySiteDomainRoleSite && resellerSetting().EdgeMainlandEnabled && updated.EdgeCertStatus != model.AdtyEdgeCertStatusReady {
+		if mode == "" && adtyNormalizeDomainRole(updated.Role) == model.AdtySiteDomainRoleSite && resellerSetting().EdgeMainlandEnabled && updated.EdgeCertStatus != model.AdtyEdgeCertStatusReady {
 			edgeCtx, edgeCancel := context.WithTimeout(ctx, 45*time.Second)
-			_ = CheckAdtyCustomEdgeCertNow(edgeCtx, &updated, true)
+			_ = CheckAdtyCustomEdgeCertNow(edgeCtx, updated, true)
 			edgeCancel()
-			if err := model.DB.WithContext(ctx).Where("id = ? AND site_id = ?", row.Id, site.Id).First(&updated).Error; err != nil {
-				return &row, nil
-			}
+			return reloadDomain(row.Id)
 		}
-		return &updated, nil
+		return updated, nil
 	}
 
 	nonce := make([]byte, 16)
@@ -294,6 +355,19 @@ func CheckAdtySiteDomainNow(ctx context.Context, ownerUserID int, domainID int) 
 	cancel()
 
 	finished := time.Now()
+	if fresh.DesiredState == "serve" && fresh.Status == model.AdtySiteDomainPending &&
+		fresh.CreatedAt > 0 && finished.Sub(time.Unix(fresh.CreatedAt, 0)) > adtyCustomDomainTimeout {
+		failCtx, failCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		failChanged, failErr := adtyFailTimedOutAutomatedCustomDomain(failCtx, &fresh, recErr, finished)
+		failCancel()
+		if rowChanged || failChanged {
+			InvalidateAdtySiteCache()
+		}
+		if failErr == nil {
+			return reloadDomain(fresh.Id)
+		}
+		recErr = errors.Join(recErr, failErr)
+	}
 	updates := map[string]any{
 		"lease_token":     "",
 		"lease_until":     0,
@@ -323,19 +397,120 @@ func CheckAdtySiteDomainNow(ctx context.Context, ownerUserID int, domainID int) 
 	if rowChanged {
 		InvalidateAdtySiteCache()
 	}
-	var updated model.AdtySiteDomain
-	if err := model.DB.WithContext(ctx).Where("id = ? AND site_id = ?", fresh.Id, site.Id).First(&updated).Error; err != nil {
-		return &fresh, nil
+	updated, err := reloadDomain(fresh.Id)
+	if err != nil {
+		return nil, err
 	}
-	if updated.Role == model.AdtySiteDomainRoleSite && resellerSetting().EdgeMainlandEnabled && updated.EdgeCertStatus != model.AdtyEdgeCertStatusReady {
+	if mode == "" && adtyNormalizeDomainRole(updated.Role) == model.AdtySiteDomainRoleSite && resellerSetting().EdgeMainlandEnabled && updated.EdgeCertStatus != model.AdtyEdgeCertStatusReady {
 		edgeCtx, edgeCancel := context.WithTimeout(ctx, 45*time.Second)
-		_ = CheckAdtyCustomEdgeCertNow(edgeCtx, &updated, true)
+		_ = CheckAdtyCustomEdgeCertNow(edgeCtx, updated, true)
 		edgeCancel()
-		if err := model.DB.WithContext(ctx).Where("id = ? AND site_id = ?", fresh.Id, site.Id).First(&updated).Error; err != nil {
-			return &fresh, nil
+		return reloadDomain(fresh.Id)
+	}
+	return updated, nil
+}
+
+// adtyFailTimedOutAutomatedCustomDomain enforces the 72-hour custom-domain timeout
+// on domain-automation paths (R1-040): deletes any provisioned Cloudflare hostname
+// and Turnstile assignment, invalidates custom edge certs, and transitions the row
+// to status=failed / automation_state=failed while holding the active lease.
+func adtyFailTimedOutAutomatedCustomDomain(ctx context.Context, row *model.AdtySiteDomain, cause error, now time.Time) (bool, error) {
+	if row == nil || row.Id <= 0 {
+		return false, nil
+	}
+	cfg := resellerSetting()
+	zone := adtyDomainEffectiveZone(row, cfg)
+	hostnameID := row.CFHostnameId
+	createAttempted := row.CFCreateStartedAt > 0
+	if strings.HasPrefix(hostnameID, adtyCloudResourcePendingPrefix) {
+		hostnameID = ""
+		createAttempted = true
+	}
+	if hostnameID == "" {
+		foundID, lookupAttempted, err := adtyLookupCloudResourceState(model.DB, zone, row)
+		if err != nil {
+			return false, err
+		}
+		hostnameID = foundID
+		createAttempted = createAttempted || lookupAttempted
+	}
+	if hostnameID != "" {
+		if err := AdtyCloudflare.deleteCustomHostname(ctx, zone, hostnameID); err != nil {
+			return false, err
 		}
 	}
-	return &updated, nil
+	if row.TurnstileWidget != "" {
+		if err := adtyTurnstileRemoveDomain(ctx, row.TurnstileWidget, row.Hostname); err != nil {
+			return false, err
+		}
+	}
+	lastErr := strings.TrimSpace(row.LastError)
+	if cause != nil {
+		lastErr = adtyDomainAutomationUserError(cause).Error()
+	}
+	if lastErr == "" {
+		lastErr = common.NewMessage("Custom domain verification timed out").Error()
+	}
+	changed := false
+	err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current model.AdtySiteDomain
+		if err := adtyLockDomainRow(tx, row.Id, &current); err != nil {
+			return err
+		}
+		if current.LeaseToken != row.LeaseToken || current.Generation != row.Generation {
+			return errAdtyDomainLeaseLost
+		}
+		if current.Status != model.AdtySiteDomainPending || current.DesiredState != "serve" {
+			return nil
+		}
+		updates := map[string]any{
+			"status":               model.AdtySiteDomainFailed,
+			"automation_state":     "failed",
+			"cf_hostname_id":       "",
+			"cf_create_started_at": 0,
+			"turnstile_widget":     "",
+			"last_error":           lastErr,
+			"last_checked_at":      now.Unix(),
+			"lease_token":          "",
+			"lease_until":          0,
+			"next_run_at":          0,
+			"edge_cert_status":     "",
+			"edge_cert_error":      "",
+			"edge_cert_not_after":  0,
+		}
+		res := tx.Model(&model.AdtySiteDomain{}).
+			Where("id = ? AND lease_token = ? AND generation = ?", row.Id, row.LeaseToken, row.Generation).
+			Updates(updates)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected != 1 {
+			return errAdtyDomainLeaseLost
+		}
+		if hostnameID != "" || createAttempted || current.CFHostnameId != "" {
+			hasCloudResTable, err := model.AdtyTableExists(tx, &model.AdtyDomainCloudResource{})
+			if err != nil {
+				return err
+			}
+			if hasCloudResTable {
+				if err := tx.Where("domain_id = ?", row.Id).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
+					return err
+				}
+			}
+		}
+		if err := adtyInvalidateCustomEdgeCertTx(tx, row.Id, current.Hostname); err != nil {
+			return err
+		}
+		changed = true
+		row.Status = model.AdtySiteDomainFailed
+		row.AutomationState = "failed"
+		row.CFHostnameId = ""
+		row.CFCreateStartedAt = 0
+		row.TurnstileWidget = ""
+		row.LastError = lastErr
+		return nil
+	})
+	return changed, err
 }
 
 func adtyBackfillActiveCustomBaseURLTurnstile(ctx context.Context, now time.Time) (bool, error) {
@@ -1021,7 +1196,12 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) (bool, 
 			return changed, errors.Join(err, result.Error)
 		}
 	}
-	result := model.DB.Model(&model.AdtySiteDomain{}).Where("id = ? AND generation = ? AND lease_token = ?", row.Id, row.Generation, row.LeaseToken).Updates(map[string]any{"status": status, "automation_state": state, "ssl_status": detail.SSL.Status, "verify_records": verify})
+	updateFields := map[string]any{"status": status, "automation_state": state, "ssl_status": detail.SSL.Status, "verify_records": verify}
+	if status == model.AdtySiteDomainActive {
+		updateFields["verified_site_id"] = row.SiteId
+		updateFields["require_ownership_txt"] = false
+	}
+	result := model.DB.Model(&model.AdtySiteDomain{}).Where("id = ? AND generation = ? AND lease_token = ?", row.Id, row.Generation, row.LeaseToken).Updates(updateFields)
 	if result.Error != nil {
 		return changed, result.Error
 	}
@@ -1030,6 +1210,12 @@ func adtyReconcileDomain(ctx context.Context, row *model.AdtySiteDomain) (bool, 
 	}
 	if status != row.Status || state != row.AutomationState {
 		changed = true
+	}
+	row.Status = status
+	row.AutomationState = state
+	if status == model.AdtySiteDomainActive {
+		row.VerifiedSiteId = row.SiteId
+		row.RequireOwnershipTXT = false
 	}
 	if state == "redirect_only" {
 		if changed {

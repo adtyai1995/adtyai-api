@@ -317,7 +317,10 @@ describe('owner custom domain streamlined flow and optional mainland acceleratio
 
       fireEvent.click(buttons[0])
       await waitFor(() => {
-        expect(postSpy).toHaveBeenCalledWith('/api/adty/site/domains/21/check')
+        expect(postSpy).toHaveBeenCalledWith(
+          '/api/adty/site/domains/21/check',
+          { mode: 'dns' }
+        )
         expect(toast.error).toHaveBeenCalledWith(
           'Domain CNAME is not pointing to the target yet'
         )
@@ -334,7 +337,10 @@ describe('owner custom domain streamlined flow and optional mainland acceleratio
       fireEvent.click(screen.getByRole('button', { name: 'Configure' }))
       fireEvent.click(screen.getByRole('button', { name: 'Check certificate' }))
       await waitFor(() => {
-        expect(postSpy).toHaveBeenCalledWith('/api/adty/site/domains/23/check')
+        expect(postSpy).toHaveBeenCalledWith(
+          '/api/adty/site/domains/23/check',
+          { mode: 'edge_cert' }
+        )
         expect(toast.success).toHaveBeenCalledWith(
           'Edge certificate is ready. You can now configure Step 2.'
         )

@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import { ref, type Ref } from 'vue'
+import { computed, ref, type Ref } from 'vue'
 
 /**
  * VitePress white-label & live site-status runtime helper for ADTY AI.
@@ -44,6 +44,7 @@ export interface PublicReferralInfo {
 
 export interface SiteBrand {
   loaded: boolean
+  loadFailed: boolean
   name: string
   apiBase: string
   siteUrl: string
@@ -51,6 +52,7 @@ export interface SiteBrand {
   favicon: string
   isWhiteLabel: boolean
   isSubsite: boolean
+  isMainSite: boolean
   paymentMethods: string[]
   referral: PublicReferralInfo
 }
@@ -74,6 +76,7 @@ const BLOCK_BOUNDARY_SELECTOR =
 
 export const DEFAULT_BRAND: SiteBrand = {
   loaded: false,
+  loadFailed: false,
   name: 'ADTY AI',
   apiBase: 'https://api.adtyai.com',
   siteUrl: 'https://www.adtyai.com',
@@ -81,6 +84,7 @@ export const DEFAULT_BRAND: SiteBrand = {
   favicon: '',
   isWhiteLabel: false,
   isSubsite: false,
+  isMainSite: false,
   paymentMethods: [],
   referral: { ...DEFAULT_REFERRAL },
 }
@@ -124,6 +128,8 @@ let lastFailedAt = 0
 export function useSiteBrand(): Ref<SiteBrand> {
   return brandState
 }
+
+export const brandReady = computed(() => brandState.value.loaded)
 
 function normalizeOrigin(raw: string): string {
   return raw.trim().replace(/\/+$/, '')
@@ -200,17 +206,22 @@ function shouldFetchSameOriginBrand(): boolean {
   return window.location.pathname.startsWith('/docs') || host !== 'docs.adtyai.com'
 }
 
-function createFallbackBrand(loaded: boolean): SiteBrand {
+function createFallbackBrand(loaded: boolean, loadFailed = false): SiteBrand {
   return {
     ...DEFAULT_BRAND,
     loaded,
+    loadFailed,
+    isMainSite: loaded && !loadFailed,
     referral: { ...DEFAULT_REFERRAL },
   }
 }
 
 export async function resolveSiteBrand(): Promise<SiteBrand> {
-  if (typeof window === 'undefined' || !shouldFetchSameOriginBrand()) {
-    const fallback = createFallbackBrand(true)
+  if (typeof window === 'undefined') {
+    return brandState.value
+  }
+  if (!shouldFetchSameOriginBrand()) {
+    const fallback = createFallbackBrand(true, false)
     brandState.value = fallback
     return fallback
   }
@@ -226,7 +237,7 @@ export async function resolveSiteBrand(): Promise<SiteBrand> {
         inflightPromise = null
       }
       lastFailedAt = Date.now()
-      const fallback = createFallbackBrand(false)
+      const fallback = createFallbackBrand(false, true)
       brandState.value = fallback
       return fallback
     }
@@ -271,6 +282,7 @@ export async function resolveSiteBrand(): Promise<SiteBrand> {
       lastFailedAt = 0
       const brand: SiteBrand = {
         loaded: true,
+        loadFailed: false,
         name,
         apiBase,
         siteUrl,
@@ -278,6 +290,7 @@ export async function resolveSiteBrand(): Promise<SiteBrand> {
         favicon,
         isWhiteLabel: true,
         isSubsite,
+        isMainSite: !isSubsite,
         paymentMethods,
         referral,
       }
@@ -664,13 +677,14 @@ function shouldPatchSearchBox(brand: SiteBrand): boolean {
   return (
     brand.isWhiteLabel ||
     brand.isSubsite ||
+    !brand.isMainSite ||
     (brand.loaded && !brand.referral.enabled)
   )
 }
 
 function shouldHideDocsHref(href: string, brand: SiteBrand): boolean {
   if (!href) return false
-  const hidePartner = brand.isSubsite
+  const hidePartner = brand.isSubsite || !brand.isMainSite
   const hideReferral = brand.loaded && !brand.referral.enabled
   return (
     (hidePartner && matchesGuideRoute(href, '/guides/partner')) ||
@@ -1258,6 +1272,7 @@ export function applyBrandToDOM(brand: SiteBrand): void {
     })
   }
 
+  const hidePartner = effectiveBrand.isSubsite || !effectiveBrand.isMainSite
   const root = document.documentElement
   root.classList.toggle('adty-is-subsite', effectiveBrand.isSubsite)
   root.classList.toggle(
@@ -1265,7 +1280,7 @@ export function applyBrandToDOM(brand: SiteBrand): void {
     effectiveBrand.loaded && !effectiveBrand.referral.enabled
   )
 
-  toggleNavItemVisibility('/guides/partner', effectiveBrand.isSubsite)
+  toggleNavItemVisibility('/guides/partner', hidePartner)
   toggleNavItemVisibility(
     '/guides/referral',
     effectiveBrand.loaded && !effectiveBrand.referral.enabled

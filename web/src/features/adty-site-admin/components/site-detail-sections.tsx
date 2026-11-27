@@ -481,7 +481,8 @@ export function SiteDomainsCard(props: {
                 <div className='flex shrink-0 gap-1.5'>
                   {!isDeleting &&
                     user?.role === ROLE.SUPER_ADMIN &&
-                    domain.status !== 'removed' &&
+                    (domain.status === 'active' ||
+                      domain.status === 'pending') &&
                     domain.role !== 'base_url' &&
                     domain.edge_cert_status && (
                       <Button

@@ -185,6 +185,11 @@ func WalletQuotaFromDecimalStrict(d decimal.Decimal) (int, error) {
 	return strictQuota(saturateQuotaBounded(f, "WalletQuotaFromDecimal", MaxWalletQuota, -MaxWalletQuota))
 }
 
+// WalletQuotaRoundChecked rounds a float64 wallet-scale quota into [-MaxWalletQuota, MaxWalletQuota].
+func WalletQuotaRoundChecked(value float64) (int, *QuotaClamp) {
+	return saturateQuotaBounded(math.Round(value), "WalletQuotaRound", MaxWalletQuota, -MaxWalletQuota)
+}
+
 // ParseBoundedDecimalString parses a plain decimal literal without scientific
 // notation (rejecting e/E exponents that can trigger giant big.Int.Exp CPU/OOM
 // allocations in shopspring/decimal) and bounds integer/fractional digit counts (R5-05).

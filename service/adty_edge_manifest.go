@@ -14,7 +14,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const adtyEdgeAPISubdomainRegex = `^api-s[0-9]+\.`
+const adtyEdgeAPISubdomainRegex = `^api-s[0-9]+(-[0-9]+)?\.`
 
 // AdtyEdgeManifestWildcardCert is one wildcard certificate delivered to edge nodes.
 type AdtyEdgeManifestWildcardCert struct {

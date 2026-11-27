@@ -186,6 +186,9 @@ func adtyEdgeCertUserError(err error) string {
 	if errors.Is(err, errAdtyEdgeWaitingDNS) {
 		return strings.TrimPrefix(err.Error(), errAdtyEdgeWaitingDNS.Error()+": ")
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "Certificate check timed out. Please try again later."
+	}
 	var msg *common.Message
 	if errors.As(err, &msg) {
 		return msg.Error()
@@ -327,7 +330,8 @@ func adtyIssueEdgeCert(ctx context.Context, cfg *adty_setting.ResellerSetting, c
 	challengeHost := adtyEdgeChallengeHost(cert.CertName)
 	matched, actual, err := adtyEdgeCheckCNAME(ctx, challengeHost, cert.AliasFQDN)
 	if err != nil {
-		return nil, fmt.Errorf("DNS CNAME check for %s failed: %w", challengeHost, err)
+		common.SysError(common.LogText("edge cert cname check failed for %s: %s", challengeHost, err.Error()))
+		return nil, fmt.Errorf("DNS CNAME check failed for %s", challengeHost)
 	}
 	if !matched {
 		if actual != "" {
@@ -423,14 +427,16 @@ func adtyIssueEdgeCert(ctx context.Context, cfg *adty_setting.ResellerSetting, c
 	}
 	leaf, err := x509.ParseCertificate(derChain[0])
 	if err != nil {
-		return nil, fmt.Errorf("parse issued certificate: %w", err)
+		common.SysError(common.LogText("edge cert parse failed for %s: %s", cert.CertName, err.Error()))
+		return nil, errors.New("Failed to parse issued edge certificate")
 	}
 	verifyHost := cert.CertName
 	if strings.HasPrefix(verifyHost, "*.") {
 		verifyHost = "probe." + strings.TrimPrefix(verifyHost, "*.")
 	}
 	if err := leaf.VerifyHostname(verifyHost); err != nil {
-		return nil, fmt.Errorf("issued certificate does not match %s: %w", cert.CertName, err)
+		common.SysError(common.LogText("edge cert hostname mismatch for %s: %s", cert.CertName, err.Error()))
+		return nil, fmt.Errorf("Issued edge certificate does not match %s", cert.CertName)
 	}
 
 	var chainBuf bytes.Buffer
@@ -639,7 +645,7 @@ func adtyEnsureEdgeCertRows(ctx context.Context, cfg *adty_setting.ResellerSetti
 		if res.Error != nil {
 			return nil, res.Error
 		}
-		if res.RowsAffected == 0 || (dom.Status == model.AdtySiteDomainRemoved && dom.UpdatedAt <= cutoff) {
+		if res.RowsAffected == 0 || ((dom.Status == model.AdtySiteDomainRemoved || dom.Status == model.AdtySiteDomainFailed) && dom.UpdatedAt <= cutoff) {
 			if err := model.DB.WithContext(ctx).Delete(&model.AdtyEdgeCert{}, cert.Id).Error; err != nil {
 				return nil, err
 			}
@@ -1070,9 +1076,21 @@ func CheckAdtyCustomEdgeCertNow(ctx context.Context, domain *model.AdtySiteDomai
 		}
 		return common.NewMessage("A certificate check is already in progress for this domain. Please try again in a few seconds.")
 	}
+	leaseHeld := true
+	defer func() {
+		if !leaseHeld {
+			return
+		}
+		relCtx, relCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer relCancel()
+		_ = model.DB.WithContext(relCtx).Model(&model.AdtyEdgeCert{}).
+			Where("cert_name = ? AND lease_token = ?", certName, leaseToken).
+			Updates(map[string]any{"lease_token": "", "lease_until": 0}).Error
+	}()
 	var fresh model.AdtyEdgeCert
 	if err := model.DB.WithContext(ctx).Where("cert_name = ? AND lease_token = ?", certName, leaseToken).First(&fresh).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			leaseHeld = false
 			return nil
 		}
 		return err
@@ -1083,12 +1101,16 @@ func CheckAdtyCustomEdgeCertNow(ctx context.Context, domain *model.AdtySiteDomai
 		fresh.KeyEncrypted != "" &&
 		fresh.NotAfter > now.Add(adtyEdgePreserveReadyMargin).Unix()
 	if preserveReady {
-		_ = model.DB.WithContext(ctx).Model(&model.AdtyEdgeCert{}).
+		saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer saveCancel()
+		if err := model.DB.WithContext(saveCtx).Model(&model.AdtyEdgeCert{}).
 			Where("id = ? AND lease_token = ?", fresh.Id, leaseToken).
-			Updates(map[string]any{"lease_token": "", "lease_until": 0}).Error
-		adtySyncDomainEdgeCertColumns(ctx, &fresh, model.AdtyEdgeCertStatusReady, "", fresh.NotAfter)
+			Updates(map[string]any{"lease_token": "", "lease_until": 0}).Error; err == nil {
+			leaseHeld = false
+		}
+		adtySyncDomainEdgeCertColumns(saveCtx, &fresh, model.AdtyEdgeCertStatusReady, "", fresh.NotAfter)
 		if !onlyIfCNAMEConfigured {
-			_ = model.DB.WithContext(ctx).Model(&model.AdtySiteDomain{}).Where("id = ?", domain.Id).Update("last_checked_at", now.Unix()).Error
+			_ = model.DB.WithContext(saveCtx).Model(&model.AdtySiteDomain{}).Where("id = ?", domain.Id).Update("last_checked_at", now.Unix()).Error
 		}
 		return nil
 	}
@@ -1137,17 +1159,22 @@ func CheckAdtyCustomEdgeCertNow(ctx context.Context, domain *model.AdtySiteDomai
 		syncErr = msg
 		syncNotAfter = fresh.NotAfter
 	}
-	res := model.DB.WithContext(ctx).Model(&model.AdtyEdgeCert{}).
+	// Persist using a detached DB context so an issued certificate or error state
+	// is never dropped and the lease is never stranded if caller ctx timed out.
+	saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer saveCancel()
+	res := model.DB.WithContext(saveCtx).Model(&model.AdtyEdgeCert{}).
 		Where("id = ? AND lease_token = ?", fresh.Id, leaseToken).
 		Updates(updates)
 	if res.Error != nil {
 		return res.Error
 	}
+	leaseHeld = false
 	if res.RowsAffected == 1 {
-		adtySyncDomainEdgeCertColumns(ctx, &fresh, syncStatus, syncErr, syncNotAfter)
+		adtySyncDomainEdgeCertColumns(saveCtx, &fresh, syncStatus, syncErr, syncNotAfter)
 	}
 	if !onlyIfCNAMEConfigured {
-		_ = model.DB.WithContext(ctx).Model(&model.AdtySiteDomain{}).Where("id = ?", domain.Id).Update("last_checked_at", finished.Unix()).Error
+		_ = model.DB.WithContext(saveCtx).Model(&model.AdtySiteDomain{}).Where("id = ?", domain.Id).Update("last_checked_at", finished.Unix()).Error
 	}
 	return nil
 }

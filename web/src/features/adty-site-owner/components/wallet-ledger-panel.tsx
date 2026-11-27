@@ -23,10 +23,9 @@ import { ErrorState } from '@/components/error-state'
 import { ContentSection } from '@/components/layout'
 import { LoadingState } from '@/components/loading-state'
 import { siteWalletKindLabel } from '@/features/adty-ledger/site-wallet-labels'
-import { SiteWalletLedger } from '@/features/adty-ledger/site-wallet-ledger'
 import { getServerErrorMessage } from '@/lib/server-error-message'
 
-import { getOwnerWalletLedger, getOwnerWallets, siteOwnerKeys } from '../api'
+import { getOwnerWallets, siteOwnerKeys } from '../api'
 import { marginCycleSummary } from '../lib/site-owner'
 import { OwnerStatGrid } from './stat-grid'
 
@@ -106,24 +105,5 @@ export function OwnerWalletBalances() {
         />
       )}
     </ContentSection>
-  )
-}
-
-/**
- * Earnings and margin wallet balances with every movement behind them. The
- * operating wallet is platform bookkeeping and is never shown to the owner.
- */
-export function WalletLedgerPanel() {
-  const { t } = useTranslation()
-  return (
-    <section className='flex flex-col gap-4'>
-      <OwnerWalletBalances />
-      <SiteWalletLedger
-        label={t('Wallet ledger')}
-        queryKey={siteOwnerKeys.list('wallet-ledger', {})}
-        kinds={['earnings', 'margin']}
-        fetchPage={getOwnerWalletLedger}
-      />
-    </section>
   )
 }

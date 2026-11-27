@@ -88,8 +88,8 @@ func siteInviteQuote(site *model.AdtySite, amount decimal.Decimal, method string
 }
 
 func QuoteAdtySiteInviteWithdrawal(userID, siteID int, amount decimal.Decimal, method string) (q SiteInviteWithdrawalQuote, err error) {
-	var user model.User
-	if err = model.DB.Select("site_id").First(&user, userID).Error; err != nil {
+	user, err := RequireAdtySiteCommissionCustomerTx(model.DB, userID)
+	if err != nil {
 		return
 	}
 	if siteID == 0 {

@@ -1,8 +1,10 @@
 package model
 
 import (
+	"strconv"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -334,7 +336,9 @@ func BuildSiteInviteCommissionRefundPreview(row AdtySiteInviteCommission, withdr
 }
 
 // LoadSiteInviteCommissionRefundPreview reads the commission for one top-up
-// and builds the official refund preview. It returns nil when none was issued.
+// (checking subsite adty_site_invite_commissions first, then falling back to
+// main-site referral_commissions) and builds the official refund preview.
+// It returns nil when none was issued.
 func LoadSiteInviteCommissionRefundPreview(db *gorm.DB, tradeNo string, refundQuota, faceQuota int64) (*AdtySiteCommissionRefundPreview, error) {
 	if db == nil || strings.TrimSpace(tradeNo) == "" {
 		return nil, nil
@@ -343,14 +347,275 @@ func LoadSiteInviteCommissionRefundPreview(db *gorm.DB, tradeNo string, refundQu
 	if err := db.Where("trade_no = ?", tradeNo).Limit(1).Find(&row).Error; err != nil {
 		return nil, err
 	}
-	if row.Id == 0 || !row.AmountUSD.IsPositive() {
+	if row.Id > 0 && row.AmountUSD.IsPositive() {
+		withdrawnLive, err := SiteInviteCommissionWithdrawnLive(db, row.Id, row.WithdrawnUSD)
+		if err != nil {
+			return nil, err
+		}
+		return BuildSiteInviteCommissionRefundPreview(row, withdrawnLive, refundQuota, faceQuota), nil
+	}
+	return loadMainSiteReferralCommissionRefundPreview(db, tradeNo, refundQuota, faceQuota)
+}
+
+func loadMainSiteReferralCommissionRefundPreview(db *gorm.DB, tradeNo string, refundQuota, faceQuota int64) (*AdtySiteCommissionRefundPreview, error) {
+	hasRefTable, err := AdtyTableExists(db, &ReferralCommission{})
+	if err != nil || !hasRefTable {
+		return nil, err
+	}
+	var commissions []ReferralCommission
+	if err := db.Where("source_type = ? AND source_trade_no = ?", ReferralSourceTopup, tradeNo).Order("id ASC").Find(&commissions).Error; err != nil {
+		return nil, err
+	}
+	if len(commissions) == 0 {
 		return nil, nil
 	}
-	withdrawnLive, err := SiteInviteCommissionWithdrawnLive(db, row.Id, row.WithdrawnUSD)
+	var ext AdtyTopupOrder
+	hasExt := false
+	if ok, tblErr := AdtyTableExists(db, &AdtyTopupOrder{}); tblErr != nil {
+		return nil, tblErr
+	} else if ok {
+		res := db.Where("trade_no = ?", tradeNo).Limit(1).Find(&ext)
+		if res.Error != nil {
+			return nil, res.Error
+		}
+		hasExt = res.RowsAffected > 0
+	}
+	ratio := decimal.NewFromInt(1)
+	if faceQuota > 0 {
+		ratio = decimal.NewFromInt(refundQuota).Div(decimal.NewFromInt(faceQuota))
+		if ratio.IsNegative() {
+			ratio = decimal.Zero
+		}
+		if ratio.GreaterThan(decimal.NewFromInt(1)) {
+			ratio = decimal.NewFromInt(1)
+		}
+	}
+	hasLedgerTable, err := AdtyTableExists(db, &ReferralCommissionLedger{})
 	if err != nil {
 		return nil, err
 	}
-	return BuildSiteInviteCommissionRefundPreview(row, withdrawnLive, refundQuota, faceQuota), nil
+	hasRecoveryTable, err := AdtyTableExists(db, &AdtyCommissionRecovery{})
+	if err != nil {
+		return nil, err
+	}
+	hasBalanceLedgerTable, err := AdtyTableExists(db, &AdtyBalanceLedger{})
+	if err != nil {
+		return nil, err
+	}
+	hasWithdrawItemTable, err := AdtyTableExists(db, &ReferralWithdrawalItem{})
+	if err != nil {
+		return nil, err
+	}
+	hasWithdrawTable, err := AdtyTableExists(db, &ReferralWithdrawal{})
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		totalIssued            decimal.Decimal
+		totalFrozen            decimal.Decimal
+		totalConverted         decimal.Decimal
+		totalConvertedClawed   decimal.Decimal
+		totalConvertedLive     decimal.Decimal
+		totalExternalWithdrawn decimal.Decimal
+		totalOnHold            decimal.Decimal
+		totalClawed            decimal.Decimal
+		totalRecovery          decimal.Decimal
+		totalExpectedRelease   decimal.Decimal
+		totalExpectedConverted decimal.Decimal
+		totalExpectedWithdrawn decimal.Decimal
+		totalExpectedClawback  decimal.Decimal
+		recordedStatus         string
+	)
+	for _, comm := range commissions {
+		recordedStatus = comm.Status
+		accrued := decimal.NewFromFloat(comm.CommissionAmount).Round(8)
+		ledgerDelta := decimal.Zero
+		if hasLedgerTable {
+			var entries []ReferralCommissionLedger
+			if err := db.Where("commission_id = ? AND type IN ?", comm.Id,
+				[]string{"commission_accrue", "commission_clawback_partial", "commission_clawback", "commission_void", "withdraw_reject_clawback"}).
+				Order("id ASC").Find(&entries).Error; err != nil {
+				return nil, err
+			}
+			for _, entry := range entries {
+				if entry.Type == "commission_accrue" {
+					accrued = decimal.NewFromFloat(entry.DeltaPending).Round(8)
+					break
+				}
+			}
+			for _, entry := range entries {
+				if entry.Type != "commission_accrue" {
+					ledgerDelta = ledgerDelta.Add(decimal.NewFromFloat(entry.DeltaPending).Round(8)).
+						Add(decimal.NewFromFloat(entry.DeltaAvailable).Round(8)).
+						Add(decimal.NewFromFloat(entry.DeltaFrozen).Round(8))
+				}
+			}
+		}
+		if !accrued.IsPositive() {
+			continue
+		}
+		extRecovered := decimal.Zero
+		cvtRecovered := decimal.Zero
+		if hasRecoveryTable {
+			var recRows []AdtyCommissionRecovery
+			if err := db.Where("commission_id = ? AND kind IN ?", comm.Id, []string{"ref_withdrawn", "ref_converted"}).Find(&recRows).Error; err != nil {
+				return nil, err
+			}
+			for _, r := range recRows {
+				if r.Kind == "ref_converted" {
+					cvtRecovered = cvtRecovered.Add(r.AmountUSD)
+				} else {
+					extRecovered = extRecovered.Add(r.AmountUSD)
+				}
+			}
+		}
+		cvtClawed := decimal.Zero
+		if hasBalanceLedgerTable {
+			var sumQuota int64
+			if err := db.Model(&AdtyBalanceLedger{}).
+				Select("COALESCE(SUM(-delta_quota), 0)").
+				Where("type = ? AND ref_type = ? AND ref_id = ? AND delta_quota < 0",
+					AdtyLedgerTypeCommissionTransfer, "referral_commission_clawback", strconv.Itoa(comm.Id)).
+				Scan(&sumQuota).Error; err != nil {
+				return nil, err
+			}
+			if sumQuota > 0 {
+				cvtClawed = decimal.NewFromInt(sumQuota).Div(common.QuotaPerUnitDecimal())
+			}
+		}
+		frozenAlloc := decimal.Zero
+		pendingClaw := decimal.Zero
+		convertedAlloc := decimal.Zero
+		externalAlloc := decimal.Zero
+		if hasWithdrawItemTable {
+			var items []struct {
+				AllocatedAmount       float64
+				PendingClawbackAmount float64
+				Status                string
+				AccountType           string
+			}
+			q := db.Table("referral_withdrawal_items AS i").Where("i.commission_id = ?", comm.Id).Order("i.id ASC")
+			if hasWithdrawTable {
+				q = q.Select("i.allocated_amount, i.pending_clawback_amount, i.status, COALESCE(w.account_type, '') AS account_type").
+					Joins("LEFT JOIN referral_withdrawals AS w ON w.id = i.withdrawal_id")
+			} else {
+				q = q.Select("i.allocated_amount, i.pending_clawback_amount, i.status, '' AS account_type")
+			}
+			if err := q.Scan(&items).Error; err != nil {
+				return nil, err
+			}
+			for _, item := range items {
+				amt := decimal.NewFromFloat(item.AllocatedAmount).Round(8)
+				pc := decimal.NewFromFloat(item.PendingClawbackAmount).Round(8)
+				switch item.Status {
+				case ReferralWithdrawalItemStatusFrozen:
+					if pc.IsPositive() {
+						pendingClaw = pendingClaw.Add(pc)
+					}
+					frozenAlloc = frozenAlloc.Add(decimal.Max(amt.Sub(pc), decimal.Zero))
+				case ReferralWithdrawalItemStatusWithdrawn:
+					if item.AccountType == ReferralWithdrawToBalance {
+						convertedAlloc = convertedAlloc.Add(amt)
+					} else {
+						externalAlloc = externalAlloc.Add(amt)
+					}
+				}
+			}
+		}
+		recovered := extRecovered.Add(cvtRecovered).Add(cvtClawed).Add(pendingClaw)
+		remaining := decimal.Max(accrued.Add(ledgerDelta).Sub(recovered), decimal.Zero)
+		alreadyClawed := decimal.Max(accrued.Sub(remaining), decimal.Zero)
+
+		gross := accrued
+		if hasExt && ext.FaceUSD.IsPositive() && ext.ReferralRate.IsPositive() {
+			gross = ext.FaceUSD.Mul(ext.ReferralRate).Div(decimal.NewFromInt(100)).Round(8)
+		}
+		targetClaw := decimal.Zero
+		if ratio.IsPositive() && gross.IsPositive() {
+			targetClaw = gross.Mul(ratio).RoundFloor(8)
+		}
+		kept := gross.Sub(targetClaw)
+		thisClaw := decimal.Max(remaining.Sub(kept), decimal.Zero)
+
+		convertedLive := decimal.Max(convertedAlloc.Sub(cvtClawed).Sub(cvtRecovered), decimal.Zero)
+		externalLive := decimal.Max(externalAlloc.Sub(extRecovered), decimal.Zero)
+
+		var expectedRelease, expectedConverted, expectedWithdrawn, onHold decimal.Decimal
+		switch comm.Status {
+		case ReferralCommissionStatusPending:
+			onHold = remaining
+			expectedRelease = decimal.Min(thisClaw, remaining)
+		case ReferralCommissionStatusPaid:
+			if !convertedLive.IsPositive() && !externalLive.IsPositive() {
+				externalLive = remaining
+				if !externalAlloc.IsPositive() {
+					externalAlloc = remaining
+				}
+			}
+			paidParts := SplitDecimalByWeights(thisClaw, []decimal.Decimal{convertedLive, externalLive})
+			expectedConverted = paidParts[0]
+			expectedWithdrawn = paidParts[1]
+		case ReferralCommissionStatusAvailable, ReferralCommissionStatusFrozen:
+			free := decimal.Max(remaining.Sub(frozenAlloc).Sub(convertedLive).Sub(externalLive), decimal.Zero)
+			onHold = free
+			parts := SplitDecimalByWeights(thisClaw, []decimal.Decimal{convertedLive, externalLive, frozenAlloc, free})
+			expectedConverted = parts[0]
+			expectedWithdrawn = parts[1]
+			expectedRelease = parts[2].Add(parts[3])
+		default:
+			thisClaw = decimal.Zero
+		}
+
+		totalIssued = totalIssued.Add(accrued)
+		totalFrozen = totalFrozen.Add(frozenAlloc)
+		totalConverted = totalConverted.Add(convertedAlloc)
+		totalConvertedClawed = totalConvertedClawed.Add(cvtClawed)
+		totalConvertedLive = totalConvertedLive.Add(convertedLive)
+		totalExternalWithdrawn = totalExternalWithdrawn.Add(externalAlloc)
+		totalOnHold = totalOnHold.Add(onHold)
+		totalClawed = totalClawed.Add(alreadyClawed)
+		totalRecovery = totalRecovery.Add(extRecovered).Add(cvtRecovered)
+		totalExpectedRelease = totalExpectedRelease.Add(expectedRelease)
+		totalExpectedConverted = totalExpectedConverted.Add(expectedConverted)
+		totalExpectedWithdrawn = totalExpectedWithdrawn.Add(expectedWithdrawn)
+		totalExpectedClawback = totalExpectedClawback.Add(thisClaw)
+	}
+	if !totalIssued.IsPositive() {
+		return nil, nil
+	}
+	states := make([]AdtySiteCommissionStateAmount, 0, 4)
+	appendPositive := func(state string, amount decimal.Decimal) {
+		if amount.IsPositive() {
+			states = append(states, AdtySiteCommissionStateAmount{State: state, AmountUSD: amount.String()})
+		}
+	}
+	appendPositive(AdtySiteCommissionStateOnHold, totalOnHold)
+	appendPositive(AdtySiteCommissionStateConverted, totalConvertedLive)
+	appendPositive(AdtySiteCommissionStateWithdrawalRequested, totalFrozen)
+	appendPositive(AdtySiteCommissionStateWithdrawnReleased, totalExternalWithdrawn)
+
+	view := &AdtySiteCommissionRefundPreview{
+		IssuedUSD:                        totalIssued.String(),
+		States:                           states,
+		AmountUSD:                        totalIssued.String(),
+		FrozenUSD:                        totalFrozen.String(),
+		ConvertedUSD:                     totalConverted.String(),
+		ConvertedClawedUSD:               totalConvertedClawed.String(),
+		WithdrawnUSD:                     totalExternalWithdrawn.String(),
+		ClawedUSD:                        totalClawed.String(),
+		RecoveryUSD:                      totalRecovery.String(),
+		RecordedStatus:                   recordedStatus,
+		ExpectedReleaseUSD:               totalExpectedRelease.String(),
+		ExpectedConvertedClawbackUSD:     totalExpectedConverted.String(),
+		ExpectedWithdrawnRecoveryUSD:     totalExpectedWithdrawn.String(),
+		ExpectedPendingCoverageCancelUSD: "0",
+		ExpectedClawbackUSD:              totalExpectedClawback.String(),
+	}
+	if totalExpectedWithdrawn.IsPositive() {
+		view.WithdrawnRecoveryLiable = "inviter"
+	}
+	return view, nil
 }
 
 // PresentSiteInviteCommissions attaches official state amounts to each row.

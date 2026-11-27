@@ -16,7 +16,10 @@ import (
 func SetApiRouter(router *gin.Engine) {
 	apiRouter := router.Group("/api")
 	apiRouter.Use(middleware.RouteTag("api"))
-	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression, gzip.WithExcludedPathsRegexs([]string{`^/api/adty/tickets/[^/]+/images/`})))
+	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression, gzip.WithExcludedPathsRegexs([]string{
+		`^/api/adty/tickets/[^/]+/images/`,
+		`^/api/referral-assets/`,
+	})))
 	apiRouter.Use(middleware.AccessTokenAudit())
 	apiRouter.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
 	apiRouter.Use(middleware.DefaultAPIRequestBodyLimit(middleware.DefaultAPIRequestBodyMaxBytes))
@@ -66,10 +69,13 @@ func SetApiRouter(router *gin.Engine) {
 			userRoute.POST("/login", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, middleware.TurnstileCheck(), controller.Login)
 			userRoute.POST("/login/2fa", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.Verify2FALogin)
 			userRoute.POST("/login/verify", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.VerifyLogin)
-			userRoute.POST("/login/passkey/begin", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.LoginPasskeyBegin)
-			userRoute.POST("/login/passkey/finish", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.LoginPasskeyFinish)
-			userRoute.POST("/passkey/login/begin", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PasskeyLoginBegin)
-			userRoute.POST("/passkey/login/finish", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PasskeyLoginFinish)
+			retirePasskey := func(c *gin.Context) {
+				common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Passkey authentication has been retired"))
+			}
+			userRoute.POST("/login/passkey/begin", retirePasskey)
+			userRoute.POST("/login/passkey/finish", retirePasskey)
+			userRoute.POST("/passkey/login/begin", retirePasskey)
+			userRoute.POST("/passkey/login/finish", retirePasskey)
 			//userRoute.POST("/tokenlog", middleware.CriticalRateLimit(), controller.TokenLog)
 			userRoute.GET("/groups", middleware.UserAuth(), controller.GetUserGroups)
 
@@ -97,12 +103,12 @@ func SetApiRouter(router *gin.Engine) {
 					accessTokenRoute.DELETE("/:id", middleware.CriticalRateLimit(), middleware.UserCriticalRateLimit("access-token"), controller.DeleteAccessToken)
 					accessTokenRoute.DELETE("/legacy", middleware.CriticalRateLimit(), middleware.UserCriticalRateLimit("access-token"), controller.RevokeLegacyAccessToken)
 				}
-				selfRoute.GET("/passkey", controller.PasskeyStatus)
-				selfRoute.POST("/passkey/register/begin", middleware.UserCriticalRateLimit("security-verification"), middleware.DisableCache(), controller.PasskeyRegisterBegin)
-				selfRoute.POST("/passkey/register/finish", middleware.UserCriticalRateLimit("security-verification"), middleware.DisableCache(), controller.PasskeyRegisterFinish)
-				selfRoute.POST("/passkey/verify/begin", middleware.UserCriticalRateLimit("security-verification"), middleware.DisableCache(), controller.PasskeyVerifyBegin)
-				selfRoute.POST("/passkey/verify/finish", middleware.UserCriticalRateLimit("security-verification"), middleware.DisableCache(), controller.PasskeyVerifyFinish)
-				selfRoute.DELETE("/passkey", middleware.DisableCache(), controller.PasskeyDelete)
+				selfRoute.GET("/passkey", retirePasskey)
+				selfRoute.POST("/passkey/register/begin", retirePasskey)
+				selfRoute.POST("/passkey/register/finish", retirePasskey)
+				selfRoute.POST("/passkey/verify/begin", retirePasskey)
+				selfRoute.POST("/passkey/verify/finish", retirePasskey)
+				selfRoute.DELETE("/passkey", retirePasskey)
 				selfRoute.PUT("/setting", middleware.UserCriticalRateLimit("CT:user-setting"), controller.UpdateUserSetting)
 
 				// 2FA routes
@@ -144,7 +150,9 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.GET("/request_policy", controller.GetRequestPolicy)
 			optionRoute.PATCH("/request_policy", controller.UpdateRequestPolicy)
 			optionRoute.PUT("/", controller.UpdateOption)
-			optionRoute.PUT("/passkey/domains", controller.UpdatePasskeyDomains)
+			optionRoute.PUT("/passkey/domains", func(c *gin.Context) {
+				common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Passkey authentication has been retired"))
+			})
 			optionRoute.GET("/model_pricing", controller.GetModelPricingConfig)
 			optionRoute.GET("/model_pricing/issues", controller.GetModelPricingIssues)
 			optionRoute.PATCH("/model_pricing", controller.UpdateModelPricingConfig)

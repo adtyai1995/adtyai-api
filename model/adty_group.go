@@ -843,11 +843,7 @@ func isAdtyUniqueViolation(err error) bool {
 	return strings.Contains(text, "UNIQUE constraint failed") || strings.Contains(text, "duplicate key")
 }
 
-var (
-	ErrAdtyGroupSameTarget  = errors.New("adty group migrate target equals source")
-	ErrAdtyGroupInUse       = errors.New("adty group still in use")
-	ErrAdtyGroupUndeletable = errors.New("adty default group cannot be deleted")
-)
+var ErrAdtyGroupSameTarget = errors.New("adty group migrate target equals source")
 
 // MigrateAdtyGroup 在一个事务里把用户、密钥（分组和自动分组）、渠道、分站 allowed_groups 和 GroupModelAllow 从 fromID 改到 toID，
 // 渠道的 abilities 跟着重建。软删除的用户和密钥也一起改，免得恢复后指向不存在的分组。

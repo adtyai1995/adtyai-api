@@ -1781,10 +1781,6 @@ func enqueueAdtyNotificationToTelegram(row *model.AdtyNotificationPublication, i
 		if channel == "" {
 			return nil
 		}
-		purpose := model.AdtyTelegramPurposeAdmin
-		if current.IssuerSiteId > 0 {
-			purpose = model.AdtyTelegramPurposeUser
-		}
 		res := tx.Model(&model.AdtyNotificationPublication{}).
 			Where("id = ? AND telegram_at = 0 AND status = ?", current.Id, "published").
 			Update("telegram_at", at)
@@ -1816,19 +1812,31 @@ func enqueueAdtyNotificationToTelegram(row *model.AdtyNotificationPublication, i
 			if err := queueAdtyPrivatePublicationTelegramTx(tx, &current); err != nil {
 				return err
 			}
+		} else if current.IssuerSiteId > 0 {
+			// Subsites cannot push announcements to shared public Telegram channels.
+			skipRow := model.AdtyTelegramDelivery{
+				Public:    true,
+				Purpose:   model.AdtyTelegramPurposeAdmin,
+				Channel:   truncateAdtyRunes(channel, 128),
+				EventKey:  adtyPublicNotificationEventKey(current.Id),
+				Body:      "",
+				Status:    model.AdtyTelegramDeliverySkip,
+				LastError: "subsite public channel unsupported",
+			}
+			_ = tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "event_key"}}, DoNothing: true}).Create(&skipRow).Error
 		} else {
 			publicBody, err := announceTelegramBodyWithDB(tx, current)
 			if err != nil {
 				return err
 			}
-			if err := queueAdtyPublicTelegramTx(tx, channel, purpose, publicBody, adtyPublicNotificationEventKey(current.Id)); err != nil {
+			if err := queueAdtyPublicTelegramTx(tx, channel, model.AdtyTelegramPurposeAdmin, publicBody, adtyPublicNotificationEventKey(current.Id)); err != nil {
 				// R2-055: Permanent content/configuration rejections must persist a skipped
 				// outbox row and mark telegram_outbox_seeded_at instead of retrying every minute for 7 days.
 				if errors.Is(err, ErrAdtyTelegramPrivate) || errors.Is(err, ErrAdtyTelegramInvalid) {
 					lastErr := truncateAdtyRunes(err.Error(), 128)
 					skipRow := model.AdtyTelegramDelivery{
 						Public:    true,
-						Purpose:   purpose,
+						Purpose:   model.AdtyTelegramPurposeAdmin,
 						Channel:   truncateAdtyRunes(channel, 128),
 						EventKey:  adtyPublicNotificationEventKey(current.Id),
 						Body:      "",
@@ -2313,6 +2321,7 @@ func adtyUserCanReadPublicationWithErr(user *model.User, pub *model.AdtyNotifica
 type adtyNotificationViewerContext struct {
 	UserID         int
 	UserSiteID     int
+	IsAdmin        bool
 	IsStaff        bool
 	IsSiteOwner    bool
 	InMainTeam     bool
@@ -2493,6 +2502,7 @@ func adtyVisibleNotificationPublicationsWithViewer(db *gorm.DB, userID int, site
 	viewer = adtyNotificationViewerContext{
 		UserID:      user.Id,
 		UserSiteID:  user.SiteId,
+		IsAdmin:     user.Role >= common.RoleAdminUser,
 		IsStaff:     isStaff,
 		IsSiteOwner: isSiteOwner,
 	}
@@ -2706,9 +2716,33 @@ func formatAdtyNotificationItemForViewer(row model.AdtyNotificationPublication, 
 			targetUserID, _ = strconv.Atoi(raw)
 		}
 	}
-	publisherLabel := strings.TrimSpace(common.GetSystemName())
-	if row.IssuerSiteId > 0 {
-		publisherLabel = ""
+	var viewer *adtyNotificationViewerContext
+	if preloaded != nil {
+		viewer = preloaded.Viewer
+	}
+	var resolvedSite *model.AdtySite
+	ownsViewerSite := false
+	isManagementViewer := false
+	if viewerSite != nil {
+		resolvedSite = viewerSite
+		if viewer != nil && viewer.ViewerSite != nil && viewer.ViewerSite.Id == viewerSite.Id {
+			resolvedSite = viewer.ViewerSite
+		}
+		ownsViewerSite = viewer != nil && viewer.OwnsViewerSite
+		isManagementViewer = ownsViewerSite || (viewer != nil && viewer.IsAdmin)
+	} else {
+		isManagementViewer = viewer != nil && (viewer.IsSiteOwner || viewer.IsAdmin)
+	}
+
+	var publisherLabel string
+	if viewerSite != nil && !isManagementViewer {
+		// On subsites, C-end viewers must never see the main-site system name when Root
+		// publishes a targeted subsite or platform announcement.
+		publisherLabel = strings.TrimSpace(AdtyBrandFor(resolvedSite).Name)
+		if publisherLabel == "" {
+			publisherLabel = "System"
+		}
+	} else if row.IssuerSiteId > 0 {
 		if preloaded != nil {
 			if issuerSite, ok := preloaded.IssuerSites[row.IssuerSiteId]; ok {
 				publisherLabel = strings.TrimSpace(AdtyBrandFor(&issuerSite).Name)
@@ -2729,6 +2763,8 @@ func formatAdtyNotificationItemForViewer(row model.AdtyNotificationPublication, 
 				}
 			}
 		}
+	} else {
+		publisherLabel = strings.TrimSpace(common.GetSystemName())
 	}
 	contentFormat := strings.ToLower(strings.TrimSpace(row.ContentFormat))
 	if contentFormat == "" {
@@ -2740,89 +2776,89 @@ func formatAdtyNotificationItemForViewer(row model.AdtyNotificationPublication, 
 	targetSiteID := row.TargetSiteId
 	targetSiteName := row.TargetSiteName
 
-	var viewer *adtyNotificationViewerContext
-	if preloaded != nil {
-		viewer = preloaded.Viewer
-	}
 	isLegacyDirect := len(rawTargetAudiences) == 0 && (row.Audience == "team" || row.Audience == "user")
-	if viewerSite != nil {
-		resolvedSite := viewerSite
-		if viewer != nil && viewer.ViewerSite != nil && viewer.ViewerSite.Id == viewerSite.Id {
-			resolvedSite = viewer.ViewerSite
-		}
-		ownsViewerSite := viewer != nil && viewer.OwnsViewerSite
-		if isLegacyDirect {
-			if row.TargetSiteId != viewerSite.Id {
-				targetSiteID = 0
-				targetSiteName = ""
-			}
-		} else {
-			targeted := viewerSite.Id > 0 && slices.Contains(row.EffectiveTargetSiteIDs(), viewerSite.Id)
-			if targeted {
-				targetSiteIDs = []int{viewerSite.Id}
-				targetSiteID = viewerSite.Id
-				targetSiteName = AdtySiteDisplayHost(resolvedSite)
+	if isManagementViewer {
+		if viewerSite != nil {
+			if isLegacyDirect {
+				if row.TargetSiteId != viewerSite.Id {
+					targetSiteID = 0
+					targetSiteName = ""
+				}
 			} else {
-				targetSiteIDs = []int{}
-				targetSiteID = 0
-				targetSiteName = ""
+				targeted := viewerSite.Id > 0 && slices.Contains(row.EffectiveTargetSiteIDs(), viewerSite.Id)
+				if targeted {
+					targetSiteIDs = []int{viewerSite.Id}
+					targetSiteID = viewerSite.Id
+					targetSiteName = AdtySiteDisplayHost(resolvedSite)
+				} else {
+					targetSiteIDs = []int{}
+					targetSiteID = 0
+					targetSiteName = ""
+				}
+				for _, aud := range rawTargetAudiences {
+					switch aud {
+					case "site_users", "site_teams":
+						if targeted {
+							targetAudiences = append(targetAudiences, aud)
+						}
+					case "all_site_owners":
+						if ownsViewerSite {
+							targetAudiences = append(targetAudiences, aud)
+						}
+					}
+				}
 			}
+		} else if !isLegacyDirect {
+			// On main site, omit subsite target IDs/hostnames so main-site users and
+			// unrelated site owners never receive other subsites' hostnames or IDs.
+			targetSiteIDs = []int{}
+			targetSiteID = 0
+			targetSiteName = ""
 			for _, aud := range rawTargetAudiences {
 				switch aud {
-				case "site_users", "site_teams":
-					if targeted {
+				case "main_users":
+					if viewer == nil || (viewer.UserSiteID == 0 && !viewer.IsStaff && !viewer.IsSiteOwner) {
+						targetAudiences = append(targetAudiences, aud)
+					}
+				case "main_teams":
+					if viewer == nil || (viewer.UserSiteID == 0 && !viewer.IsStaff && viewer.InMainTeam) {
 						targetAudiences = append(targetAudiences, aud)
 					}
 				case "all_site_owners":
-					if ownsViewerSite {
+					if viewer == nil || viewer.IsSiteOwner {
 						targetAudiences = append(targetAudiences, aud)
 					}
-				}
-			}
-		}
-	} else if !isLegacyDirect {
-		// On main site, omit subsite target IDs/hostnames so main-site users and
-		// unrelated site owners never receive other subsites' hostnames or IDs.
-		targetSiteIDs = []int{}
-		targetSiteID = 0
-		targetSiteName = ""
-		for _, aud := range rawTargetAudiences {
-			switch aud {
-			case "main_users":
-				if viewer == nil || (viewer.UserSiteID == 0 && !viewer.IsStaff && !viewer.IsSiteOwner) {
-					targetAudiences = append(targetAudiences, aud)
-				}
-			case "main_teams":
-				if viewer == nil || (viewer.UserSiteID == 0 && !viewer.IsStaff && viewer.InMainTeam) {
-					targetAudiences = append(targetAudiences, aud)
-				}
-			case "all_site_owners":
-				if viewer == nil || viewer.IsSiteOwner {
-					targetAudiences = append(targetAudiences, aud)
 				}
 			}
 		}
 	}
 
+	audience := row.Audience
+	if !isManagementViewer && !isLegacyDirect {
+		audience = "all_users"
+	}
+
 	item := map[string]any{
-		"id":               fmt.Sprintf("publication:%d", row.Id),
-		"read_key":         row.ReadKey,
-		"title":            row.Title,
-		"content":          content,
-		"content_format":   contentFormat,
-		"type":             "default",
-		"publishDate":      time.Unix(row.PublishedAt, 0).UTC().Format(time.RFC3339),
-		"publisher_name":   publisherLabel,
-		"issuer_site_id":   row.IssuerSiteId,
-		"audience":         row.Audience,
-		"target_audiences": targetAudiences,
-		"target_site_ids":  targetSiteIDs,
-		"target_site_id":   targetSiteID,
-		"target_site_name": targetSiteName,
-		"target_team_id":   targetTeamID,
-		"target_user_id":   targetUserID,
-		"kind":             row.Kind,
-		"business":         row.Business,
+		"id":             fmt.Sprintf("publication:%d", row.Id),
+		"read_key":       row.ReadKey,
+		"title":          row.Title,
+		"content":        content,
+		"content_format": contentFormat,
+		"type":           "default",
+		"publishDate":    time.Unix(row.PublishedAt, 0).UTC().Format(time.RFC3339),
+		"publisher_name": publisherLabel,
+		"audience":       audience,
+		"target_team_id": targetTeamID,
+		"target_user_id": targetUserID,
+		"kind":           row.Kind,
+		"business":       row.Business,
+	}
+	if isManagementViewer {
+		item["issuer_site_id"] = row.IssuerSiteId
+		item["target_audiences"] = targetAudiences
+		item["target_site_ids"] = targetSiteIDs
+		item["target_site_id"] = targetSiteID
+		item["target_site_name"] = targetSiteName
 	}
 	cleanBodySrc := stripAdtyNotificationTranslationSuffix(row.Content, "")
 	bodySrc := cleanBodySrc

@@ -174,6 +174,9 @@ func SaveAdtyTranslationConfig(input AdtyTranslationInput, audits ...model.Audit
 		utf8.RuneCountInString(input.BaseURL) > 256 || utf8.RuneCountInString(input.ModelName) > 80 || utf8.RuneCountInString(input.BackupModel) > 80 {
 		return nil, ErrAdtyTranslationInvalid
 	}
+	if input.TimeoutSec < 0 || input.TimeoutSec > 300 {
+		return nil, common.NewMessage("Translation timeout must be between 0 and 300 seconds")
+	}
 	if input.Mode == model.AdtyTranslationModeOwn {
 		protocol, err := adtyTranslationProtocolName(input.Protocol)
 		if err != nil {

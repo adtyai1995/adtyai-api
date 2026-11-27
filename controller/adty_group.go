@@ -200,10 +200,6 @@ func writeAdtyGroupError(c *gin.Context, err error) {
 		common.ApiErrorT(c, "The English group name is required")
 	case errors.Is(err, model.ErrAdtyGroupSameTarget):
 		common.ApiErrorT(c, "Choose a different target group")
-	case errors.Is(err, model.ErrAdtyGroupInUse):
-		common.ApiErrorT(c, "The group is still used by users, keys, channels or sites. Migrate it first")
-	case errors.Is(err, model.ErrAdtyGroupUndeletable):
-		common.ApiErrorT(c, "The default group cannot be deleted")
 	default:
 		common.SysError(common.LogText("adty group: %s", err.Error()))
 		common.ApiErrorT(c, "Database error, please contact the administrator")

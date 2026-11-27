@@ -8,8 +8,6 @@ import (
 	"github.com/QuantumNous/new-api/model"
 )
 
-var ErrAdtySiteOwnershipConflict = common.NewMessage("Site ownership changed; reload the site before trying again")
-var ErrAdtySiteOwnershipTarget = common.NewMessage("Choose an enabled main-site user who does not own another open site")
 var ErrAdtySiteOwnerImmutable = common.NewMessage("Site owners cannot be replaced")
 
 type AdtySiteOwnerHandoverInput struct {

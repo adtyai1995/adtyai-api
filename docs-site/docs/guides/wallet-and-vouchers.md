@@ -38,7 +38,7 @@ Bonus availability and rates are tied to the current site's USDT Recharge Bonus 
 
 If you received a prepaid **Quota Voucher** code from a promotion, partner, or team administrator:
 
-1. Navigate to **Wallet** → **Redeem Voucher** in the console.
+1. Navigate to **Wallet** → **Credit Redemption Code** in the console.
 2. Paste the voucher code carefully (without extra leading or trailing spaces) and submit.
 3. Valid codes immediately add their face value in USD to your wallet balance.
 

@@ -58,7 +58,6 @@ export function Pricing() {
     groupRatio,
     usableGroup,
     endpointMap,
-    autoGroups,
     hasData,
     isLoading,
     isFetching,
@@ -278,7 +277,6 @@ export function Pricing() {
                   { path?: string; method?: string }
                 >) || {}
               }
-              autoGroups={autoGroups || []}
               priceRate={priceRate ?? 1}
               usdExchangeRate={usdExchangeRate ?? 1}
               tokenUnit={tokenUnit}

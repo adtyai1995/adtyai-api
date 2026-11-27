@@ -358,9 +358,6 @@ func securityVerificationPolicy(scope string, state model.UserVerificationState)
 	if state.HasTwoFA {
 		enrolled = append(enrolled, VerificationMethodTwoFA)
 	}
-	if state.HasPasskey {
-		enrolled = append(enrolled, VerificationMethodPasskey)
-	}
 	var methods []string
 	switch scope {
 	case VerificationScopeChannelKeyRead, VerificationScopePasskeyDelete, VerificationScopeLogin:
@@ -487,7 +484,7 @@ func GetVerificationRequirementsForSite(identity AuthIdentity, scope string, sit
 		requirements.Methods = methods
 	}
 	passwordLoginEnabled := common.GetPasswordLoginEnabled()
-	if siteID > 0 && scope != VerificationScopeAdtySiteOwnerManage {
+	if siteID > 0 && !adtyIsSiteOwnerManagementScope(scope) {
 		passwordLoginEnabled = AdtyEffectiveAuthSettingsForSite(AdtySiteById(siteID)).PasswordLoginEnabled
 	}
 	for i := range methods {
@@ -510,7 +507,11 @@ func GetVerificationRequirementsForSite(identity AuthIdentity, scope string, sit
 }
 
 func RequireVerificationMethod(identity AuthIdentity, scope, method string) (*VerificationRequirements, error) {
-	requirements, err := GetVerificationRequirements(identity, scope)
+	return RequireVerificationMethodForSite(identity, scope, method, 0)
+}
+
+func RequireVerificationMethodForSite(identity AuthIdentity, scope, method string, siteID int) (*VerificationRequirements, error) {
+	requirements, err := GetVerificationRequirementsForSite(identity, scope, siteID)
 	if err != nil {
 		return nil, err
 	}
@@ -529,10 +530,14 @@ func RequireVerificationMethod(identity AuthIdentity, scope, method string) (*Ve
 // CompleteSecurityVerification runs after the concrete authentication ceremony.
 // Recheck the session and policy after potentially slow external authentication.
 func CompleteSecurityVerification(identity AuthIdentity, binding VerificationBinding, method string) (*SecurityProof, error) {
+	return CompleteSecurityVerificationForSite(identity, binding, method, 0)
+}
+
+func CompleteSecurityVerificationForSite(identity AuthIdentity, binding VerificationBinding, method string, siteID int) (*SecurityProof, error) {
 	if err := ValidateStepUpIdentity(identity); err != nil {
 		return nil, err
 	}
-	if _, err := RequireVerificationMethod(identity, binding.Scope, method); err != nil {
+	if _, err := RequireVerificationMethodForSite(identity, binding.Scope, method, siteID); err != nil {
 		return nil, err
 	}
 	token, expiresAt, err := IssueSecurityProof(identity, method, binding)
@@ -542,11 +547,11 @@ func CompleteSecurityVerification(identity AuthIdentity, binding VerificationBin
 	return &SecurityProof{ProofToken: token, ExpiresAt: expiresAt, Method: method, Scope: binding.Scope}, nil
 }
 
-func completeSecurityVerificationWithBackup(identity AuthIdentity, binding VerificationBinding, method, backupCode string) (*SecurityProof, error) {
+func completeSecurityVerificationWithBackupForSite(identity AuthIdentity, binding VerificationBinding, method, backupCode string, siteID int) (*SecurityProof, error) {
 	if err := ValidateStepUpIdentity(identity); err != nil {
 		return nil, err
 	}
-	if _, err := RequireVerificationMethod(identity, binding.Scope, method); err != nil {
+	if _, err := RequireVerificationMethodForSite(identity, binding.Scope, method, siteID); err != nil {
 		return nil, err
 	}
 	token, expiresAt, err := issueSecurityProof(identity, method, binding, func(tx *gorm.DB) error {
@@ -598,6 +603,10 @@ func acceptSecurityBackupCode(twoFA *model.TwoFA, code string) (string, error) {
 // ConsumeOperationProof accepts a proof at most once. The consumption commits
 // before the caller performs its action; an action failure must not restore it.
 func ConsumeOperationProof(raw string, identity AuthIdentity, operation VerificationOperation) (*model.AuthFlowAuthorization, error) {
+	return ConsumeOperationProofForSite(raw, identity, operation, 0)
+}
+
+func ConsumeOperationProofForSite(raw string, identity AuthIdentity, operation VerificationOperation, siteID int) (*model.AuthFlowAuthorization, error) {
 	binding, err := BindVerificationOperation(operation)
 	if err != nil {
 		return nil, err
@@ -612,7 +621,7 @@ func ConsumeOperationProof(raw string, identity AuthIdentity, operation Verifica
 	if err := requireAccessTokenVerificationScopeForOperation(identity, operation); err != nil {
 		return nil, err
 	}
-	if _, err := RequireVerificationMethod(identity, binding.Scope, claims.Method); err != nil {
+	if _, err := RequireVerificationMethodForSite(identity, binding.Scope, claims.Method, siteID); err != nil {
 		return nil, err
 	}
 	flow, err := model.ConsumeAuthFlowWithAction(claims.ID, model.AuthFlowMatch{
@@ -632,13 +641,21 @@ func ConsumeOperationProof(raw string, identity AuthIdentity, operation Verifica
 	}
 	return &model.AuthFlowAuthorization{
 		AuthSessionIdentity: identity, ProofID: flow.Id, Scope: binding.Scope,
-		ContextHash: binding.ContextHash, Method: claims.Method,
+		ContextHash: binding.ContextHash, Method: claims.Method, SiteID: siteID,
 	}, nil
 }
 
 // ValidateFlowAuthorization permits a dedicated configuration flow to outlive
 // its consumed proof, while retaining its operation, session and method policy.
 func ValidateFlowAuthorization(identity AuthIdentity, operation VerificationOperation, authorization *model.AuthFlowAuthorization) error {
+	siteID := 0
+	if authorization != nil {
+		siteID = authorization.SiteID
+	}
+	return ValidateFlowAuthorizationForSite(identity, operation, authorization, siteID)
+}
+
+func ValidateFlowAuthorizationForSite(identity AuthIdentity, operation VerificationOperation, authorization *model.AuthFlowAuthorization, siteID int) error {
 	if authorization == nil || authorization.ProofID <= 0 || authorization.AuthSessionIdentity != identity {
 		return model.ErrAuthFlowInvalid
 	}
@@ -655,7 +672,7 @@ func ValidateFlowAuthorization(identity AuthIdentity, operation VerificationOper
 	if err := requireAccessTokenVerificationScopeForOperation(identity, operation); err != nil {
 		return err
 	}
-	_, err = RequireVerificationMethod(identity, binding.Scope, authorization.Method)
+	_, err = RequireVerificationMethodForSite(identity, binding.Scope, authorization.Method, siteID)
 	return err
 }
 
@@ -684,7 +701,7 @@ func VerifySecurityInput(identity AuthIdentity, input VerificationInput) (*Secur
 	if err := requireAccessTokenVerificationScopeForOperation(identity, op); err != nil {
 		return nil, err
 	}
-	if _, err := RequireVerificationMethod(identity, input.Scope, input.Method); err != nil {
+	if _, err := RequireVerificationMethodForSite(identity, input.Scope, input.Method, input.SiteID); err != nil {
 		return nil, err
 	}
 	if input.Method == VerificationMethodRootExempt {
@@ -695,7 +712,7 @@ func VerifySecurityInput(identity AuthIdentity, input VerificationInput) (*Secur
 		if state.Role != common.RoleRootUser {
 			return nil, ErrProofMethod
 		}
-		return CompleteSecurityVerification(identity, binding, VerificationMethodRootExempt)
+		return CompleteSecurityVerificationForSite(identity, binding, VerificationMethodRootExempt, input.SiteID)
 	}
 	switch input.Method {
 	case VerificationMethodPassword:
@@ -743,7 +760,7 @@ func VerifySecurityInput(identity AuthIdentity, input VerificationInput) (*Secur
 			return nil, err
 		}
 		if backupCode != "" {
-			return completeSecurityVerificationWithBackup(identity, binding, input.Method, backupCode)
+			return completeSecurityVerificationWithBackupForSite(identity, binding, input.Method, backupCode, input.SiteID)
 		}
 	case VerificationMethodEmailCode:
 		return completeSecurityVerificationWithEmailCode(identity, binding, input)
@@ -752,7 +769,7 @@ func VerifySecurityInput(identity AuthIdentity, input VerificationInput) (*Secur
 	default:
 		return nil, ErrProofMethod
 	}
-	return CompleteSecurityVerification(identity, binding, input.Method)
+	return CompleteSecurityVerificationForSite(identity, binding, input.Method, input.SiteID)
 }
 
 // VerifyTwoFactorCode classifies the input before verification so one failed
@@ -868,10 +885,17 @@ func SetSecurityStepUpEmailSenderForTest(hook func(*model.AdtySite, string, stri
 // code for an important-operation step-up. site is the current request site
 // (nil is the main site, site ID 0).
 func IssueSecurityEmailCode(identity AuthIdentity, scope string, site *model.AdtySite, _ string) error {
-	if _, err := RequireVerificationMethod(identity, scope, VerificationMethodEmailCode); err != nil {
+	siteID := 0
+	if site != nil {
+		siteID = site.Id
+	}
+	if _, err := RequireVerificationMethodForSite(identity, scope, VerificationMethodEmailCode, siteID); err != nil {
 		return err
 	}
 	if err := common.VerificationStoreReady(); err != nil {
+		return err
+	}
+	if err := EnsureAdtyRequestMailConfigured(site); err != nil {
 		return err
 	}
 	user, err := model.GetUserById(identity.UserID, false)
@@ -883,10 +907,6 @@ func IssueSecurityEmailCode(identity AuthIdentity, scope string, site *model.Adt
 		return ErrVerificationUnavailable
 	}
 	code := common.GenerateVerificationCode(6)
-	siteID := 0
-	if site != nil {
-		siteID = site.Id
-	}
 	key := SecurityStepUpCodeKey(email, siteID, identity.UserID, scope)
 	if err := common.RegisterVerificationCodeWithKey(key, code, common.SecurityStepUpPurpose); err != nil {
 		return err
@@ -900,7 +920,7 @@ func IssueSecurityEmailCode(identity AuthIdentity, scope string, site *model.Adt
 	})
 	if err := sendSecurityStepUpEmail(site, subject, email, content); err != nil {
 		_, _ = common.ConsumeVerificationCodeWithKey(key, code, common.SecurityStepUpPurpose)
-		if errors.Is(err, ErrAdtySiteMailNotConfigured) {
+		if errors.Is(err, ErrAdtySiteMailNotConfigured) || errors.Is(err, ErrAdtyMainSiteMailNotConfigured) {
 			return err
 		}
 		return ErrSecurityEmailCodeDelivery
@@ -926,7 +946,7 @@ func completeSecurityVerificationWithEmailCode(identity AuthIdentity, binding Ve
 		}
 		return nil, ErrVerificationFailed
 	}
-	proof, err := CompleteSecurityVerification(identity, binding, VerificationMethodEmailCode)
+	proof, err := CompleteSecurityVerificationForSite(identity, binding, VerificationMethodEmailCode, input.SiteID)
 	if err != nil {
 		common.RestoreVerificationCodeWithKey(key, code, common.SecurityStepUpPurpose, issued)
 		return nil, err

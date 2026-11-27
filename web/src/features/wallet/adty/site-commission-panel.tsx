@@ -51,10 +51,9 @@ export type SiteCommission = {
   converted_usd: string
   converted_clawed_usd?: string
   withdrawn_usd: string
-  frozen_usd: string
-  earnings_hold_usd: string
-  margin_hold_usd: string
-  recovered_usd?: string
+  frozen_usd?: string
+  pending_withdrawal_usd?: string
+  withdrawable_usd?: string
   recovery_usd?: string
   available_at: number
   official_states?: OfficialCommissionStateAmount[]
@@ -83,7 +82,10 @@ async function convertSiteCommission(
 }
 
 /** Moves an amount the inviter types from an available site commission into balance. */
-export function SiteCommissionPanel(props: { onConverted: () => void }) {
+export function SiteCommissionPanel(props: {
+  onConverted: () => void
+  legacyMode?: boolean
+}) {
   const { t } = useTranslation()
   const client = useQueryClient()
   const rows = useQuery({
@@ -117,6 +119,7 @@ export function SiteCommissionPanel(props: { onConverted: () => void }) {
       {rows.isSuccess && rows.data.length > 0 && (
         <SiteInviteWithdrawPanel
           rows={rows.data}
+          legacyMode={props.legacyMode}
           onChanged={() => {
             props.onConverted()
             void client.invalidateQueries({

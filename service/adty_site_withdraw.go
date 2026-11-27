@@ -15,10 +15,9 @@ import (
 )
 
 const (
-	adtySiteWithdrawMinKey    = "adty_site_withdraw.min_usd"
-	adtySiteWithdrawFeeKey    = "adty_site_withdraw.fee_usd"
-	adtySiteWithdrawAlipayKey = "adty_site_withdraw.alipay_cny_rate"
-	adtySiteWithdrawUSDTKey   = "adty_site_withdraw.usdt_usd_rate"
+	adtySiteWithdrawMinKey  = "adty_site_withdraw.min_usd"
+	adtySiteWithdrawFeeKey  = "adty_site_withdraw.fee_usd"
+	adtySiteWithdrawUSDTKey = "adty_site_withdraw.usdt_usd_rate"
 )
 
 var (
@@ -38,10 +37,9 @@ func isAllowedAdtySiteWithdrawNetwork(network string) bool {
 
 // AdtySiteWithdrawRules is Root configuration. Empty or non-positive values are unset.
 type AdtySiteWithdrawRules struct {
-	MinUSD        string `json:"min_usd"`
-	FeeUSD        string `json:"fee_usd"`
-	AlipayCNYRate string `json:"alipay_cny_rate,omitempty"`
-	USDTUSDRate   string `json:"usdt_usd_rate"`
+	MinUSD      string `json:"min_usd"`
+	FeeUSD      string `json:"fee_usd"`
+	USDTUSDRate string `json:"usdt_usd_rate"`
 }
 
 type AdtySiteWithdrawInput struct {
@@ -76,12 +74,10 @@ func resignSiteWithdrawalQR(row *model.AdtySiteWithdrawal, now time.Time) {
 }
 
 type adtySiteWithdrawConfig struct {
-	Min           decimal.Decimal
-	Fee           decimal.Decimal
-	AlipayCNYRate decimal.Decimal
-	AlipayCNYRaw  string
-	USDTUSDRate   decimal.Decimal
-	USDTUSDRaw    string
+	Min         decimal.Decimal
+	Fee         decimal.Decimal
+	USDTUSDRate decimal.Decimal
+	USDTUSDRaw  string
 }
 
 func SaveAdtySiteWithdrawRules(rules AdtySiteWithdrawRules, operatorID int) error {
@@ -116,12 +112,6 @@ func SaveAdtySiteWithdrawRulesWithAudit(rules AdtySiteWithdrawRules, operatorID 
 		"fee_usd":       feeRaw,
 		"usdt_usd_rate": usdtRaw,
 	}
-	if alipayTrimmed := strings.TrimSpace(rules.AlipayCNYRate); alipayTrimmed != "" {
-		if _, alipayRaw, alipayErr := requiredPositiveDecimal(alipayTrimmed); alipayErr == nil {
-			values[adtySiteWithdrawAlipayKey] = alipayRaw
-			after["alipay_cny_rate"] = alipayRaw
-		}
-	}
 	var auditEvent *model.AuditLog
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		before := map[string]any{"configured": false}
@@ -131,12 +121,6 @@ func SaveAdtySiteWithdrawRulesWithAudit(rules AdtySiteWithdrawRules, operatorID 
 				"min_usd":       prev.Min.String(),
 				"fee_usd":       prev.Fee.String(),
 				"usdt_usd_rate": prev.USDTUSDRaw,
-			}
-			if prev.AlipayCNYRaw != "" {
-				before["alipay_cny_rate"] = prev.AlipayCNYRaw
-				if _, ok := after["alipay_cny_rate"]; !ok {
-					after["alipay_cny_rate"] = prev.AlipayCNYRaw
-				}
 			}
 		} else if !errors.Is(cfgErr, ErrAdtySiteWithdrawUnset) {
 			return cfgErr
@@ -204,13 +188,7 @@ func loadAdtySiteWithdrawConfigTx(tx *gorm.DB, lock bool) (adtySiteWithdrawConfi
 	var cfg adtySiteWithdrawConfig
 	var err error
 	// Lock/read keys in strict lexicographical order matching SaveOptionsTx
-	// (alipay_cny_rate < fee_usd < min_usd < usdt_usd_rate) to avoid deadlocks.
-	if alipayRate, alipayRaw, alipayErr := readPositiveOptionTx(tx, adtySiteWithdrawAlipayKey, lock); alipayErr == nil {
-		cfg.AlipayCNYRate = alipayRate
-		cfg.AlipayCNYRaw = alipayRaw
-	} else if !errors.Is(alipayErr, ErrAdtySiteWithdrawUnset) {
-		return cfg, alipayErr
-	}
+	// (fee_usd < min_usd < usdt_usd_rate) to avoid deadlocks.
 	if cfg.Fee, _, err = readPositiveOptionTx(tx, adtySiteWithdrawFeeKey, lock); err != nil {
 		return cfg, err
 	}
@@ -245,13 +223,12 @@ func readPositiveOptionTx(tx *gorm.DB, key string, lock bool) (decimal.Decimal, 
 
 // AdtySiteWithdrawRulesView is what the owner page may show. Unset rules stay blank.
 type AdtySiteWithdrawRulesView struct {
-	Configured    bool     `json:"configured"`
-	MinUSD        string   `json:"min_usd,omitempty"`
-	FeeUSD        string   `json:"fee_usd,omitempty"`
-	AlipayCNYRate string   `json:"alipay_cny_rate,omitempty"`
-	USDTUSDRate   string   `json:"usdt_usd_rate,omitempty"`
-	Methods       []string `json:"methods"`
-	Networks      []string `json:"networks"`
+	Configured  bool     `json:"configured"`
+	MinUSD      string   `json:"min_usd,omitempty"`
+	FeeUSD      string   `json:"fee_usd,omitempty"`
+	USDTUSDRate string   `json:"usdt_usd_rate,omitempty"`
+	Methods     []string `json:"methods"`
+	Networks    []string `json:"networks"`
 }
 
 func LoadAdtySiteWithdrawRules() (AdtySiteWithdrawRulesView, error) {
@@ -269,7 +246,6 @@ func LoadAdtySiteWithdrawRules() (AdtySiteWithdrawRulesView, error) {
 	view.Configured = true
 	view.MinUSD = cfg.Min.String()
 	view.FeeUSD = cfg.Fee.String()
-	view.AlipayCNYRate = cfg.AlipayCNYRaw
 	view.USDTUSDRate = cfg.USDTUSDRaw
 	return view, nil
 }

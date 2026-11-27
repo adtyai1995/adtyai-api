@@ -110,9 +110,11 @@ func (req *adtyEpayChannelRequest) toChannel() (*model.AdtyEpayChannel, error) {
 	if strings.TrimSpace(req.Name) == "" || req.GatewayURL == "" || strings.TrimSpace(req.MerchantId) == "" {
 		return nil, common.NewMessage("Name, gateway address and merchant ID are required")
 	}
-	if !strings.HasPrefix(req.GatewayURL, "https://") && !strings.HasPrefix(req.GatewayURL, "http://") {
-		return nil, common.NewMessage("The gateway address must start with http:// or https://")
+	validatedURL, urlErr := service.ValidateEpayGatewayURL(req.GatewayURL)
+	if urlErr != nil {
+		return nil, urlErr
 	}
+	req.GatewayURL = validatedURL
 	signType := strings.ToUpper(strings.TrimSpace(req.SignType))
 	if signType == "" {
 		signType = model.AdtyEpaySignTypeMD5

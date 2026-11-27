@@ -167,7 +167,7 @@ export function CapabilityBento() {
             </ul>
             <p className='text-muted-foreground mt-auto pt-6 text-sm leading-[1.7]'>
               {t(
-                'Your wallet shows the methods this site offers. Payment-method top-up bonuses never expire.'
+                'Your wallet shows the methods this site offers. USDT top-up bonuses never expire.'
               )}
             </p>
           </Tile>

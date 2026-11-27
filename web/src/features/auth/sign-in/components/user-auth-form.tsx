@@ -137,6 +137,19 @@ export function UserAuthForm({
     }
   }
 
+  if (!passwordLoginEnabled) {
+    return (
+      <div
+        className={cn(
+          'border-border/60 bg-muted/40 text-muted-foreground rounded-md border p-4 text-sm',
+          className
+        )}
+      >
+        {t('Password login has been disabled by administrator')}
+      </div>
+    )
+  }
+
   return (
     <Form {...form}>
       <form
@@ -144,73 +157,69 @@ export function UserAuthForm({
         className={cn('grid gap-4 [&_input]:h-10', className)}
         {...props}
       >
-        {passwordLoginEnabled && (
-          <>
-            {/* Username Field */}
-            <FormField
-              control={form.control}
-              name='username'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('Username or Email')}</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder={t('Enter your username or email')}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            {/* Password Field */}
-            <FormField
-              control={form.control}
-              name='password'
-              render={({ field }) => (
-                <FormItem className='relative'>
-                  <FormLabel>{t('Password')}</FormLabel>
-                  <FormControl>
-                    <PasswordInput
-                      placeholder={t('Enter password')}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                  <Link
-                    to='/forgot-password'
-                    className='text-muted-foreground absolute end-0 -top-0.5 z-10 text-sm font-medium hover:opacity-75'
-                  >
-                    {t('Forgot password?')}
-                  </Link>
-                </FormItem>
-              )}
-            />
-
-            {/* Submit Button */}
-            <Button
-              type='submit'
-              variant='brand'
-              className='mt-1 h-10 w-full justify-center gap-2 text-[0.9375rem]'
-              disabled={isLoading}
-            >
-              {isLoading ? <Loader2 className='animate-spin' /> : <LogIn />}
-              {t('Sign in')}
-            </Button>
-
-            {/* Turnstile */}
-            {isTurnstileEnabled && (
-              <div className='mt-2'>
-                <Turnstile
-                  key={turnstileWidgetKey}
-                  siteKey={turnstileSiteKey}
-                  onVerify={setTurnstileToken}
-                  onExpire={() => setTurnstileToken('')}
+        {/* Username Field */}
+        <FormField
+          control={form.control}
+          name='username'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t('Username or Email')}</FormLabel>
+              <FormControl>
+                <Input
+                  placeholder={t('Enter your username or email')}
+                  {...field}
                 />
-              </div>
-            )}
-          </>
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        {/* Password Field */}
+        <FormField
+          control={form.control}
+          name='password'
+          render={({ field }) => (
+            <FormItem className='relative'>
+              <FormLabel>{t('Password')}</FormLabel>
+              <FormControl>
+                <PasswordInput
+                  placeholder={t('Enter password')}
+                  {...field}
+                />
+              </FormControl>
+              <FormMessage />
+              <Link
+                to='/forgot-password'
+                className='text-muted-foreground absolute end-0 -top-0.5 z-10 text-sm font-medium hover:opacity-75'
+              >
+                {t('Forgot password?')}
+              </Link>
+            </FormItem>
+          )}
+        />
+
+        {/* Submit Button */}
+        <Button
+          type='submit'
+          variant='brand'
+          className='mt-1 h-10 w-full justify-center gap-2 text-[0.9375rem]'
+          disabled={isLoading}
+        >
+          {isLoading ? <Loader2 className='animate-spin' /> : <LogIn />}
+          {t('Sign in')}
+        </Button>
+
+        {/* Turnstile */}
+        {isTurnstileEnabled && (
+          <div className='mt-2'>
+            <Turnstile
+              key={turnstileWidgetKey}
+              siteKey={turnstileSiteKey}
+              onVerify={setTurnstileToken}
+              onExpire={() => setTurnstileToken('')}
+            />
+          </div>
         )}
 
         <LegalConsent

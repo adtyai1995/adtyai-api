@@ -58,6 +58,7 @@ export function Profile() {
   const permissions = user?.permissions
 
   const isSubsiteUser = (user?.site_id ?? 0) > 0
+  const isSiteStaff = (user?.staff_site_id ?? 0) > 0
   const isPureSiteOwner = Boolean(
     user?.adty_site_owner && (user?.role ?? 0) < ROLE.ADMIN
   )
@@ -67,7 +68,7 @@ export function Profile() {
     !isSubsiteUser &&
       user &&
       user.role < ROLE.SUPER_ADMIN &&
-      (user.staff_site_id ?? 0) === 0 &&
+      !isSiteStaff &&
       !user.adty_site_owner &&
       canOpenPlatformTickets(user)
   )
@@ -123,7 +124,9 @@ export function Profile() {
                   profile={profile}
                   onProfileUpdate={refreshProfile}
                 />
-                {!isPureSiteOwner && <TelegramBindCard purpose='user' />}
+                {!isPureSiteOwner && !isSiteStaff && (
+                  <TelegramBindCard purpose='user' />
+                )}
                 {showPlatformAdminTelegram && (
                   <TelegramBindCard purpose='admin' platformSupport />
                 )}

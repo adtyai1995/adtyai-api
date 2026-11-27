@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"slices"
@@ -588,24 +589,9 @@ func buildAdminUserResponses(users []*model.User) ([]adminUserResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	siteOwners := map[int]bool{}
-	if len(userIDs) > 0 && model.DB != nil {
-		hasSiteTable, tblErr := model.AdtyTableExists(model.DB, &model.AdtySite{})
-		if tblErr != nil {
-			return nil, tblErr
-		}
-		if hasSiteTable {
-			var ownerIDs []int
-			if err := model.DB.Model(&model.AdtySite{}).
-				Where("owner_user_id IN ? AND status NOT IN ?", userIDs, []string{model.AdtySiteStatusClosed, "deleted", "rejected"}).
-				Distinct("owner_user_id").
-				Pluck("owner_user_id", &ownerIDs).Error; err != nil {
-				return nil, err
-			}
-			for _, oid := range ownerIDs {
-				siteOwners[oid] = true
-			}
-		}
+	siteOwners, err := service.AdtySiteOwnerIDSet(userIDs)
+	if err != nil {
+		return nil, err
 	}
 	items := make([]adminUserResponse, len(users))
 	for i, user := range users {
@@ -2228,8 +2214,12 @@ func UpdateUserSetting(c *gin.Context) {
 	}
 
 	// 验证预警阈值，0 表示使用系统默认阈值
-	if req.QuotaWarningThreshold < 0 {
-		common.ApiErrorT(c, "Reminder threshold cannot be negative")
+	if math.IsNaN(req.QuotaWarningThreshold) || math.IsInf(req.QuotaWarningThreshold, 0) || req.QuotaWarningThreshold < 0 || req.QuotaWarningThreshold > float64(common.MaxWalletQuota) {
+		if req.QuotaWarningThreshold < 0 {
+			common.ApiErrorT(c, "Reminder threshold cannot be negative")
+		} else {
+			common.ApiErrorT(c, "Invalid parameters")
+		}
 		return
 	}
 

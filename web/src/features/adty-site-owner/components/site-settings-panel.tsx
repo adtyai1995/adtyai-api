@@ -513,7 +513,7 @@ function DomainsCard(props: { site: OwnerSite }) {
   })
   const checkNow = useMutation({
     mutationFn: (input: { id: number; mode: 'dns' | 'edge_cert' }) =>
-      checkDomainNow(input.id),
+      checkDomainNow(input.id, input.mode),
     onMutate: (input) => setCheckingTarget(input),
     onSuccess: (updated, input) => {
       queryClient.setQueryData<OwnerSite | undefined>(
