@@ -129,7 +129,7 @@ export function Referral() {
         <SectionPageLayout.Title>{t('Referral')}</SectionPageLayout.Title>
         <SectionPageLayout.Description>
           {t(
-            'Invite users to this sub-site through your one-level invite link and manage your site invite commissions.'
+            'Invite users to this site through your one-level invite link and manage your invite commissions.'
           )}
         </SectionPageLayout.Description>
         <SectionPageLayout.Content>

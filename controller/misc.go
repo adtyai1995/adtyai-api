@@ -288,7 +288,7 @@ func SendEmailVerification(c *gin.Context) {
 		return
 	}
 	if err := service.EnsureAdtyRequestMailConfigured(reqSite); err != nil {
-		common.ApiError(c, err)
+		common.ApiError(c, service.AdtyCustomerMailError(err))
 		return
 	}
 	// 二开：已注册的邮箱不发验证码，改发一封提醒，响应和正常情况完全一样（任务 7.3）
@@ -333,7 +333,7 @@ func SendPasswordResetEmail(c *gin.Context) {
 		return
 	}
 	if err := service.EnsureAdtyRequestMailConfigured(service.AdtySiteForRequest(c)); err != nil {
-		common.ApiError(c, err)
+		common.ApiError(c, service.AdtyCustomerMailError(err))
 		return
 	}
 	username := strings.TrimSpace(c.Query("username"))
@@ -341,7 +341,7 @@ func SendPasswordResetEmail(c *gin.Context) {
 	switch {
 	case err == nil:
 		if sendErr := sendPasswordResetInstructions(c, user); errors.Is(sendErr, service.ErrAdtySiteMailNotConfigured) {
-			common.ApiError(c, sendErr)
+			common.ApiError(c, service.AdtyCustomerMailError(sendErr))
 			return
 		}
 	case errors.Is(err, model.ErrEmailAmbiguous):

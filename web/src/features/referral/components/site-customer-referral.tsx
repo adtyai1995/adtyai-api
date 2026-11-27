@@ -134,7 +134,7 @@ export function SiteCustomerReferral() {
           <div className='flex min-w-0 flex-col gap-4'>
             <div className='flex flex-col gap-1'>
               <span className='text-background/70 text-xs'>
-                {t('Your site invite link')}
+                {t('Your invite link')}
               </span>
               <div className='flex items-center gap-2'>
                 <span
@@ -168,9 +168,9 @@ export function SiteCustomerReferral() {
                 {profile.affiliate_disabled === true ||
                 profile.affiliate_status === 'disabled'
                   ? t(
-                      'Your affiliate account has been disabled by the site owner.'
+                      'Your affiliate account has been disabled by the site administrator.'
                     )
-                  : t('Site referral is currently disabled by the site owner.')}
+                  : t('The referral program is currently disabled on this site.')}
               </p>
             )}
             <dl className='grid grid-cols-2 gap-4 text-sm sm:grid-cols-3'>
@@ -229,7 +229,7 @@ export function SiteCustomerReferral() {
                   <Input
                     id='site-bind-invite-code'
                     value={bindCode}
-                    placeholder={t('Enter site invite code')}
+                    placeholder={t('Enter invite code')}
                     onChange={(event) => setBindCode(event.target.value)}
                   />
                 </div>
@@ -311,7 +311,7 @@ export function SiteCustomerReferral() {
               <ul className='text-muted-foreground list-disc space-y-2 pl-5 text-sm'>
                 <li>
                   {t(
-                    'Only direct one-level invites within this sub-site qualify for commission.'
+                    'Only direct one-level invites within this site qualify for commission.'
                   )}
                 </li>
                 <li>
@@ -321,7 +321,7 @@ export function SiteCustomerReferral() {
                 </li>
                 <li>
                   {t(
-                    'Commission settles after site coverage and the {{days}}-day observation period. Refunded orders void or claw back their commission.',
+                    'Commission settles after coverage and the {{days}}-day observation period. Refunded orders void or claw back their commission.',
                     { days: profile.observation_days ?? 0 }
                   )}
                 </li>

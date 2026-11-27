@@ -43,6 +43,7 @@ import {
 } from '../api'
 import { useNowSeconds } from '../lib/countdown'
 import {
+  customerMethodLabel,
   METHOD_LABELS,
   methodLabel,
   ORDER_STATUS_LABELS,
@@ -281,7 +282,12 @@ export function AdtyTopupHistory(props: {
               id: 'method',
               header: t('Payment method'),
               cell: (row) =>
-                row.ext?.method_label || t(methodLabel(row.payment_method)),
+                row.ext?.method_label ||
+                t(
+                  props.business === 'owner_margin_topup'
+                    ? methodLabel(row.payment_method)
+                    : customerMethodLabel(row.payment_method)
+                ),
             },
             {
               id: 'scene',

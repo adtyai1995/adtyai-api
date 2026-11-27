@@ -178,6 +178,7 @@ func TestSubsiteBasicAuthIsolationAndMailGuards(t *testing.T) {
 		cSub.Set("adty_site_id", site.Id)
 		SendEmailVerification(cSub)
 		assert.Contains(t, recSub.Body.String(), `"success":false`)
+		assert.Contains(t, recSub.Body.String(), service.ErrAdtyCustomerMailNotConfigured.Error())
 
 		// Unconfigured main site also rejects instead of faking success.
 		recMain := httptest.NewRecorder()
@@ -185,6 +186,7 @@ func TestSubsiteBasicAuthIsolationAndMailGuards(t *testing.T) {
 		cMain.Request = httptest.NewRequest(http.MethodGet, "/api/verification?email=alice@mainonly.com", nil)
 		SendEmailVerification(cMain)
 		assert.Contains(t, recMain.Body.String(), `"success":false`)
+		assert.Contains(t, recMain.Body.String(), service.ErrAdtyCustomerMailNotConfigured.Error())
 	})
 
 	t.Run("subsite cannot enable email verification before configuring mail or domain restriction with empty whitelist", func(t *testing.T) {

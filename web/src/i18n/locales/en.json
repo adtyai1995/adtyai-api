@@ -11860,6 +11860,25 @@
     "Allow users to log in with password. Site owners can still sign in on the main site if this is disabled.": "Allow users to log in with password. Site owners can still sign in on the main site if this is disabled.",
     "Email configured": "Email configured",
     "Email not configured": "Email not configured",
-    "Go to email configuration": "Go to email configuration"
+    "Go to email configuration": "Go to email configuration",
+    "Email sending is not configured for this site. Please contact the site administrator.": "Email sending is not configured for this site. Please contact the site administrator.",
+    "Recharge bonus quota is temporarily unavailable on this site. Please contact the site administrator or try again later.": "Recharge bonus quota is temporarily unavailable on this site. Please contact the site administrator or try again later.",
+    "Invite code (optional)": "Invite code (optional)",
+    "Enter invite code": "Enter invite code",
+    "Invalid invite code": "Invalid invite code",
+    "Failed to generate invite code": "Failed to generate invite code",
+    "Unable to issue the invite session right now": "Unable to issue the invite session right now",
+    "This invitation feature is only available to eligible accounts on this site": "This invitation feature is only available to eligible accounts on this site",
+    "This account cannot join this referral program": "This account cannot join this referral program",
+    "Quota voucher": "Quota voucher",
+    "Invite users to this site through your one-level invite link and manage your invite commissions.": "Invite users to this site through your one-level invite link and manage your invite commissions.",
+    "Your invite link": "Your invite link",
+    "Your affiliate account has been disabled by the site administrator.": "Your affiliate account has been disabled by the site administrator.",
+    "The referral program is currently disabled on this site.": "The referral program is currently disabled on this site.",
+    "Only direct one-level invites within this site qualify for commission.": "Only direct one-level invites within this site qualify for commission.",
+    "Commission settles after coverage and the {{days}}-day observation period. Refunded orders void or claw back their commission.": "Commission settles after coverage and the {{days}}-day observation period. Refunded orders void or claw back their commission.",
+    "Cash withdrawals of invite commission are reviewed by the site administrator.": "Cash withdrawals of invite commission are reviewed by the site administrator.",
+    "Transferring to your balance credits your account immediately. Cash withdrawals are completed after review and payout.": "Transferring to your balance credits your account immediately. Cash withdrawals are completed after review and payout.",
+    "Site administrators can create teams or issue team registration links.": "Site administrators can create teams or issue team registration links."
   }
 }

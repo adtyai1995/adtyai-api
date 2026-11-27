@@ -61,6 +61,20 @@ export function methodLabel(method: string): string {
   return METHOD_LABELS[method] ?? method
 }
 
+/** Customer-facing method label that avoids leaking main-site/subsite voucher kinds. */
+export function customerMethodLabel(method: string): string {
+  const normalized = method.trim().toLowerCase()
+  if (
+    normalized === 'main_user' ||
+    normalized === 'site_customer' ||
+    normalized === 'voucher:main_user' ||
+    normalized === 'voucher:site_customer'
+  ) {
+    return 'Quota voucher'
+  }
+  return methodLabel(method)
+}
+
 /** Epay lists one button per channel, so a method id alone is not unique. */
 export function paymentMethodKey(method: AdtyMethod): string {
   return `${method.id}:${method.channel_id ?? 0}`

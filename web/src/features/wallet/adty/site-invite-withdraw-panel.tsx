@@ -531,11 +531,13 @@ function SiteWithdrawForm(props: {
           {t('Invite commission withdrawal')}
         </h3>
         <p className='text-muted-foreground text-sm'>
-          {t('The site owner reviews cash withdrawals of invite commission.')}
+          {t(
+            'Cash withdrawals of invite commission are reviewed by the site administrator.'
+          )}
         </p>
         <p className='text-muted-foreground text-sm'>
           {t(
-            'A transfer to balance deducts the site hold. External payout releases it after payment is complete.'
+            'Transferring to your balance credits your account immediately. Cash withdrawals are completed after review and payout.'
           )}
         </p>
         <p className='text-sm tabular-nums'>

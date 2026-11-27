@@ -32,7 +32,7 @@ var (
 	ErrReferralWithdrawBlocked = errors.New("withdrawal disabled for this affiliate")
 	// ErrReferralWithdrawUnavailable：这种去向要的最低提现额或手续费还没在后台设置（约定 I）。
 	ErrReferralWithdrawUnavailable = errors.New("withdrawal method not configured")
-	ErrReferralSiteCustomer        = common.NewMessage("Reseller site customers cannot join the referral program")
+	ErrReferralSiteCustomer        = common.NewMessage("This account cannot join this referral program")
 )
 
 // ReferralService 收拢推广返佣的业务逻辑。

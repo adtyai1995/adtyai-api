@@ -102,8 +102,8 @@ func writeSecurityOperationError(c *gin.Context, err error) {
 	case errors.Is(err, model.ErrUsernameAlreadyTaken):
 		status = http.StatusConflict
 		code, message = "USERNAME_ALREADY_TAKEN", "Username already exists or has been deleted"
-	case errors.Is(err, service.ErrAdtySiteMailNotConfigured):
-		code, message = "SITE_MAIL_NOT_CONFIGURED", err.Error()
+	case errors.Is(err, service.ErrAdtySiteMailNotConfigured), errors.Is(err, service.ErrAdtyMainSiteMailNotConfigured):
+		code, message = "SITE_MAIL_NOT_CONFIGURED", service.ErrAdtyCustomerMailNotConfigured.Error()
 	case errors.Is(err, service.ErrEmailBindingDelivery):
 		code, message = "EMAIL_BINDING_DELIVERY_FAILED", err.Error()
 	case errors.Is(err, model.ErrEmailBindingCodeInvalid):

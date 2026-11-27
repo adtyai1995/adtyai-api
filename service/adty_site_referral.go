@@ -646,7 +646,7 @@ func ensureAdtySiteCustomerInviteCode(userID, siteID int) (string, error) {
 			return code, nil
 		}
 	}
-	return "", common.NewMessage("Failed to generate site invite code")
+	return "", common.NewMessage("Failed to generate invite code")
 }
 
 func isAdtyUniqueConflictError(err error) bool {
@@ -675,12 +675,12 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 		return nil, err
 	}
 	if user.SiteId <= 0 || user.StaffSiteId > 0 || user.Status != common.UserStatusEnabled {
-		return nil, common.NewMessage("Only sub-site customers can use sub-site invitations")
+		return nil, common.NewMessage("This invitation feature is only available to eligible accounts on this site")
 	}
 	if isEmp, empErr := AdtyIsIndependentTeamEmployee(userID); empErr != nil {
 		return nil, empErr
 	} else if isEmp {
-		return nil, common.NewMessage("Only sub-site customers can use sub-site invitations")
+		return nil, common.NewMessage("This invitation feature is only available to eligible accounts on this site")
 	}
 	var site model.AdtySite
 	if err := model.DB.First(&site, user.SiteId).Error; err != nil {
@@ -819,7 +819,7 @@ func BuildAdtySiteInviteCookie(siteID int, code string, issuedAt time.Time) (str
 	code = strings.ToUpper(strings.TrimSpace(code))
 	secret := referralSecret()
 	if siteID <= 0 || code == "" || len(code) > 24 || secret == "" {
-		return "", common.NewMessage("Unable to issue the site invite cookie right now")
+		return "", common.NewMessage("Unable to issue the invite session right now")
 	}
 	payload := fmt.Sprintf("v1.%d.%s.%d", siteID, code, issuedAt.Unix())
 	return base64.StdEncoding.EncodeToString([]byte(payload + "." + common.HmacSha256(payload, secret))), nil
@@ -882,11 +882,11 @@ func AdtySiteInviteCookieExpired(siteID int, capturedAt, nowUnix int64) bool {
 func ValidateAdtySiteInviteCode(siteID int, code string) (string, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	if siteID <= 0 || code == "" || len(code) > 24 {
-		return "", common.NewMessage("Invalid site invite code")
+		return "", common.NewMessage("Invalid invite code")
 	}
 	var site model.AdtySite
 	if err := model.DB.Select("id", "status").First(&site, siteID).Error; err != nil {
-		return "", common.NewMessage("Invalid site invite code")
+		return "", common.NewMessage("Invalid invite code")
 	}
 	if site.Status == model.AdtySiteStatusClosed || site.Status == model.AdtySiteStatusClosing || site.Status == model.AdtySiteStatusDeleting {
 		return "", common.NewMessage("Site referral is not enabled")
@@ -901,7 +901,7 @@ func ValidateAdtySiteInviteCode(siteID int, code string) (string, error) {
 		return "", lookup.Error
 	}
 	if lookup.RowsAffected == 0 || cust.UserId <= 0 {
-		return "", common.NewMessage("Invalid site invite code")
+		return "", common.NewMessage("Invalid invite code")
 	}
 	activeReferrer, userErr := isActiveSiteReferrerUserTx(model.DB, siteID, cust.UserId)
 	if userErr != nil {
@@ -955,7 +955,7 @@ func ClearAdtySiteInviteCookie(c *gin.Context) {
 func BindSiteInviteByCodeFromIP(siteID int, code string, inviteeID int, ipHash string) error {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	if siteID <= 0 || inviteeID <= 0 || code == "" || len(code) > 24 {
-		return common.NewMessage("Invalid site invite code")
+		return common.NewMessage("Invalid invite code")
 	}
 	var rate model.AdtySiteReferralRate
 	if err := model.DB.Where("site_id = ?", siteID).First(&rate).Error; err != nil || !rate.Enabled {
@@ -967,7 +967,7 @@ func BindSiteInviteByCodeFromIP(siteID int, code string, inviteeID int, ipHash s
 		return lookup.Error
 	}
 	if lookup.RowsAffected == 0 || cust.UserId <= 0 {
-		return common.NewMessage("Invalid site invite code")
+		return common.NewMessage("Invalid invite code")
 	}
 	effectiveRate := rate.Rate
 	aff, found, affErr := loadSiteReferralAffiliateTx(model.DB, siteID, cust.UserId)
@@ -990,17 +990,17 @@ func BindSiteInviteByCodeFromIP(siteID int, code string, inviteeID int, ipHash s
 	}
 	var inviter model.User
 	if err := model.DB.Select("id", "site_id", "staff_site_id", "status").First(&inviter, cust.UserId).Error; err != nil {
-		return common.NewMessage("Invalid site invite code")
+		return common.NewMessage("Invalid invite code")
 	}
 	if inviter.SiteId != siteID || inviter.StaffSiteId > 0 || inviter.Status != common.UserStatusEnabled {
-		return common.NewMessage("Invalid site invite code")
+		return common.NewMessage("Invalid invite code")
 	}
 	var invitee model.User
 	if err := model.DB.Select("id", "site_id", "staff_site_id", "status").First(&invitee, inviteeID).Error; err != nil {
 		return err
 	}
 	if invitee.SiteId != siteID || invitee.StaffSiteId > 0 || invitee.Status != common.UserStatusEnabled {
-		return common.NewMessage("Only sub-site customers can use sub-site invitations")
+		return common.NewMessage("This invitation feature is only available to eligible accounts on this site")
 	}
 	return BindSiteInviteFromIP(siteID, cust.UserId, inviteeID, ipHash)
 }
@@ -1016,12 +1016,12 @@ func BindAdtySiteInviteByCodeForUser(userID int, code, ipHash string) error {
 		return err
 	}
 	if user.SiteId <= 0 || user.StaffSiteId > 0 || user.Status != common.UserStatusEnabled {
-		return common.NewMessage("Only sub-site customers can use sub-site invitations")
+		return common.NewMessage("This invitation feature is only available to eligible accounts on this site")
 	}
 	if isEmp, empErr := AdtyIsIndependentTeamEmployee(userID); empErr != nil {
 		return empErr
 	} else if isEmp {
-		return common.NewMessage("Only sub-site customers can use sub-site invitations")
+		return common.NewMessage("This invitation feature is only available to eligible accounts on this site")
 	}
 	return BindSiteInviteByCodeFromIP(user.SiteId, code, user.Id, ipHash)
 }

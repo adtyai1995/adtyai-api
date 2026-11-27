@@ -74,8 +74,8 @@ func SendAccountDeletionCode(c *gin.Context) {
 	})
 	if err := sendAccountDeletionEmail(site, subject, email, content); err != nil {
 		_, _ = common.ConsumeVerificationCodeWithKey(key, code, common.AccountDeletionPurpose)
-		if errors.Is(err, service.ErrAdtySiteMailNotConfigured) {
-			common.ApiError(c, err)
+		if errors.Is(err, service.ErrAdtySiteMailNotConfigured) || errors.Is(err, service.ErrAdtyMainSiteMailNotConfigured) {
+			common.ApiError(c, service.AdtyCustomerMailError(err))
 			return
 		}
 		common.ApiErrorT(c, "Failed to send email")

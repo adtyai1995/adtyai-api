@@ -368,11 +368,11 @@ export function SignUpForm({
         {showSiteInviteCode && (
           <div className='space-y-1.5'>
             <Label htmlFor='sign-up-site-invite-code'>
-              {t('Site invite code (optional)')}
+              {t('Invite code (optional)')}
             </Label>
             <Input
               id='sign-up-site-invite-code'
-              placeholder={t('Enter site invite code')}
+              placeholder={t('Enter invite code')}
               value={siteInviteCode}
               onChange={(event) => {
                 setSiteInviteEdited(true)

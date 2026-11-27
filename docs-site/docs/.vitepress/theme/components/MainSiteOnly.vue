@@ -17,13 +17,13 @@ const homeHref = computed(() => withBase(isZh.value ? '/zh-cn/' : '/'))
 <template>
   <div v-if="brand.isSubsite" class="adty-card" data-adty-keep-raw="true">
     <h3 class="adty-card-title" style="margin-bottom: 8px">
-      {{ isZh ? '该页面仅在主站展示' : 'Main Platform Page Only' }}
+      {{ isZh ? '该页面暂未开放' : 'Page Unavailable' }}
     </h3>
     <p class="adty-muted" style="margin: 0 0 12px">
       {{
         isZh
-          ? '当前访问的是独立品牌站点，分站合作介绍不在当前站点开放展示。'
-          : 'This partnership overview is only displayed on the main platform site.'
+          ? '该站点未开放此页面，请返回文档首页查看其他指南。'
+          : 'This page is not available on this site. Please return to the documentation home.'
       }}
     </p>
     <a class="adty-wizard-link" :href="homeHref">

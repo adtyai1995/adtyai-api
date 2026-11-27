@@ -561,7 +561,7 @@ export function TeamPanel(
             <EmptyState
               title={t('You are not in a team')}
               description={t(
-                'Platform administrators and site owners can create teams or issue team registration links.'
+                'Site administrators can create teams or issue team registration links.'
               )}
             />
           )}

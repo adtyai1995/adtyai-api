@@ -158,10 +158,7 @@ function CommissionRow(props: {
   })
   const states = officialCommissionStates(props.row)
   const details = [
-    [t('Earnings hold'), props.row.earnings_hold_usd],
-    [t('Margin hold'), props.row.margin_hold_usd],
     [t('Clawed back'), props.row.clawed_usd],
-    [t('Returned to site wallets'), props.row.recovered_usd],
     [t('Recovery liability'), props.row.recovery_usd],
   ].filter(([, amount]) => amount && amount !== '0')
   return (

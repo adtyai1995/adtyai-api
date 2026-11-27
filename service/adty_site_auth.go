@@ -17,7 +17,20 @@ import (
 
 const adtySiteAuthWhitelistMaxDomains = 200
 
-var ErrAdtyMainSiteMailNotConfigured = common.NewMessage("Email sending is not configured. Configure SMTP or Resend first.")
+var (
+	ErrAdtyMainSiteMailNotConfigured = common.NewMessage("Email sending is not configured. Configure SMTP or Resend first.")
+	ErrAdtyCustomerMailNotConfigured = common.NewMessage("Email sending is not configured for this site. Please contact the site administrator.")
+)
+
+// AdtyCustomerMailError maps internal site/main mail-unconfigured sentinel
+// errors to a neutral customer-facing message so end users on autonomous
+// subsites never see subsite/admin transport details.
+func AdtyCustomerMailError(err error) error {
+	if errors.Is(err, ErrAdtySiteMailNotConfigured) || errors.Is(err, ErrAdtyMainSiteMailNotConfigured) {
+		return ErrAdtyCustomerMailNotConfigured
+	}
+	return err
+}
 
 // AdtySiteAuthConfigView is returned to site owners when reading or updating
 // per-subsite basic authentication settings.

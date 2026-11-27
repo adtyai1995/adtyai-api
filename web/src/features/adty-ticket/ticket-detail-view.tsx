@@ -458,9 +458,13 @@ export function TicketDetailView(props: {
                 !message.author_role || message.author_role === 'unconfirmed'
               const isSupport =
                 !isUnconfirmed && message.author_role !== 'customer'
-              const roleLabel = t(
+              const rawRoleKey =
                 TICKET_AUTHOR_ROLE_LABELS[message.author_role ?? ''] ??
-                  'Historical author role unconfirmed'
+                'Historical author role unconfirmed'
+              const roleLabel = t(
+                props.scope === 'personal' && isSupport
+                  ? 'Support staff'
+                  : rawRoleKey
               )
               const messageImages = (detail.images ?? []).filter(
                 (image) =>
