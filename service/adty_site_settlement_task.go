@@ -69,7 +69,11 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 		return 0, err
 	}
 	var pendingCoverageSites []int
-	if model.DB.Migrator().HasTable(&model.AdtySiteInviteCommission{}) {
+	hasCommTable, err := model.AdtyTableExists(model.DB, &model.AdtySiteInviteCommission{})
+	if err != nil {
+		return 0, err
+	}
+	if hasCommTable {
 		if err := model.DB.Model(&model.AdtySiteInviteCommission{}).Distinct("site_id").
 			Where("site_id > 0 AND status = ?", model.AdtySiteCommissionPendingCoverage).
 			Pluck("site_id", &pendingCoverageSites).Error; err != nil {
@@ -77,7 +81,11 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 		}
 	}
 	var pendingGiftSites []int
-	if model.DB.Migrator().HasTable(&model.AdtyGiftFulfillment{}) {
+	hasGiftTable, err := model.AdtyTableExists(model.DB, &model.AdtyGiftFulfillment{})
+	if err != nil {
+		return 0, err
+	}
+	if hasGiftTable {
 		if err := model.DB.Model(&model.AdtyGiftFulfillment{}).Distinct("site_id").
 			Where("site_id > 0 AND status = ?", model.AdtyGiftFulfillmentPending).
 			Pluck("site_id", &pendingGiftSites).Error; err != nil {

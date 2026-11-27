@@ -104,7 +104,11 @@ func adtyTranslateViaProviderWithOptions(modelName, text string, allowDisabled b
 			return "", err
 		}
 		if AdtyPlatformChannelTranslateFunc != nil {
-			return AdtyPlatformChannelTranslateFunc(channel, upstreamModel, buildAdtyTranslationSystemPrompt(text), text, adtyTranslationTimeout(cfg.TimeoutSec))
+			systemPrompt, err := buildAdtyTranslationSystemPrompt(text)
+			if err != nil {
+				return "", err
+			}
+			return AdtyPlatformChannelTranslateFunc(channel, upstreamModel, systemPrompt, text, adtyTranslationTimeout(cfg.TimeoutSec))
 		}
 		return adtyDispatchTranslationHTTP(protocol, endpoint, token, upstreamModel, text, cfg.TimeoutSec)
 
@@ -187,13 +191,21 @@ func resolveAdtyPlatformChannel(modelName, requestHost string) (*model.Channel, 
 	if modelName == "" || model.DB == nil {
 		return nil, "", "", "", "", ErrAdtyTranslationInvalid
 	}
-	if !model.DB.Migrator().HasTable(&model.Channel{}) {
+	hasChannelTable, err := model.AdtyTableExists(model.DB, &model.Channel{})
+	if err != nil {
+		return nil, "", "", "", "", err
+	}
+	if !hasChannelTable {
 		return nil, "", "", "", "", ErrAdtyTranslationInvalid
 	}
 
 	var selected *model.Channel
 	sawUnsupported := false
-	if model.DB.Migrator().HasTable(&model.Ability{}) {
+	hasAbilityTable, err := model.AdtyTableExists(model.DB, &model.Ability{})
+	if err != nil {
+		return nil, "", "", "", "", err
+	}
+	if hasAbilityTable {
 		var channelIDs []int
 		err := model.DB.Table("abilities").
 			Select("abilities.channel_id").
@@ -201,17 +213,18 @@ func resolveAdtyPlatformChannel(modelName, requestHost string) (*model.Channel, 
 			Where("abilities.enabled = ? AND abilities.model = ? AND channels.status = ?", true, modelName, common.ChannelStatusEnabled).
 			Order("COALESCE(abilities.priority, 0) DESC, abilities.weight DESC, channels.id DESC").
 			Pluck("abilities.channel_id", &channelIDs).Error
-		if err == nil {
-			for _, id := range channelIDs {
-				var ch model.Channel
-				if err := model.DB.First(&ch, id).Error; err == nil && ch.Status == common.ChannelStatusEnabled {
-					if _, protoErr := adtyChannelProtocol(ch.Type); protoErr != nil {
-						sawUnsupported = true
-						continue
-					}
-					selected = &ch
-					break
+		if err != nil {
+			return nil, "", "", "", "", err
+		}
+		for _, id := range channelIDs {
+			var ch model.Channel
+			if err := model.DB.First(&ch, id).Error; err == nil && ch.Status == common.ChannelStatusEnabled {
+				if _, protoErr := adtyChannelProtocol(ch.Type); protoErr != nil {
+					sawUnsupported = true
+					continue
 				}
+				selected = &ch
+				break
 			}
 		}
 	}
@@ -350,7 +363,11 @@ func adtyTranslationEndpoint(rawBaseURL, protocol string) (string, error) {
 	if err != nil || parsed.Host == "" || parsed.User != nil || !strings.EqualFold(parsed.Scheme, "https") {
 		return "", ErrAdtyTranslationInvalid
 	}
-	if adtyTranslationTargetIsSelf(parsed.Host) {
+	isSelf, err := adtyTranslationTargetIsSelf(parsed.Host)
+	if err != nil {
+		return "", err
+	}
+	if isSelf {
 		return "", ErrAdtyTranslationSelf
 	}
 	if err := validateURLWithCurrentFetchSetting(parsed.String(), false); err != nil {
@@ -378,21 +395,21 @@ func adtyTranslationEndpoint(rawBaseURL, protocol string) (string, error) {
 }
 
 // adtyTranslationTargetIsSelf 防止翻译请求回到本站：本站品牌域名、主站域名、API 域名、分站根域名/自定义域名与私网/环回地址都算自己。
-func adtyTranslationTargetIsSelf(host string) bool {
+func adtyTranslationTargetIsSelf(host string) (bool, error) {
 	host = strings.Trim(AdtyNormalizeHost(host), "[]")
 	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") || host == "0.0.0.0" {
-		return true
+		return true, nil
 	}
 	if ip := common.ParseIP(host); ip != nil {
 		if common.IsPrivateIP(ip) || ip.IsPrivate() || ip.IsLoopback() ||
 			ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
 			ip.IsUnspecified() || ip.IsMulticast() ||
 			common.IsIpInCIDRList(ip, []string{"100.64.0.0/10"}) {
-			return true
+			return true, nil
 		}
 	}
 	if AdtyIsMainHost(host) {
-		return true
+		return true, nil
 	}
 	own := []string{}
 	addOwn := func(domain string) {
@@ -422,33 +439,47 @@ func adtyTranslationTargetIsSelf(host string) bool {
 	addOwn(reseller.FallbackOrigin)
 	for _, domain := range own {
 		if adtyHostUnder(host, domain) {
-			return true
+			return true, nil
 		}
 	}
 	if model.DB != nil {
-		if model.DB.Migrator().HasTable(&model.AdtySite{}) {
+		hasSiteTable, err := model.AdtyTableExists(model.DB, &model.AdtySite{})
+		if err != nil {
+			return true, err
+		}
+		if hasSiteTable {
 			if AdtyIsCustomDomainHost(host) || AdtyIsApiOnlyHost(host) || AdtySiteForHost(host) != nil {
-				return true
+				return true, nil
 			}
 			if sub, root, ok := strings.Cut(host, "."); ok && sub != "" && root != "" {
 				var count int64
 				if err := model.DB.Model(&model.AdtySite{}).
 					Where("LOWER(subdomain) = ? AND LOWER(root_domain) = ?", sub, root).
-					Count(&count).Error; err == nil && count > 0 {
-					return true
+					Count(&count).Error; err != nil {
+					return true, err
+				}
+				if count > 0 {
+					return true, nil
 				}
 			}
 		}
-		if model.DB.Migrator().HasTable(&model.AdtySiteDomain{}) {
+		hasDomainTable, err := model.AdtyTableExists(model.DB, &model.AdtySiteDomain{})
+		if err != nil {
+			return true, err
+		}
+		if hasDomainTable {
 			var count int64
 			if err := model.DB.Model(&model.AdtySiteDomain{}).
 				Where("LOWER(hostname) = ?", host).
-				Count(&count).Error; err == nil && count > 0 {
-				return true
+				Count(&count).Error; err != nil {
+				return true, err
+			}
+			if count > 0 {
+				return true, nil
 			}
 		}
 	}
-	return false
+	return false, nil
 }
 
 func adtyTranslationTimeout(seconds int) time.Duration {
@@ -459,7 +490,10 @@ func adtyTranslationTimeout(seconds int) time.Duration {
 }
 
 func adtyTranslationPayload(protocol, modelName, text string) (any, error) {
-	systemPrompt := buildAdtyTranslationSystemPrompt(text)
+	systemPrompt, err := buildAdtyTranslationSystemPrompt(text)
+	if err != nil {
+		return nil, err
+	}
 	switch protocol {
 	case adtyTranslationProtocolAnthropic:
 		return map[string]any{

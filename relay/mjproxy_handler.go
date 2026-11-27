@@ -635,9 +635,16 @@ func RelayMidjourneyTaskImageSeed(c *gin.Context) *dto.MidjourneyResponse {
 	if err != nil {
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, "unmarshal_response_body_failed")
 	}
-	c.Writer.Header().Set("Content-Type", "application/json")
-	c.Writer.WriteHeader(midjResponseWithStatus.StatusCode)
-	service.IOCopyBytesGracefully(c, nil, respBody)
+	statusCode := midjResponseWithStatus.StatusCode
+	if statusCode == 0 {
+		statusCode = http.StatusOK
+	}
+	service.IOCopyBytesGracefully(c, &http.Response{
+		StatusCode: statusCode,
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+		},
+	}, respBody)
 	return nil
 }
 

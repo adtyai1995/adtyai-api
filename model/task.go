@@ -725,10 +725,21 @@ func (t *Task) ToOpenAIVideo() *dto.OpenAIVideo {
 // has included Task. A missing column makes task reads and inserts fail once
 // the field is on the struct, so migration failure must stop startup.
 func EnsureTaskPerfSampledAt(db *gorm.DB) error {
-	if db == nil || !db.Migrator().HasTable(&Task{}) {
+	if db == nil {
 		return nil
 	}
-	if db.Migrator().HasColumn(&Task{}, "PerfSampledAt") || db.Migrator().HasColumn(&Task{}, "perf_sampled_at") {
+	hasTaskTable, err := AdtyTableExists(db, &Task{})
+	if err != nil {
+		return err
+	}
+	if !hasTaskTable {
+		return nil
+	}
+	hasPerfCol, err := AdtyColumnExists(db, &Task{}, "perf_sampled_at")
+	if err != nil {
+		return err
+	}
+	if hasPerfCol {
 		return nil
 	}
 	if err := db.Migrator().AddColumn(&Task{}, "PerfSampledAt"); err != nil {

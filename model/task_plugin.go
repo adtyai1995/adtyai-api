@@ -117,7 +117,14 @@ func lockTaskPluginKey(tx *gorm.DB, key string) error {
 // Existing duplicates keep the newest row. The conditional index then rejects a
 // second active row instead of letting two publishes both succeed.
 func EnsureTaskPluginOneActiveIndex(db *gorm.DB) error {
-	if db == nil || !db.Migrator().HasTable(&TaskPlugin{}) {
+	if db == nil {
+		return nil
+	}
+	hasPluginTable, err := AdtyTableExists(db, &TaskPlugin{})
+	if err != nil {
+		return err
+	}
+	if !hasPluginTable {
 		return nil
 	}
 	if err := db.Exec(`

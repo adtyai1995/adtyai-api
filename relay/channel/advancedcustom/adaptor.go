@@ -40,6 +40,10 @@ type Adaptor struct {
 }
 
 func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
+	a.resolved = false
+	a.converted = false
+	a.route = dto.AdvancedCustomRoute{}
+	a.converter = ""
 	a.openaiAdaptor.Init(info)
 	a.claudeAdaptor.Init(info)
 	a.geminiAdaptor.Init(info)
@@ -332,6 +336,9 @@ func (a *Adaptor) GetChannelName() string {
 }
 
 func (a *Adaptor) doNativeResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (any, *types.NewAPIError) {
+	if info != nil && (info.RelayMode == relayconstant.RelayModeResponses || info.RelayMode == relayconstant.RelayModeResponsesCompact) {
+		return a.openaiAdaptor.DoResponse(c, resp, info)
+	}
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
 		return a.claudeAdaptor.DoResponse(c, resp, info)
@@ -381,13 +388,20 @@ func (a *Adaptor) resolve(c *gin.Context, info *relaycommon.RelayInfo) error {
 }
 
 func incomingRequestPath(c *gin.Context, info *relaycommon.RelayInfo) string {
+	if info != nil {
+		if raw := strings.TrimSpace(info.RequestURLPath); raw != "" {
+			if parsed, err := url.Parse(raw); err == nil && parsed.Path != "" {
+				return parsed.Path
+			}
+			if path := strings.Split(raw, "?")[0]; path != "" {
+				return path
+			}
+		}
+	}
 	if c != nil && c.Request != nil && c.Request.URL != nil {
 		return c.Request.URL.Path
 	}
-	if info == nil {
-		return ""
-	}
-	return strings.Split(info.RequestURLPath, "?")[0]
+	return ""
 }
 
 func (a *Adaptor) routeURL(info *relaycommon.RelayInfo) (string, error) {
@@ -491,8 +505,14 @@ func useGeminiStreamGenerateContentURL(parsedURL *url.URL) {
 }
 
 func shouldApplyClaudeHeaders(converter string, info *relaycommon.RelayInfo) bool {
-	return converter == relayconvert.ConverterOpenAIChatToClaudeMessages ||
-		(converter == relayconvert.ConverterNone && info != nil && info.RelayFormat == types.RelayFormatClaude)
+	if converter == relayconvert.ConverterOpenAIChatToClaudeMessages {
+		return true
+	}
+	return converter == relayconvert.ConverterNone &&
+		info != nil &&
+		info.RelayFormat == types.RelayFormatClaude &&
+		info.RelayMode != relayconstant.RelayModeResponses &&
+		info.RelayMode != relayconstant.RelayModeResponsesCompact
 }
 
 func applyClaudeHeaders(c *gin.Context, header *http.Header, info *relaycommon.RelayInfo) {

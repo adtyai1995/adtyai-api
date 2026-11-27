@@ -419,7 +419,10 @@ func resolveUptimeGroupRatios(c *gin.Context, siteID int, items []UptimeGroupRes
 		common.SysError(common.LogText("uptime status site pricing failed: %s", err.Error()))
 		return nil
 	}
-	applyPricingTeamMultiplier(c, userID, siteID, rawGroupRatio, groupRatio, nil)
+	if _, err := applyPricingTeamMultiplier(c, userID, siteID, rawGroupRatio, groupRatio, nil); err != nil {
+		common.SysError(common.LogText("uptime status team pricing failed: %s", err.Error()))
+		return nil
+	}
 	return groupRatio
 }
 

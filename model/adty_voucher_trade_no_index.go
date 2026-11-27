@@ -22,7 +22,11 @@ func EnsureAdtyVoucherTradeNoUniqueIndex(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("voucher trade_no unique index: database is nil")
 	}
-	if !db.Migrator().HasTable(&AdtyVoucher{}) {
+	hasVoucherTable, err := AdtyTableExists(db, &AdtyVoucher{})
+	if err != nil {
+		return err
+	}
+	if !hasVoucherTable {
 		return nil
 	}
 	duplicates, err := countAdtyVoucherTradeNoCollisions(db)

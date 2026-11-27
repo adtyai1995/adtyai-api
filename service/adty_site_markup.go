@@ -347,7 +347,15 @@ func adtyApplyTeamProtocolPriceDecimal(c *gin.Context, userId int, groupRatio, m
 		return marked, storedK
 	}
 	tokenId := common.GetContextKeyInt(c, constant.ContextKeyTokenId)
-	if tokenId <= 0 || model.DB == nil || !adtyTeamTableReadyFor(model.DB, &model.AdtyTeamKey{}) {
+	if tokenId <= 0 || model.DB == nil {
+		return marked, storedK
+	}
+	hasTeamKeyTable, err := model.AdtyTableExists(model.DB, &model.AdtyTeamKey{})
+	if err != nil {
+		c.Set(AdtyTeamPriceBlockedKey, true)
+		return marked, storedK
+	}
+	if !hasTeamKeyTable {
 		return marked, storedK
 	}
 	var binding model.AdtyTeamKey
@@ -507,10 +515,10 @@ func adtyEnsurePricingTables() {
 	if model.DB == nil {
 		return
 	}
-	if !model.DB.Migrator().HasTable(&model.AdtySitePriceScope{}) {
+	if hasScope, err := model.AdtyTableExists(model.DB, &model.AdtySitePriceScope{}); err == nil && !hasScope {
 		_ = model.DB.AutoMigrate(&model.AdtySitePriceScope{})
 	}
-	if !model.DB.Migrator().HasTable(&model.AdtyPriceRevision{}) {
+	if hasRev, err := model.AdtyTableExists(model.DB, &model.AdtyPriceRevision{}); err == nil && !hasRev {
 		_ = model.DB.AutoMigrate(&model.AdtyPriceRevision{})
 	}
 }

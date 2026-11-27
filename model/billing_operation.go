@@ -309,24 +309,50 @@ func freezeBillingEarningRiskTx(tx *gorm.DB, row *BillingOperation) error {
 
 // ReserveBillingOperation atomically reserves both wallet and token. A rejected
 // request leaves neither a debit nor a pending job that could charge it later.
-// AdtyBusinessLocation returns the configured Root business-day timezone
-// (defaulting to Asia/Shanghai, with a UTC+8 fixed fallback if tzdata is absent).
-func AdtyBusinessLocation(tx *gorm.DB) *time.Location {
+// AdtyBusinessLocationStrict loads the configured Root business-day timezone
+// without swallowing DB errors or falling back to outer DB when tx != nil.
+func AdtyBusinessLocationStrict(tx *gorm.DB) (*time.Location, error) {
 	const key = "adty.business_timezone"
 	name := "Asia/Shanghai"
-	if tx != nil && tx.Migrator().HasTable(&Option{}) {
-		var opt Option
-		if err := tx.Where(&Option{Key: key}).Limit(1).Find(&opt).Error; err == nil {
+	if tx != nil {
+		hasOption, err := AdtyTableExists(tx, &Option{})
+		if err != nil {
+			return nil, err
+		}
+		if hasOption {
+			var opt Option
+			if err := tx.Where(&Option{Key: key}).Limit(1).Find(&opt).Error; err != nil {
+				return nil, err
+			}
 			if trimmed := strings.TrimSpace(opt.Value); trimmed != "" {
 				name = trimmed
 			}
 		}
-	} else if raw, ok, err := ReadOptionFromDB(key); err == nil && ok {
-		if trimmed := strings.TrimSpace(raw); trimmed != "" {
-			name = trimmed
+	} else {
+		raw, ok, err := ReadOptionFromDB(key)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			if trimmed := strings.TrimSpace(raw); trimmed != "" {
+				name = trimmed
+			}
 		}
 	}
 	if loc, err := time.LoadLocation(name); err == nil {
+		return loc, nil
+	}
+	if loc, err := time.LoadLocation("Asia/Shanghai"); err == nil {
+		return loc, nil
+	}
+	return time.FixedZone("CST", 8*3600), nil
+}
+
+// AdtyBusinessLocation returns the configured Root business-day timezone
+// (defaulting to Asia/Shanghai, with a UTC+8 fixed fallback if tzdata is absent).
+// When tx != nil, it never falls back to outer DB.
+func AdtyBusinessLocation(tx *gorm.DB) *time.Location {
+	if loc, err := AdtyBusinessLocationStrict(tx); err == nil && loc != nil {
 		return loc
 	}
 	if loc, err := time.LoadLocation("Asia/Shanghai"); err == nil {
@@ -569,7 +595,11 @@ func ReserveBillingOperation(spec BillingOperation, target int) (*BillingOperati
 		}
 		// 补扣同样要登记分摊：结算时按「预扣 + 补扣」总额扣批次，漏登记会让
 		// 实际消耗大于已登记额度。传累计 target，函数内部只补差额。
-		if err := AllocateAdtyFundAllocationsTx(withOwnerFundScope(tx, &result), result.UserId, result.OperationKey, int64(target), int64(balance)); err != nil {
+		scopedTx, err := withOwnerFundScope(tx, &result)
+		if err != nil {
+			return err
+		}
+		if err := AllocateAdtyFundAllocationsTx(scopedTx, result.UserId, result.OperationKey, int64(target), int64(balance)); err != nil {
 			return err
 		}
 		result.ReservedQuota = target
@@ -1035,23 +1065,37 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		// R4-005 / R6-008: Pre-lock all involved site earnings wallets in ascending
 		// site_id order BEFORE fund-batch settlement/reversal (which may lock margin
 		// and operating wallets), preserving User -> Token -> earnings(ASC) -> margin(ASC) -> operating(ASC).
-		if tx.Migrator().HasTable(&AdtySiteWallet{}) {
+		hasSiteWalletTable, err := AdtyTableExists(tx, &AdtySiteWallet{})
+		if err != nil {
+			return err
+		}
+		if hasSiteWalletTable {
 			earningsSiteSet := make(map[int]struct{})
 			if row.PayerKind != BillingPayerOwner && row.SiteId > 0 && BillingEarningFactorsUsable(row.SiteMarkup, row.SiteCostFactor) {
 				earningsSiteSet[row.SiteId] = struct{}{}
 			}
-			if !teamPaid && row.PayerKind != BillingPayerOwner && tx.Migrator().HasTable(&AdtyFundBatch{}) && tx.Migrator().HasTable(&AdtyTopupOrder{}) {
-				var bonusSiteIDs []int
-				if err := tx.Table("adty_topup_orders").
-					Distinct("adty_topup_orders.site_id").
-					Joins("JOIN adty_fund_batches ON adty_fund_batches.source = adty_topup_orders.trade_no").
-					Where("adty_fund_batches.user_id = ? AND adty_fund_batches.kind = ? AND adty_topup_orders.site_id > 0", row.UserId, "bonus").
-					Pluck("adty_topup_orders.site_id", &bonusSiteIDs).Error; err != nil {
+			if !teamPaid && row.PayerKind != BillingPayerOwner {
+				hasFundBatchTable, err := AdtyTableExists(tx, &AdtyFundBatch{})
+				if err != nil {
 					return err
 				}
-				for _, sid := range bonusSiteIDs {
-					if sid > 0 {
-						earningsSiteSet[sid] = struct{}{}
+				hasTopupOrderTable, err := AdtyTableExists(tx, &AdtyTopupOrder{})
+				if err != nil {
+					return err
+				}
+				if hasFundBatchTable && hasTopupOrderTable {
+					var bonusSiteIDs []int
+					if err := tx.Table("adty_topup_orders").
+						Distinct("adty_topup_orders.site_id").
+						Joins("JOIN adty_fund_batches ON adty_fund_batches.source = adty_topup_orders.trade_no").
+						Where("adty_fund_batches.user_id = ? AND adty_fund_batches.kind = ? AND adty_topup_orders.site_id > 0", row.UserId, "bonus").
+						Pluck("adty_topup_orders.site_id", &bonusSiteIDs).Error; err != nil {
+						return err
+					}
+					for _, sid := range bonusSiteIDs {
+						if sid > 0 {
+							earningsSiteSet[sid] = struct{}{}
+						}
 					}
 				}
 			}
@@ -1108,7 +1152,10 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 				// 预扣的 base 已经在 PreConsume 阶段扣掉了，若把此刻余额（可能已是 0）
 				// 传给「无批次时补建 legacy 批次」的分支，补出来的批次不够扣本次消耗，
 				// 结算会整笔失败——老用户（升级前就有额度、从来没批次）就再也结不了账。
-				scoped := withOwnerFundScope(tx, &row)
+				scoped, err := withOwnerFundScope(tx, &row)
+				if err != nil {
+					return err
+				}
 				if settledQuota > 0 {
 					// Ensure every non-team debit (including task upward adjust, ReservedQuota==0,
 					// and unreserved mj_charge) creates AdtyFundAllocation rows under its own
@@ -1210,8 +1257,12 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 			if err := freezeBillingEarningRiskTx(tx, &row); err != nil {
 				return err
 			}
+			bizLoc, err := AdtyBusinessLocationStrict(tx)
+			if err != nil {
+				return err
+			}
 			event := AdtySiteEarningEvent{OperationKey: row.OperationKey, SiteId: row.SiteId, SiteOwnerUserId: row.SiteOwnerUserId, UserId: row.UserId,
-				Quota: earningQuota, Markup: row.SiteMarkup, CostFactor: row.SiteCostFactor, Day: time.Now().In(AdtyBusinessLocation(tx)).Format("2006-01-02"),
+				Quota: earningQuota, Markup: row.SiteMarkup, CostFactor: row.SiteCostFactor, Day: time.Now().In(bizLoc).Format("2006-01-02"),
 				RootOperationKey: row.EarningRootKey, RiskFlag: row.EarningRiskFlag, ReviewStatus: row.EarningReviewStatus}
 			var customers []AdtySiteCustomer
 			if err := lockForUpdate(tx).Where("user_id = ?", row.UserId).Limit(1).Find(&customers).Error; err != nil {
@@ -1243,9 +1294,15 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		if err := tx.Save(&row).Error; err != nil {
 			return err
 		}
-		if (row.Shortfall > 0 || row.Kind == "request") && tx.Migrator().HasTable(&AdtyBillingHold{}) {
-			if err := SyncAdtyBillingHoldForOperationTx(tx, &row); err != nil {
+		if row.Shortfall > 0 || row.Kind == "request" {
+			hasHoldTable, err := AdtyTableExists(tx, &AdtyBillingHold{})
+			if err != nil {
 				return err
+			}
+			if hasHoldTable {
+				if err := SyncAdtyBillingHoldForOperationTx(tx, &row); err != nil {
+					return err
+				}
 			}
 		}
 		applied = true

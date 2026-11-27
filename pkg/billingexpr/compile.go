@@ -390,8 +390,13 @@ const (
 	literalResolveUnknown literalResolveStatus = iota
 	literalResolveValue
 	literalResolveNil
+	literalResolveOptionalNil
 	literalResolveError
 )
+
+func isLiteralNilStatus(status literalResolveStatus) bool {
+	return status == literalResolveNil || status == literalResolveOptionalNil
+}
 
 func isDefiniteStringNode(n ast.Node, depth int) bool {
 	if n == nil || depth > maxMinMaxValidationDepth {
@@ -418,7 +423,7 @@ func isDefiniteStringNode(n ast.Node, depth int) bool {
 			if _, isNil := leftUnwrapped.(*ast.NilNode); isNil || leftUnwrapped.Nature().Nil {
 				return isDefiniteStringNode(v.Right, depth+1)
 			}
-			if _, status := resolveLiteralMemberNode(leftUnwrapped, depth+1); status == literalResolveNil {
+			if _, status := resolveLiteralMemberNode(v.Left, depth+1); isLiteralNilStatus(status) {
 				return isDefiniteStringNode(v.Right, depth+1)
 			}
 			return isDefiniteStringNode(v.Left, depth+1) && isDefiniteStringNode(v.Right, depth+1)
@@ -434,8 +439,14 @@ func resolveLiteralArrayElems(node ast.Node, depth int) ([]ast.Node, literalReso
 	if node == nil || depth > maxMinMaxValidationDepth {
 		return nil, literalResolveUnknown
 	}
-	n := unwrapChainNode(node)
-	switch v := n.(type) {
+	if ch, ok := node.(*ast.ChainNode); ok {
+		elems, status := resolveLiteralArrayElems(ch.Node, depth+1)
+		if status == literalResolveOptionalNil {
+			return nil, literalResolveNil
+		}
+		return elems, status
+	}
+	switch v := node.(type) {
 	case *ast.ArrayNode:
 		return v.Nodes, literalResolveValue
 	case *ast.NilNode:
@@ -450,6 +461,10 @@ func resolveLiteralArrayElems(node ast.Node, depth int) ([]ast.Node, literalReso
 		elems, status := resolveLiteralArrayElems(v.Node, depth+1)
 		if status == literalResolveError {
 			return nil, literalResolveError
+		}
+		if status == literalResolveOptionalNil {
+			// Short-circuited optional chain inside the same ChainNode yields nil.
+			return nil, literalResolveOptionalNil
 		}
 		if status == literalResolveNil {
 			// Slicing nil is always a runtime error (cannot slice nil).
@@ -497,27 +512,40 @@ func resolveLiteralMemberNode(node ast.Node, depth int) (ast.Node, literalResolv
 	if node == nil || depth > maxMinMaxValidationDepth {
 		return nil, literalResolveUnknown
 	}
-	mem, isMem := unwrapChainNode(node).(*ast.MemberNode)
+	if ch, ok := node.(*ast.ChainNode); ok {
+		resolved, status := resolveLiteralMemberNode(ch.Node, depth+1)
+		if status == literalResolveOptionalNil {
+			// Exiting a ChainNode boundary terminates optional short-circuiting so
+			// outer non-optional member accesses (e.g. (x?.b).c) still fail on nil.
+			return nil, literalResolveNil
+		}
+		return resolved, status
+	}
+	mem, isMem := node.(*ast.MemberNode)
 	if !isMem {
 		return nil, literalResolveUnknown
 	}
-	base := unwrapChainNode(mem.Node)
+	base := mem.Node
 	if inner, innerStatus := resolveLiteralMemberNode(base, depth+1); innerStatus != literalResolveUnknown {
 		switch innerStatus {
 		case literalResolveError:
 			return nil, literalResolveError
+		case literalResolveOptionalNil:
+			// An earlier ?. inside the same ChainNode already short-circuited to nil.
+			return nil, literalResolveOptionalNil
 		case literalResolveNil:
 			if mem.Optional {
-				return nil, literalResolveNil
+				return nil, literalResolveOptionalNil
 			}
 			return nil, literalResolveError
 		case literalResolveValue:
-			base = unwrapChainNode(inner)
+			base = inner
 		}
 	}
-	if _, isNil := base.(*ast.NilNode); isNil || base.Nature().Nil {
+	unwrappedBase := unwrapChainNode(base)
+	if _, isNil := unwrappedBase.(*ast.NilNode); isNil || unwrappedBase.Nature().Nil {
 		if mem.Optional {
-			return nil, literalResolveNil
+			return nil, literalResolveOptionalNil
 		}
 		return nil, literalResolveError
 	}
@@ -525,9 +553,11 @@ func resolveLiteralMemberNode(node ast.Node, depth int) (ast.Node, literalResolv
 		switch arrStatus {
 		case literalResolveError:
 			return nil, literalResolveError
+		case literalResolveOptionalNil:
+			return nil, literalResolveOptionalNil
 		case literalResolveNil:
 			if mem.Optional {
-				return nil, literalResolveNil
+				return nil, literalResolveOptionalNil
 			}
 			return nil, literalResolveError
 		case literalResolveValue:
@@ -549,7 +579,7 @@ func resolveLiteralMemberNode(node ast.Node, depth int) (ast.Node, literalResolv
 			return elems[idx], literalResolveValue
 		}
 	}
-	if container, isMap := base.(*ast.MapNode); isMap {
+	if container, isMap := unwrappedBase.(*ast.MapNode); isMap {
 		key, keyOK := constStringNode(mem.Property)
 		if !keyOK {
 			return nil, literalResolveUnknown
@@ -653,7 +683,7 @@ func validateMinMaxArgTypeDepth(name string, arg ast.Node, depth int, allowNil b
 		switch status {
 		case literalResolveError:
 			return fmt.Errorf("invalid argument for %s (invalid member access)", name)
-		case literalResolveNil:
+		case literalResolveNil, literalResolveOptionalNil:
 			if allowNil {
 				return nil
 			}
@@ -680,6 +710,11 @@ func validateMinMaxArgTypeDepth(name string, arg ast.Node, depth int, allowNil b
 			return nil
 		}
 		if container, isMap := unwrapChainNode(mem.Node).(*ast.MapNode); isMap {
+			if _, keyOK := constStringNode(mem.Property); !keyOK && allowNil {
+				// Dynamic key lookup on a map literal can miss and evaluate to nil,
+				// which an enclosing ?? can coalesce to a valid numeric fallback.
+				return nil
+			}
 			if len(container.Pairs) == 0 {
 				if allowNil {
 					return nil
@@ -707,93 +742,7 @@ func validateMinMaxArgTypeDepth(name string, arg ast.Node, depth int, allowNil b
 		}
 	}
 	if sl, ok := arg.(*ast.SliceNode); ok {
-		elems, arrStatus := resolveLiteralArrayElems(sl.Node, depth+1)
-		switch arrStatus {
-		case literalResolveError, literalResolveNil:
-			return fmt.Errorf("invalid argument for %s (cannot slice value)", name)
-		case literalResolveValue:
-			length := len(elems)
-			if length == 0 {
-				return fmt.Errorf("invalid argument for %s (empty array)", name)
-			}
-			from, fromKnown := 0, sl.From == nil
-			if sl.From != nil {
-				from, fromKnown = constIntNode(sl.From)
-			}
-			to, toKnown := length, sl.To == nil
-			if sl.To != nil {
-				to, toKnown = constIntNode(sl.To)
-			}
-			if fromKnown {
-				if from < 0 {
-					from = length + from
-				}
-				if from < 0 {
-					from = 0
-				}
-				if from >= length {
-					return fmt.Errorf("invalid argument for %s (empty array)", name)
-				}
-			}
-			if toKnown {
-				if to < 0 {
-					to = length + to
-				}
-				if to <= 0 {
-					return fmt.Errorf("invalid argument for %s (empty array)", name)
-				}
-				if to > length {
-					to = length
-				}
-			}
-			if fromKnown && toKnown {
-				if from >= to {
-					return fmt.Errorf("invalid argument for %s (empty array)", name)
-				}
-				for _, elem := range elems[from:to] {
-					if err := validateMinMaxArgTypeDepth(name, elem, depth+1, false); err != nil {
-						return err
-					}
-				}
-				return nil
-			}
-			if fromKnown {
-				// Any non-empty slice starting at from must include elems[from].
-				return validateMinMaxArgTypeDepth(name, elems[from], depth+1, false)
-			}
-			if toKnown {
-				// Any non-empty slice ending at to must include elems[to-1].
-				return validateMinMaxArgTypeDepth(name, elems[to-1], depth+1, false)
-			}
-			var firstErr error
-			validAny := false
-			for _, elem := range elems {
-				if err := validateMinMaxArgTypeDepth(name, elem, depth+1, false); err == nil {
-					validAny = true
-				} else if firstErr == nil {
-					firstErr = err
-				}
-			}
-			if !validAny && firstErr != nil {
-				return firstErr
-			}
-			return nil
-		}
-		if sl.To != nil {
-			if to, toOK := constIntNode(sl.To); toOK && to == 0 {
-				return fmt.Errorf("invalid argument for %s (empty array)", name)
-			}
-		}
-		if sl.From != nil && sl.To != nil {
-			if from, fromOK := constIntNode(sl.From); fromOK {
-				if to, toOK := constIntNode(sl.To); toOK {
-					if (from >= 0 && to >= 0 && from >= to) || (from < 0 && to < 0 && from >= to) {
-						return fmt.Errorf("invalid argument for %s (empty array)", name)
-					}
-				}
-			}
-		}
-		return validateMinMaxArgTypeDepth(name, sl.Node, depth+1, false)
+		return validateMinMaxSliceNode(name, sl, depth, allowNil, false)
 	}
 	t := arg.Type()
 	if t == nil {
@@ -815,6 +764,124 @@ func validateMinMaxArgTypeDepth(name string, arg ast.Node, depth int, allowNil b
 		}
 	}
 	return fmt.Errorf("invalid argument for %s (type %s)", name, t)
+}
+
+func validateMinMaxSliceNode(name string, sl *ast.SliceNode, depth int, allowNil bool, allowCoalescedNilTarget bool) error {
+	if depth > maxMinMaxValidationDepth {
+		return fmt.Errorf("invalid argument for %s (nesting depth exceeded)", name)
+	}
+	elems, arrStatus := resolveLiteralArrayElems(sl.Node, depth+1)
+	switch arrStatus {
+	case literalResolveError:
+		return fmt.Errorf("invalid argument for %s (cannot slice value)", name)
+	case literalResolveOptionalNil:
+		if allowNil || allowCoalescedNilTarget {
+			return nil
+		}
+		return fmt.Errorf("invalid argument for %s (type nil)", name)
+	case literalResolveNil:
+		if allowCoalescedNilTarget {
+			// When distributing a slice across the left operand of (a ?? b)[from:to],
+			// a nil left operand coalesces to b before the slice runs.
+			return nil
+		}
+		return fmt.Errorf("invalid argument for %s (cannot slice value)", name)
+	case literalResolveValue:
+		length := len(elems)
+		if length == 0 {
+			return fmt.Errorf("invalid argument for %s (empty array)", name)
+		}
+		from, fromKnown := 0, sl.From == nil
+		if sl.From != nil {
+			from, fromKnown = constIntNode(sl.From)
+		}
+		to, toKnown := length, sl.To == nil
+		if sl.To != nil {
+			to, toKnown = constIntNode(sl.To)
+		}
+		if fromKnown {
+			if from < 0 {
+				from = length + from
+			}
+			if from < 0 {
+				from = 0
+			}
+			if from >= length {
+				return fmt.Errorf("invalid argument for %s (empty array)", name)
+			}
+		}
+		if toKnown {
+			if to < 0 {
+				to = length + to
+			}
+			if to <= 0 {
+				return fmt.Errorf("invalid argument for %s (empty array)", name)
+			}
+			if to > length {
+				to = length
+			}
+		}
+		if fromKnown && toKnown {
+			if from >= to {
+				return fmt.Errorf("invalid argument for %s (empty array)", name)
+			}
+			for _, elem := range elems[from:to] {
+				if err := validateMinMaxArgTypeDepth(name, elem, depth+1, false); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if fromKnown {
+			// Any non-empty slice starting at from must include elems[from].
+			return validateMinMaxArgTypeDepth(name, elems[from], depth+1, false)
+		}
+		if toKnown {
+			// Any non-empty slice ending at to must include elems[to-1].
+			return validateMinMaxArgTypeDepth(name, elems[to-1], depth+1, false)
+		}
+		var firstErr error
+		validAny := false
+		for _, elem := range elems {
+			if err := validateMinMaxArgTypeDepth(name, elem, depth+1, false); err == nil {
+				validAny = true
+			} else if firstErr == nil {
+				firstErr = err
+			}
+		}
+		if !validAny && firstErr != nil {
+			return firstErr
+		}
+		return nil
+	}
+	if sl.To != nil {
+		if to, toOK := constIntNode(sl.To); toOK && to == 0 {
+			return fmt.Errorf("invalid argument for %s (empty array)", name)
+		}
+	}
+	if sl.From != nil && sl.To != nil {
+		if from, fromOK := constIntNode(sl.From); fromOK {
+			if to, toOK := constIntNode(sl.To); toOK {
+				if (from >= 0 && to >= 0 && from >= to) || (from < 0 && to < 0 && from >= to) {
+					return fmt.Errorf("invalid argument for %s (empty array)", name)
+				}
+			}
+		}
+	}
+	target := unwrapChainNode(sl.Node)
+	if cond, ok := target.(*ast.ConditionalNode); ok {
+		if err := validateMinMaxSliceNode(name, &ast.SliceNode{Node: cond.Exp1, From: sl.From, To: sl.To}, depth+1, allowNil, allowCoalescedNilTarget); err != nil {
+			return err
+		}
+		return validateMinMaxSliceNode(name, &ast.SliceNode{Node: cond.Exp2, From: sl.From, To: sl.To}, depth+1, allowNil, allowCoalescedNilTarget)
+	}
+	if bin, ok := target.(*ast.BinaryNode); ok && bin.Operator == "??" {
+		if err := validateMinMaxSliceNode(name, &ast.SliceNode{Node: bin.Left, From: sl.From, To: sl.To}, depth+1, allowNil, true); err != nil {
+			return err
+		}
+		return validateMinMaxSliceNode(name, &ast.SliceNode{Node: bin.Right, From: sl.From, To: sl.To}, depth+1, allowNil, allowCoalescedNilTarget)
+	}
+	return validateMinMaxArgTypeDepth(name, sl.Node, depth+1, allowCoalescedNilTarget)
 }
 
 func validateCompiledMinMaxArgs(root ast.Node) error {

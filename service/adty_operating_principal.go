@@ -28,7 +28,11 @@ func adtyCreditOperatingPrincipalTx(tx *gorm.DB, topUp *model.TopUp, ext *model.
 		return nil
 	}
 	// R10-020: Never re-credit a closed subsite's drained operating wallet on late settlement.
-	if tx.Migrator().HasTable(&model.AdtySite{}) {
+	hasSiteTable, err := model.AdtyTableExists(tx, &model.AdtySite{})
+	if err != nil {
+		return err
+	}
+	if hasSiteTable {
 		var status string
 		if err := tx.Model(&model.AdtySite{}).Select("status").Where("id = ?", ext.SiteId).Limit(1).Scan(&status).Error; err != nil {
 			return err
@@ -70,7 +74,14 @@ func adtyBatchSiteIDTx(tx *gorm.DB, batch *model.AdtyFundBatch) (int, error) {
 // (even if all principal belonged to main-site site_id=0 batches, so callers
 // never erroneously fall back to InheritedFromSiteId).
 func adtyOperatingPrincipalAllocBySiteTx(tx *gorm.DB, userID int, operationKey string, limitQuota int64) (bySite map[int]int64, found bool, err error) {
-	if tx == nil || userID <= 0 || operationKey == "" || !tx.Migrator().HasTable(&model.AdtyFundAllocation{}) {
+	if tx == nil || userID <= 0 || operationKey == "" {
+		return nil, false, nil
+	}
+	hasAllocTable, err := model.AdtyTableExists(tx, &model.AdtyFundAllocation{})
+	if err != nil {
+		return nil, false, err
+	}
+	if !hasAllocTable {
 		return nil, false, nil
 	}
 	// R3-005: Always attribute strictly by this operation's own allocation rows.

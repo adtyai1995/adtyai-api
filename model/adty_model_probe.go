@@ -53,7 +53,11 @@ func InsertAdtyModelProbe(row *AdtyModelProbe) error {
 	if row == nil {
 		return nil
 	}
-	if !DB.Migrator().HasTable(&AdtyModelProbe{}) {
+	hasProbeTable, err := AdtyTableExists(DB, &AdtyModelProbe{})
+	if err != nil {
+		return err
+	}
+	if !hasProbeTable {
 		return nil
 	}
 	entry := *row
@@ -72,7 +76,14 @@ func InsertAdtyModelProbe(row *AdtyModelProbe) error {
 
 // PruneAdtyModelProbesBefore deletes probe records strictly older than cutoffUnix.
 func PruneAdtyModelProbesBefore(cutoffUnix int64) error {
-	if DB == nil || !DB.Migrator().HasTable(&AdtyModelProbe{}) {
+	if DB == nil {
+		return nil
+	}
+	hasProbeTable, err := AdtyTableExists(DB, &AdtyModelProbe{})
+	if err != nil {
+		return err
+	}
+	if !hasProbeTable {
 		return nil
 	}
 	return DB.Where("checked_at < ?", cutoffUnix).Delete(&AdtyModelProbe{}).Error
@@ -81,7 +92,14 @@ func PruneAdtyModelProbesBefore(cutoffUnix int64) error {
 // ListAdtyModelProbesSince returns all probe records with checked_at >= sinceUnix
 // ordered chronologically (checked_at ASC, id ASC).
 func ListAdtyModelProbesSince(sinceUnix int64) ([]AdtyModelProbe, error) {
-	if DB == nil || !DB.Migrator().HasTable(&AdtyModelProbe{}) {
+	if DB == nil {
+		return []AdtyModelProbe{}, nil
+	}
+	hasProbeTable, err := AdtyTableExists(DB, &AdtyModelProbe{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasProbeTable {
 		return []AdtyModelProbe{}, nil
 	}
 	var rows []AdtyModelProbe
@@ -98,7 +116,14 @@ func ListAdtyModelProbesSince(sinceUnix int64) ([]AdtyModelProbe, error) {
 
 // LatestAdtyModelProbeCheckedAt returns the most recent probe timestamp, or 0 if none exist.
 func LatestAdtyModelProbeCheckedAt() (int64, error) {
-	if DB == nil || !DB.Migrator().HasTable(&AdtyModelProbe{}) {
+	if DB == nil {
+		return 0, nil
+	}
+	hasProbeTable, err := AdtyTableExists(DB, &AdtyModelProbe{})
+	if err != nil {
+		return 0, err
+	}
+	if !hasProbeTable {
 		return 0, nil
 	}
 	var row AdtyModelProbe

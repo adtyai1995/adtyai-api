@@ -205,7 +205,11 @@ func ensureAdtySystemEmailTable(db *gorm.DB) error {
 	if adtySystemEmailMigrated[db] {
 		return nil
 	}
-	if !db.Migrator().HasTable(&AdtySystemEmailDelivery{}) {
+	hasTable, err := model.AdtyTableExists(db, &AdtySystemEmailDelivery{})
+	if err != nil {
+		return err
+	}
+	if !hasTable {
 		if err := db.AutoMigrate(&AdtySystemEmailDelivery{}); err != nil {
 			return err
 		}
@@ -261,9 +265,11 @@ func inferAdtySystemEmailLanguage(explicitLang string, userID int, subject, cont
 	if strings.TrimSpace(explicitLang) != "" {
 		return i18n.OfficialLanguage(explicitLang)
 	}
-	if userID > 0 && model.DB != nil && model.DB.Migrator().HasTable(&model.User{}) {
-		if lang := model.GetUserLanguage(userID); lang != "" {
-			return i18n.OfficialLanguage(lang)
+	if userID > 0 && model.DB != nil {
+		if hasUserTable, tblErr := model.AdtyTableExists(model.DB, &model.User{}); tblErr == nil && hasUserTable {
+			if lang := model.GetUserLanguage(userID); lang != "" {
+				return i18n.OfficialLanguage(lang)
+			}
 		}
 	}
 	for _, r := range subject + content {
@@ -304,34 +310,46 @@ func validateAdtySystemEmailRecipient(db *gorm.DB, req AdtySystemEmailRequest) (
 			return "", ErrAdtySystemEmailRecipientInvalid
 		}
 		to = validated
-		if db != nil && db.Migrator().HasTable(&model.User{}) && model.IsEmailAlreadyTaken(to, req.SiteID) {
-			return "", ErrAdtySystemEmailRecipientForbidden
+		if db != nil {
+			hasUserTable, err := model.AdtyTableExists(db, &model.User{})
+			if err != nil {
+				return "", err
+			}
+			if hasUserTable && model.IsEmailAlreadyTaken(to, req.SiteID) {
+				return "", ErrAdtySystemEmailRecipientForbidden
+			}
 		}
 	}
-	if req.UserID > 0 && db != nil && db.Migrator().HasTable(&model.User{}) {
-		var user model.User
-		if err := db.Where("id = ?", req.UserID).First(&user).Error; err != nil {
-			return "", ErrAdtySystemEmailRecipientForbidden
+	if req.UserID > 0 && db != nil {
+		hasUserTable, err := model.AdtyTableExists(db, &model.User{})
+		if err != nil {
+			return "", err
 		}
-		if user.Status != common.UserStatusEnabled || user.SiteId != req.SiteID {
-			return "", ErrAdtySystemEmailRecipientForbidden
-		}
-		allowed := map[string]bool{}
-		if primary := model.NormalizeEmail(user.Email); primary != "" {
-			allowed[primary] = true
-		}
-		if req.Category == AdtySystemEmailCategoryOrderNotice {
-			if notify := model.NormalizeEmail(user.GetSetting().NotificationEmail); notify != "" {
-				allowed[notify] = true
+		if hasUserTable {
+			var user model.User
+			if err := db.Where("id = ?", req.UserID).First(&user).Error; err != nil {
+				return "", ErrAdtySystemEmailRecipientForbidden
 			}
-		}
-		if req.Category == AdtySystemEmailCategoryEmailBinding || req.Category == AdtySystemEmailCategorySecurityNotice {
-			if extra := model.NormalizeEmail(req.AllowedAddress); extra != "" {
-				allowed[extra] = true
+			if user.Status != common.UserStatusEnabled || user.SiteId != req.SiteID {
+				return "", ErrAdtySystemEmailRecipientForbidden
 			}
-		}
-		if !allowed[to] {
-			return "", ErrAdtySystemEmailRecipientForbidden
+			allowed := map[string]bool{}
+			if primary := model.NormalizeEmail(user.Email); primary != "" {
+				allowed[primary] = true
+			}
+			if req.Category == AdtySystemEmailCategoryOrderNotice {
+				if notify := model.NormalizeEmail(user.GetSetting().NotificationEmail); notify != "" {
+					allowed[notify] = true
+				}
+			}
+			if req.Category == AdtySystemEmailCategoryEmailBinding || req.Category == AdtySystemEmailCategorySecurityNotice {
+				if extra := model.NormalizeEmail(req.AllowedAddress); extra != "" {
+					allowed[extra] = true
+				}
+			}
+			if !allowed[to] {
+				return "", ErrAdtySystemEmailRecipientForbidden
+			}
 		}
 	}
 	return to, nil
@@ -489,14 +507,21 @@ func deliverAdtySystemEmailRow(db *gorm.DB, row *AdtySystemEmailDelivery, now ti
 	var sendErr error
 	if row.SiteId > 0 {
 		var site *model.AdtySite
-		if db != nil && db.Migrator().HasTable(&model.AdtySite{}) {
-			// R8-16: Read authoritative site status directly from DB instead of
-			// the 60s local cache so closed/deleting sites are stopped immediately across replicas.
-			var siteRow model.AdtySite
-			if findErr := db.Where("id = ?", row.SiteId).First(&siteRow).Error; findErr == nil {
-				site = &siteRow
-			} else if !errors.Is(findErr, gorm.ErrRecordNotFound) {
-				sendErr = findErr
+		if db != nil {
+			hasSiteTable, tblErr := model.AdtyTableExists(db, &model.AdtySite{})
+			if tblErr != nil {
+				sendErr = tblErr
+			} else if hasSiteTable {
+				// R8-16: Read authoritative site status directly from DB instead of
+				// the 60s local cache so closed/deleting sites are stopped immediately across replicas.
+				var siteRow model.AdtySite
+				if findErr := db.Where("id = ?", row.SiteId).First(&siteRow).Error; findErr == nil {
+					site = &siteRow
+				} else if !errors.Is(findErr, gorm.ErrRecordNotFound) {
+					sendErr = findErr
+				}
+			} else {
+				site = AdtySiteById(row.SiteId)
 			}
 		} else {
 			site = AdtySiteById(row.SiteId)

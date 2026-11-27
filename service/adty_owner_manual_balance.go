@@ -346,7 +346,11 @@ func AdjustAdtySiteTierPrincipal(siteID, operatorID int, mode string, amountUSD 
 		if err != nil {
 			return err
 		}
-		if tx.Migrator().HasTable(&model.AuditIntent{}) {
+		hasAuditIntentTable, err := model.AdtyTableExists(tx, &model.AuditIntent{})
+		if err != nil {
+			return err
+		}
+		if hasAuditIntentTable {
 			if err := model.AppendAuditIntentTx(tx, prepared); err != nil {
 				return err
 			}

@@ -462,10 +462,18 @@ func GetUserSiteIDs(belowRole int) ([]int, error) {
 	result := []int{0}
 	seen := map[int]bool{0: true}
 
-	if DB.Migrator().HasTable(&AdtySite{}) {
+	hasSiteTable, err := AdtyTableExists(DB, &AdtySite{})
+	if err != nil {
+		return nil, err
+	}
+	if hasSiteTable {
 		var activeSiteIDs []int
 		siteQuery := DB.Model(&AdtySite{})
-		if DB.Migrator().HasColumn(&AdtySite{}, "archived_hidden_at") {
+		hasArchivedCol, err := AdtyColumnExists(DB, &AdtySite{}, "archived_hidden_at")
+		if err != nil {
+			return nil, err
+		}
+		if hasArchivedCol {
 			siteQuery = siteQuery.Where("archived_hidden_at = 0")
 		}
 		if err := siteQuery.Order("id ASC").Pluck("id", &activeSiteIDs).Error; err != nil {
@@ -496,12 +504,20 @@ func GetUserSiteIDs(belowRole int) ([]int, error) {
 // (active/paused/closing, not archived/closed/deleting) for broadcast targeting.
 func GetOpenUserSiteIDs(_ int) ([]int, error) {
 	result := []int{0}
-	if !DB.Migrator().HasTable(&AdtySite{}) {
+	hasSiteTable, err := AdtyTableExists(DB, &AdtySite{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasSiteTable {
 		return result, nil
 	}
 	var openSiteIDs []int
 	siteQuery := DB.Model(&AdtySite{}).Where("status IN ?", []string{AdtySiteStatusActive, AdtySiteStatusPaused, AdtySiteStatusClosing})
-	if DB.Migrator().HasColumn(&AdtySite{}, "archived_hidden_at") {
+	hasArchivedCol, err := AdtyColumnExists(DB, &AdtySite{}, "archived_hidden_at")
+	if err != nil {
+		return nil, err
+	}
+	if hasArchivedCol {
 		siteQuery = siteQuery.Where("archived_hidden_at = 0")
 	}
 	if err := siteQuery.Order("id ASC").Pluck("id", &openSiteIDs).Error; err != nil {
@@ -671,7 +687,14 @@ func HardDeleteUserByIdForActorWithID(id int, actorID int, actorRole int, denyAd
 }
 
 func ensureRegistrableSiteTx(tx *gorm.DB, siteID int) error {
-	if siteID <= 0 || !tx.Migrator().HasTable(&AdtySite{}) {
+	if siteID <= 0 {
+		return nil
+	}
+	hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
+	if err != nil {
+		return err
+	}
+	if !hasSiteTable {
 		return nil
 	}
 	var site AdtySite
@@ -976,13 +999,21 @@ func PreLockScopedEmployeeRowsTx(tx *gorm.DB, userID int) error {
 	if tx == nil || userID <= 0 {
 		return nil
 	}
-	if tx.Migrator().HasTable(&AdtySiteStaff{}) {
+	hasStaffTable, err := AdtyTableExists(tx, &AdtySiteStaff{})
+	if err != nil {
+		return err
+	}
+	if hasStaffTable {
 		var staffs []AdtySiteStaff
 		if err := lockForUpdate(tx).Select("id").Where("user_id = ?", userID).Order("id ASC").Find(&staffs).Error; err != nil {
 			return err
 		}
 	}
-	if tx.Migrator().HasTable(&AdtyTeamMember{}) {
+	hasTeamMemberTable, err := AdtyTableExists(tx, &AdtyTeamMember{})
+	if err != nil {
+		return err
+	}
+	if hasTeamMemberTable {
 		var members []AdtyTeamMember
 		if err := lockForUpdate(tx).Select("id").Where("user_id = ? AND independent_employee = ?", userID, true).Order("id ASC").Find(&members).Error; err != nil {
 			return err
@@ -999,14 +1030,22 @@ func SyncStaffAndTeamDisabledAuthVersionTx(tx *gorm.DB, userID int, prevAuthVers
 	if tx == nil || userID <= 0 || prevAuthVersion <= 0 || nextAuthVersion <= 0 || prevAuthVersion == nextAuthVersion {
 		return nil
 	}
-	if tx.Migrator().HasTable(&AdtySiteStaff{}) {
+	hasStaffTable, err := AdtyTableExists(tx, &AdtySiteStaff{})
+	if err != nil {
+		return err
+	}
+	if hasStaffTable {
 		if err := tx.Model(&AdtySiteStaff{}).
 			Where("user_id = ? AND status = ? AND disabled_auth_version = ?", userID, "disabled", prevAuthVersion).
 			Update("disabled_auth_version", nextAuthVersion).Error; err != nil {
 			return err
 		}
 	}
-	if tx.Migrator().HasTable(&AdtyTeamMember{}) {
+	hasTeamMemberTable, err := AdtyTableExists(tx, &AdtyTeamMember{})
+	if err != nil {
+		return err
+	}
+	if hasTeamMemberTable {
 		if err := tx.Model(&AdtyTeamMember{}).
 			Where("user_id = ? AND independent_employee = ? AND status = ? AND disabled_auth_version = ?",
 				userID, true, AdtyTeamMemberDisabled, prevAuthVersion).
@@ -1056,13 +1095,25 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 	if denyAdminTarget && current.Role >= common.RoleAdminUser {
 		return false, ErrAdminTargetSessionRequired
 	}
+	hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
+	if err != nil {
+		return false, err
+	}
+	hasStaffTable, err := AdtyTableExists(tx, &AdtySiteStaff{})
+	if err != nil {
+		return false, err
+	}
+	hasTeamMemberTable, err := AdtyTableExists(tx, &AdtyTeamMember{})
+	if err != nil {
+		return false, err
+	}
 	updates := map[string]any{}
 	if user.Role != 0 && user.Role != current.Role {
 		if user.Role >= common.RoleAdminUser && user.Role > current.Role {
 			if current.SiteId > 0 || current.StaffSiteId > 0 {
 				return false, ErrCannotPromoteScopedUser
 			}
-			if tx.Migrator().HasTable(&AdtySite{}) {
+			if hasSiteTable {
 				var ownerCount int64
 				if err := tx.Model(&AdtySite{}).
 					Where("owner_user_id = ? AND status <> ?", current.Id, AdtySiteStatusClosed).
@@ -1073,7 +1124,7 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 					return false, ErrCannotPromoteScopedUser
 				}
 			}
-			if tx.Migrator().HasTable(&AdtyTeamMember{}) {
+			if hasTeamMemberTable {
 				var empCount int64
 				if err := tx.Model(&AdtyTeamMember{}).
 					Where("user_id = ? AND independent_employee = ?", current.Id, true).
@@ -1096,7 +1147,7 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 		}
 		// R4-06: Even if already disabled by a site owner or team leader, a platform
 		// disable must revoke owner/leader re-enable authority by clearing disabled_auth_version.
-		if current.StaffSiteId > 0 && tx.Migrator().HasTable(&AdtySiteStaff{}) {
+		if current.StaffSiteId > 0 && hasStaffTable {
 			var stamped int64
 			if err := tx.Model(&AdtySiteStaff{}).Where("user_id = ? AND disabled_auth_version <> 0", current.Id).Count(&stamped).Error; err != nil {
 				return false, err
@@ -1105,7 +1156,7 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 				clearScopedDisableVersions = true
 			}
 		}
-		if tx.Migrator().HasTable(&AdtyTeamMember{}) {
+		if hasTeamMemberTable {
 			var stamped int64
 			if err := tx.Model(&AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ? AND disabled_auth_version <> 0", current.Id, true).Count(&stamped).Error; err != nil {
 				return false, err
@@ -1120,7 +1171,7 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 		// (or legacy disabled_auth_version == 0), lift only the platform ban by
 		// rebinding disabled_auth_version so the site owner regains enable control.
 		if user.Status == common.UserStatusEnabled && current.StaffSiteId > 0 {
-			if tx.Migrator().HasTable(&AdtySite{}) {
+			if hasSiteTable {
 				var site AdtySite
 				if err := tx.Select("id", "status").Where("id = ?", current.StaffSiteId).Limit(1).Find(&site).Error; err != nil {
 					return false, err
@@ -1129,7 +1180,7 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 					return false, common.NewMessage("Cannot enable a staff account of a closed site")
 				}
 			}
-			if tx.Migrator().HasTable(&AdtySiteStaff{}) {
+			if hasStaffTable {
 				var staff AdtySiteStaff
 				res := tx.Where("user_id = ?", current.Id).Limit(1).Find(&staff)
 				if res.Error != nil {
@@ -1148,16 +1199,24 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 			}
 		}
 		// R3-022 / R4-06: Same dual-control lift for independent team employees.
-		if user.Status == common.UserStatusEnabled && tx.Migrator().HasTable(&AdtyTeamMember{}) {
+		if user.Status == common.UserStatusEnabled && hasTeamMemberTable {
 			var empMembers []AdtyTeamMember
 			if err := tx.Where("user_id = ? AND independent_employee = ?", current.Id, true).Find(&empMembers).Error; err != nil {
 				return false, err
+			}
+			hasTeamTable := false
+			if len(empMembers) > 0 {
+				var teamErr error
+				hasTeamTable, teamErr = AdtyTableExists(tx, &AdtyTeam{})
+				if teamErr != nil {
+					return false, teamErr
+				}
 			}
 			for _, m := range empMembers {
 				if m.Status == AdtyTeamMemberDeleted || m.Status == AdtyTeamMemberLeft || m.DeletedAt != 0 {
 					return false, common.NewMessage("Deleted or removed team employee accounts cannot be re-enabled")
 				}
-				if tx.Migrator().HasTable(&AdtyTeam{}) && m.TeamId > 0 {
+				if hasTeamTable && m.TeamId > 0 {
 					var team AdtyTeam
 					if err := tx.Select("id", "status").Where("id = ?", m.TeamId).Limit(1).Find(&team).Error; err != nil {
 						return false, err
@@ -1190,23 +1249,23 @@ func ApplyManagedUserAccessForActorTx(tx *gorm.DB, user *User, actorRole int, de
 		return false, err
 	}
 	if clearScopedDisableVersions || (user.Status == common.UserStatusDisabled && user.Status != current.Status) {
-		if current.StaffSiteId > 0 && tx.Migrator().HasTable(&AdtySiteStaff{}) {
+		if current.StaffSiteId > 0 && hasStaffTable {
 			if err := tx.Model(&AdtySiteStaff{}).Where("user_id = ?", current.Id).Update("disabled_auth_version", 0).Error; err != nil {
 				return false, err
 			}
 		}
-		if tx.Migrator().HasTable(&AdtyTeamMember{}) {
+		if hasTeamMemberTable {
 			if err := tx.Model(&AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ?", current.Id, true).Update("disabled_auth_version", 0).Error; err != nil {
 				return false, err
 			}
 		}
 	}
-	if rebindStaffDisableVersion && tx.Migrator().HasTable(&AdtySiteStaff{}) {
+	if rebindStaffDisableVersion && hasStaffTable {
 		if err := tx.Model(&AdtySiteStaff{}).Where("user_id = ? AND status = ?", current.Id, "disabled").Update("disabled_auth_version", next).Error; err != nil {
 			return false, err
 		}
 	}
-	if rebindTeamDisableVersion && tx.Migrator().HasTable(&AdtyTeamMember{}) {
+	if rebindTeamDisableVersion && hasTeamMemberTable {
 		if err := tx.Model(&AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ? AND status = ?", current.Id, true, AdtyTeamMemberDisabled).Update("disabled_auth_version", next).Error; err != nil {
 			return false, err
 		}
@@ -1582,11 +1641,18 @@ func ClearCancelledAccountProfileLeftovers(ctx context.Context, cutoff int64, li
 var ErrSiteOwnerCannotDelete = errors.New("close the site before deleting this account")
 
 func userOwnsOpenSite(tx *gorm.DB, userId int) (bool, error) {
-	if tx == nil || userId <= 0 || !tx.Migrator().HasTable(&AdtySite{}) {
+	if tx == nil || userId <= 0 {
+		return false, nil
+	}
+	hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
+	if err != nil {
+		return false, err
+	}
+	if !hasSiteTable {
 		return false, nil
 	}
 	var count int64
-	err := tx.Model(&AdtySite{}).Where("owner_user_id = ? AND status IN ?", userId, []string{
+	err = tx.Model(&AdtySite{}).Where("owner_user_id = ? AND status IN ?", userId, []string{
 		AdtySiteStatusActive, AdtySiteStatusPaused, AdtySiteStatusClosing, AdtySiteStatusDeleting,
 	}).Count(&count).Error
 	return count > 0, err
@@ -1597,7 +1663,11 @@ func disableDeletedUserAffiliatesTx(tx *gorm.DB, userId int) error {
 		return nil
 	}
 	now := time.Now().Unix()
-	if tx.Migrator().HasTable(&ReferralAffiliate{}) {
+	hasRefAffTable, err := AdtyTableExists(tx, &ReferralAffiliate{})
+	if err != nil {
+		return err
+	}
+	if hasRefAffTable {
 		if err := tx.Model(&ReferralAffiliate{}).
 			Where("user_id = ?", userId).
 			Updates(map[string]any{
@@ -1608,7 +1678,11 @@ func disableDeletedUserAffiliatesTx(tx *gorm.DB, userId int) error {
 			return err
 		}
 	}
-	if tx.Migrator().HasTable(&AdtySiteReferralAffiliate{}) {
+	hasSiteRefAffTable, err := AdtyTableExists(tx, &AdtySiteReferralAffiliate{})
+	if err != nil {
+		return err
+	}
+	if hasSiteRefAffTable {
 		if err := tx.Model(&AdtySiteReferralAffiliate{}).
 			Where("user_id = ?", userId).
 			Updates(map[string]any{
@@ -2051,7 +2125,11 @@ func EnsureBuiltinOAuthSubjectIndexes(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("builtin oauth subject indexes: database is nil")
 	}
-	if !db.Migrator().HasTable(&User{}) {
+	hasUserTable, err := AdtyTableExists(db, &User{})
+	if err != nil {
+		return err
+	}
+	if !hasUserTable {
 		return nil
 	}
 	for _, column := range builtinOAuthSubjectColumns {
@@ -2516,7 +2594,14 @@ func RootUserExists() bool {
 
 // EnsureOneRootUserIndex 让未删除的根账号最多一个。普通唯一索引拦不住多条空 deleted_at。
 func EnsureOneRootUserIndex(db *gorm.DB) error {
-	if db == nil || !db.Migrator().HasTable(&User{}) {
+	if db == nil {
+		return nil
+	}
+	hasUserTable, err := AdtyTableExists(db, &User{})
+	if err != nil {
+		return err
+	}
+	if !hasUserTable {
 		return nil
 	}
 	var roots int64

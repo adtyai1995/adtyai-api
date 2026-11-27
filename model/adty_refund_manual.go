@@ -74,31 +74,49 @@ func lockAdtyRefundOrderForActorTx(tx *gorm.DB, tradeNo string, actor AdtyRefund
 		return topUp, ext, nil
 	}
 	if actor.Role > 0 || actor.DenyAdminTarget {
-		if ext.TeamId > 0 && tx.Migrator().HasTable(&AdtyTeam{}) {
-			var team AdtyTeam
-			if err := lockForUpdate(tx).Select("id").Where("id = ?", ext.TeamId).Limit(1).Find(&team).Error; err != nil {
+		if ext.TeamId > 0 {
+			hasTeamTable, err := AdtyTableExists(tx, &AdtyTeam{})
+			if err != nil {
 				return nil, nil, err
+			}
+			if hasTeamTable {
+				var team AdtyTeam
+				if err := lockForUpdate(tx).Select("id").Where("id = ?", ext.TeamId).Limit(1).Find(&team).Error; err != nil {
+					return nil, nil, err
+				}
 			}
 		}
 		// Preserve R2-022 canonical ascending user_id lock order when an invite
 		// commission exists on this subsite or main-site order so locking the
 		// target user here never inverts [inviter, invitee] locking later in Complete (R12-014).
 		var inviterID int
-		if ext.TeamId == 0 && ext.SiteId > 0 && tx.Migrator().HasTable(&AdtySiteInviteCommission{}) {
-			var commStub AdtySiteInviteCommission
-			if err := tx.Select("inviter_id").Where("trade_no = ?", ext.TradeNo).Limit(1).Find(&commStub).Error; err != nil {
+		if ext.TeamId == 0 && ext.SiteId > 0 {
+			hasSiteInviteCommTable, err := AdtyTableExists(tx, &AdtySiteInviteCommission{})
+			if err != nil {
 				return nil, nil, err
 			}
-			if commStub.InviterId > 0 && commStub.InviterId != topUp.UserId {
-				inviterID = commStub.InviterId
+			if hasSiteInviteCommTable {
+				var commStub AdtySiteInviteCommission
+				if err := tx.Select("inviter_id").Where("trade_no = ?", ext.TradeNo).Limit(1).Find(&commStub).Error; err != nil {
+					return nil, nil, err
+				}
+				if commStub.InviterId > 0 && commStub.InviterId != topUp.UserId {
+					inviterID = commStub.InviterId
+				}
 			}
-		} else if ext.TeamId == 0 && ext.SiteId == 0 && tx.Migrator().HasTable(&ReferralCommission{}) {
-			var refStub ReferralCommission
-			if err := tx.Select("affiliate_user_id").Where("source_type = ? AND source_trade_no = ?", ReferralSourceTopup, ext.TradeNo).Limit(1).Find(&refStub).Error; err != nil {
+		} else if ext.TeamId == 0 && ext.SiteId == 0 {
+			hasRefCommTable, err := AdtyTableExists(tx, &ReferralCommission{})
+			if err != nil {
 				return nil, nil, err
 			}
-			if refStub.AffiliateUserId > 0 && refStub.AffiliateUserId != topUp.UserId {
-				inviterID = refStub.AffiliateUserId
+			if hasRefCommTable {
+				var refStub ReferralCommission
+				if err := tx.Select("affiliate_user_id").Where("source_type = ? AND source_trade_no = ?", ReferralSourceTopup, ext.TradeNo).Limit(1).Find(&refStub).Error; err != nil {
+					return nil, nil, err
+				}
+				if refStub.AffiliateUserId > 0 && refStub.AffiliateUserId != topUp.UserId {
+					inviterID = refStub.AffiliateUserId
+				}
 			}
 		}
 		if inviterID > 0 && inviterID < topUp.UserId {
@@ -195,7 +213,11 @@ func adtyValidateReconcileOrphanTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []Adty
 		return 0, common.NewMessage("This external reversal event cannot be reconciled by a manual refund")
 	}
 	reviewByID := map[int64]PaymentOrphanReview{}
-	if tx.Migrator().HasTable(&PaymentOrphanReview{}) {
+	hasOrphanReviewTable, err := AdtyTableExists(tx, &PaymentOrphanReview{})
+	if err != nil {
+		return 0, err
+	}
+	if hasOrphanReviewTable {
 		var reviews []PaymentOrphanReview
 		if err := tx.Where("trade_no = ? AND status IN ?", ext.TradeNo, []string{PaymentOrphanStatusPendingReview, PaymentOrphanStatusRefunded}).
 			Order("id ASC").Find(&reviews).Error; err != nil {
@@ -273,12 +295,24 @@ func moveCustomerRefundOperatingTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyMa
 	if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{SiteID: ext.SiteId, AccountID: ext.UserId, OrderRef: ext.TradeNo}); err != nil {
 		return err
 	}
-	if !tx.Migrator().HasTable(&AdtySiteWallet{}) || !tx.Migrator().HasTable(&AdtySiteWalletLedger{}) {
+	hasWalletTable, err := AdtyTableExists(tx, &AdtySiteWallet{})
+	if err != nil {
+		return err
+	}
+	hasWalletLedgerTable, err := AdtyTableExists(tx, &AdtySiteWalletLedger{})
+	if err != nil {
+		return err
+	}
+	if !hasWalletTable || !hasWalletLedgerTable {
 		return nil
 	}
 	// R3-015: Once a subsite has closed and migrated customer principal lots to site_id=0,
 	// its operating wallet has already been debited for those lots; skip touching it again.
-	if tx.Migrator().HasTable(&AdtySite{}) {
+	hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
+	if err != nil {
+		return err
+	}
+	if hasSiteTable {
 		var site AdtySite
 		if err := tx.Select("id", "status").Where("id = ?", ext.SiteId).Limit(1).Find(&site).Error; err != nil {
 			return err
@@ -287,7 +321,11 @@ func moveCustomerRefundOperatingTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyMa
 			return nil
 		}
 	}
-	if tx.Migrator().HasTable(&AdtyFundBatch{}) {
+	hasFundBatchTable, err := AdtyTableExists(tx, &AdtyFundBatch{})
+	if err != nil {
+		return err
+	}
+	if hasFundBatchTable {
 		var batch AdtyFundBatch
 		if err := tx.Select("id", "site_id").
 			Where("user_id = ? AND source = ? AND kind = ?", ext.UserId, ext.TradeNo, AdtyFundBatchKindPrincipal).
@@ -375,7 +413,11 @@ func releaseCustomerManualRefundTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyMa
 	if err := applyUserQuotaDeltaTx(tx, &user, int(row.DeductedPrincipalQuota), false); err != nil {
 		return false, err
 	}
-	if tx.Migrator().HasTable(&AdtyFundBatch{}) {
+	hasFundBatchTable, err := AdtyTableExists(tx, &AdtyFundBatch{})
+	if err != nil {
+		return false, err
+	}
+	if hasFundBatchTable {
 		var lots []AdtyFundBatch
 		if err := lockForUpdate(tx).Where("user_id = ? AND source = ? AND kind = ?", ext.UserId, ext.TradeNo, AdtyFundBatchKindPrincipal).
 			Order("id ASC").Find(&lots).Error; err != nil {
@@ -816,7 +858,11 @@ func HasActiveManualRefundOccupancyTx(tx *gorm.DB, tradeNo string) (bool, error)
 	if tx == nil || tradeNo == "" {
 		return false, nil
 	}
-	if !tx.Migrator().HasTable(&AdtyManualRefund{}) {
+	hasManualRefundTable, err := AdtyTableExists(tx, &AdtyManualRefund{})
+	if err != nil {
+		return false, err
+	}
+	if !hasManualRefundTable {
 		return false, nil
 	}
 	var rows []AdtyManualRefund
@@ -1371,14 +1417,20 @@ func adtyEffectiveGrantedBonusQuotaTx(tx *gorm.DB, ext *AdtyTopupOrder) (int64, 
 	// granted bonus batches so ungranted or shrunk-before-fulfill gift is never over-reclaimed (R1-048 / R5-002).
 	switch ext.GiftFulfillmentStatus {
 	case AdtyGiftFulfillmentPending, AdtyGiftFulfillmentPendingReview, AdtyGiftFulfillmentCanceled, AdtyGiftFulfillmentFulfilled:
-		if tx != nil && tx.Migrator().HasTable(&AdtyFundBatch{}) {
-			var granted int64
-			if err := tx.Model(&AdtyFundBatch{}).
-				Where("user_id = ? AND source = ? AND kind IN ?", ext.UserId, ext.TradeNo, []string{AdtyFundBatchKindBonus, AdtyFundBatchKindExpiringBonus}).
-				Select("COALESCE(SUM(original), 0)").Scan(&granted).Error; err != nil {
+		if tx != nil {
+			hasFundBatchTable, err := AdtyTableExists(tx, &AdtyFundBatch{})
+			if err != nil {
 				return 0, err
 			}
-			return min(fullQuota, max(granted, int64(0))), nil
+			if hasFundBatchTable {
+				var granted int64
+				if err := tx.Model(&AdtyFundBatch{}).
+					Where("user_id = ? AND source = ? AND kind IN ?", ext.UserId, ext.TradeNo, []string{AdtyFundBatchKindBonus, AdtyFundBatchKindExpiringBonus}).
+					Select("COALESCE(SUM(original), 0)").Scan(&granted).Error; err != nil {
+					return 0, err
+				}
+				return min(fullQuota, max(granted, int64(0))), nil
+			}
 		}
 		if ext.GiftFulfillmentStatus == AdtyGiftFulfillmentFulfilled {
 			return fullQuota, nil
@@ -1846,18 +1898,30 @@ func CompleteAdtyTopUpManualRefundForActor(tradeNo, refundID string, actor AdtyR
 			// and lock [invitee, inviter] in strict ascending user_id order to prevent
 			// AB-BA deadlocks with commission clawback and referral write transactions.
 			var inviterID int
-			if ext.SiteId > 0 && tx.Migrator().HasTable(&AdtySiteInviteCommission{}) {
-				var commStub AdtySiteInviteCommission
-				if err := tx.Select("inviter_id").Where("trade_no = ?", ext.TradeNo).Limit(1).Find(&commStub).Error; err != nil {
+			if ext.SiteId > 0 {
+				hasSiteInviteCommTable, err := AdtyTableExists(tx, &AdtySiteInviteCommission{})
+				if err != nil {
 					return err
 				}
-				inviterID = commStub.InviterId
-			} else if ext.SiteId == 0 && tx.Migrator().HasTable(&ReferralCommission{}) {
-				var refStub ReferralCommission
-				if err := tx.Select("affiliate_user_id").Where("source_type = ? AND source_trade_no = ?", ReferralSourceTopup, ext.TradeNo).Limit(1).Find(&refStub).Error; err != nil {
+				if hasSiteInviteCommTable {
+					var commStub AdtySiteInviteCommission
+					if err := tx.Select("inviter_id").Where("trade_no = ?", ext.TradeNo).Limit(1).Find(&commStub).Error; err != nil {
+						return err
+					}
+					inviterID = commStub.InviterId
+				}
+			} else if ext.SiteId == 0 {
+				hasRefCommTable, err := AdtyTableExists(tx, &ReferralCommission{})
+				if err != nil {
 					return err
 				}
-				inviterID = refStub.AffiliateUserId
+				if hasRefCommTable {
+					var refStub ReferralCommission
+					if err := tx.Select("affiliate_user_id").Where("source_type = ? AND source_trade_no = ?", ReferralSourceTopup, ext.TradeNo).Limit(1).Find(&refStub).Error; err != nil {
+						return err
+					}
+					inviterID = refStub.AffiliateUserId
+				}
 			}
 			if inviterID > 0 && inviterID < topUp.UserId {
 				var inviter User

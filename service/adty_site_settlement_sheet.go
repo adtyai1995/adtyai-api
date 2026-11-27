@@ -56,7 +56,11 @@ func loadAdtyBusinessLocationTx(tx *gorm.DB) (*time.Location, string, error) {
 		return loadAdtyBusinessLocation()
 	}
 	name := defaultBusinessTimezone
-	if tx.Migrator().HasTable(&model.Option{}) {
+	hasOptionTable, err := model.AdtyTableExists(tx, &model.Option{})
+	if err != nil {
+		return nil, "", err
+	}
+	if hasOptionTable {
 		var row model.Option
 		res := tx.Where(&model.Option{Key: adtyBusinessTimezoneKey}).Limit(1).Find(&row)
 		if res.Error != nil {
@@ -98,12 +102,18 @@ func FreezeAdtyBillingClock(input *billingexpr.RequestInput, snapshot *billingex
 	input.AcceptedUnix = input.AcceptedAt.Unix()
 	if input.BusinessTimezone == "" {
 		zone := defaultBusinessTimezone
-		if model.DB != nil && model.DB.Migrator().HasTable(&model.Option{}) {
-			_, name, err := loadAdtyBusinessLocation()
+		if model.DB != nil {
+			hasOptionTable, err := model.AdtyTableExists(model.DB, &model.Option{})
 			if err != nil {
 				return "", err
 			}
-			zone = name
+			if hasOptionTable {
+				_, name, err := loadAdtyBusinessLocation()
+				if err != nil {
+					return "", err
+				}
+				zone = name
+			}
 		}
 		input.BusinessTimezone = zone
 	}

@@ -1034,8 +1034,9 @@ func reclaimConvertedCommissionFundBatchesTx(tx *gorm.DB, row *model.AdtySiteInv
 			return total, siteTotal, nil
 		}
 	}
-	// Older balance transfers shared a lot across several commissions. Preserve
-	// any remaining quota that could belong to another commission.
+	// Older balance transfers shared a lot across several commissions. Subtract
+	// provable sibling clawbacks on the same withdrawal so the 2nd..Nth zero-spend
+	// refunds are not masked behind the original combined lot size (R4-12 parity).
 	var items []model.AdtySiteInviteWithdrawalItem
 	if err := tx.Where("commission_id = ? AND status = ?", row.Id, model.AdtySiteInviteWithdrawItemPaid).Find(&items).Error; err != nil {
 		return 0, 0, err
@@ -1047,14 +1048,128 @@ func reclaimConvertedCommissionFundBatchesTx(tx *gorm.DB, row *model.AdtySiteInv
 		if res.Error != nil {
 			return 0, 0, res.Error
 		}
-		if res.RowsAffected == 0 {
+		if res.RowsAffected == 0 || lot.Remaining <= 0 {
 			continue
 		}
 		own, err := common.WalletQuotaFromDecimalStrict(item.AmountUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
 		if err != nil {
 			return 0, 0, err
 		}
-		provable := lot.Remaining - max(lot.Original-int64(own), 0)
+		var siblingItems []model.AdtySiteInviteWithdrawalItem
+		if err := tx.Where("withdrawal_id = ? AND commission_id > 0 AND commission_id <> ? AND status = ?",
+			item.WithdrawalId, row.Id, model.AdtySiteInviteWithdrawItemPaid).
+			Find(&siblingItems).Error; err != nil {
+			return 0, 0, err
+		}
+		var siblingClawed int64
+		if len(siblingItems) > 0 {
+			hasLedgerTable, tblErr := model.AdtyTableExists(tx, &model.AdtyBalanceLedger{})
+			if tblErr != nil {
+				return 0, 0, tblErr
+			}
+			if hasLedgerTable {
+				allocThisByComm := make(map[int64]int64, len(siblingItems))
+				siblingCommIDs := make([]int64, 0, len(siblingItems))
+				for _, sib := range siblingItems {
+					q, qErr := common.WalletQuotaFromDecimalStrict(sib.AmountUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
+					if qErr != nil {
+						return 0, 0, qErr
+					}
+					if _, exists := allocThisByComm[sib.CommissionId]; !exists {
+						siblingCommIDs = append(siblingCommIDs, sib.CommissionId)
+					}
+					allocThisByComm[sib.CommissionId] += int64(q)
+				}
+				allocOthersByComm := make(map[int64]int64, len(siblingCommIDs))
+				var otherItems []model.AdtySiteInviteWithdrawalItem
+				if err := tx.Where("commission_id IN ? AND withdrawal_id <> ? AND status = ?",
+					siblingCommIDs, item.WithdrawalId, model.AdtySiteInviteWithdrawItemPaid).
+					Find(&otherItems).Error; err != nil {
+					return 0, 0, err
+				}
+				if len(otherItems) > 0 {
+					otherWIDs := make([]int64, 0, len(otherItems))
+					seenWID := make(map[int64]struct{}, len(otherItems))
+					for _, oi := range otherItems {
+						if _, ok := seenWID[oi.WithdrawalId]; !ok {
+							seenWID[oi.WithdrawalId] = struct{}{}
+							otherWIDs = append(otherWIDs, oi.WithdrawalId)
+						}
+					}
+					var balanceWIDs []int64
+					if err := tx.Model(&model.AdtySiteInviteWithdrawal{}).
+						Where("id IN ? AND method = ?", otherWIDs, "balance").
+						Pluck("id", &balanceWIDs).Error; err != nil {
+						return 0, 0, err
+					}
+					isBalanceWID := make(map[int64]struct{}, len(balanceWIDs))
+					for _, wid := range balanceWIDs {
+						isBalanceWID[wid] = struct{}{}
+					}
+					for _, oi := range otherItems {
+						if _, ok := isBalanceWID[oi.WithdrawalId]; !ok {
+							continue
+						}
+						q, qErr := common.WalletQuotaFromDecimalStrict(oi.AmountUSD.Mul(common.QuotaPerUnitDecimal()).Floor())
+						if qErr != nil {
+							return 0, 0, qErr
+						}
+						allocOthersByComm[oi.CommissionId] += int64(q)
+					}
+				}
+				// Also include any direct per-commission conversions (site-comm-cvt:<cid>:*)
+				// so clawbacks taken from those batches are never attributed to this merged lot.
+				for _, cid := range siblingCommIDs {
+					var directOrig int64
+					if err := tx.Model(&model.AdtyFundBatch{}).
+						Select("COALESCE(SUM(original), 0)").
+						Where("user_id = ? AND source LIKE ?", row.InviterId, fmt.Sprintf("site-comm-cvt:%d:%%", cid)).
+						Scan(&directOrig).Error; err != nil {
+						return 0, 0, err
+					}
+					allocOthersByComm[cid] += directOrig
+				}
+				var siblingComms []model.AdtySiteInviteCommission
+				if err := tx.Select("id", "trade_no").Where("id IN ?", siblingCommIDs).Find(&siblingComms).Error; err != nil {
+					return 0, 0, err
+				}
+				commIDByTradeNo := make(map[string]int64, len(siblingComms))
+				refTradeNos := make([]string, 0, len(siblingComms))
+				for _, sc := range siblingComms {
+					if sc.TradeNo != "" {
+						commIDByTradeNo[sc.TradeNo] = sc.Id
+						refTradeNos = append(refTradeNos, sc.TradeNo)
+					}
+				}
+				totalClawedByComm := make(map[int64]int64, len(refTradeNos))
+				if len(refTradeNos) > 0 {
+					type clawSumRow struct {
+						RefId string
+						Total int64
+					}
+					var clawRows []clawSumRow
+					if err := tx.Model(&model.AdtyBalanceLedger{}).
+						Select("ref_id, COALESCE(SUM(-delta_quota), 0) AS total").
+						Where("user_id = ? AND type = ? AND ref_type = ? AND ref_id IN ? AND delta_quota < 0",
+							row.InviterId, model.AdtyLedgerTypeCommissionTransfer, "site_invite", refTradeNos).
+						Group("ref_id").
+						Scan(&clawRows).Error; err != nil {
+						return 0, 0, err
+					}
+					for _, cr := range clawRows {
+						if cid, ok := commIDByTradeNo[cr.RefId]; ok {
+							totalClawedByComm[cid] = cr.Total
+						}
+					}
+				}
+				for _, cid := range siblingCommIDs {
+					provableFromThis := min(max(totalClawedByComm[cid]-allocOthersByComm[cid], 0), allocThisByComm[cid])
+					siblingClawed += provableFromThis
+				}
+			}
+		}
+		otherProtected := max(lot.Original-int64(own)-siblingClawed, 0)
+		provable := lot.Remaining - otherProtected
 		if provable <= 0 {
 			continue
 		}
@@ -1285,10 +1400,20 @@ func AdtyUserHasLegacySiteCommissions(userID int) bool {
 	if userID <= 0 || model.DB == nil {
 		return false
 	}
-	if !model.DB.Migrator().HasTable(&model.AdtySite{}) {
+	hasSiteTable, err := model.AdtyTableExists(model.DB, &model.AdtySite{})
+	if err != nil {
+		common.SysError(common.LogText("check legacy site commissions site table: %s", err.Error()))
 		return false
 	}
-	if model.DB.Migrator().HasTable(&model.AdtySiteInviteCommission{}) {
+	if !hasSiteTable {
+		return false
+	}
+	hasCommTable, err := model.AdtyTableExists(model.DB, &model.AdtySiteInviteCommission{})
+	if err != nil {
+		common.SysError(common.LogText("check legacy site commissions table: %s", err.Error()))
+		return false
+	}
+	if hasCommTable {
 		var count int64
 		if err := model.DB.Table("adty_site_invite_commissions AS c").
 			Joins("JOIN adty_sites s ON s.id = c.site_id").
@@ -1297,7 +1422,12 @@ func AdtyUserHasLegacySiteCommissions(userID int) bool {
 			return true
 		}
 	}
-	if model.DB.Migrator().HasTable(&model.AdtySiteInviteWithdrawal{}) {
+	hasWithdrawTable, err := model.AdtyTableExists(model.DB, &model.AdtySiteInviteWithdrawal{})
+	if err != nil {
+		common.SysError(common.LogText("check legacy site withdrawals table: %s", err.Error()))
+		return false
+	}
+	if hasWithdrawTable {
 		var count int64
 		if err := model.DB.Table("adty_site_invite_withdrawals AS w").
 			Joins("JOIN adty_sites s ON s.id = w.site_id").
@@ -1331,7 +1461,11 @@ func adtyRecordSiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder) er
 func ReleaseAdtySiteInviteCommissions(now time.Time) error {
 	query := model.DB.Model(&model.AdtySiteInviteCommission{}).
 		Where("status = ? AND available_at > 0 AND available_at <= ?", model.AdtySiteCommissionCovered, now.Unix())
-	if model.DB.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
+	hasAffiliateTable, err := model.AdtyTableExists(model.DB, &model.AdtySiteReferralAffiliate{})
+	if err != nil {
+		return err
+	}
+	if hasAffiliateTable {
 		query = query.Where(
 			"NOT EXISTS (SELECT 1 FROM adty_site_referral_affiliates a WHERE a.site_id = adty_site_invite_commissions.site_id AND a.user_id = adty_site_invite_commissions.inviter_id AND a.settlement_enabled = ?)",
 			false,

@@ -581,16 +581,22 @@ func buildAdminUserResponses(users []*model.User) ([]adminUserResponse, error) {
 		return nil, err
 	}
 	siteOwners := map[int]bool{}
-	if len(userIDs) > 0 && model.DB != nil && model.DB.Migrator().HasTable(&model.AdtySite{}) {
-		var ownerIDs []int
-		if err := model.DB.Model(&model.AdtySite{}).
-			Where("owner_user_id IN ? AND status NOT IN ?", userIDs, []string{model.AdtySiteStatusClosed, "deleted", "rejected"}).
-			Distinct("owner_user_id").
-			Pluck("owner_user_id", &ownerIDs).Error; err != nil {
-			return nil, err
+	if len(userIDs) > 0 && model.DB != nil {
+		hasSiteTable, tblErr := model.AdtyTableExists(model.DB, &model.AdtySite{})
+		if tblErr != nil {
+			return nil, tblErr
 		}
-		for _, oid := range ownerIDs {
-			siteOwners[oid] = true
+		if hasSiteTable {
+			var ownerIDs []int
+			if err := model.DB.Model(&model.AdtySite{}).
+				Where("owner_user_id IN ? AND status NOT IN ?", userIDs, []string{model.AdtySiteStatusClosed, "deleted", "rejected"}).
+				Distinct("owner_user_id").
+				Pluck("owner_user_id", &ownerIDs).Error; err != nil {
+				return nil, err
+			}
+			for _, oid := range ownerIDs {
+				siteOwners[oid] = true
+			}
 		}
 	}
 	items := make([]adminUserResponse, len(users))

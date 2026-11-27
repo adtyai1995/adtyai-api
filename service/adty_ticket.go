@@ -1248,7 +1248,14 @@ func releaseInvalidTicketAssigneeTx(tx *gorm.DB, ticket *model.AdtyTicket, actor
 }
 
 func releaseStaffTicketsWithAuditsTx(tx *gorm.DB, staff *model.AdtySiteStaff, actorID int, reason string) ([]model.AuditLog, error) {
-	if tx == nil || staff == nil || staff.UserId <= 0 || !tx.Migrator().HasTable(&model.AdtyTicket{}) {
+	if tx == nil || staff == nil || staff.UserId <= 0 {
+		return nil, nil
+	}
+	hasTicketTable, err := model.AdtyTableExists(tx, &model.AdtyTicket{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasTicketTable {
 		return nil, nil
 	}
 	var tickets []model.AdtyTicket
@@ -1332,7 +1339,14 @@ func ReleaseAssigneeSubsiteOpenTicketsWithAuditsTx(tx *gorm.DB, assigneeID int, 
 // before User / AdtyTicket locks are acquired, and returns the deduplicated
 // staff user IDs owned by targetUserID (excluding targetUserID itself).
 func PreLockSiteOwnerStaffForDisableTx(tx *gorm.DB, targetUserID int) ([]int, error) {
-	if tx == nil || targetUserID <= 0 || !tx.Migrator().HasTable(&model.AdtySiteStaff{}) {
+	if tx == nil || targetUserID <= 0 {
+		return nil, nil
+	}
+	hasStaffTable, err := model.AdtyTableExists(tx, &model.AdtySiteStaff{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasStaffTable {
 		return nil, nil
 	}
 	var rows []model.AdtySiteStaff
@@ -1384,7 +1398,14 @@ func ReleaseAssigneesOpenTicketsWithAuditsTx(tx *gorm.DB, ownerUserID int, staff
 		seen[id] = struct{}{}
 		assigneeIDs = append(assigneeIDs, id)
 	}
-	if len(assigneeIDs) == 0 || !tx.Migrator().HasTable(&model.AdtyTicket{}) {
+	if len(assigneeIDs) == 0 {
+		return nil, nil
+	}
+	hasTicketTable, err := model.AdtyTableExists(tx, &model.AdtyTicket{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasTicketTable {
 		return nil, nil
 	}
 	slices.Sort(assigneeIDs)
@@ -1442,7 +1463,14 @@ func ReleaseAssigneesOpenTicketsWithAuditsTx(tx *gorm.DB, ownerUserID int, staff
 // id ASC lock pass, returning the recorded official audit logs for post-commit
 // delivery.
 func ReleaseSiteOwnerStaffOpenTicketsWithAuditsTx(tx *gorm.DB, ownerUserID, actorID int, reason string) ([]model.AuditLog, error) {
-	if tx == nil || ownerUserID <= 0 || !tx.Migrator().HasTable(&model.AdtySiteStaff{}) {
+	if tx == nil || ownerUserID <= 0 {
+		return nil, nil
+	}
+	hasStaffTable, err := model.AdtyTableExists(tx, &model.AdtySiteStaff{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasStaffTable {
 		return nil, nil
 	}
 	var rows []model.AdtySiteStaff
@@ -1484,7 +1512,14 @@ func DeliverAdtyCommittedAudits(events []model.AuditLog) {
 }
 
 func releaseAssigneeOpenTicketsByScopeTx(tx *gorm.DB, assigneeID int, actorID int, reason string, subsiteOnly bool) (int64, []model.AuditLog, error) {
-	if tx == nil || assigneeID <= 0 || !tx.Migrator().HasTable(&model.AdtyTicket{}) {
+	if tx == nil || assigneeID <= 0 {
+		return 0, nil, nil
+	}
+	hasTicketTable, err := model.AdtyTableExists(tx, &model.AdtyTicket{})
+	if err != nil {
+		return 0, nil, err
+	}
+	if !hasTicketTable {
 		return 0, nil, nil
 	}
 	query := model.AdtyLockForUpdate(tx).
@@ -2131,11 +2166,16 @@ func adtyTicketAssigneesTx(tx *gorm.DB, ticket model.AdtyTicket, includePlatform
 		return nil, err
 	}
 	var platformCan func(int, int, authz.Permission) bool
-	if includePlatform && slices.ContainsFunc(users, func(user model.User) bool { return user.Role == common.RoleAdminUser }) && tx.Migrator().HasTable(&model.CasbinRule{}) {
-		var err error
-		platformCan, err = authz.PermissionCheckerInTx(tx.Where("v1 = ?", authz.ResourceAdtyTicket))
+	if includePlatform && slices.ContainsFunc(users, func(user model.User) bool { return user.Role == common.RoleAdminUser }) {
+		hasCasbinTable, err := model.AdtyTableExists(tx, &model.CasbinRule{})
 		if err != nil {
 			return nil, err
+		}
+		if hasCasbinTable {
+			platformCan, err = authz.PermissionCheckerInTx(tx.Where("v1 = ?", authz.ResourceAdtyTicket))
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	result := []AdtyTicketAssignee{}
@@ -2184,17 +2224,30 @@ func loadAdtyTicketActorTx(tx *gorm.DB, userId int) (adtyTicketActor, error) {
 	if actor.User.SiteId == 0 && actor.User.StaffSiteId == 0 && actor.User.Role >= common.RoleAdminUser {
 		if actor.User.Role >= common.RoleRootUser {
 			actor.PlatformAll, actor.PlatformMain = true, true
-		} else if tx.Migrator().HasTable(&model.CasbinRule{}) {
-			check, err := authz.PermissionCheckerInTx(tx.Where("v1 = ?", authz.ResourceAdtyTicket))
+		} else {
+			hasCasbinTable, err := model.AdtyTableExists(tx, &model.CasbinRule{})
 			if err != nil {
 				return actor, err
 			}
-			actor.PlatformAll = check(userId, actor.User.Role, authz.AdtyTicketManageAll)
-			actor.PlatformMain = actor.PlatformAll || check(userId, actor.User.Role, authz.AdtyTicketManage)
+			if hasCasbinTable {
+				check, err := authz.PermissionCheckerInTx(tx.Where("v1 = ?", authz.ResourceAdtyTicket))
+				if err != nil {
+					return actor, err
+				}
+				actor.PlatformAll = check(userId, actor.User.Role, authz.AdtyTicketManageAll)
+				actor.PlatformMain = actor.PlatformAll || check(userId, actor.User.Role, authz.AdtyTicketManage)
+			}
 		}
 	}
-	hasSiteTable := tx.Migrator().HasTable(&model.AdtySite{})
-	if tx.Migrator().HasTable(&model.AdtySiteStaff{}) {
+	hasSiteTable, err := model.AdtyTableExists(tx, &model.AdtySite{})
+	if err != nil {
+		return actor, err
+	}
+	hasStaffTable, err := model.AdtyTableExists(tx, &model.AdtySiteStaff{})
+	if err != nil {
+		return actor, err
+	}
+	if hasStaffTable {
 		var staff model.AdtySiteStaff
 		lookup := tx.Where("user_id = ?", userId).Limit(1).Find(&staff)
 		if lookup.Error != nil {
@@ -2230,7 +2283,15 @@ func loadAdtyTicketActorTx(tx *gorm.DB, userId int) (adtyTicketActor, error) {
 			actor.OwnerTickets = AdtySiteAgreementAccepted(site.AgreementVer)
 		}
 	}
-	if tx.Migrator().HasTable(&model.AdtyTeamMember{}) && tx.Migrator().HasTable(&model.AdtyTeam{}) {
+	hasTeamMemberTable, err := model.AdtyTableExists(tx, &model.AdtyTeamMember{})
+	if err != nil {
+		return actor, err
+	}
+	hasTeamTable, err := model.AdtyTableExists(tx, &model.AdtyTeam{})
+	if err != nil {
+		return actor, err
+	}
+	if hasTeamMemberTable && hasTeamTable {
 		var member model.AdtyTeamMember
 		team := tx.Where("user_id = ? AND status = ?", userId, model.AdtyTeamMemberActive).Limit(1).Find(&member)
 		if team.Error != nil {
@@ -2409,12 +2470,20 @@ func ensureAdtyTicketNoticeSchema() error {
 	if model.DB == nil {
 		return nil
 	}
-	if !model.DB.Migrator().HasTable(&model.AdtyTicketNotice{}) {
+	hasNoticeTable, err := model.AdtyTableExists(model.DB, &model.AdtyTicketNotice{})
+	if err != nil {
+		return err
+	}
+	if !hasNoticeTable {
 		if err := model.DB.AutoMigrate(&model.AdtyTicketNotice{}); err != nil {
 			return err
 		}
 	}
-	if !model.DB.Migrator().HasTable(&model.AdtyTelegramDelivery{}) {
+	hasTgDeliveryTable, err := model.AdtyTableExists(model.DB, &model.AdtyTelegramDelivery{})
+	if err != nil {
+		return err
+	}
+	if !hasTgDeliveryTable {
 		if err := model.DB.AutoMigrate(&model.AdtyTelegramBot{}, &model.AdtyTelegramBinding{}, &model.AdtyTelegramDelivery{}); err != nil {
 			return err
 		}
@@ -2776,12 +2845,18 @@ func SaveAdtyTicketImagePolicy(policy model.AdtyTicketPolicy, audits ...model.Au
 		if err := tx.Save(&policy).Error; err != nil {
 			return err
 		}
-		if len(audits) > 0 && tx.Migrator().HasTable(&model.AuditIntent{}) {
-			for _, event := range audits {
-				event.BeforeValue = common.GetJsonString(before)
-				event.AfterValue = common.GetJsonString(after)
-				if err := model.AppendAuditIntentTx(tx, event); err != nil {
-					return err
+		if len(audits) > 0 {
+			hasAuditIntentTable, err := model.AdtyTableExists(tx, &model.AuditIntent{})
+			if err != nil {
+				return err
+			}
+			if hasAuditIntentTable {
+				for _, event := range audits {
+					event.BeforeValue = common.GetJsonString(before)
+					event.AfterValue = common.GetJsonString(after)
+					if err := model.AppendAuditIntentTx(tx, event); err != nil {
+						return err
+					}
 				}
 			}
 		}

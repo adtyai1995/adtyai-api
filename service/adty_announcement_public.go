@@ -48,18 +48,25 @@ func AdtyPublicAnnouncementsForRequest(c *gin.Context) []AdtyPublicAnnouncement 
 		return out
 	}
 	headByKey := map[string]model.AdtyTranslationHead{}
-	if len(rows) > 0 && model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyTranslationHead{}) {
-		keys := make([]string, 0, len(rows)*2)
-		for _, row := range rows {
-			if row.Id > 0 {
-				keys = append(keys, adtyNotificationTranslationKey(row.Id), adtyNotificationTitleTranslationKey(row.Id))
+	if len(rows) > 0 && model.DB != nil {
+		hasTransTable, transErr := model.AdtyTableExists(model.DB, &model.AdtyTranslationHead{})
+		if transErr != nil {
+			common.SysError(common.LogText("check translation table for public announcements failed: %s", transErr.Error()))
+		} else if hasTransTable {
+			keys := make([]string, 0, len(rows)*2)
+			for _, row := range rows {
+				if row.Id > 0 {
+					keys = append(keys, adtyNotificationTranslationKey(row.Id), adtyNotificationTitleTranslationKey(row.Id))
+				}
 			}
-		}
-		if len(keys) > 0 {
-			var heads []model.AdtyTranslationHead
-			if err := model.DB.Where("object_key IN ?", keys).Find(&heads).Error; err == nil {
-				for _, head := range heads {
-					headByKey[head.ObjectKey] = head
+			if len(keys) > 0 {
+				var heads []model.AdtyTranslationHead
+				if err := model.DB.Where("object_key IN ?", keys).Find(&heads).Error; err != nil {
+					common.SysError(common.LogText("load public announcement translations failed: %s", err.Error()))
+				} else {
+					for _, head := range heads {
+						headByKey[head.ObjectKey] = head
+					}
 				}
 			}
 		}

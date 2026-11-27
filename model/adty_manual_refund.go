@@ -143,7 +143,14 @@ type AdtyManualRefundResult struct {
 }
 
 func adtyRequireManualRefundTable(tx *gorm.DB) error {
-	if tx == nil || !tx.Migrator().HasTable(&AdtyManualRefund{}) {
+	if tx == nil {
+		return ErrAdtyManualRefundTableMissing
+	}
+	hasTable, err := AdtyTableExists(tx, &AdtyManualRefund{})
+	if err != nil {
+		return err
+	}
+	if !hasTable {
 		return ErrAdtyManualRefundTableMissing
 	}
 	return nil
@@ -285,8 +292,14 @@ func adtyExternalRefundOffsetForRowsTx(tx *gorm.DB, ext *AdtyTopupOrder, rows []
 	if face <= 0 {
 		return 0, nil
 	}
-	hasOrphan := tx.Migrator().HasTable(&PaymentOrphanEvent{})
-	hasReview := tx.Migrator().HasTable(&PaymentOrphanReview{})
+	hasOrphan, err := AdtyTableExists(tx, &PaymentOrphanEvent{})
+	if err != nil {
+		return 0, err
+	}
+	hasReview, err := AdtyTableExists(tx, &PaymentOrphanReview{})
+	if err != nil {
+		return 0, err
+	}
 	if !hasOrphan && !hasReview {
 		return 0, nil
 	}

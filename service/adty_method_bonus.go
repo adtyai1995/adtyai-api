@@ -42,12 +42,21 @@ func AdtyPaymentMethodBonus(site *model.AdtySite, method string, faceUSD decimal
 			return decimal.Zero, decimal.Zero, nil
 		}
 		status := site.Status
-		if status == "" && model.DB != nil && model.DB.Migrator().HasTable(&model.AdtySite{}) {
-			var loaded model.AdtySite
-			if err := model.DB.Select("id, status").Where("id = ?", site.Id).Limit(1).Find(&loaded).Error; err != nil || loaded.Id == 0 {
-				return decimal.Zero, decimal.Zero, nil
+		if status == "" && model.DB != nil {
+			hasSiteTable, tableErr := model.AdtyTableExists(model.DB, &model.AdtySite{})
+			if tableErr != nil {
+				return decimal.Zero, decimal.Zero, tableErr
 			}
-			status = loaded.Status
+			if hasSiteTable {
+				var loaded model.AdtySite
+				if err := model.DB.Select("id, status").Where("id = ?", site.Id).Limit(1).Find(&loaded).Error; err != nil {
+					return decimal.Zero, decimal.Zero, err
+				}
+				if loaded.Id == 0 {
+					return decimal.Zero, decimal.Zero, nil
+				}
+				status = loaded.Status
+			}
 		}
 		if status != model.AdtySiteStatusActive {
 			return decimal.Zero, decimal.Zero, nil
@@ -324,7 +333,11 @@ func ReserveAdtySiteGiftTx(tx *gorm.DB, ext *model.AdtyTopupOrder, marginAuthori
 		if len(marginAuthorization) > 0 {
 			marginAllowed = marginAuthorization[0]
 		} else {
-			marginAllowed = adty_setting.SiteBonusMarginFillAllowedTx(tx, ext.SiteId)
+			var authErr error
+			marginAllowed, authErr = adty_setting.SiteBonusMarginFillAllowedStrictTx(tx, ext.SiteId)
+			if authErr != nil {
+				return authErr
+			}
 		}
 		if !marginAllowed {
 			return common.NewMessage("Site gift reserve is not covered by the earning wallet")

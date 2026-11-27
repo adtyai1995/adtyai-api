@@ -36,7 +36,14 @@ func init() {
 }
 
 func readAuthoritativeEpayTimeouts() (map[string]string, error) {
-	if model.DB == nil || !model.DB.Migrator().HasTable(&model.Option{}) {
+	if model.DB == nil {
+		return nil, common.NewMessage("Operation failed")
+	}
+	hasOptionTable, err := model.AdtyTableExists(model.DB, &model.Option{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasOptionTable {
 		return nil, common.NewMessage("Operation failed")
 	}
 	var rows []model.Option
@@ -173,11 +180,13 @@ func readCurrentOptionRawValue(db *gorm.DB, key string) string {
 }
 
 func readCurrentOptionRow(db *gorm.DB, key string) (string, bool) {
-	if db != nil && db.Migrator().HasTable(&model.Option{}) {
-		var row model.Option
-		lookup := db.Where(&model.Option{Key: key}).Limit(1).Find(&row)
-		if lookup.Error == nil && lookup.RowsAffected > 0 {
-			return row.Value, true
+	if db != nil {
+		if hasOptionTable, tblErr := model.AdtyTableExists(db, &model.Option{}); tblErr == nil && hasOptionTable {
+			var row model.Option
+			lookup := db.Where(&model.Option{Key: key}).Limit(1).Find(&row)
+			if lookup.Error == nil && lookup.RowsAffected > 0 {
+				return row.Value, true
+			}
 		}
 	}
 	return "", false

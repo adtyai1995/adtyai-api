@@ -67,8 +67,16 @@ func runAdtyEpayFollowUpQueries(now int64) {
 	}
 	canceledFailedWindow := max(grace, int64(3600))
 	teamLookbackWindow := max(canceledFailedWindow, int64(7*24*60*60))
-	hasOrphanTable := model.DB.Migrator().HasTable(&model.PaymentOrphanEvent{})
-	hasChannelTable := model.DB.Migrator().HasTable(&model.AdtyEpayChannel{})
+	hasOrphanTable, err := model.AdtyTableExists(model.DB, &model.PaymentOrphanEvent{})
+	if err != nil {
+		common.SysError(common.LogText("epay follow-up check orphan table: %s", err.Error()))
+		return
+	}
+	hasChannelTable, err := model.AdtyTableExists(model.DB, &model.AdtyEpayChannel{})
+	if err != nil {
+		common.SysError(common.LogText("epay follow-up check channel table: %s", err.Error()))
+		return
+	}
 	applyCommonFilters := func(q *gorm.DB) *gorm.DB {
 		if hasChannelTable {
 			q = q.Joins("JOIN adty_epay_channels c ON c.id = a.channel_id AND TRIM(c.gateway_url) <> ''")
@@ -281,7 +289,12 @@ func countAdtyEpayUnpaid(tradeNos []string) {
 		Joins("JOIN top_ups t ON t.trade_no = a.trade_no").
 		Where("a.trade_no IN ? AND a.provider = ? AND a.unpaid_counted = ? AND t.status NOT IN ?",
 			tradeNos, model.PaymentProviderAdtyEpay, false, []string{common.TopUpStatusSuccess, common.TopUpStatusRefunded})
-	if model.DB.Migrator().HasTable(&model.PaymentOrphanEvent{}) {
+	hasOrphanTable, err := model.AdtyTableExists(model.DB, &model.PaymentOrphanEvent{})
+	if err != nil {
+		common.SysError(common.LogText("count unpaid epay orders check orphan table: %s", err.Error()))
+		return
+	}
+	if hasOrphanTable {
 		q = q.Where("NOT EXISTS (SELECT 1 FROM adty_payment_orphan_events o WHERE o.provider = a.provider AND o.reference_id = a.trade_no AND o.event_type IN ('payment_callback','payment_query') AND o.event_id NOT LIKE 'reversal:%' AND o.status <> ?)",
 			model.PaymentOrphanStatusDismissed)
 	}

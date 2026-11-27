@@ -19,7 +19,14 @@ func (AdtyBadgeSeen) TableName() string { return "adty_badge_seens" }
 
 func GetAdtyBadgeSeenMap(userID int) (map[string]int64, error) {
 	result := map[string]int64{}
-	if userID <= 0 || DB == nil || !DB.Migrator().HasTable(&AdtyBadgeSeen{}) {
+	if userID <= 0 || DB == nil {
+		return result, nil
+	}
+	hasTable, err := AdtyTableExists(DB, &AdtyBadgeSeen{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasTable {
 		return result, nil
 	}
 	var rows []AdtyBadgeSeen

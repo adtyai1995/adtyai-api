@@ -123,10 +123,16 @@ func ResolvePaymentOrphanReviewForActor(id int64, operatorID, actorRole int, den
 				if actorRole > 0 && actorRole != common.RoleRootUser && (ext == nil || ext.SiteId != 0) {
 					return ErrUserQuotaPermission
 				}
-				if ext != nil && ext.TeamId > 0 && tx.Migrator().HasTable(&AdtyTeam{}) {
-					var team AdtyTeam
-					if err := lockForUpdate(tx).Select("id").Where("id = ?", ext.TeamId).Limit(1).Find(&team).Error; err != nil {
+				if ext != nil && ext.TeamId > 0 {
+					hasTeamTable, err := AdtyTableExists(tx, &AdtyTeam{})
+					if err != nil {
 						return err
+					}
+					if hasTeamTable {
+						var team AdtyTeam
+						if err := lockForUpdate(tx).Select("id").Where("id = ?", ext.TeamId).Limit(1).Find(&team).Error; err != nil {
+							return err
+						}
 					}
 				}
 				var target User
@@ -163,7 +169,11 @@ func ResolvePaymentOrphanReviewForActor(id int64, operatorID, actorRole int, den
 		if topUp != nil && (topUp.PaymentProvider != orphan.Provider || (ext != nil && (ext.Provider != orphan.Provider || ext.UserId != topUp.UserId))) {
 			return ErrPaymentMethodMismatch
 		}
-		if tx.Migrator().HasTable(&AdtyManualRefund{}) {
+		hasManualRefundTable, err := AdtyTableExists(tx, &AdtyManualRefund{})
+		if err != nil {
+			return err
+		}
+		if hasManualRefundTable {
 			if request.Status == PaymentOrphanStatusDismissed || request.Status == PaymentOrphanStatusNeverCredited {
 				var activeBound int64
 				if err := tx.Model(&AdtyManualRefund{}).
@@ -205,7 +215,7 @@ func ResolvePaymentOrphanReviewForActor(id int64, operatorID, actorRole int, den
 				return common.NewMessage("A full external reversal and the original wallet refund are required")
 			}
 			var completedRefunds []AdtyManualRefund
-			if tx.Migrator().HasTable(&AdtyManualRefund{}) {
+			if hasManualRefundTable {
 				if err := tx.Where("trade_no = ? AND status = ?", topUp.TradeNo, AdtyManualRefundStatusCompleted).Order("id asc").Find(&completedRefunds).Error; err != nil {
 					return err
 				}
@@ -214,7 +224,11 @@ func ResolvePaymentOrphanReviewForActor(id int64, operatorID, actorRole int, den
 			var refundLedgerID int64
 			if ext.TeamId > 0 {
 				var teamLedgers []AdtyTeamLedger
-				if tx.Migrator().HasTable(&AdtyTeamLedger{}) {
+				hasTeamLedgerTable, err := AdtyTableExists(tx, &AdtyTeamLedger{})
+				if err != nil {
+					return err
+				}
+				if hasTeamLedgerTable {
 					refIDs := make([]string, 0, len(completedRefunds)+1)
 					refIDs = append(refIDs, topUp.TradeNo)
 					completedRefSet := map[string]struct{}{}

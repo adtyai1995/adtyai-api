@@ -316,11 +316,18 @@ func adtyTranslationHeadMatchesSource(head model.AdtyTranslationHead, currentSou
 	return strings.TrimSpace(head.Source) == norm
 }
 
-func invalidateAdtyTranslationHeadOnSecret(objectKey, sourceHash string, siteId, notifPubID int, notifRevision int64) {
-	if objectKey == "" || model.DB == nil || !model.DB.Migrator().HasTable(&model.AdtyTranslationHead{}) {
-		return
+func invalidateAdtyTranslationHeadOnSecret(objectKey, sourceHash string, siteId, notifPubID int, notifRevision int64) error {
+	if objectKey == "" || model.DB == nil {
+		return nil
 	}
-	_ = withAdtyTranslationHeadLock(func(tx *gorm.DB) error {
+	hasHeadTable, err := model.AdtyTableExists(model.DB, &model.AdtyTranslationHead{})
+	if err != nil {
+		return err
+	}
+	if !hasHeadTable {
+		return nil
+	}
+	return withAdtyTranslationHeadLock(func(tx *gorm.DB) error {
 		var head model.AdtyTranslationHead
 		lookup := model.AdtyLockForUpdate(tx).Where("object_key = ?", objectKey).Limit(1).Find(&head)
 		if lookup.Error != nil || lookup.RowsAffected == 0 {
@@ -348,7 +355,14 @@ func invalidateAdtyTranslationHeadOnSecret(objectKey, sourceHash string, siteId,
 }
 
 func adtyNotificationRevisionMatchesTx(tx *gorm.DB, pubID int, revision int64) (bool, error) {
-	if tx == nil || pubID <= 0 || !tx.Migrator().HasTable(&model.AdtyNotificationPublication{}) {
+	if tx == nil || pubID <= 0 {
+		return true, nil
+	}
+	hasPubTable, err := model.AdtyTableExists(tx, &model.AdtyNotificationPublication{})
+	if err != nil {
+		return false, err
+	}
+	if !hasPubTable {
 		return true, nil
 	}
 	var pub model.AdtyNotificationPublication
@@ -368,11 +382,18 @@ func adtyNotificationRevisionMatchesTx(tx *gorm.DB, pubID int, revision int64) (
 // deleteAdtyNotificationTranslationHeadIfCurrent deletes a notification translation
 // head only while holding the head + publication locks and confirming the live
 // publication is still published at the expected revision (R10-035).
-func deleteAdtyNotificationTranslationHeadIfCurrent(pubID int, revision int64, objectKey string) {
-	if objectKey == "" || model.DB == nil || !model.DB.Migrator().HasTable(&model.AdtyTranslationHead{}) {
-		return
+func deleteAdtyNotificationTranslationHeadIfCurrent(pubID int, revision int64, objectKey string) error {
+	if objectKey == "" || model.DB == nil {
+		return nil
 	}
-	_ = withAdtyTranslationHeadLock(func(tx *gorm.DB) error {
+	hasHeadTable, err := model.AdtyTableExists(model.DB, &model.AdtyTranslationHead{})
+	if err != nil {
+		return err
+	}
+	if !hasHeadTable {
+		return nil
+	}
+	return withAdtyTranslationHeadLock(func(tx *gorm.DB) error {
 		var head model.AdtyTranslationHead
 		lookup := model.AdtyLockForUpdate(tx).Where("object_key = ?", objectKey).Limit(1).Find(&head)
 		if lookup.Error != nil || lookup.RowsAffected == 0 {
@@ -417,12 +438,20 @@ func adtyTranslationSiteCallsTodayWithDB(db *gorm.DB, siteID int, now time.Time)
 	if siteID <= 0 || db == nil {
 		return 0, nil
 	}
-	if !db.Migrator().HasTable(&model.AdtyTranslationJob{}) || !db.Migrator().HasTable(&model.AdtyTranslationHead{}) {
+	hasJobTable, err := model.AdtyTableExists(db, &model.AdtyTranslationJob{})
+	if err != nil {
+		return 0, err
+	}
+	hasHeadTable, err := model.AdtyTableExists(db, &model.AdtyTranslationHead{})
+	if err != nil {
+		return 0, err
+	}
+	if !hasJobTable || !hasHeadTable {
 		return 0, nil
 	}
 	_, dayStart, dayEnd := adtyTranslationUTCDayBounds(now)
 	var count int64
-	err := db.Table("adty_translation_jobs AS j").
+	err = db.Table("adty_translation_jobs AS j").
 		Joins("INNER JOIN adty_translation_heads AS h ON h.object_key = j.object_key").
 		Where("h.site_id = ?", siteID).
 		Where("((j.finished_at >= ? AND j.finished_at < ?) OR (j.finished_at = 0 AND j.created_at >= ? AND j.created_at < ?))", dayStart, dayEnd, dayStart, dayEnd).
@@ -466,7 +495,9 @@ func translateAdtyDynamicInternal(objectKey, source string, siteId, notifPubID i
 	}
 	hash := adtyTranslationSourceHash(source)
 	if adtyTextHasOutboundSecret(source) {
-		invalidateAdtyTranslationHeadOnSecret(objectKey, hash, siteId, notifPubID, notifRevision)
+		if err := invalidateAdtyTranslationHeadOnSecret(objectKey, hash, siteId, notifPubID, notifRevision); err != nil {
+			return nil, err
+		}
 		return &AdtyTranslationResult{ObjectKey: objectKey, Source: source, Status: model.AdtyTranslationFailed, Notice: AdtyTranslationNotReady}, nil
 	}
 
@@ -611,8 +642,14 @@ func executeAdtyReservedTranslationWithGuard(objectKey, source string, siteId, v
 	}
 
 	english, modelName, callErr := translateWithBackupForSite(cfg, source, siteId)
-	if callErr == nil && adtyIsHTMLTranslation(model.DB, objectKey, source) {
-		english = SanitizeAdtyNotificationHTML(english)
+	if callErr == nil {
+		isHTML, htmlErr := adtyIsHTMLTranslation(model.DB, objectKey, source)
+		if htmlErr != nil {
+			return nil, htmlErr
+		}
+		if isHTML {
+			english = SanitizeAdtyNotificationHTML(english)
+		}
 	}
 	if callErr != nil || !adtyTranslationKeepsFacts(source, english) {
 		return fallbackAdtyTranslationWithGuard(objectKey, source, siteId, version, hash, modelName, notifPubID, notifRevision, expectedLeaseUntil)
@@ -986,7 +1023,14 @@ func lockAdtyNotificationPublicationForTranslationTx(tx *gorm.DB, objectKey stri
 		return pub, false, nil
 	}
 	pubID, err := strconv.Atoi(suffix)
-	if err != nil || pubID <= 0 || tx == nil || !tx.Migrator().HasTable(&model.AdtyNotificationPublication{}) {
+	if err != nil || pubID <= 0 || tx == nil {
+		return pub, false, nil
+	}
+	hasPubTable, err := model.AdtyTableExists(tx, &model.AdtyNotificationPublication{})
+	if err != nil {
+		return pub, false, err
+	}
+	if !hasPubTable {
 		return pub, false, nil
 	}
 	lookup := model.AdtyLockForUpdate(tx).Where("id = ?", pubID).Limit(1).Find(&pub)
@@ -1162,7 +1206,14 @@ func rejectAdtyTranslationSelf(baseURL, requestHost, token string) error {
 	}
 	host := strings.Trim(AdtyNormalizeHost(parsed.Host), "[]")
 	reqHost := strings.Trim(AdtyNormalizeHost(requestHost), "[]")
-	if host == "" || (reqHost != "" && host == reqHost) || adtyTranslationTargetIsSelf(parsed.Host) {
+	if host == "" || (reqHost != "" && host == reqHost) {
+		return ErrAdtyTranslationSelf
+	}
+	isSelf, err := adtyTranslationTargetIsSelf(parsed.Host)
+	if err != nil {
+		return err
+	}
+	if isSelf {
 		return ErrAdtyTranslationSelf
 	}
 	if err := validateURLWithCurrentFetchSetting(parsed.String(), false); err != nil {
@@ -1624,19 +1675,29 @@ func adtyLooksLikeHTML(text string) bool {
 	return strings.TrimSpace(text) != "" && adtyHTMLTagPattern.MatchString(text)
 }
 
-func adtyIsHTMLTranslation(db *gorm.DB, objectKey, source string) bool {
+func adtyIsHTMLTranslation(db *gorm.DB, objectKey, source string) (bool, error) {
 	if adtyLooksLikeHTML(source) {
-		return true
+		return true, nil
 	}
 	if suffix, ok := strings.CutPrefix(strings.TrimSpace(objectKey), "notification:"); ok && !strings.Contains(suffix, ":") {
-		if pubID, err := strconv.Atoi(suffix); err == nil && pubID > 0 && db != nil && db.Migrator().HasTable(&model.AdtyNotificationPublication{}) {
-			var pub model.AdtyNotificationPublication
-			if db.Select("content_format").Where("id = ?", pubID).Limit(1).Find(&pub).RowsAffected > 0 {
-				return strings.EqualFold(strings.TrimSpace(pub.ContentFormat), "html")
+		if pubID, err := strconv.Atoi(suffix); err == nil && pubID > 0 && db != nil {
+			hasPubTable, err := model.AdtyTableExists(db, &model.AdtyNotificationPublication{})
+			if err != nil {
+				return false, err
+			}
+			if hasPubTable {
+				var pub model.AdtyNotificationPublication
+				res := db.Select("content_format").Where("id = ?", pubID).Limit(1).Find(&pub)
+				if res.Error != nil {
+					return false, res.Error
+				}
+				if res.RowsAffected > 0 {
+					return strings.EqualFold(strings.TrimSpace(pub.ContentFormat), "html"), nil
+				}
 			}
 		}
 	}
-	return false
+	return false, nil
 }
 
 func adtyTranslationKeepsFacts(source, english string) bool {

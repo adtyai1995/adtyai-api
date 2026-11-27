@@ -2,6 +2,7 @@ package openai
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -75,7 +76,9 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 	}
 
-	service.IOCopyBytesGracefully(c, resp, responseBody)
+	if !helper.ClientRequestCanceled(c) {
+		service.IOCopyBytesGracefully(c, resp, responseBody)
+	}
 	return usage, nil
 }
 
@@ -85,8 +88,10 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 	}
 	defer service.CloseResponseBodyGracefully(resp)
 
-	info.StreamStatus = relaycommon.NewStreamStatus()
-	info.StreamStatus.RequireTerminal()
+	if info != nil {
+		info.StreamStatus = relaycommon.NewStreamStatus()
+		info.StreamStatus.RequireTerminal()
+	}
 	accumulator := relayconvert.NewResponsesBufferedAccumulator()
 	imageCounter := &relaycommon.ImageGenerationCallCounter{}
 	var finalResponse *dto.OpenAIResponsesResponse
@@ -99,16 +104,19 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 	scanner.Split(bufio.ScanLines)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if len(line) < 6 || line[:5] != "data:" {
+		data, hasDataPrefix := strings.CutPrefix(line, "data:")
+		data = strings.TrimSpace(data)
+		if !hasDataPrefix && data != "[DONE]" {
 			continue
 		}
-		data := line[5:]
-		data = strings.TrimSpace(data)
-		if data == "" || data == "[DONE]" {
-			if data == "[DONE]" {
-				break
-			}
+		if data == "" {
 			continue
+		}
+		if data == "[DONE]" {
+			if info != nil && info.StreamStatus != nil {
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+			}
+			break
 		}
 
 		raw := common.StringToByteSlice(data)
@@ -127,37 +135,57 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 			break
 		}
 		receivedValidEvent = true
-		if streamResp.Response != nil {
+		if info != nil {
+			info.SetFirstResponseTime()
+			info.ReceivedResponseCount++
+		}
+		if streamResp.Response != nil && info != nil {
 			info.ObserveResponseModel(streamResp.Response.Model)
 		}
-		service.ObserveResponsesOutcome(info, &streamResp)
+		if info != nil {
+			service.ObserveResponsesOutcome(info, &streamResp)
+		}
 		accumulator.ProcessEvent(&streamResp)
 		switch streamResp.Type {
 		case dto.ResponsesOutputTypeItemDone:
 			if streamResp.Item != nil {
 				switch streamResp.Item.Type {
 				case dto.BuildInCallWebSearchCall, dto.BuildInCallFileSearchCall, dto.BuildInCallFunctionCall:
-					info.CountBillableToolCall(streamResp.Item.Type, streamResp.Item.Name)
+					if info != nil {
+						info.CountBillableToolCall(streamResp.Item.Type, streamResp.Item.Name)
+					}
 					countedItemTools = true
 				case dto.ResponsesOutputTypeImageGenerationCall:
 					imageCounter.Observe(streamResp.Item, streamResp.OutputIndex)
 				}
 			}
-		case "response.completed", "response.done", "response.incomplete":
+		case "response.completed", "response.done", "response.incomplete", "response.cancelled", "response.canceled":
 			terminalRaw = append([]byte(nil), data...)
 			finalResponse = streamResp.Response
-			if streamResp.Type == "response.incomplete" {
+			if streamResp.Type == "response.incomplete" || streamResp.Type == "response.cancelled" || streamResp.Type == "response.canceled" {
 				if finalResponse == nil {
-					finalResponse = &dto.OpenAIResponsesResponse{}
+					finalResponse = &dto.OpenAIResponsesResponse{
+						ID:        helper.GetResponseID(c),
+						Object:    "response",
+						CreatedAt: dto.IntValue(time.Now().Unix()),
+						Model:     info.GetUpstreamModelName(),
+					}
 				}
 				if len(finalResponse.Status) == 0 {
-					finalResponse.Status = []byte(`"incomplete"`)
+					if streamResp.Type == "response.incomplete" {
+						finalResponse.Status = []byte(`"incomplete"`)
+					} else {
+						finalResponse.Status = []byte(`"cancelled"`)
+					}
 				}
 			}
 		case "error", "response.failed", "response.error":
 			streamErr = extractResponsesStreamError(&streamResp, raw)
 		}
 		if streamErr != nil || finalResponse != nil {
+			if finalResponse != nil && info != nil && info.StreamStatus != nil {
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+			}
 			break
 		}
 	}
@@ -165,7 +193,10 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 		return nil, streamErr
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+		if helper.ClientRequestCanceled(c) || errors.Is(err, context.Canceled) {
+			return nil, types.NewError(err, types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry(), types.ErrOptionWithHideErrMsg("client closed request"))
+		}
+		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
 	if !receivedValidEvent {
 		return nil, types.NewOpenAIError(errors.New("empty upstream responses stream"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
@@ -176,7 +207,7 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 		finalResponse = &dto.OpenAIResponsesResponse{
 			ID:        helper.GetResponseID(c),
 			CreatedAt: dto.IntValue(time.Now().Unix()),
-			Model:     info.UpstreamModelName,
+			Model:     info.GetUpstreamModelName(),
 			Status:    []byte(`"completed"`),
 		}
 	}
@@ -185,7 +216,7 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 		return nil, types.NewOpenAIError(errors.New("empty upstream responses stream"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
 	}
 
-	if !countedItemTools {
+	if !countedItemTools && info != nil {
 		for _, output := range finalResponse.Output {
 			switch output.Type {
 			case dto.BuildInCallWebSearchCall:
@@ -197,13 +228,15 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 			}
 		}
 	}
-	if len(terminalRaw) > 0 {
-		info.ApplyVendorToolUsage(terminalRaw)
+	if info != nil {
+		if len(terminalRaw) > 0 {
+			info.ApplyVendorToolUsage(terminalRaw)
+		}
+		for i := range finalResponse.Output {
+			imageCounter.Observe(&finalResponse.Output[i], &i)
+		}
+		imageCounter.Commit(info)
 	}
-	for i := range finalResponse.Output {
-		imageCounter.Observe(&finalResponse.Output[i], &i)
-	}
-	imageCounter.Commit(info)
 
 	responseValue, usage, err := convertResponsesResponseForClient(c, info, finalResponse)
 	if err != nil {
@@ -214,7 +247,18 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 	}
 
-	service.IOCopyBytesGracefully(c, resp, responseBody)
+	if !helper.ClientRequestCanceled(c) {
+		jsonResp := *resp
+		if resp.Header != nil {
+			jsonResp.Header = resp.Header.Clone()
+		} else {
+			jsonResp.Header = make(http.Header)
+		}
+		jsonResp.Header.Set("Content-Type", "application/json")
+		jsonResp.Header.Del("Transfer-Encoding")
+		jsonResp.Header.Del("Content-Length")
+		service.IOCopyBytesGracefully(c, &jsonResp, responseBody)
+	}
 	return usage, nil
 }
 

@@ -24,10 +24,18 @@ func EnsureAdtySitePriceUniqueIndex(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("site price unique index: database is nil")
 	}
-	if !db.Migrator().HasTable(&AdtySitePrice{}) {
+	hasSitePriceTable, err := AdtyTableExists(db, &AdtySitePrice{})
+	if err != nil {
+		return err
+	}
+	if !hasSitePriceTable {
 		return nil
 	}
-	if db.Migrator().HasColumn(&AdtySitePrice{}, "model") {
+	hasModelCol, err := AdtyColumnExists(db, &AdtySitePrice{}, "model")
+	if err != nil {
+		return err
+	}
+	if hasModelCol {
 		if err := db.Model(&AdtySitePrice{}).Where("model IS NULL").Update("model", "").Error; err != nil {
 			return fmt.Errorf("backfill empty site price model: %w", err)
 		}

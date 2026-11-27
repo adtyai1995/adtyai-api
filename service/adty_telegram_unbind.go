@@ -38,7 +38,11 @@ func RevokeAdtyTelegramBind(userID int, purpose string, audit *model.AuditLog) e
 		}
 		var row model.AdtyTelegramBinding
 		before := map[string]any{"purpose": purpose, "status": "unbound"}
-		if tx.Migrator().HasTable(&model.AdtyTelegramBinding{}) {
+		hasBindingTable, err := model.AdtyTableExists(tx, &model.AdtyTelegramBinding{})
+		if err != nil {
+			return err
+		}
+		if hasBindingTable {
 			found := model.AdtyLockForUpdate(tx).Where("user_id = ? AND purpose = ?", userID, purpose).Limit(1).Find(&row)
 			if found.Error != nil {
 				return found.Error
@@ -55,12 +59,20 @@ func RevokeAdtyTelegramBind(userID int, purpose string, audit *model.AuditLog) e
 				}
 			}
 		}
-		if tx.Migrator().HasTable(&model.AdtyTelegramChallenge{}) {
+		hasChallengeTable, err := model.AdtyTableExists(tx, &model.AdtyTelegramChallenge{})
+		if err != nil {
+			return err
+		}
+		if hasChallengeTable {
 			if err := tx.Model(&model.AdtyTelegramChallenge{}).Where("user_id = ? AND purpose = ? AND used_at = 0", userID, purpose).Update("used_at", time.Now().Unix()).Error; err != nil {
 				return err
 			}
 		}
-		if tx.Migrator().HasTable(&model.AdtyTelegramDelivery{}) {
+		hasDeliveryTable, err := model.AdtyTableExists(tx, &model.AdtyTelegramDelivery{})
+		if err != nil {
+			return err
+		}
+		if hasDeliveryTable {
 			if err := tx.Model(&model.AdtyTelegramDelivery{}).Where("user_id = ? AND purpose = ? AND public = ? AND status IN ?", userID, purpose, false, []string{model.AdtyTelegramDeliveryWait, model.AdtyTelegramDeliveryFail}).Updates(map[string]any{"status": model.AdtyTelegramDeliverySkip, "last_error": "binding revoked"}).Error; err != nil {
 				return err
 			}
@@ -85,18 +97,26 @@ func RevokeAdtyTelegramBind(userID int, purpose string, audit *model.AuditLog) e
 		audit.AfterValue = common.GetJsonString(map[string]any{"purpose": purpose, "status": "revoked"})
 		return model.AppendAuditIntentTx(tx, *audit)
 	})
-	if err == nil && wasActive && prevTelegramUserID > 0 && AdtyTelegramSender != nil && model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyTelegramBot{}) {
-		var bot model.AdtyTelegramBot
-		if model.DB.Where("purpose = ? AND enabled = ?", purpose, true).Limit(1).Find(&bot).RowsAffected > 0 &&
-			(prevBotIdentity == "" || bot.IdentityHash == prevBotIdentity) {
-			if token := mustOpenTelegramToken(bot); token != "" {
-				siteName := adtyTelegramSiteDisplayName(prevSiteID)
-				if _, body, renderErr := RenderAdtyBilingualNotice("telegram_unbind_confirm", nil, siteName); renderErr == nil && strings.TrimSpace(body) != "" {
-					sender := AdtyTelegramSender
-					chat := strconv.FormatInt(prevTelegramUserID, 10)
-					go func() {
-						_ = sender(token, chat, body)
-					}()
+	if err == nil && wasActive && prevTelegramUserID > 0 && AdtyTelegramSender != nil && model.DB != nil {
+		hasBotTable, botTableErr := model.AdtyTableExists(model.DB, &model.AdtyTelegramBot{})
+		if botTableErr != nil {
+			common.SysError(common.LogText("check telegram bot table for unbind notice failed: %s", botTableErr.Error()))
+		} else if hasBotTable {
+			var bot model.AdtyTelegramBot
+			botLookup := model.DB.Where("purpose = ? AND enabled = ?", purpose, true).Limit(1).Find(&bot)
+			if botLookup.Error != nil {
+				common.SysError(common.LogText("load telegram bot for unbind notice failed: %s", botLookup.Error.Error()))
+			} else if botLookup.RowsAffected > 0 &&
+				(prevBotIdentity == "" || bot.IdentityHash == prevBotIdentity) {
+				if token := mustOpenTelegramToken(bot); token != "" {
+					siteName := adtyTelegramSiteDisplayName(prevSiteID)
+					if _, body, renderErr := RenderAdtyBilingualNotice("telegram_unbind_confirm", nil, siteName); renderErr == nil && strings.TrimSpace(body) != "" {
+						sender := AdtyTelegramSender
+						chat := strconv.FormatInt(prevTelegramUserID, 10)
+						go func() {
+							_ = sender(token, chat, body)
+						}()
+					}
 				}
 			}
 		}
@@ -115,21 +135,33 @@ func RevokeAllAdtyTelegramBindings(userID int) error {
 		if err := model.AdtyLockForUpdate(tx).First(&user, userID).Error; err != nil {
 			return err
 		}
-		if tx.Migrator().HasTable(&model.AdtyTelegramBinding{}) {
+		hasBindingTable, err := model.AdtyTableExists(tx, &model.AdtyTelegramBinding{})
+		if err != nil {
+			return err
+		}
+		if hasBindingTable {
 			if err := tx.Model(&model.AdtyTelegramBinding{}).
 				Where("user_id = ? AND status <> ?", userID, "revoked").
 				Update("status", "revoked").Error; err != nil {
 				return err
 			}
 		}
-		if tx.Migrator().HasTable(&model.AdtyTelegramChallenge{}) {
+		hasChallengeTable, err := model.AdtyTableExists(tx, &model.AdtyTelegramChallenge{})
+		if err != nil {
+			return err
+		}
+		if hasChallengeTable {
 			if err := tx.Model(&model.AdtyTelegramChallenge{}).
 				Where("user_id = ? AND used_at = 0", userID).
 				Update("used_at", time.Now().Unix()).Error; err != nil {
 				return err
 			}
 		}
-		if tx.Migrator().HasTable(&model.AdtyTelegramDelivery{}) {
+		hasDeliveryTable, err := model.AdtyTableExists(tx, &model.AdtyTelegramDelivery{})
+		if err != nil {
+			return err
+		}
+		if hasDeliveryTable {
 			if err := tx.Model(&model.AdtyTelegramDelivery{}).
 				Where("user_id = ? AND public = ? AND status IN ?", userID, false, []string{model.AdtyTelegramDeliveryWait, model.AdtyTelegramDeliveryFail}).
 				Updates(map[string]any{"status": model.AdtyTelegramDeliverySkip, "last_error": "binding revoked"}).Error; err != nil {

@@ -116,17 +116,27 @@ func authFlowProviderForHost(host string) string {
 	return ""
 }
 
-func mainConfiguredHosts(tx *gorm.DB) []string {
+func mainConfiguredHosts(tx *gorm.DB) ([]string, error) {
 	keys := []string{"ServerAddress", "adty_site_setting.api_base_url"}
 	out := make([]string, 0, len(keys))
 	for _, key := range keys {
 		common.OptionMapRWMutex.RLock()
 		raw := common.OptionMap[key]
 		common.OptionMapRWMutex.RUnlock()
-		if raw == "" && tx != nil && tx.Migrator().HasTable(&Option{}) {
-			var opt Option
-			if tx.Where(&Option{Key: key}).Limit(1).Find(&opt).RowsAffected > 0 {
-				raw = opt.Value
+		if raw == "" && tx != nil {
+			hasOptionTable, err := AdtyTableExists(tx, &Option{})
+			if err != nil {
+				return nil, err
+			}
+			if hasOptionTable {
+				var opt Option
+				res := tx.Where(&Option{Key: key}).Limit(1).Find(&opt)
+				if res.Error != nil {
+					return nil, res.Error
+				}
+				if res.RowsAffected > 0 {
+					raw = opt.Value
+				}
 			}
 		}
 		if raw == "" {
@@ -140,7 +150,7 @@ func mainConfiguredHosts(tx *gorm.DB) []string {
 			out = append(out, h)
 		}
 	}
-	return out
+	return out, nil
 }
 
 func matchesAdtySiteDefaultAPIHost(host string, site AdtySite) bool {
@@ -170,7 +180,14 @@ func matchesAdtySiteDefaultAPIHost(host string, site AdtySite) bool {
 }
 
 func siteHasPlatformBaseURLDomainWithTx(tx *gorm.DB, siteID int) (bool, error) {
-	if tx == nil || siteID <= 0 || !tx.Migrator().HasTable(&AdtySiteDomain{}) {
+	if tx == nil || siteID <= 0 {
+		return false, nil
+	}
+	hasDomainTable, err := AdtyTableExists(tx, &AdtySiteDomain{})
+	if err != nil {
+		return false, err
+	}
+	if !hasDomainTable {
 		return false, nil
 	}
 	var count int64
@@ -186,7 +203,14 @@ func validateEmailBindingOriginWithTx(tx *gorm.DB, siteID int, host string) erro
 	if siteID < 0 {
 		return ErrAuthFlowInvalid
 	}
-	hasSitesTable := tx != nil && tx.Migrator().HasTable(&AdtySite{})
+	hasSitesTable := false
+	if tx != nil {
+		var err error
+		hasSitesTable, err = AdtyTableExists(tx, &AdtySite{})
+		if err != nil {
+			return err
+		}
+	}
 	if siteID > 0 && hasSitesTable {
 		var site AdtySite
 		if err := tx.Where("id = ?", siteID).Limit(1).Find(&site).Error; err != nil {
@@ -199,7 +223,11 @@ func validateEmailBindingOriginWithTx(tx *gorm.DB, siteID int, host string) erro
 	if host == "" {
 		return nil
 	}
-	for _, mainHost := range mainConfiguredHosts(tx) {
+	mainHosts, err := mainConfiguredHosts(tx)
+	if err != nil {
+		return err
+	}
+	for _, mainHost := range mainHosts {
 		if host == mainHost {
 			if siteID > 0 {
 				return ErrAuthFlowInvalid
@@ -239,22 +267,28 @@ func validateEmailBindingOriginWithTx(tx *gorm.DB, siteID int, host string) erro
 			}
 		}
 	}
-	if tx != nil && tx.Migrator().HasTable(&AdtySiteDomain{}) {
-		var domains []AdtySiteDomain
-		if err := tx.Where("LOWER(hostname) = ?", host).Find(&domains).Error; err != nil {
+	if tx != nil {
+		hasDomainTable, err := AdtyTableExists(tx, &AdtySiteDomain{})
+		if err != nil {
 			return err
 		}
-		if len(domains) > 0 {
-			activeMatch := false
-			for _, d := range domains {
-				if d.SiteId == siteID && d.Status == AdtySiteDomainActive && d.DesiredState != "removed" {
-					activeMatch = true
-				} else {
+		if hasDomainTable {
+			var domains []AdtySiteDomain
+			if err := tx.Where("LOWER(hostname) = ?", host).Find(&domains).Error; err != nil {
+				return err
+			}
+			if len(domains) > 0 {
+				activeMatch := false
+				for _, d := range domains {
+					if d.SiteId == siteID && d.Status == AdtySiteDomainActive && d.DesiredState != "removed" {
+						activeMatch = true
+					} else {
+						return ErrAuthFlowInvalid
+					}
+				}
+				if !activeMatch {
 					return ErrAuthFlowInvalid
 				}
-			}
-			if !activeMatch {
-				return ErrAuthFlowInvalid
 			}
 		}
 	}
@@ -265,7 +299,14 @@ func isSiteOwnerForEmailBindingWithTx(tx *gorm.DB, userID, siteID int) (bool, er
 	if tx == nil {
 		tx = DB
 	}
-	if userID <= 0 || siteID <= 0 || !tx.Migrator().HasTable(&AdtySite{}) {
+	if userID <= 0 || siteID <= 0 {
+		return false, nil
+	}
+	hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
+	if err != nil {
+		return false, err
+	}
+	if !hasSiteTable {
 		return false, nil
 	}
 	var count int64
@@ -311,10 +352,21 @@ func resolveOwnerSubsiteIDForHostWithTx(tx *gorm.DB, ownerUserID int, host strin
 		tx = DB
 	}
 	host = NormalizeEmailBindingHost(host)
-	if ownerUserID <= 0 || host == "" || !tx.Migrator().HasTable(&AdtySite{}) {
+	if ownerUserID <= 0 || host == "" {
 		return 0, nil
 	}
-	for _, mainHost := range mainConfiguredHosts(tx) {
+	hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
+	if err != nil {
+		return 0, err
+	}
+	if !hasSiteTable {
+		return 0, nil
+	}
+	mainHosts, err := mainConfiguredHosts(tx)
+	if err != nil {
+		return 0, err
+	}
+	for _, mainHost := range mainHosts {
 		if host == mainHost {
 			return 0, nil
 		}
@@ -336,7 +388,11 @@ func resolveOwnerSubsiteIDForHostWithTx(tx *gorm.DB, ownerUserID int, host strin
 			return s.Id, nil
 		}
 	}
-	if tx.Migrator().HasTable(&AdtySiteDomain{}) {
+	hasDomainTable, err := AdtyTableExists(tx, &AdtySiteDomain{})
+	if err != nil {
+		return 0, err
+	}
+	if hasDomainTable {
 		var domain AdtySiteDomain
 		res := tx.Where("LOWER(hostname) = ? AND site_id IN ? AND status = ? AND desired_state <> ?",
 			host, ownedIDs, AdtySiteDomainActive, "removed").Limit(1).Find(&domain)

@@ -106,7 +106,14 @@ func freezeBillingPayerTx(tx *gorm.DB, row *BillingOperation, newAcceptance bool
 func captureBillingPayerTx(tx *gorm.DB, row *BillingOperation) error {
 	row.PayerKind, row.PayerTeamId = BillingPayerPersonal, 0
 	var before AdtyTeamKey
-	hasBindings := row.TokenId > 0 && tx.Migrator().HasTable(&AdtyTeamKey{})
+	hasBindings := false
+	if row.TokenId > 0 {
+		var tblErr error
+		hasBindings, tblErr = AdtyTableExists(tx, &AdtyTeamKey{})
+		if tblErr != nil {
+			return tblErr
+		}
+	}
 	if hasBindings {
 		if err := tx.Where("token_id = ?", row.TokenId).Limit(1).Find(&before).Error; err != nil {
 			return err
@@ -171,7 +178,11 @@ func captureBillingPayerTx(tx *gorm.DB, row *BillingOperation) error {
 // membership and user/site state cannot establish a legacy financial owner.
 func recoverBillingPayerTx(tx *gorm.DB, row *BillingOperation) (bool, error) {
 	teamId := int64(0)
-	if tx.Migrator().HasTable(&AdtyTeamLedger{}) {
+	hasTeamLedgerTable, err := AdtyTableExists(tx, &AdtyTeamLedger{})
+	if err != nil {
+		return false, err
+	}
+	if hasTeamLedgerTable {
 		var entries []AdtyTeamLedger
 		if err := tx.Where("ref_id = ? AND type IN ?", row.OperationKey, []string{"reserve", "settle", "refund"}).Find(&entries).Error; err != nil {
 			return false, err

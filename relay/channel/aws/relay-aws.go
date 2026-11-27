@@ -171,7 +171,7 @@ func doAwsClientRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor,
 				Accept:      aws.String("application/json"),
 				ContentType: aws.String("application/json"),
 			}
-			awsReq.Body, err = buildAwsRequestBody(c, info, awsClaudeReq)
+			awsReq.Body, err = buildAwsRequestBody(c, info, awsClaudeReq, requestHeader)
 			if err != nil {
 				return nil, types.NewError(errors.Wrap(err, "marshal aws request fail"), types.ErrorCodeBadRequestBody)
 			}
@@ -183,7 +183,7 @@ func doAwsClientRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor,
 				Accept:      aws.String("application/json"),
 				ContentType: aws.String("application/json"),
 			}
-			awsReq.Body, err = buildAwsRequestBody(c, info, awsClaudeReq)
+			awsReq.Body, err = buildAwsRequestBody(c, info, awsClaudeReq, requestHeader)
 			if err != nil {
 				return nil, types.NewError(errors.Wrap(err, "marshal aws request fail"), types.ErrorCodeBadRequestBody)
 			}
@@ -193,9 +193,12 @@ func doAwsClientRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor,
 	}
 }
 
+const awsBedrockAnthropicVersion = "bedrock-2023-05-31"
+
 // buildAwsRequestBody prepares the payload for AWS requests, applying passthrough rules when enabled.
-func buildAwsRequestBody(c *gin.Context, info *relaycommon.RelayInfo, awsClaudeReq any) ([]byte, error) {
-	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled {
+func buildAwsRequestBody(c *gin.Context, info *relaycommon.RelayInfo, awsClaudeReq any, requestHeader http.Header) ([]byte, error) {
+	if info != nil && info.RelayFormat == types.RelayFormatClaude &&
+		(model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled) {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return nil, errors.Wrap(err, "get request body for pass-through fail")
@@ -209,8 +212,58 @@ func buildAwsRequestBody(c *gin.Context, info *relaycommon.RelayInfo, awsClaudeR
 		if err := common.Unmarshal(body, &data); err != nil {
 			return nil, errors.Wrap(err, "pass-through unmarshal request body fail")
 		}
+		if data == nil {
+			return nil, errors.New("pass-through request body must be a JSON object")
+		}
 		delete(data, "model")
 		delete(data, "stream")
+
+		var existingVersion string
+		if rawVersion, ok := data["anthropic_version"]; ok && len(rawVersion) > 0 {
+			_ = common.Unmarshal(rawVersion, &existingVersion)
+		}
+		if strings.TrimSpace(existingVersion) == "" {
+			versionJSON, err := common.Marshal(awsBedrockAnthropicVersion)
+			if err != nil {
+				return nil, errors.Wrap(err, "marshal aws anthropic_version fail")
+			}
+			data["anthropic_version"] = versionJSON
+		}
+
+		var mergedBetas []string
+		seenBetas := make(map[string]struct{})
+		appendBeta := func(beta string) {
+			beta = strings.TrimSpace(beta)
+			if beta == "" {
+				return
+			}
+			if _, exists := seenBetas[beta]; exists {
+				return
+			}
+			seenBetas[beta] = struct{}{}
+			mergedBetas = append(mergedBetas, beta)
+		}
+		if rawBetas, ok := data["anthropic_beta"]; ok && len(rawBetas) > 0 && string(rawBetas) != "null" {
+			var bodyBetas []string
+			if err := common.Unmarshal(rawBetas, &bodyBetas); err == nil {
+				for _, beta := range bodyBetas {
+					appendBeta(beta)
+				}
+			}
+		}
+		for _, headerVal := range requestHeader.Values("anthropic-beta") {
+			for beta := range strings.SplitSeq(headerVal, ",") {
+				appendBeta(beta)
+			}
+		}
+		if len(mergedBetas) > 0 {
+			betaJSON, err := common.Marshal(mergedBetas)
+			if err != nil {
+				return nil, errors.Wrap(err, "marshal aws anthropic_beta fail")
+			}
+			data["anthropic_beta"] = betaJSON
+		}
+
 		return common.Marshal(data)
 	}
 	return common.Marshal(awsClaudeReq)

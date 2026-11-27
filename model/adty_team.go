@@ -193,7 +193,11 @@ func AdtyTokenIsTeamKeyTx(tx *gorm.DB, tokenId int) (bool, error) {
 	if tx == nil || tokenId <= 0 {
 		return false, nil
 	}
-	if !tx.Migrator().HasTable(&AdtyTeamKey{}) {
+	hasTeamKeyTable, err := AdtyTableExists(tx, &AdtyTeamKey{})
+	if err != nil {
+		return false, err
+	}
+	if !hasTeamKeyTable {
 		// 没有绑表就等于没有团队 Key，个人计费照旧。
 		return false, nil
 	}
@@ -207,7 +211,11 @@ func AdtyTokenIsTeamKeyTx(tx *gorm.DB, tokenId int) (bool, error) {
 // ValidateAdtyTeamTokenTx reads current lifecycle state even when token metadata
 // came from a different node's cache. Historical bindings cannot become personal.
 func ValidateAdtyTeamTokenTx(tx *gorm.DB, token *Token) error {
-	if !tx.Migrator().HasTable(&AdtyTeamKey{}) {
+	hasTeamKeyTable, err := AdtyTableExists(tx, &AdtyTeamKey{})
+	if err != nil {
+		return err
+	}
+	if !hasTeamKeyTable {
 		return nil
 	}
 	var key AdtyTeamKey
@@ -238,7 +246,11 @@ func ValidateAdtyTeamTokenTx(tx *gorm.DB, token *Token) error {
 
 // Independent staff accounts retain their team identity after disablement or closure.
 func independentTeamEmployeeTx(tx *gorm.DB, userID int) (*AdtyTeamMember, error) {
-	if !tx.Migrator().HasTable(&AdtyTeamMember{}) {
+	hasMemberTable, err := AdtyTableExists(tx, &AdtyTeamMember{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasMemberTable {
 		return nil, nil
 	}
 	var member AdtyTeamMember
@@ -317,7 +329,11 @@ func ValidateAdtyTeamTopupCreateTx(tx *gorm.DB, ext *AdtyTopupOrder) error {
 	if ext == nil || ext.TeamId <= 0 || tx == nil {
 		return nil
 	}
-	if tx.Migrator().HasTable(&AdtyTeam{}) {
+	hasTeamTable, err := AdtyTableExists(tx, &AdtyTeam{})
+	if err != nil {
+		return err
+	}
+	if hasTeamTable {
 		var team AdtyTeam
 		if err := AdtyLockForUpdate(tx).First(&team, ext.TeamId).Error; err != nil {
 			return err
@@ -372,10 +388,25 @@ func BackfillAdtyTeamSourceSiteID(db *gorm.DB) error {
 	if db == nil {
 		return nil
 	}
-	if !db.Migrator().HasTable(&AdtyTeam{}) || !db.Migrator().HasColumn(&AdtyTeam{}, "source_site_id") {
+	hasTeamTable, err := AdtyTableExists(db, &AdtyTeam{})
+	if err != nil {
+		return err
+	}
+	if !hasTeamTable {
 		return nil
 	}
-	if !db.Migrator().HasTable(&AdtyTeamRegistrationLink{}) {
+	hasSourceSiteCol, err := AdtyColumnExists(db, &AdtyTeam{}, "source_site_id")
+	if err != nil {
+		return err
+	}
+	if !hasSourceSiteCol {
+		return nil
+	}
+	hasRegLinkTable, err := AdtyTableExists(db, &AdtyTeamRegistrationLink{})
+	if err != nil {
+		return err
+	}
+	if !hasRegLinkTable {
 		return nil
 	}
 

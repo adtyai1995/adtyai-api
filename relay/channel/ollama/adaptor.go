@@ -44,6 +44,15 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	switch info.RelayMode {
+	case relayconstant.RelayModeResponses:
+		return fmt.Sprintf("%s/v1/responses", info.ChannelBaseUrl), nil
+	case relayconstant.RelayModeResponsesCompact:
+		return fmt.Sprintf("%s/v1/responses/compact", info.ChannelBaseUrl), nil
+	}
+	if info.RelayFormat == types.RelayFormatOpenAIResponses {
+		return fmt.Sprintf("%s/v1/responses", info.ChannelBaseUrl), nil
+	}
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
 		return (&claude.Adaptor{}).GetRequestURL(info)
@@ -51,10 +60,6 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 		switch info.RelayMode {
 		case relayconstant.RelayModeEmbeddings:
 			return fmt.Sprintf("%s/api/embed", info.ChannelBaseUrl), nil
-		case relayconstant.RelayModeResponses:
-			return fmt.Sprintf("%s/v1/responses", info.ChannelBaseUrl), nil
-		case relayconstant.RelayModeResponsesCompact:
-			return fmt.Sprintf("%s/v1/responses/compact", info.ChannelBaseUrl), nil
 		case relayconstant.RelayModeCompletions:
 			return fmt.Sprintf("%s/api/generate", info.ChannelBaseUrl), nil
 		default:
@@ -69,6 +74,11 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {
 	channel.SetupApiRequestHeader(info, c, req)
 	req.Set("Authorization", "Bearer "+info.ApiKey)
+	if info.RelayMode == relayconstant.RelayModeResponses ||
+		info.RelayMode == relayconstant.RelayModeResponsesCompact ||
+		info.RelayFormat == types.RelayFormatOpenAIResponses {
+		return nil
+	}
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
 		claude.CommonClaudeHeadersOperation(c, req, info)
@@ -114,6 +124,12 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
+	if info.RelayMode == relayconstant.RelayModeResponses ||
+		info.RelayMode == relayconstant.RelayModeResponsesCompact ||
+		info.RelayFormat == types.RelayFormatOpenAIResponses {
+		adaptor := openai.Adaptor{}
+		return adaptor.DoResponse(c, resp, info)
+	}
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
 		adaptor := claude.Adaptor{}
@@ -122,9 +138,6 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		switch info.RelayMode {
 		case relayconstant.RelayModeEmbeddings:
 			return ollamaEmbeddingHandler(c, info, resp)
-		case relayconstant.RelayModeResponses, relayconstant.RelayModeResponsesCompact:
-			adaptor := openai.Adaptor{}
-			return adaptor.DoResponse(c, resp, info)
 		default:
 			// /api/generate always returns native NDJSON; chat follows the channel setting.
 			if info.RelayMode != relayconstant.RelayModeCompletions && info.ChannelOtherSettings.OllamaOpenAIChat {

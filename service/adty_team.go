@@ -52,11 +52,6 @@ func adtyTeamTableReadyForStrict(tx *gorm.DB, modelValue any) (bool, error) {
 	return ready, nil
 }
 
-func adtyTeamTableReadyFor(tx *gorm.DB, modelValue any) bool {
-	ready, err := adtyTeamTableReadyForStrict(tx, modelValue)
-	return err == nil && ready
-}
-
 func init() {
 	model.AdtyTeamReserveHook = reserveAdtyTeamQuotaHook
 	model.AdtyTeamSettleHook = settleAdtyTeamQuotaHook
@@ -86,21 +81,27 @@ func creditAdtyTeamTopUpTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopup
 	if err := applyAdtyTeamQuotaTx(tx, &team, principal, "topup", ext.TradeNo, topUp.UserId, ext.TeamPaymentEffectiveAt); err != nil {
 		return err
 	}
-	if team.Status == model.AdtyTeamStatusClosed && adtyTeamTableReadyFor(tx, &model.AdtyAnomalyDisposition{}) {
-		var existing int64
-		if err := tx.Model(&model.AdtyAnomalyDisposition{}).
-			Where("kind = ? AND ref = ?", "closed_team_topup", ext.TradeNo).
-			Count(&existing).Error; err != nil {
+	if team.Status == model.AdtyTeamStatusClosed {
+		hasAnomalyTable, err := adtyTeamTableReadyForStrict(tx, &model.AdtyAnomalyDisposition{})
+		if err != nil {
 			return err
 		}
-		if existing == 0 {
-			if err := tx.Create(&model.AdtyAnomalyDisposition{
-				Kind: "closed_team_topup",
-				Ref:  ext.TradeNo, OrderRef: ext.TradeNo, TeamId: team.Id, SiteId: ext.SiteId, AccountId: topUp.UserId,
-				Status: "open",
-				Note:   fmt.Sprintf("team %d closed before paid topup callback credited %d quota", team.Id, principal),
-			}).Error; err != nil {
+		if hasAnomalyTable {
+			var existing int64
+			if err := tx.Model(&model.AdtyAnomalyDisposition{}).
+				Where("kind = ? AND ref = ?", "closed_team_topup", ext.TradeNo).
+				Count(&existing).Error; err != nil {
 				return err
+			}
+			if existing == 0 {
+				if err := tx.Create(&model.AdtyAnomalyDisposition{
+					Kind: "closed_team_topup",
+					Ref:  ext.TradeNo, OrderRef: ext.TradeNo, TeamId: team.Id, SiteId: ext.SiteId, AccountId: topUp.UserId,
+					Status: "open",
+					Note:   fmt.Sprintf("team %d closed before paid topup callback credited %d quota", team.Id, principal),
+				}).Error; err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -803,7 +804,14 @@ func createIndependentTeamEmployeeTx(tx *gorm.DB, team *model.AdtyTeam, username
 }
 
 func disableIndependentTeamEmployeeUserTx(tx *gorm.DB, userId int) error {
-	if userId <= 0 || !adtyTeamTableReadyFor(tx, &model.User{}) {
+	if userId <= 0 {
+		return nil
+	}
+	hasUserTable, err := adtyTeamTableReadyForStrict(tx, &model.User{})
+	if err != nil {
+		return err
+	}
+	if !hasUserTable {
 		return nil
 	}
 	if _, err := model.IncrementUserAuthVersionWithTx(tx, userId); err != nil {
@@ -1723,7 +1731,11 @@ func rejectTeamStaffIdentityTx(tx *gorm.DB, userId int) error {
 	if userId <= 0 {
 		return ErrAdtyTeamForbidden
 	}
-	if adtyTeamTableReadyFor(tx, &model.AdtySiteStaff{}) {
+	hasStaffTable, err := adtyTeamTableReadyForStrict(tx, &model.AdtySiteStaff{})
+	if err != nil {
+		return err
+	}
+	if hasStaffTable {
 		var staffCount int64
 		if err := tx.Model(&model.AdtySiteStaff{}).Where("user_id = ? AND status <> ?", userId, "deleted").Count(&staffCount).Error; err != nil {
 			return err
@@ -1739,7 +1751,11 @@ func rejectTeamStaffOrOwnerIdentityTx(tx *gorm.DB, userId int) error {
 	if err := rejectTeamStaffIdentityTx(tx, userId); err != nil {
 		return err
 	}
-	if adtyTeamTableReadyFor(tx, &model.AdtySite{}) {
+	hasSiteTable, err := adtyTeamTableReadyForStrict(tx, &model.AdtySite{})
+	if err != nil {
+		return err
+	}
+	if hasSiteTable {
 		var owned int64
 		if err := tx.Model(&model.AdtySite{}).Where("owner_user_id = ? AND status <> ?", userId, model.AdtySiteStatusClosed).Count(&owned).Error; err != nil {
 			return err
@@ -1865,7 +1881,14 @@ func AcceptAdtyTeamInvite(userId int, code string) (*model.AdtyTeamMember, error
 }
 
 func lockActiveSiteForTeamTx(tx *gorm.DB, siteID int) error {
-	if siteID <= 0 || !adtyTeamTableReadyFor(tx, &model.AdtySite{}) {
+	if siteID <= 0 {
+		return nil
+	}
+	hasSiteTable, err := adtyTeamTableReadyForStrict(tx, &model.AdtySite{})
+	if err != nil {
+		return err
+	}
+	if !hasSiteTable {
 		return nil
 	}
 	var site model.AdtySite
@@ -2125,7 +2148,14 @@ func BindAdtyTeamKey(userId, tokenId int, teamIds ...int64) error {
 // 来源已独立记录的历史团队由 model.BackfillAdtyTeamSourceSiteID 在迁移时补写。
 // 关站迁入不会关闭团队；原团队 API Key 仍按迁移安全规则停用。
 func inheritAdtyTeamsBeforeUsersOnCloseTx(tx *gorm.DB, siteId int) ([]int64, error) {
-	if !adtyTeamTableReadyFor(tx, &model.AdtyTeam{}) || siteId == 0 {
+	if siteId == 0 {
+		return nil, nil
+	}
+	hasTeamTable, err := adtyTeamTableReadyForStrict(tx, &model.AdtyTeam{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasTeamTable {
 		return nil, nil
 	}
 	var teams []model.AdtyTeam
@@ -2134,6 +2164,10 @@ func inheritAdtyTeamsBeforeUsersOnCloseTx(tx *gorm.DB, siteId int) ([]int64, err
 	}
 	teamIDs := make([]int64, 0, len(teams))
 	now := time.Now().Unix()
+	hasAuditLogTable, err := adtyTeamTableReadyForStrict(tx, &model.AuditLog{})
+	if err != nil {
+		return nil, err
+	}
 	for _, team := range teams {
 		if err := tx.Model(&model.AdtyTeamInvite{}).Where("team_id = ? AND used_at = 0 AND revoked_at = 0", team.Id).Update("revoked_at", now).Error; err != nil {
 			return nil, err
@@ -2155,7 +2189,7 @@ func inheritAdtyTeamsBeforeUsersOnCloseTx(tx *gorm.DB, siteId int) ([]int64, err
 		if err := tx.Model(&model.AdtyTeam{}).Where("id = ?", team.Id).Updates(updates).Error; err != nil {
 			return nil, err
 		}
-		if adtyTeamTableReadyFor(tx, &model.AuditLog{}) {
+		if hasAuditLogTable {
 			zeroSite := 0
 			entry, err := model.PrepareOfficialAuditLog(nil, model.OfficialAuditWrite{
 				UserId: 0, Username: "system", ActorRole: common.RoleRootUser, SiteID: &zeroSite,
@@ -2232,7 +2266,11 @@ func validateNewAdtyTeamReserveTx(tx *gorm.DB, team *model.AdtyTeam, userId int,
 	if team == nil || team.Status != model.AdtyTeamStatusActive {
 		return ErrAdtyTeamClosed
 	}
-	if adtyTeamTableReadyFor(tx, &model.AdtyTeamMember{}) {
+	hasMemberTable, err := adtyTeamTableReadyForStrict(tx, &model.AdtyTeamMember{})
+	if err != nil {
+		return err
+	}
+	if hasMemberTable {
 		var member model.AdtyTeamMember
 		lookup := tx.Where("team_id = ? AND user_id = ? AND status = ?", team.Id, userId, model.AdtyTeamMemberActive).Limit(1).Find(&member)
 		if lookup.Error != nil {
@@ -2242,25 +2280,42 @@ func validateNewAdtyTeamReserveTx(tx *gorm.DB, team *model.AdtyTeam, userId int,
 			return ErrAdtyTeamForbidden
 		}
 	}
-	if ref != "" && adtyTeamTableReadyFor(tx, &model.BillingOperation{}) {
-		var op model.BillingOperation
-		opLookup := tx.Select("operation_key", "token_id").Where("operation_key = ?", ref).Limit(1).Find(&op)
-		if opLookup.Error != nil {
-			return opLookup.Error
+	if ref != "" {
+		hasOpTable, err := adtyTeamTableReadyForStrict(tx, &model.BillingOperation{})
+		if err != nil {
+			return err
 		}
-		if opLookup.RowsAffected > 0 && op.TokenId > 0 {
-			return validateAdtyTeamTokenActiveTx(tx, team.Id, userId, op.TokenId)
+		if hasOpTable {
+			var op model.BillingOperation
+			opLookup := tx.Select("operation_key", "token_id").Where("operation_key = ?", ref).Limit(1).Find(&op)
+			if opLookup.Error != nil {
+				return opLookup.Error
+			}
+			if opLookup.RowsAffected > 0 && op.TokenId > 0 {
+				return validateAdtyTeamTokenActiveTx(tx, team.Id, userId, op.TokenId)
+			}
 		}
 	}
-	if adtyTeamTableReadyFor(tx, &model.AdtyTeamKey{}) {
+	hasKeyTable, err := adtyTeamTableReadyForStrict(tx, &model.AdtyTeamKey{})
+	if err != nil {
+		return err
+	}
+	if hasKeyTable {
 		var keys []model.AdtyTeamKey
 		if err := tx.Where("team_id = ? AND user_id = ?", team.Id, userId).Find(&keys).Error; err != nil {
 			return err
 		}
 		if len(keys) > 0 {
 			for _, key := range keys {
-				if key.Status == model.AdtyTeamMemberActive && validateAdtyTeamTokenActiveTx(tx, team.Id, userId, key.TokenId) == nil {
+				if key.Status != model.AdtyTeamMemberActive {
+					continue
+				}
+				tokErr := validateAdtyTeamTokenActiveTx(tx, team.Id, userId, key.TokenId)
+				if tokErr == nil {
 					return nil
+				}
+				if !errors.Is(tokErr, ErrAdtyTeamForbidden) {
+					return tokErr
 				}
 			}
 			return ErrAdtyTeamForbidden
@@ -2270,7 +2325,11 @@ func validateNewAdtyTeamReserveTx(tx *gorm.DB, team *model.AdtyTeam, userId int,
 }
 
 func validateAdtyTeamTokenActiveTx(tx *gorm.DB, teamId int64, userId, tokenId int) error {
-	if !adtyTeamTableReadyFor(tx, &model.AdtyTeamKey{}) {
+	hasKeyTable, err := adtyTeamTableReadyForStrict(tx, &model.AdtyTeamKey{})
+	if err != nil {
+		return err
+	}
+	if !hasKeyTable {
 		return nil
 	}
 	var key model.AdtyTeamKey
@@ -2281,7 +2340,11 @@ func validateAdtyTeamTokenActiveTx(tx *gorm.DB, teamId int64, userId, tokenId in
 	if lookup.RowsAffected == 0 || key.TeamId != teamId || key.UserId != userId || key.Status != model.AdtyTeamMemberActive {
 		return ErrAdtyTeamForbidden
 	}
-	if adtyTeamTableReadyFor(tx, &model.Token{}) {
+	hasTokenTable, err := adtyTeamTableReadyForStrict(tx, &model.Token{})
+	if err != nil {
+		return err
+	}
+	if hasTokenTable {
 		var token model.Token
 		tokLookup := tx.Select("id", "user_id", "status").Where("id = ?", tokenId).Limit(1).Find(&token)
 		if tokLookup.Error != nil {
@@ -2336,7 +2399,14 @@ func settleAdtyTeamQuotaHook(tx *gorm.DB, teamId int64, userId, delta int, ref s
 // 任何曾绑定到团队的 Key（含已撤销、成员已移除、团队已关闭的 left 绑定）都属于团队 Key
 // （ok=true），失效后返回可用额度 0，绝不回退扣减成员个人钱包（`ISS-R1-0047` / `ISS-R4-0017`）。
 func adtyTeamSharedQuotaForToken(tokenId int) (quota int64, ok bool, err error) {
-	if tokenId <= 0 || model.DB == nil || !adtyTeamTableReadyFor(model.DB, &model.AdtyTeamKey{}) {
+	if tokenId <= 0 || model.DB == nil {
+		return 0, false, nil
+	}
+	hasKeyTable, err := adtyTeamTableReadyForStrict(model.DB, &model.AdtyTeamKey{})
+	if err != nil {
+		return 0, false, err
+	}
+	if !hasKeyTable {
 		return 0, false, nil
 	}
 	var key model.AdtyTeamKey
@@ -2350,7 +2420,11 @@ func adtyTeamSharedQuotaForToken(tokenId int) (quota int64, ok bool, err error) 
 	if key.Status != model.AdtyTeamMemberActive || key.TeamId <= 0 || key.UserId <= 0 {
 		return 0, true, nil
 	}
-	if adtyTeamTableReadyFor(model.DB, &model.Token{}) {
+	hasTokenTable, err := adtyTeamTableReadyForStrict(model.DB, &model.Token{})
+	if err != nil {
+		return 0, true, err
+	}
+	if hasTokenTable {
 		var token model.Token
 		tokLookup := model.DB.Select("id", "user_id", "status").Where("id = ?", tokenId).Limit(1).Find(&token)
 		if tokLookup.Error != nil {
@@ -2360,7 +2434,11 @@ func adtyTeamSharedQuotaForToken(tokenId int) (quota int64, ok bool, err error) 
 			return 0, true, nil
 		}
 	}
-	if adtyTeamTableReadyFor(model.DB, &model.AdtyTeamMember{}) {
+	hasMemberTable, err := adtyTeamTableReadyForStrict(model.DB, &model.AdtyTeamMember{})
+	if err != nil {
+		return 0, true, err
+	}
+	if hasMemberTable {
 		var member model.AdtyTeamMember
 		memLookup := model.DB.Where("team_id = ? AND user_id = ? AND status = ?", key.TeamId, key.UserId, model.AdtyTeamMemberActive).Limit(1).Find(&member)
 		if memLookup.Error != nil {
@@ -2446,8 +2524,14 @@ func preLockAdtyTeamForUserDelete(tx *gorm.DB, userId int) error {
 	if tx == nil || userId <= 0 {
 		return nil
 	}
-	hasTeamTable := adtyTeamTableReadyFor(tx, &model.AdtyTeam{})
-	hasMemberTable := adtyTeamTableReadyFor(tx, &model.AdtyTeamMember{})
+	hasTeamTable, err := adtyTeamTableReadyForStrict(tx, &model.AdtyTeam{})
+	if err != nil {
+		return err
+	}
+	hasMemberTable, err := adtyTeamTableReadyForStrict(tx, &model.AdtyTeamMember{})
+	if err != nil {
+		return err
+	}
 	teamIDSet := make(map[int64]struct{})
 	if hasTeamTable {
 		var ledIDs []int64
@@ -2560,7 +2644,11 @@ func preLockAdtyTeamForUserDelete(tx *gorm.DB, userId int) error {
 	// in canonical ascending ID order (adty_team_keys -> tokens) so HardDelete/Delete
 	// never deadlocks with BatchDeleteTokens.
 	tokenIDSet := make(map[int]struct{})
-	if adtyTeamTableReadyFor(tx, &model.AdtyTeamKey{}) {
+	hasKeyTable, err := adtyTeamTableReadyForStrict(tx, &model.AdtyTeamKey{})
+	if err != nil {
+		return err
+	}
+	if hasKeyTable {
 		var keys []model.AdtyTeamKey
 		keyQuery := model.AdtyLockForUpdate(tx).Select("id", "token_id").Where("user_id = ?", userId)
 		if len(leaderTeamIDs) > 0 {
@@ -2598,7 +2686,11 @@ func preLockAdtyTeamForUserDelete(tx *gorm.DB, userId int) error {
 
 func closeAdtyTeamForDeletedLeader(tx *gorm.DB, userId, actorId int, reason string) (model.AdtyUserDeletePostEffects, error) {
 	var effects model.AdtyUserDeletePostEffects
-	if adtyTeamTableReadyFor(tx, &model.AdtyTeam{}) {
+	hasTeamTable, err := adtyTeamTableReadyForStrict(tx, &model.AdtyTeam{})
+	if err != nil {
+		return effects, err
+	}
+	if hasTeamTable {
 		var team model.AdtyTeam
 		lookup := model.AdtyLockForUpdate(tx).Where("leader_user_id = ? AND status = ?", userId, model.AdtyTeamStatusActive).Limit(1).Find(&team)
 		if lookup.Error != nil {
@@ -2618,7 +2710,11 @@ func closeAdtyTeamForDeletedLeader(tx *gorm.DB, userId, actorId int, reason stri
 		}
 		// R3-053: Also deactivate non-leader team memberships and disable team keys
 		// owned by the deleted user so no ghost active rows remain.
-		if adtyTeamTableReadyFor(tx, &model.AdtyTeamMember{}) {
+		hasMemberTable, err := adtyTeamTableReadyForStrict(tx, &model.AdtyTeamMember{})
+		if err != nil {
+			return effects, err
+		}
+		if hasMemberTable {
 			var members []model.AdtyTeamMember
 			if err := model.AdtyLockForUpdate(tx).
 				Where("user_id = ? AND status IN ?", userId, []string{model.AdtyTeamMemberActive, model.AdtyTeamMemberDisabled}).
@@ -2648,13 +2744,21 @@ func closeAdtyTeamForDeletedLeader(tx *gorm.DB, userId, actorId int, reason stri
 	}
 	// R2-P2-17: Clear per-user Casbin authorization rules and release any open
 	// assigned tickets across all user-deletion entry points (ManageUser/DeleteUser/DeleteSelf).
-	if tx.Migrator().HasTable("casbin_rule") {
+	hasCasbinTable, err := model.AdtyTableExists(tx, "casbin_rule")
+	if err != nil {
+		return effects, err
+	}
+	if hasCasbinTable {
 		if err := authz.ClearUserAuthorizationInTx(tx, userId); err != nil {
 			return effects, err
 		}
 		effects.AuthzCleared = true
 	}
-	if adtyTeamTableReadyFor(tx, &model.AdtyTicket{}) {
+	hasTicketTable, err := adtyTeamTableReadyForStrict(tx, &model.AdtyTicket{})
+	if err != nil {
+		return effects, err
+	}
+	if hasTicketTable {
 		releaseReason := strings.TrimSpace(reason)
 		if releaseReason == "" {
 			releaseReason = "admin_delete"
@@ -2743,7 +2847,14 @@ func joinAdtyTeamTx(tx *gorm.DB, userId int, teamId int64) (*model.AdtyTeamMembe
 }
 
 func adtyTeamPriorReservedQuotaTx(tx *gorm.DB, teamId int64, ref string) (int64, error) {
-	if tx == nil || teamId <= 0 || ref == "" || !adtyTeamTableReadyFor(tx, &model.AdtyTeamLedger{}) {
+	if tx == nil || teamId <= 0 || ref == "" {
+		return 0, nil
+	}
+	hasLedgerTable, err := adtyTeamTableReadyForStrict(tx, &model.AdtyTeamLedger{})
+	if err != nil {
+		return 0, err
+	}
+	if !hasLedgerTable {
 		return 0, nil
 	}
 	var rows []model.AdtyTeamLedger

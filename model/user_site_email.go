@@ -32,7 +32,14 @@ func PasswordResetCodeKey(user *User) string {
 }
 
 func findSiteOwnerForEmailChallenge(email string, siteID int) (*User, error) {
-	if siteID <= 0 || DB == nil || !DB.Migrator().HasTable(&AdtySite{}) {
+	if siteID <= 0 || DB == nil {
+		return nil, ErrEmailNotFound
+	}
+	hasSiteTable, err := AdtyTableExists(DB, &AdtySite{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasSiteTable {
 		return nil, ErrEmailNotFound
 	}
 	var site AdtySite
@@ -58,7 +65,14 @@ func findSiteOwnerForEmailChallenge(email string, siteID int) (*User, error) {
 }
 
 func isActiveSiteOwnerForSite(userID, siteID int) (bool, error) {
-	if userID <= 0 || siteID <= 0 || DB == nil || !DB.Migrator().HasTable(&AdtySite{}) {
+	if userID <= 0 || siteID <= 0 || DB == nil {
+		return false, nil
+	}
+	hasSiteTable, err := AdtyTableExists(DB, &AdtySite{})
+	if err != nil {
+		return false, err
+	}
+	if !hasSiteTable {
 		return false, nil
 	}
 	var count int64
@@ -197,7 +211,11 @@ func EnsureSiteEmailUniqueIndex(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("site email unique index: database is nil")
 	}
-	if !db.Migrator().HasTable(&User{}) {
+	hasUserTable, err := AdtyTableExists(db, &User{})
+	if err != nil {
+		return err
+	}
+	if !hasUserTable {
 		return nil
 	}
 	if err := ensureInheritedFromSiteIDColumn(db); err != nil {
@@ -240,7 +258,11 @@ func EnsureSiteEmailUniqueIndex(db *gorm.DB) error {
 }
 
 func ensureInheritedFromSiteIDColumn(db *gorm.DB) error {
-	if db.Migrator().HasColumn(&User{}, "inherited_from_site_id") {
+	hasCol, err := AdtyColumnExists(db, &User{}, "inherited_from_site_id")
+	if err != nil {
+		return err
+	}
+	if hasCol {
 		return nil
 	}
 	if err := db.Migrator().AddColumn(&User{}, "InheritedFromSiteId"); err != nil {

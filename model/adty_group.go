@@ -75,7 +75,14 @@ func adtyGroupOptionDefaultValue(key string) string {
 }
 
 func preLockAdtyGroupOptionsTx(tx *gorm.DB, keys []string) error {
-	if tx == nil || len(keys) == 0 || !tx.Migrator().HasTable(&Option{}) {
+	if tx == nil || len(keys) == 0 {
+		return nil
+	}
+	hasOptionTable, err := AdtyTableExists(tx, &Option{})
+	if err != nil {
+		return err
+	}
+	if !hasOptionTable {
 		return nil
 	}
 	sorted := slices.Clone(keys)
@@ -305,7 +312,10 @@ func CreateAdtyGroup(name, desc string) (*AdtyGroup, error) {
 				return err
 			}
 			var load func(string) (string, error)
-			hasOptionTable := tx.Migrator().HasTable(&Option{})
+			hasOptionTable, err := AdtyTableExists(tx, &Option{})
+			if err != nil {
+				return err
+			}
 			if hasOptionTable {
 				load = func(key string) (string, error) {
 					return loadAdtyGroupOptionTx(tx, key)
@@ -436,7 +446,11 @@ func ActiveAdtyGroupIDsTx(tx *gorm.DB, lock bool) (map[string]struct{}, error) {
 	if tx == nil {
 		tx = DB
 	}
-	if !tx.Migrator().HasTable(&AdtyGroup{}) {
+	hasGroupTable, err := AdtyTableExists(tx, &AdtyGroup{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasGroupTable {
 		return map[string]struct{}{}, nil
 	}
 	q := tx
@@ -479,7 +493,14 @@ func countAdtyGroupRefs(db *gorm.DB, id string) (AdtyGroupRefs, error) {
 }
 
 func countAdtySiteRefs(db *gorm.DB, id string) (int64, error) {
-	if db == nil || !db.Migrator().HasTable(&AdtySite{}) {
+	if db == nil {
+		return 0, nil
+	}
+	hasSiteTable, err := AdtyTableExists(db, &AdtySite{})
+	if err != nil {
+		return 0, err
+	}
+	if !hasSiteTable {
 		return 0, nil
 	}
 	var sites []AdtySite
@@ -652,7 +673,14 @@ func lockAssignableAdtyGroupsTx(tx *gorm.DB, ids []string) error {
 		unique = append(unique, id)
 	}
 	// 还没建分组表的库没有可锁定的行，旧名字照旧放行。
-	if len(unique) == 0 || tx == nil || !tx.Migrator().HasTable(&AdtyGroup{}) {
+	if len(unique) == 0 || tx == nil {
+		return nil
+	}
+	hasGroupTable, err := AdtyTableExists(tx, &AdtyGroup{})
+	if err != nil {
+		return err
+	}
+	if !hasGroupTable {
 		return nil
 	}
 	var activeCount int64
@@ -688,7 +716,14 @@ func PreLockAdtyGroupRowAllowDeletedTx(tx *gorm.DB, id string) (bool, error) {
 
 func preLockAdtyGroupRowAllowDeletedTx(tx *gorm.DB, id string) (bool, error) {
 	id = strings.TrimSpace(id)
-	if id == "" || tx == nil || !tx.Migrator().HasTable(&AdtyGroup{}) {
+	if id == "" || tx == nil {
+		return false, nil
+	}
+	hasGroupTable, err := AdtyTableExists(tx, &AdtyGroup{})
+	if err != nil {
+		return false, err
+	}
+	if !hasGroupTable {
 		return false, nil
 	}
 	var rows []AdtyGroup
@@ -843,7 +878,11 @@ func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 		if err := lockLiveAdtyGroupsTx(tx, fromID, toID); err != nil {
 			return err
 		}
-		if tx.Migrator().HasTable(&AdtySite{}) {
+		hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
+		if err != nil {
+			return err
+		}
+		if hasSiteTable {
 			var sites []AdtySite
 			if err := lockForUpdate(tx).Select("id", "status", "allowed_groups").
 				Where("allowed_groups <> '' AND status <> ?", AdtySiteStatusDeleting).
@@ -944,7 +983,11 @@ func MigrateAdtyGroup(fromID, toID string) (AdtyGroupRefs, error) {
 			moved.Channels++
 		}
 
-		if tx.Migrator().HasTable(&Option{}) {
+		hasOptionTable, err := AdtyTableExists(tx, &Option{})
+		if err != nil {
+			return err
+		}
+		if hasOptionTable {
 			var err error
 			optionValues, err = adtyGroupOptionsMigrated(fromID, toID, func(key string) (string, error) {
 				return loadAdtyGroupOptionTx(tx, key)
@@ -1015,7 +1058,11 @@ func DeleteAdtyGroup(id string) error {
 		if len(activeIDs) <= 1 {
 			return common.NewMessage("At least one active group must remain")
 		}
-		if tx.Migrator().HasTable(&AdtySite{}) {
+		hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
+		if err != nil {
+			return err
+		}
+		if hasSiteTable {
 			var sites []AdtySite
 			if err := lockForUpdate(tx).Select("id", "status", "allowed_groups").
 				Where("allowed_groups <> ''").
@@ -1052,7 +1099,11 @@ func DeleteAdtyGroup(id string) error {
 				}
 			}
 		}
-		if tx.Migrator().HasTable(&User{}) {
+		hasUserTable, err := AdtyTableExists(tx, &User{})
+		if err != nil {
+			return err
+		}
+		if hasUserTable {
 			var users []User
 			if err := lockForUpdate(tx.Unscoped()).Select("id").Where(AdtyGroupColumn()+" = ?", id).Order("id").Find(&users).Error; err != nil {
 				return err
@@ -1069,7 +1120,15 @@ func DeleteAdtyGroup(id string) error {
 			}
 		}
 		// Keep tokens untouched so existing API keys are never silently rebound to another group.
-		if tx.Migrator().HasTable(&Channel{}) {
+		hasChannelTable, err := AdtyTableExists(tx, &Channel{})
+		if err != nil {
+			return err
+		}
+		if hasChannelTable {
+			hasAbilityTable, err := AdtyTableExists(tx, &Ability{})
+			if err != nil {
+				return err
+			}
 			var channels []Channel
 			if err := lockForUpdate(tx).Select("id", "models", "status", commonGroupCol, "priority", "weight", "tag").Order("id").Find(&channels).Error; err != nil {
 				return err
@@ -1094,7 +1153,7 @@ func DeleteAdtyGroup(id string) error {
 					}).Error; err != nil {
 						return err
 					}
-					if tx.Migrator().HasTable(&Ability{}) {
+					if hasAbilityTable {
 						if err := tx.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error; err != nil {
 							return err
 						}
@@ -1104,7 +1163,7 @@ func DeleteAdtyGroup(id string) error {
 					if err := tx.Model(&Channel{}).Where("id = ?", channel.Id).Update(commonGroupCol, channel.Group).Error; err != nil {
 						return err
 					}
-					if tx.Migrator().HasTable(&Ability{}) {
+					if hasAbilityTable {
 						if err := channel.UpdateAbilities(tx); err != nil {
 							return err
 						}
@@ -1119,7 +1178,11 @@ func DeleteAdtyGroup(id string) error {
 		if err != nil {
 			return err
 		}
-		if tx.Migrator().HasTable(&Option{}) {
+		hasOptionTable, err := AdtyTableExists(tx, &Option{})
+		if err != nil {
+			return err
+		}
+		if hasOptionTable {
 			var uptimeOpt Option
 			if findErr := lockForUpdate(tx).Where(commonKeyCol+" = ?", "console_setting.uptime_kuma_groups").Limit(1).Find(&uptimeOpt).Error; findErr != nil {
 				return findErr
@@ -1147,7 +1210,11 @@ func DeleteAdtyGroup(id string) error {
 				}
 			}
 		}
-		if tx.Migrator().HasTable(&AdtyModelProbe{}) {
+		hasModelProbeTable, err := AdtyTableExists(tx, &AdtyModelProbe{})
+		if err != nil {
+			return err
+		}
+		if hasModelProbeTable {
 			if err := tx.Where("group_id = ?", id).Delete(&AdtyModelProbe{}).Error; err != nil {
 				return err
 			}
@@ -1155,7 +1222,7 @@ func DeleteAdtyGroup(id string) error {
 		if err := tx.Where("id = ?", id).Delete(&AdtyGroup{}).Error; err != nil {
 			return err
 		}
-		if tx.Migrator().HasTable(&Option{}) {
+		if hasOptionTable {
 			if err := SaveOptionsTx(tx, values); err != nil {
 				return err
 			}
@@ -1195,13 +1262,20 @@ func DeleteAdtyGroup(id string) error {
 // options.UserUsableGroups（缺项补默认倍率 1 与分组名），同时清除已软删除的分组键，
 // 持久化后刷新内存设置与定价缓存。
 func SyncActiveAdtyGroupsToOptions() error {
-	if DB == nil || !DB.Migrator().HasTable(&AdtyGroup{}) {
+	if DB == nil {
+		return nil
+	}
+	hasGroupTable, err := AdtyTableExists(DB, &AdtyGroup{})
+	if err != nil {
+		return err
+	}
+	if !hasGroupTable {
 		return nil
 	}
 	adtyGroupConfigMu.Lock()
 	defer adtyGroupConfigMu.Unlock()
 	var optionValues map[string]string
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err = DB.Transaction(func(tx *gorm.DB) error {
 		if err := preLockAdtyGroupOptionsTx(tx, []string{"GroupRatio", "UserUsableGroups"}); err != nil {
 			return err
 		}
@@ -1226,7 +1300,10 @@ func SyncActiveAdtyGroupsToOptions() error {
 			activeGroups = append(activeGroups, g)
 		}
 		var load func(string) (string, error)
-		hasOptionTable := tx.Migrator().HasTable(&Option{})
+		hasOptionTable, err := AdtyTableExists(tx, &Option{})
+		if err != nil {
+			return err
+		}
 		if hasOptionTable {
 			load = func(key string) (string, error) {
 				return loadAdtyGroupOptionTx(tx, key)
@@ -1606,7 +1683,14 @@ func (option *Option) BeforeSave(tx *gorm.DB) error {
 			return common.NewMessage("Group auto cannot be used in {{key}}", map[string]any{"key": AdtyGroupModelAllowOption})
 		}
 	}
-	if tx == nil || !tx.Migrator().HasTable(&AdtyGroup{}) {
+	if tx == nil {
+		return nil
+	}
+	hasGroupTable, err := AdtyTableExists(tx, &AdtyGroup{})
+	if err != nil {
+		return err
+	}
+	if !hasGroupTable {
 		return nil
 	}
 	var total int64

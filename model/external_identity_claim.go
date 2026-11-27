@@ -152,10 +152,18 @@ func EnsureExternalIdentityClaimSiteIndexes(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("external identity claim indexes: database is nil")
 	}
-	if !db.Migrator().HasTable(&ExternalIdentityClaim{}) {
+	hasClaimTable, err := AdtyTableExists(db, &ExternalIdentityClaim{})
+	if err != nil {
+		return err
+	}
+	if !hasClaimTable {
 		return nil
 	}
-	if db.Migrator().HasTable(&User{}) {
+	hasUserTable, err := AdtyTableExists(db, &User{})
+	if err != nil {
+		return err
+	}
+	if hasUserTable {
 		if err := db.Exec(`
 			UPDATE external_identity_claims
 			SET site_id = COALESCE((SELECT site_id FROM users WHERE users.id = external_identity_claims.user_id), site_id)

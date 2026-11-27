@@ -254,7 +254,14 @@ func adtyProportionalGiftUSD(siteBonus decimal.Decimal, reclaimed, totalBonusQuo
 }
 
 func adtyCompletedManualRefundBonusStatsTx(tx *gorm.DB, ext *model.AdtyTopupOrder) (hasRows bool, prevReclaimed, cumReclaimed int64, err error) {
-	if tx == nil || ext == nil || ext.TradeNo == "" || !tx.Migrator().HasTable(&model.AdtyManualRefund{}) {
+	if tx == nil || ext == nil || ext.TradeNo == "" {
+		return false, 0, 0, nil
+	}
+	hasRefundTable, err := model.AdtyTableExists(tx, &model.AdtyManualRefund{})
+	if err != nil {
+		return false, 0, 0, err
+	}
+	if !hasRefundTable {
 		return false, 0, 0, nil
 	}
 	var rows []model.AdtyManualRefund
@@ -334,7 +341,11 @@ func reacquireAdtySiteGiftAmountTx(tx *gorm.DB, ext *model.AdtyTopupOrder, bonus
 	rest := needed.Sub(fromEarning)
 	fromMargin := decimal.Zero
 	if rest.IsPositive() {
-		if !adty_setting.SiteBonusMarginFillAllowedTx(tx, ext.SiteId) || pooledSite {
+		marginAllowed, authErr := adty_setting.SiteBonusMarginFillAllowedStrictTx(tx, ext.SiteId)
+		if authErr != nil {
+			return authErr
+		}
+		if !marginAllowed || pooledSite {
 			return errGiftGuaranteeShort
 		}
 		var margin model.AdtySiteWallet
@@ -590,13 +601,19 @@ func fulfillPendingAdtyGiftFulfillment(tradeNo string) (bool, error) {
 		if batchSiteID > 0 && user.SiteId == 0 {
 			// R10-033: Customer migrated to main site after subsite close.
 			batchSiteID = 0
-		} else if batchSiteID > 0 && tx.Migrator().HasTable(&model.AdtySite{}) {
-			var siteStatus string
-			if err := tx.Model(&model.AdtySite{}).Select("status").Where("id = ?", batchSiteID).Limit(1).Scan(&siteStatus).Error; err != nil {
+		} else if batchSiteID > 0 {
+			hasSiteTable, err := model.AdtyTableExists(tx, &model.AdtySite{})
+			if err != nil {
 				return err
 			}
-			if siteStatus == model.AdtySiteStatusClosed {
-				batchSiteID = 0
+			if hasSiteTable {
+				var siteStatus string
+				if err := tx.Model(&model.AdtySite{}).Select("status").Where("id = ?", batchSiteID).Limit(1).Scan(&siteStatus).Error; err != nil {
+					return err
+				}
+				if siteStatus == model.AdtySiteStatusClosed {
+					batchSiteID = 0
+				}
 			}
 		}
 		if err := addAdtyGiftFulfilledBonusTx(tx, row.UserId, batchSiteID, tradeNo, owed); err != nil {
@@ -814,7 +831,11 @@ func confirmTopUpUnpaidBeforeExpireTx(tx *gorm.DB, _ *model.TopUp, ext *model.Ad
 	// manual reconciliation. Check this BEFORE stale query confirming/paid states so
 	// an order that moved from confirming -> post-expiry callback orphan still
 	// expires and releases site gift guarantees instead of locking forever.
-	if tx.Migrator().HasTable(&model.PaymentOrphanEvent{}) {
+	hasOrphanTable, err := model.AdtyTableExists(tx, &model.PaymentOrphanEvent{})
+	if err != nil {
+		return false, err
+	}
+	if hasOrphanTable {
 		var orphanCount int64
 		if err := tx.Model(&model.PaymentOrphanEvent{}).
 			Where("reference_id = ? AND provider = ? AND event_type IN ? AND event_id NOT LIKE ? AND status <> ?",
@@ -867,13 +888,19 @@ func effectiveSiteGiftBasisTx(tx *gorm.DB, ext *model.AdtyTopupOrder) (decimal.D
 	if err != nil {
 		return decimal.Zero, 0, err
 	}
-	if tx != nil && ext != nil && ext.GiftFulfillmentStatus == model.AdtyGiftFulfillmentFulfilled && tx.Migrator().HasTable(&model.AdtyGiftFulfillment{}) {
-		var row model.AdtyGiftFulfillment
-		if err := tx.Where("trade_no = ? AND status = ?", ext.TradeNo, model.AdtyGiftFulfillmentFulfilled).Limit(1).Find(&row).Error; err != nil {
+	if tx != nil && ext != nil && ext.GiftFulfillmentStatus == model.AdtyGiftFulfillmentFulfilled {
+		hasGiftTable, err := model.AdtyTableExists(tx, &model.AdtyGiftFulfillment{})
+		if err != nil {
 			return decimal.Zero, 0, err
 		}
-		if row.Id > 0 && row.BonusUSD.IsPositive() && row.BonusQuota > 0 {
-			return row.BonusUSD, row.BonusQuota, nil
+		if hasGiftTable {
+			var row model.AdtyGiftFulfillment
+			if err := tx.Where("trade_no = ? AND status = ?", ext.TradeNo, model.AdtyGiftFulfillmentFulfilled).Limit(1).Find(&row).Error; err != nil {
+				return decimal.Zero, 0, err
+			}
+			if row.Id > 0 && row.BonusUSD.IsPositive() && row.BonusQuota > 0 {
+				return row.BonusUSD, row.BonusQuota, nil
+			}
 		}
 	}
 	return siteBonus, totalBonusQuota, nil
@@ -898,7 +925,11 @@ func releaseUnusedSiteGiftGuaranteeTx(tx *gorm.DB, ext *model.AdtyTopupOrder) er
 	}
 	var bonusBatchCount int64
 	var remainingBonusQuota int64
-	if tx.Migrator().HasTable(&model.AdtyFundBatch{}) {
+	hasFundBatchTable, err := model.AdtyTableExists(tx, &model.AdtyFundBatch{})
+	if err != nil {
+		return err
+	}
+	if hasFundBatchTable {
 		if err := tx.Model(&model.AdtyFundBatch{}).
 			Where("user_id = ? AND source = ? AND kind = ?", ext.UserId, ext.TradeNo, "bonus").
 			Count(&bonusBatchCount).Error; err != nil {
@@ -1001,10 +1032,16 @@ func releaseUnusedSiteGiftGuaranteeTx(tx *gorm.DB, ext *model.AdtyTopupOrder) er
 		return err
 	}
 	// R6-018: Ensure canonical earnings -> margin lock order even for margin-only reserves.
-	if relMargin.IsPositive() && !relEarning.IsPositive() && tx.Migrator().HasTable(&model.AdtySiteWallet{}) {
-		var prelockEarnings model.AdtySiteWallet
-		if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND kind = ?", ext.SiteId, model.AdtySiteWalletEarnings).Limit(1).Find(&prelockEarnings).Error; err != nil {
+	if relMargin.IsPositive() && !relEarning.IsPositive() {
+		hasWalletTable, err := model.AdtyTableExists(tx, &model.AdtySiteWallet{})
+		if err != nil {
 			return err
+		}
+		if hasWalletTable {
+			var prelockEarnings model.AdtySiteWallet
+			if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND kind = ?", ext.SiteId, model.AdtySiteWalletEarnings).Limit(1).Find(&prelockEarnings).Error; err != nil {
+				return err
+			}
 		}
 	}
 	if relEarning.IsPositive() {
@@ -1067,7 +1104,14 @@ func cancelPendingGiftFulfillmentOnFullRefundTx(tx *gorm.DB, ext *model.AdtyTopu
 	fullPrincipal := ext.FaceQuota() > 0 && ext.RefundQuota >= ext.FaceQuota()
 	fullGift := bonusQuota > 0 && reclaimed >= bonusQuota
 	if !fullPrincipal && !fullGift {
-		if ext.FaceQuota() <= 0 || ext.RefundQuota <= 0 || !tx.Migrator().HasTable(&model.AdtyGiftFulfillment{}) {
+		if ext.FaceQuota() <= 0 || ext.RefundQuota <= 0 {
+			return nil
+		}
+		hasGiftTable, err := model.AdtyTableExists(tx, &model.AdtyGiftFulfillment{})
+		if err != nil {
+			return err
+		}
+		if !hasGiftTable {
 			return nil
 		}
 		var row model.AdtyGiftFulfillment
@@ -1141,7 +1185,14 @@ func cancelPendingGiftFulfillmentOnFullRefundTx(tx *gorm.DB, ext *model.AdtyTopu
 // preLockGiftSpendSiteWalletsTx locks all involved site earnings wallets in site_id ASC
 // order followed by all involved site margin wallets in site_id ASC order (R6-008).
 func preLockGiftSpendSiteWalletsTx(tx *gorm.DB, userID int, items []model.AdtyBonusSpend) error {
-	if tx == nil || userID <= 0 || len(items) == 0 || !tx.Migrator().HasTable(&model.AdtySiteWallet{}) {
+	if tx == nil || userID <= 0 || len(items) == 0 {
+		return nil
+	}
+	hasWalletTable, err := model.AdtyTableExists(tx, &model.AdtySiteWallet{})
+	if err != nil {
+		return err
+	}
+	if !hasWalletTable {
 		return nil
 	}
 	sources := make([]string, 0, len(items))
@@ -1398,13 +1449,23 @@ func releaseSiteGiftGuaranteeForSourceTx(tx *gorm.DB, userID int, tradeNo string
 	}
 	if !already && (relEarning.IsPositive() || relMargin.IsPositive()) {
 		releasedUSD := relEarning.Add(relMargin)
-		if releasedUSD.IsPositive() && tx.Migrator().HasTable(&model.AdtySiteEarningDaily{}) {
-			day := time.Now().In(model.AdtyBusinessLocation(tx)).Format("2006-01-02")
-			if err := upsertAdtySiteEarningTx(tx, day, adtySiteEarningEntry{
-				SiteId: ext.SiteId, SiteOwnerUserId: ext.SiteOwnerUserId, UserId: userID,
-				Kind: model.AdtySiteEarningBonusReversal, Earning: releasedUSD,
-			}); err != nil {
+		if releasedUSD.IsPositive() {
+			hasDailyTable, err := model.AdtyTableExists(tx, &model.AdtySiteEarningDaily{})
+			if err != nil {
 				return err
+			}
+			if hasDailyTable {
+				bizLoc, err := model.AdtyBusinessLocationStrict(tx)
+				if err != nil {
+					return err
+				}
+				day := time.Now().In(bizLoc).Format("2006-01-02")
+				if err := upsertAdtySiteEarningTx(tx, day, adtySiteEarningEntry{
+					SiteId: ext.SiteId, SiteOwnerUserId: ext.SiteOwnerUserId, UserId: userID,
+					Kind: model.AdtySiteEarningBonusReversal, Earning: releasedUSD,
+				}); err != nil {
+					return err
+				}
 			}
 		}
 		if _, err := appendAdtyGiftOfficialAuditTx(tx, userID, ext.SiteId, tradeNo, "adty.gift.release", "unused gift guarantee released on bonus reduction",
@@ -1583,7 +1644,11 @@ func ListAdtyGiftFulfillments(status string, siteID int, pageInfo *common.PageIn
 	if model.DB == nil {
 		return nil, 0, common.NewMessage("Database is unavailable")
 	}
-	if !model.DB.Migrator().HasTable(&model.AdtyGiftFulfillment{}) {
+	hasGiftTable, err := model.AdtyTableExists(model.DB, &model.AdtyGiftFulfillment{})
+	if err != nil {
+		return nil, 0, err
+	}
+	if !hasGiftTable {
 		return []model.AdtyGiftFulfillment{}, 0, nil
 	}
 	q := model.DB.Model(&model.AdtyGiftFulfillment{})

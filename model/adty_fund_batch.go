@@ -665,15 +665,30 @@ func isAdtyFundBatchExpiredAt(batch *AdtyFundBatch, nowUnix int64, loc *time.Loc
 // Each batch runs in a savepoint so restricted-write / shortfall conditions
 // never roll back live billing settlements.
 func ExpireOverdueAdtyGiftBatchesForUserTx(tx *gorm.DB, userID int, now time.Time) (int64, error) {
-	if tx == nil || userID <= 0 ||
-		!tx.Migrator().HasTable(&AdtyFundBatch{}) ||
-		!tx.Migrator().HasTable(&AdtyFundAllocation{}) ||
-		!tx.Migrator().HasTable(&AdtyBalanceLedger{}) {
+	if tx == nil || userID <= 0 {
+		return 0, nil
+	}
+	hasBatchTable, err := AdtyTableExists(tx, &AdtyFundBatch{})
+	if err != nil {
+		return 0, err
+	}
+	hasAllocTable, err := AdtyTableExists(tx, &AdtyFundAllocation{})
+	if err != nil {
+		return 0, err
+	}
+	hasLedgerTable, err := AdtyTableExists(tx, &AdtyBalanceLedger{})
+	if err != nil {
+		return 0, err
+	}
+	if !hasBatchTable || !hasAllocTable || !hasLedgerTable {
 		return 0, nil
 	}
 	loc := now.Location()
 	if loc == nil || loc == time.Local || loc == time.UTC {
-		loc = AdtyBusinessLocation(tx)
+		loc, err = AdtyBusinessLocationStrict(tx)
+		if err != nil {
+			return 0, err
+		}
 		now = now.In(loc)
 	}
 	nowUnix := now.Unix()
@@ -714,10 +729,20 @@ func ExpireOverdueAdtyGiftBatchesForUserTx(tx *gorm.DB, userID int, now time.Tim
 // gift batches whose midnight cutoff has already passed (e.g., if a reviewing
 // restriction prevented sweeping them), so spendable balance never includes them.
 func overdueUnsweptExpiringGiftQuotaTx(tx *gorm.DB, userID int, now time.Time) (int64, error) {
-	if tx == nil || userID <= 0 || !tx.Migrator().HasTable(&AdtyFundBatch{}) {
+	if tx == nil || userID <= 0 {
 		return 0, nil
 	}
-	loc := AdtyBusinessLocation(tx)
+	hasBatchTable, err := AdtyTableExists(tx, &AdtyFundBatch{})
+	if err != nil {
+		return 0, err
+	}
+	if !hasBatchTable {
+		return 0, nil
+	}
+	loc, err := AdtyBusinessLocationStrict(tx)
+	if err != nil {
+		return 0, err
+	}
 	now = now.In(loc)
 	nowUnix := now.Unix()
 	dayStart := AdtyGiftExpiryMidnightUnix(nowUnix, loc)
@@ -732,8 +757,11 @@ func overdueUnsweptExpiringGiftQuotaTx(tx *gorm.DB, userID int, now time.Time) (
 		return 0, nil
 	}
 	heldByBatch := map[int64]int64{}
-	if tx.Migrator().HasTable(&AdtyFundAllocation{}) {
-		var err error
+	hasAllocTable, err := AdtyTableExists(tx, &AdtyFundAllocation{})
+	if err != nil {
+		return 0, err
+	}
+	if hasAllocTable {
 		heldByBatch, err = outstandingAdtyFundAllocationByBatchTx(tx, userID)
 		if err != nil {
 			return 0, err
@@ -763,7 +791,11 @@ func adtyMoveFundBatchesToSiteTx(tx *gorm.DB, userIDs []int, fromSite, toSite in
 	if tx == nil || len(userIDs) == 0 || fromSite == toSite {
 		return nil
 	}
-	if !tx.Migrator().HasTable(&AdtyFundBatch{}) {
+	hasBatchTable, err := AdtyTableExists(tx, &AdtyFundBatch{})
+	if err != nil {
+		return err
+	}
+	if !hasBatchTable {
 		return nil
 	}
 	return tx.Model(&AdtyFundBatch{}).
@@ -1024,7 +1056,11 @@ func adtyEffectiveLegacyBalanceTx(tx *gorm.DB, userID int, balanceBefore int64, 
 		}
 		if rows[i].IsExpiringGift() && rows[i].ExpiresAt != nil && *rows[i].ExpiresAt > 0 {
 			if loc == nil {
-				loc = AdtyBusinessLocation(tx)
+				var locErr error
+				loc, locErr = AdtyBusinessLocationStrict(tx)
+				if locErr != nil {
+					return 0, locErr
+				}
 				nowUnix = time.Now().In(loc).Unix()
 			}
 			if isAdtyFundBatchExpiredAt(&rows[i], nowUnix, loc) {
@@ -1035,7 +1071,11 @@ func adtyEffectiveLegacyBalanceTx(tx *gorm.DB, userID int, balanceBefore int64, 
 		}
 	}
 	var ownerRefundHeld int64
-	if tx.Migrator().HasTable(&AdtyFundAllocation{}) {
+	hasAllocTable, err := AdtyTableExists(tx, &AdtyFundAllocation{})
+	if err != nil {
+		return 0, err
+	}
+	if hasAllocTable {
 		if err := tx.Model(&AdtyFundAllocation{}).
 			Where("user_id = ? AND operation_id LIKE ? AND held > settled", userID, ownerRefundOperationPrefix+"%").
 			Select("COALESCE(SUM(held-settled),0)").
@@ -1307,7 +1347,11 @@ func applyAdtyWalletDebitToBatchesTx(tx *gorm.DB, userID int, source string, pri
 }
 
 func adtyRequireFundBatchTable(tx *gorm.DB) error {
-	if !tx.Migrator().HasTable(&AdtyFundBatch{}) {
+	hasTable, err := AdtyTableExists(tx, &AdtyFundBatch{})
+	if err != nil {
+		return err
+	}
+	if !hasTable {
 		return ErrAdtyFundBatchTableMissing
 	}
 	return nil
@@ -1419,7 +1463,11 @@ func SumAdtyFundBatchRemainingByKindForUsers(userIDs []int) (map[int]AdtyFundBat
 		return nil, err
 	}
 	heldByBatch := map[int64]int64{}
-	if DB.Migrator().HasTable(&AdtyFundAllocation{}) {
+	hasAllocTable, err := AdtyTableExists(DB, &AdtyFundAllocation{})
+	if err != nil {
+		return nil, err
+	}
+	if hasAllocTable {
 		var allocRows []struct {
 			BatchId int64
 			Held    int64
@@ -1437,7 +1485,10 @@ func SumAdtyFundBatchRemainingByKindForUsers(userIDs []int) (map[int]AdtyFundBat
 			}
 		}
 	}
-	loc := AdtyBusinessLocation(DB)
+	loc, err := AdtyBusinessLocationStrict(DB)
+	if err != nil {
+		return nil, err
+	}
 	nowUnix := time.Now().In(loc).Unix()
 	for i := range rows {
 		row := rows[i]

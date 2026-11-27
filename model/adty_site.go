@@ -449,13 +449,21 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 	// R5-12 / R5-13: Preserve canonical AdtySite -> AdtyTeam -> AdtySiteStaff / AdtyTeamMember -> User
 	// lock order before locking User rows so concurrent admin operations (PreLockScopedEmployeeRowsTx)
 	// cannot AB-BA deadlock with site closure.
-	if tx.Migrator().HasTable(&AdtySiteStaff{}) {
+	hasStaffTable, err := AdtyTableExists(tx, &AdtySiteStaff{})
+	if err != nil {
+		return nil, 0, err
+	}
+	if hasStaffTable {
 		var preLockedStaff []AdtySiteStaff
 		if err := lockForUpdate(tx).Select("id").Where("site_id = ?", fromSite).Order("id ASC").Find(&preLockedStaff).Error; err != nil {
 			return nil, 0, err
 		}
 	}
-	if tx.Migrator().HasTable(&AdtyTeamMember{}) {
+	hasTeamMemberTable, err := AdtyTableExists(tx, &AdtyTeamMember{})
+	if err != nil {
+		return nil, 0, err
+	}
+	if hasTeamMemberTable {
 		// R6-07: Pluck customer IDs without locking users first, and lock all
 		// independent_employee rows regardless of status so MySQL InnoDB never
 		// takes an implicit users S-lock or misses active rows scanned by user_id.
@@ -549,17 +557,25 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 		}).Error; err != nil {
 			return nil, 0, err
 		}
-		if tx.Migrator().HasTable(&UserAccessToken{}) {
+		hasAccessTokenTable, err := AdtyTableExists(tx, &UserAccessToken{})
+		if err != nil {
+			return nil, 0, err
+		}
+		if hasAccessTokenTable {
 			if err := tx.Where("user_id IN ?", staffIDs).Delete(&UserAccessToken{}).Error; err != nil {
 				return nil, 0, err
 			}
 		}
-		if tx.Migrator().HasTable(&AdtySiteStaff{}) {
+		if hasStaffTable {
 			if err := tx.Model(&AdtySiteStaff{}).Where("site_id = ? AND user_id IN ?", fromSite, staffIDs).
 				Updates(map[string]any{"status": "disabled", "disabled_auth_version": 0}).Error; err != nil {
 				return nil, 0, err
 			}
 		}
+	}
+	hasFundBatchTable, err := AdtyTableExists(tx, &AdtyFundBatch{})
+	if err != nil {
+		return nil, 0, err
 	}
 	var movedPrincipal int64
 	if len(ids) > 0 {
@@ -584,7 +600,7 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 		if err := tx.Model(&User{}).Where("id IN ?", ids).Updates(updates).Error; err != nil {
 			return nil, 0, err
 		}
-		if fromSite > 0 && tx.Migrator().HasTable(&AdtyFundBatch{}) {
+		if fromSite > 0 && hasFundBatchTable {
 			// R9-08: Lock customer batches with FOR UPDATE (InnoDB current read)
 			// and sum/update only the locked IDs so concurrent commission-to-balance
 			// conversions under REPEATABLE READ cannot be moved by UPDATE while missed
@@ -619,7 +635,7 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 			}
 		}
 	}
-	if ownerLocked && tx.Migrator().HasTable(&AdtyFundBatch{}) {
+	if ownerLocked && hasFundBatchTable {
 		var ownerBatches []AdtyFundBatch
 		if err := lockForUpdate(tx).
 			Where("user_id = ? AND site_id = ? AND kind = ?", ownerUserID, fromSite, AdtyFundBatchKindPrincipal).
@@ -632,7 +648,11 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 			// R10-019: Exclude ALL batches with any active allocation (in-flight API
 			// precharges as well as owner-refund holds) AND any batch whose source
 			// top-up still has a non-final manual refund (submitted/approved/reclaimed).
-			if tx.Migrator().HasTable(&AdtyFundAllocation{}) {
+			hasAllocTable, err := AdtyTableExists(tx, &AdtyFundAllocation{})
+			if err != nil {
+				return nil, 0, err
+			}
+			if hasAllocTable {
 				var heldBatchIDs []int64
 				if err := tx.Model(&AdtyFundAllocation{}).
 					Distinct("batch_id").
@@ -645,7 +665,11 @@ func AdtyCloseSiteUsersAndOwnerSelfUseTx(tx *gorm.DB, fromSite, ownerUserID, toS
 				}
 			}
 			encumberedSources := map[string]bool{}
-			if tx.Migrator().HasTable(&AdtyManualRefund{}) {
+			hasRefundTable, err := AdtyTableExists(tx, &AdtyManualRefund{})
+			if err != nil {
+				return nil, 0, err
+			}
+			if hasRefundTable {
 				var refundSources []string
 				if err := tx.Model(&AdtyManualRefund{}).
 					Distinct("trade_no").
@@ -709,10 +733,25 @@ func BackfillAdtyUserSiteMigrationsFromInheritedSiteID(db *gorm.DB, now int64) e
 	if db == nil {
 		return nil
 	}
-	if !db.Migrator().HasTable(&User{}) || !db.Migrator().HasColumn(&User{}, "inherited_from_site_id") {
+	hasUserTable, err := AdtyTableExists(db, &User{})
+	if err != nil {
+		return err
+	}
+	if !hasUserTable {
 		return nil
 	}
-	if !db.Migrator().HasTable(&AdtyUserSiteMigration{}) {
+	hasInheritedCol, err := AdtyColumnExists(db, &User{}, "inherited_from_site_id")
+	if err != nil {
+		return err
+	}
+	if !hasInheritedCol {
+		return nil
+	}
+	hasMigrationTable, err := AdtyTableExists(db, &AdtyUserSiteMigration{})
+	if err != nil {
+		return err
+	}
+	if !hasMigrationTable {
 		return nil
 	}
 	var users []User

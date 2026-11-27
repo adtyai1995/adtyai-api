@@ -1464,7 +1464,11 @@ func removeAdtySiteDomainForActor(ctx context.Context, domain *model.AdtySiteDom
 		if res.RowsAffected == 0 {
 			return common.NewMessage("Domain automation is in progress for this site; please try again shortly")
 		}
-		if tx.Migrator().HasTable(&model.AdtyDomainCloudResource{}) {
+		hasCloudResTable, err := model.AdtyTableExists(tx, &model.AdtyDomainCloudResource{})
+		if err != nil {
+			return err
+		}
+		if hasCloudResTable {
 			if err := tx.Where("domain_id = ?", snapshot.Id).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
 				return err
 			}
@@ -1578,7 +1582,11 @@ func adtyMarkCustomDomainFailed(ctx context.Context, zone string, domain *model.
 		if res.RowsAffected == 0 {
 			return errors.New("custom domain snapshot changed during timeout cleanup")
 		}
-		if tx.Migrator().HasTable(&model.AdtyDomainCloudResource{}) {
+		hasCloudResTable, err := model.AdtyTableExists(tx, &model.AdtyDomainCloudResource{})
+		if err != nil {
+			return err
+		}
+		if hasCloudResTable {
 			if err := tx.Where("domain_id = ?", domain.Id).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
 				return err
 			}

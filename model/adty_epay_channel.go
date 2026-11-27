@@ -383,7 +383,11 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 func DeleteAdtyEpayChannel(id int) error {
 	return DB.Transaction(func(tx *gorm.DB) error {
 		// R8-15: Follow canonical lock order adty_payment_scene_configs -> adty_epay_channels.
-		if tx.Migrator().HasTable(&AdtyPaymentSceneConfig{}) {
+		hasSceneCfgTable, err := AdtyTableExists(tx, &AdtyPaymentSceneConfig{})
+		if err != nil {
+			return err
+		}
+		if hasSceneCfgTable {
 			sceneCfg, cfgErr := GetAdtyPaymentSceneConfig(tx, true)
 			if cfgErr != nil {
 				return cfgErr

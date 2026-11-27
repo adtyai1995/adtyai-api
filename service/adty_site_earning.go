@@ -212,7 +212,11 @@ func upsertAdtySiteEarningLineTx(tx *gorm.DB, siteID, ownerID, userID int, model
 	if tx == nil || siteID <= 0 || userID <= 0 || quota == 0 || !adtyEarningFactorsUsable(k, d) {
 		return nil
 	}
-	if !tx.Migrator().HasTable(&model.AdtySiteEarningLine{}) {
+	hasLineTable, err := model.AdtyTableExists(tx, &model.AdtySiteEarningLine{})
+	if err != nil {
+		return err
+	}
+	if !hasLineTable {
 		return nil
 	}
 	modelName = strings.TrimSpace(modelName)
@@ -272,13 +276,21 @@ func recordDurableEventEarningLineTx(tx *gorm.DB, event *model.AdtySiteEarningEv
 	if tx == nil || event == nil || strings.TrimSpace(event.OperationKey) == "" || event.Quota == 0 {
 		return nil
 	}
-	if !tx.Migrator().HasTable(&model.AdtySiteEarningLine{}) {
+	hasLineTable, err := model.AdtyTableExists(tx, &model.AdtySiteEarningLine{})
+	if err != nil {
+		return err
+	}
+	if !hasLineTable {
 		return nil
 	}
 	opKey := strings.TrimSpace(event.OperationKey)
 	requestID := opKey
 	var modelName, group string
-	if tx.Migrator().HasTable(&model.BillingOperation{}) {
+	hasOpTable, err := model.AdtyTableExists(tx, &model.BillingOperation{})
+	if err != nil {
+		return err
+	}
+	if hasOpTable {
 		var op model.BillingOperation
 		if err := tx.Where("operation_key = ?", opKey).Limit(1).Find(&op).Error; err != nil {
 			return err
@@ -314,30 +326,39 @@ func recordDurableEventEarningLineTx(tx *gorm.DB, event *model.AdtySiteEarningEv
 					}
 				}
 			}
-			if (op.Kind == "task" || strings.HasPrefix(opKey, "task:") || strings.HasPrefix(op.EarningRootKey, "task:")) && (modelName == "" || group == "") && tx.Migrator().HasTable(&model.Task{}) {
-				var tasks []model.Task
-				if err := tx.Where("user_id = ?", entry.UserId).Order("id DESC").Limit(20).Find(&tasks).Error; err == nil && len(tasks) > 0 {
-					chosen := &tasks[0]
-					for i := range tasks {
-						bKey := strings.TrimSpace(tasks[i].PrivateData.BillingOperationKey)
-						if bKey != "" && (bKey == opKey || bKey == op.EarningRootKey) {
-							chosen = &tasks[i]
-							break
-						}
-						if op.ReferenceId > 0 && tasks[i].ID == op.ReferenceId {
-							chosen = &tasks[i]
-							break
-						}
+			if (op.Kind == "task" || strings.HasPrefix(opKey, "task:") || strings.HasPrefix(op.EarningRootKey, "task:")) && (modelName == "" || group == "") {
+				hasTaskTable, err := model.AdtyTableExists(tx, &model.Task{})
+				if err != nil {
+					return err
+				}
+				if hasTaskTable {
+					var tasks []model.Task
+					if err := tx.Where("user_id = ?", entry.UserId).Order("id DESC").Limit(20).Find(&tasks).Error; err != nil {
+						return err
 					}
-					if group == "" && strings.TrimSpace(chosen.Group) != "" {
-						group = strings.TrimSpace(chosen.Group)
-					}
-					if modelName == "" {
-						if chosen.PrivateData.BillingContext != nil && strings.TrimSpace(chosen.PrivateData.BillingContext.OriginModelName) != "" {
-							modelName = strings.TrimSpace(chosen.PrivateData.BillingContext.OriginModelName)
+					if len(tasks) > 0 {
+						chosen := &tasks[0]
+						for i := range tasks {
+							bKey := strings.TrimSpace(tasks[i].PrivateData.BillingOperationKey)
+							if bKey != "" && (bKey == opKey || bKey == op.EarningRootKey) {
+								chosen = &tasks[i]
+								break
+							}
+							if op.ReferenceId > 0 && tasks[i].ID == op.ReferenceId {
+								chosen = &tasks[i]
+								break
+							}
 						}
-						if modelName == "" && strings.TrimSpace(chosen.Properties.OriginModelName) != "" {
-							modelName = strings.TrimSpace(chosen.Properties.OriginModelName)
+						if group == "" && strings.TrimSpace(chosen.Group) != "" {
+							group = strings.TrimSpace(chosen.Group)
+						}
+						if modelName == "" {
+							if chosen.PrivateData.BillingContext != nil && strings.TrimSpace(chosen.PrivateData.BillingContext.OriginModelName) != "" {
+								modelName = strings.TrimSpace(chosen.PrivateData.BillingContext.OriginModelName)
+							}
+							if modelName == "" && strings.TrimSpace(chosen.Properties.OriginModelName) != "" {
+								modelName = strings.TrimSpace(chosen.Properties.OriginModelName)
+							}
 						}
 					}
 				}

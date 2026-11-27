@@ -751,7 +751,9 @@ def apply_and_reload(
         shutil.copytree(certs_dir, backup_dir / "certs", copy_function=_copy_cert_file)
         snapshot_ready = True
 
-        # Write updated certs and configs into place.
+        # Write updated certs and configs into place, then validate and reload.
+        # Any exception or non-zero exit before nginx validates and reloads
+        # cleanly rolls back both nginx configs and certs_dir.
         try:
             for slug, (cert_pem, key_pem) in cert_files.items():
                 write_cert_pair(certs_dir, slug, cert_pem, key_pem)
@@ -778,33 +780,31 @@ def apply_and_reload(
             for existing in list(http80_extra_dir.glob("*.conf")):
                 if existing.name not in wanted_http80_extra:
                     existing.unlink()
-        except Exception:
-            if snapshot_ready:
-                _rollback_snapshot()
-            raise
 
-        test_proc = subprocess.run(
-            [cfg.nginx_bin, "-t"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if test_proc.returncode != 0:
-            # Roll back immediately before raising.
-            _rollback_snapshot()
-            stderr = (test_proc.stderr or test_proc.stdout or "").strip()
-            raise SyncError(f"nginx -t failed; rolled back previous config: {stderr}")
-
-        if reload_nginx:
-            reload_proc = subprocess.run(
-                shlex.split(cfg.nginx_reload_cmd),
+            test_proc = subprocess.run(
+                [cfg.nginx_bin, "-t"],
                 capture_output=True,
                 text=True,
                 check=False,
             )
-            if reload_proc.returncode != 0:
-                stderr = (reload_proc.stderr or reload_proc.stdout or "").strip()
-                raise SyncError(f"nginx reload failed: {stderr}")
+            if test_proc.returncode != 0:
+                stderr = (test_proc.stderr or test_proc.stdout or "").strip()
+                raise SyncError(f"nginx -t failed; rolled back previous config: {stderr}")
+
+            if reload_nginx:
+                reload_proc = subprocess.run(
+                    shlex.split(cfg.nginx_reload_cmd),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if reload_proc.returncode != 0:
+                    stderr = (reload_proc.stderr or reload_proc.stdout or "").strip()
+                    raise SyncError(f"nginx reload failed; rolled back previous config: {stderr}")
+        except BaseException:
+            if snapshot_ready:
+                _rollback_snapshot()
+            raise
 
         prune_expired_certs(certs_dir, set(cert_files.keys()), cfg.cert_retention_days, now_ts)
     finally:

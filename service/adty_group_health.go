@@ -202,13 +202,24 @@ func resolveAdtyProbeCandidate(ch *model.Channel, modelName string) (upstreamMod
 }
 
 func resolveAdtyGroupProbeChannel(group, modelName string) (*model.Channel, string, string, string, string, error) {
-	if model.DB == nil || !model.DB.Migrator().HasTable(&model.Channel{}) {
+	if model.DB == nil {
+		return nil, "", "", "", "", ErrAdtyTranslationInvalid
+	}
+	hasChannelTable, err := model.AdtyTableExists(model.DB, &model.Channel{})
+	if err != nil {
+		return nil, "", "", "", "", err
+	}
+	if !hasChannelTable {
 		return nil, "", "", "", "", ErrAdtyTranslationInvalid
 	}
 	tried := make(map[int]struct{})
 	sawBlocked := false
 
-	if model.DB.Migrator().HasTable(&model.Ability{}) {
+	hasAbilityTable, err := model.AdtyTableExists(model.DB, &model.Ability{})
+	if err != nil {
+		return nil, "", "", "", "", err
+	}
+	if hasAbilityTable {
 		var channelIDs []int
 		err := model.DB.Table("abilities").
 			Select("abilities.channel_id").
@@ -217,23 +228,24 @@ func resolveAdtyGroupProbeChannel(group, modelName string) (*model.Channel, stri
 				true, group, modelName, common.ChannelStatusEnabled).
 			Order("COALESCE(abilities.priority, 0) DESC, abilities.weight DESC, channels.id DESC").
 			Pluck("abilities.channel_id", &channelIDs).Error
-		if err == nil {
-			for _, id := range channelIDs {
-				if _, seen := tried[id]; seen {
-					continue
-				}
-				tried[id] = struct{}{}
-				var ch model.Channel
-				if err := model.DB.First(&ch, id).Error; err != nil || ch.Status != common.ChannelStatusEnabled {
-					continue
-				}
-				upstreamModel, protocol, endpoint, key, candErr := resolveAdtyProbeCandidate(&ch, modelName)
-				if candErr == nil {
-					return &ch, upstreamModel, protocol, endpoint, key, nil
-				}
-				if errors.Is(candErr, ErrAdtyTranslationSelf) {
-					sawBlocked = true
-				}
+		if err != nil {
+			return nil, "", "", "", "", err
+		}
+		for _, id := range channelIDs {
+			if _, seen := tried[id]; seen {
+				continue
+			}
+			tried[id] = struct{}{}
+			var ch model.Channel
+			if err := model.DB.First(&ch, id).Error; err != nil || ch.Status != common.ChannelStatusEnabled {
+				continue
+			}
+			upstreamModel, protocol, endpoint, key, candErr := resolveAdtyProbeCandidate(&ch, modelName)
+			if candErr == nil {
+				return &ch, upstreamModel, protocol, endpoint, key, nil
+			}
+			if errors.Is(candErr, ErrAdtyTranslationSelf) {
+				sawBlocked = true
 			}
 		}
 	}

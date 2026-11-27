@@ -194,7 +194,14 @@ func validAdtySiteWalletAmount(amount decimal.Decimal) bool {
 // wallet kinds in canonical order (earnings -> margin -> operating) to prevent
 // cross-transaction AB-BA deadlocks.
 func preLockAdtySiteWalletsTx(tx *gorm.DB, siteID int, kinds ...string) error {
-	if tx == nil || siteID <= 0 || len(kinds) == 0 || !tx.Migrator().HasTable(&model.AdtySiteWallet{}) {
+	if tx == nil || siteID <= 0 || len(kinds) == 0 {
+		return nil
+	}
+	hasWalletTable, err := model.AdtyTableExists(tx, &model.AdtySiteWallet{})
+	if err != nil {
+		return err
+	}
+	if !hasWalletTable {
 		return nil
 	}
 	if err := ensureAdtySiteWalletsTx(tx, siteID); err != nil {
@@ -655,7 +662,10 @@ func ReviewAdtyAnomalyDispositionWithAudit(id int64, operatorID int, status, not
 }
 
 func notifyAdtyAnomalyDispositionTx(tx *gorm.DB, row model.AdtyAnomalyDisposition, operatorID int, status, note string) error {
-	recipientID, targetSiteID, includeInternalNote := resolveAdtyAnomalyDispositionRecipientTx(tx, row, operatorID)
+	recipientID, targetSiteID, includeInternalNote, err := resolveAdtyAnomalyDispositionRecipientTx(tx, row, operatorID)
+	if err != nil {
+		return err
+	}
 	if recipientID <= 0 {
 		return nil
 	}
@@ -696,9 +706,19 @@ func notifyAdtyAnomalyDispositionTx(tx *gorm.DB, row model.AdtyAnomalyDispositio
 	if err := tx.Create(&notice).Error; err != nil {
 		return err
 	}
-	if tx.Migrator().HasTable(&model.AdtyTelegramDelivery{}) &&
-		tx.Migrator().HasTable(&model.AdtyTelegramBinding{}) &&
-		tx.Migrator().HasTable(&model.AdtyTelegramBot{}) {
+	hasTgDelivery, err := model.AdtyTableExists(tx, &model.AdtyTelegramDelivery{})
+	if err != nil {
+		return err
+	}
+	hasTgBinding, err := model.AdtyTableExists(tx, &model.AdtyTelegramBinding{})
+	if err != nil {
+		return err
+	}
+	hasTgBot, err := model.AdtyTableExists(tx, &model.AdtyTelegramBot{})
+	if err != nil {
+		return err
+	}
+	if hasTgDelivery && hasTgBinding && hasTgBot {
 		if err := queueAdtyPrivatePublicationTelegramTx(tx, &notice); err != nil {
 			return err
 		}
@@ -706,33 +726,45 @@ func notifyAdtyAnomalyDispositionTx(tx *gorm.DB, row model.AdtyAnomalyDispositio
 	return nil
 }
 
-func resolveAdtyAnomalyDispositionRecipientTx(tx *gorm.DB, row model.AdtyAnomalyDisposition, operatorID int) (recipientID, targetSiteID int, includeInternalNote bool) {
+func resolveAdtyAnomalyDispositionRecipientTx(tx *gorm.DB, row model.AdtyAnomalyDisposition, operatorID int) (recipientID, targetSiteID int, includeInternalNote bool, err error) {
 	siteID := row.SiteId
 	if siteID <= 0 && row.TeamId == 0 {
-		if parsed, err := strconv.Atoi(strings.TrimSpace(row.Ref)); err == nil && parsed > 0 {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(row.Ref)); parseErr == nil && parsed > 0 {
 			siteID = parsed
 		}
 	}
-	if siteID <= 0 && tx.Migrator().HasTable(&model.AdtyTopupOrder{}) {
-		for _, candidate := range []string{strings.TrimSpace(row.OrderRef), strings.TrimSpace(row.Ref)} {
-			if candidate == "" {
-				continue
-			}
-			var orders []model.AdtyTopupOrder
-			if err := tx.Select("site_id", "user_id").Where("trade_no = ?", candidate).Limit(1).Find(&orders).Error; err == nil && len(orders) > 0 {
-				if orders[0].SiteId > 0 {
-					siteID = orders[0].SiteId
+	if siteID <= 0 {
+		hasOrderTable, tblErr := model.AdtyTableExists(tx, &model.AdtyTopupOrder{})
+		if tblErr != nil {
+			return 0, 0, false, tblErr
+		}
+		if hasOrderTable {
+			for _, candidate := range []string{strings.TrimSpace(row.OrderRef), strings.TrimSpace(row.Ref)} {
+				if candidate == "" {
+					continue
 				}
-				if row.AccountId <= 0 && orders[0].UserId > 0 {
-					row.AccountId = orders[0].UserId
+				var orders []model.AdtyTopupOrder
+				if qErr := tx.Select("site_id", "user_id").Where("trade_no = ?", candidate).Limit(1).Find(&orders).Error; qErr != nil {
+					return 0, 0, false, qErr
 				}
-				break
+				if len(orders) > 0 {
+					if orders[0].SiteId > 0 {
+						siteID = orders[0].SiteId
+					}
+					if row.AccountId <= 0 && orders[0].UserId > 0 {
+						row.AccountId = orders[0].UserId
+					}
+					break
+				}
 			}
 		}
 	}
 	if siteID > 0 {
 		var sites []model.AdtySite
-		if err := tx.Select("id", "owner_user_id").Where("id = ?", siteID).Limit(1).Find(&sites).Error; err == nil && len(sites) > 0 && sites[0].OwnerUserId > 0 {
+		if qErr := tx.Select("id", "owner_user_id").Where("id = ?", siteID).Limit(1).Find(&sites).Error; qErr != nil {
+			return 0, 0, false, qErr
+		}
+		if len(sites) > 0 && sites[0].OwnerUserId > 0 {
 			recipientID = sites[0].OwnerUserId
 		}
 	}
@@ -744,19 +776,22 @@ func resolveAdtyAnomalyDispositionRecipientTx(tx *gorm.DB, row model.AdtyAnomaly
 		includeInternalNote = true
 	}
 	if recipientID <= 0 {
-		return 0, 0, false
+		return 0, 0, false, nil
 	}
 	var users []model.User
-	if err := tx.Select("id", "site_id", "staff_site_id", "role").Where("id = ?", recipientID).Limit(1).Find(&users).Error; err == nil && len(users) > 0 {
+	if qErr := tx.Select("id", "site_id", "staff_site_id", "role").Where("id = ?", recipientID).Limit(1).Find(&users).Error; qErr != nil {
+		return 0, 0, false, qErr
+	}
+	if len(users) > 0 {
 		if users[0].StaffSiteId > 0 {
-			return 0, 0, false
+			return 0, 0, false, nil
 		}
 		targetSiteID = users[0].SiteId
 		if users[0].Role >= common.RoleAdminUser {
 			includeInternalNote = true
 		}
 	}
-	return recipientID, targetSiteID, includeInternalNote
+	return recipientID, targetSiteID, includeInternalNote, nil
 }
 
 // TransferAdtyEarningToMargin opens a current-target cycle only after the
@@ -1132,7 +1167,11 @@ func saveAdtySiteTiers(tiers []model.AdtySiteTier, existingOnly bool) error {
 		}
 		if !hasReady {
 			var openSites int64
-			if tx.Migrator().HasTable(&model.AdtySite{}) {
+			hasSiteTable, err := model.AdtyTableExists(tx, &model.AdtySite{})
+			if err != nil {
+				return err
+			}
+			if hasSiteTable {
 				if err := tx.Model(&model.AdtySite{}).
 					Where("status NOT IN ?", []string{model.AdtySiteStatusClosed, model.AdtySiteStatusDeleting}).
 					Count(&openSites).Error; err != nil {

@@ -313,7 +313,11 @@ func LockOrderPaymentOrphansForCreditTx(tx *gorm.DB, tradeNo, provider string, e
 		}
 		return nil, nil, err
 	}
-	if !tx.Migrator().HasTable(&PaymentOrphanEvent{}) {
+	hasOrphanTable, err := AdtyTableExists(tx, &PaymentOrphanEvent{})
+	if err != nil {
+		return nil, ext, err
+	}
+	if !hasOrphanTable {
 		return nil, ext, nil
 	}
 	if strings.TrimSpace(provider) == "" && ext != nil {

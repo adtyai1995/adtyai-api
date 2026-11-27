@@ -54,7 +54,11 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			return nil
 		}
 		now := time.Now().Unix()
-		if tx.Migrator().HasTable(&model.AdtySiteDomain{}) {
+		hasDomainTable, err := model.AdtyTableExists(tx, &model.AdtySiteDomain{})
+		if err != nil {
+			return err
+		}
+		if hasDomainTable {
 			var domains []model.AdtySiteDomain
 			if err := model.AdtyLockForUpdate(tx).Where("site_id = ? AND status <> ?", siteID, model.AdtySiteDomainRemoved).Order("id ASC").Find(&domains).Error; err != nil {
 				return err
@@ -93,7 +97,11 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			return
 		}
 		_ = model.DB.Transaction(func(tx *gorm.DB) error {
-			if tx.Migrator().HasTable(&model.AdtySiteDomain{}) {
+			hasDomainTable, tblErr := model.AdtyTableExists(tx, &model.AdtySiteDomain{})
+			if tblErr != nil {
+				return tblErr
+			}
+			if hasDomainTable {
 				_ = tx.Model(&model.AdtySiteDomain{}).Where("id IN ? AND lease_token = ?", leasedDomainIDs, leaseToken).Updates(map[string]any{
 					"lease_token": "",
 					"lease_until": 0,
@@ -130,7 +138,11 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 		// canonical DAG lock order: options (key ASC) -> adty_payment_scene_configs -> adty_sites -> adty_epay_channels.
 		lockedOptVals := map[string]string{}
 		lockedOptFound := map[string]bool{}
-		if tx.Migrator().HasTable(&model.Option{}) {
+		hasOptionTable, err := model.AdtyTableExists(tx, &model.Option{})
+		if err != nil {
+			return err
+		}
+		if hasOptionTable {
 			optKeys := []string{
 				commissionMarginKey,
 				adty_setting.TopupSettingKeySiteBonusMarginFill,
@@ -149,7 +161,11 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			}
 		}
 		var sceneCfg *model.AdtyPaymentSceneConfig
-		if tx.Migrator().HasTable(&model.AdtyPaymentSceneConfig{}) {
+		hasSceneCfgTable, err := model.AdtyTableExists(tx, &model.AdtyPaymentSceneConfig{})
+		if err != nil {
+			return err
+		}
+		if hasSceneCfgTable {
 			var cfgErr error
 			sceneCfg, cfgErr = model.GetAdtyPaymentSceneConfig(tx, true)
 			if cfgErr != nil {
@@ -193,22 +209,45 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			oldSnapshot["status"] = site.Status
 		}
 		var domainIDs []int
-		if tx.Migrator().HasTable(&model.AdtySiteDomain{}) {
-			if err := tx.Model(&model.AdtySiteDomain{}).Where("site_id = ?", siteID).Pluck("id", &domainIDs).Error; err != nil {
+		var siteDomains []model.AdtySiteDomain
+		hasDomainTable, err := model.AdtyTableExists(tx, &model.AdtySiteDomain{})
+		if err != nil {
+			return err
+		}
+		if hasDomainTable {
+			if err := tx.Select("id", "hostname").Where("site_id = ?", siteID).Find(&siteDomains).Error; err != nil {
 				return err
 			}
-		}
-		if len(domainIDs) > 0 && tx.Migrator().HasTable(&model.AdtyDomainCloudResource{}) {
-			if err := tx.Where("domain_id IN ?", domainIDs).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
-				return err
+			domainIDs = make([]int, 0, len(siteDomains))
+			for _, dom := range siteDomains {
+				domainIDs = append(domainIDs, dom.Id)
 			}
 		}
-		if len(domainIDs) > 0 && tx.Migrator().HasTable(&model.AdtyEdgeCert{}) {
-			if err := tx.Where("domain_id IN ?", domainIDs).Delete(&model.AdtyEdgeCert{}).Error; err != nil {
+		if len(domainIDs) > 0 {
+			hasCloudResTable, err := model.AdtyTableExists(tx, &model.AdtyDomainCloudResource{})
+			if err != nil {
 				return err
 			}
+			if hasCloudResTable {
+				if err := tx.Where("domain_id IN ?", domainIDs).Delete(&model.AdtyDomainCloudResource{}).Error; err != nil {
+					return err
+				}
+			}
+			for _, dom := range siteDomains {
+				if err := adtyInvalidateCustomEdgeCertTx(tx, dom.Id, dom.Hostname); err != nil {
+					return err
+				}
+			}
 		}
-		if tx.Migrator().HasTable(&model.AdtyTranslationHead{}) && tx.Migrator().HasTable(&model.AdtyTranslationJob{}) {
+		hasTransHeadTable, err := model.AdtyTableExists(tx, &model.AdtyTranslationHead{})
+		if err != nil {
+			return err
+		}
+		hasTransJobTable, err := model.AdtyTableExists(tx, &model.AdtyTranslationJob{})
+		if err != nil {
+			return err
+		}
+		if hasTransHeadTable && hasTransJobTable {
 			var objectKeys []string
 			if err := tx.Model(&model.AdtyTranslationHead{}).Where("site_id = ?", siteID).Pluck("object_key", &objectKeys).Error; err != nil {
 				return err
@@ -219,8 +258,16 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 				}
 			}
 		}
-		if tx.Migrator().HasTable(&AdtyTodoItem{}) {
-			if tx.Migrator().HasTable(&AdtyTodoStateHistory{}) {
+		hasTodoTable, err := model.AdtyTableExists(tx, &AdtyTodoItem{})
+		if err != nil {
+			return err
+		}
+		if hasTodoTable {
+			hasTodoHistoryTable, err := model.AdtyTableExists(tx, &AdtyTodoStateHistory{})
+			if err != nil {
+				return err
+			}
+			if hasTodoHistoryTable {
 				var todoIDs []int64
 				if err := tx.Model(&AdtyTodoItem{}).Where("site_id = ?", siteID).Pluck("id", &todoIDs).Error; err != nil {
 					return err
@@ -262,13 +309,21 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			&model.AdtyGroupHealthSample{},
 			&model.AdtyGroupHealthAlert{},
 		} {
-			if tx.Migrator().HasTable(tableModel) {
+			hasTable, err := model.AdtyTableExists(tx, tableModel)
+			if err != nil {
+				return err
+			}
+			if hasTable {
 				if err := tx.Where("site_id = ?", siteID).Delete(tableModel).Error; err != nil {
 					return err
 				}
 			}
 		}
-		if tx.Migrator().HasTable(&model.AdtyNotificationPublication{}) {
+		hasPubTable, err := model.AdtyTableExists(tx, &model.AdtyNotificationPublication{})
+		if err != nil {
+			return err
+		}
+		if hasPubTable {
 			if err := tx.Where("issuer_site_id = ?", siteID).Delete(&model.AdtyNotificationPublication{}).Error; err != nil {
 				return err
 			}
@@ -347,11 +402,17 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 			if err := tx.Model(&model.AdtySite{}).Where("owner_user_id = ?", site.OwnerUserId).Count(&otherSites).Error; err != nil {
 				return err
 			}
-			if otherSites == 0 && tx.Migrator().HasTable(&model.ReferralAffiliate{}) {
-				if err := tx.Model(&model.ReferralAffiliate{}).
-					Where("user_id = ? AND site_owner_since > 0", site.OwnerUserId).
-					Update("site_owner_since", 0).Error; err != nil {
+			if otherSites == 0 {
+				hasAffTable, err := model.AdtyTableExists(tx, &model.ReferralAffiliate{})
+				if err != nil {
 					return err
+				}
+				if hasAffTable {
+					if err := tx.Model(&model.ReferralAffiliate{}).
+						Where("user_id = ? AND site_owner_since > 0", site.OwnerUserId).
+						Update("site_owner_since", 0).Error; err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -371,7 +432,10 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 		}
 	}
 	if preservedOwnerID > 0 {
-		if model.DB.Migrator().HasTable(&model.UserSession{}) {
+		hasSessionTable, tblErr := model.AdtyTableExists(model.DB, &model.UserSession{})
+		if tblErr != nil {
+			common.SysError(common.LogText("failed to check user sessions table after hard-deleting site %d for preserved owner %d: %v", siteID, preservedOwnerID, tblErr))
+		} else if hasSessionTable {
 			if _, err := model.RevokeUserSessionsByIssuedSite(preservedOwnerID, siteID, "site_deleted"); err != nil {
 				common.SysError(common.LogText("failed to revoke site sessions after hard-deleting site %d for preserved owner %d: %v", siteID, preservedOwnerID, err))
 			}
@@ -390,8 +454,19 @@ func DeleteAdtySiteWithAudit(siteID, adminID int, reason string) (mode string, e
 }
 
 func cleanupAdtySiteCloudDomainsForHardDelete(ctx context.Context, siteID int) error {
-	if model.DB == nil || !model.DB.Migrator().HasTable(&model.AdtySiteDomain{}) {
+	if model.DB == nil {
 		return nil
+	}
+	hasDomainTable, err := model.AdtyTableExists(model.DB.WithContext(ctx), &model.AdtySiteDomain{})
+	if err != nil {
+		return err
+	}
+	if !hasDomainTable {
+		return nil
+	}
+	hasCloudResTable, err := model.AdtyTableExists(model.DB.WithContext(ctx), &model.AdtyDomainCloudResource{})
+	if err != nil {
+		return err
 	}
 	var domains []model.AdtySiteDomain
 	if err := model.DB.WithContext(ctx).Where("site_id = ? AND status <> ?", siteID, model.AdtySiteDomainRemoved).Order("id ASC").Find(&domains).Error; err != nil {
@@ -413,7 +488,7 @@ func cleanupAdtySiteCloudDomainsForHardDelete(ctx context.Context, siteID int) e
 			hostnameID = ""
 			createAttempted = true
 		}
-		if hostnameID == "" && model.DB.Migrator().HasTable(&model.AdtyDomainCloudResource{}) {
+		if hostnameID == "" && hasCloudResTable {
 			foundID, lookupAttempted, err := adtyLookupCloudResourceState(model.DB, zone, row)
 			if err != nil {
 				return err
@@ -451,7 +526,7 @@ func cleanupAdtySiteCloudDomainsForHardDelete(ctx context.Context, siteID int) e
 				"cf_hostname_id":       "",
 				"cf_create_started_at": 0,
 			}).Error
-			if model.DB.Migrator().HasTable(&model.AdtyDomainCloudResource{}) {
+			if hasCloudResTable {
 				_ = model.DB.Where("domain_id = ?", row.Id).Delete(&model.AdtyDomainCloudResource{}).Error
 			}
 		}
@@ -541,7 +616,11 @@ func cleanupAdtySiteSenderDomainsForHardDelete(ctx context.Context, siteID int) 
 	if model.DB == nil {
 		return nil
 	}
-	if model.DB.Migrator().HasTable(&model.AdtySiteSenderDomain{}) {
+	hasSenderTable, err := model.AdtyTableExists(model.DB.WithContext(ctx), &model.AdtySiteSenderDomain{})
+	if err != nil {
+		return err
+	}
+	if hasSenderTable {
 		var rows []model.AdtySiteSenderDomain
 		if err := model.DB.WithContext(ctx).
 			Where("site_id = ? AND status <> ?", siteID, model.AdtySenderDomainDisabled).
@@ -564,7 +643,11 @@ func cleanupAdtySiteSenderDomainsForHardDelete(ctx context.Context, siteID int) 
 				}).Error
 		}
 	}
-	if model.DB.Migrator().HasTable(&model.AdtySenderDomainCleanup{}) {
+	hasCleanupTable, err := model.AdtyTableExists(model.DB.WithContext(ctx), &model.AdtySenderDomainCleanup{})
+	if err != nil {
+		return err
+	}
+	if hasCleanupTable {
 		var jobs []model.AdtySenderDomainCleanup
 		if err := model.DB.WithContext(ctx).Where("site_id = ?", siteID).Find(&jobs).Error; err != nil {
 			return err
@@ -625,7 +708,11 @@ func adtySiteHasBusinessDataTx(tx *gorm.DB, siteID int) (bool, error) {
 		{&model.Token{}, "owner_self_use_site_id = ?", []any{siteID}, true},
 	}
 	for _, chk := range checks {
-		if !tx.Migrator().HasTable(chk.model) {
+		hasTable, err := model.AdtyTableExists(tx, chk.model)
+		if err != nil {
+			return false, err
+		}
+		if !hasTable {
 			continue
 		}
 		var n int64

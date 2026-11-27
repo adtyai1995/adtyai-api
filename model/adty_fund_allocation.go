@@ -30,7 +30,11 @@ func AdtyFundAllocationTableReady(db *gorm.DB) error {
 		// 没有库连接时退款根本不会发生，这里不制造假警。
 		return nil
 	}
-	if !db.Migrator().HasTable(&AdtyFundAllocation{}) {
+	hasTable, err := AdtyTableExists(db, &AdtyFundAllocation{})
+	if err != nil {
+		return err
+	}
+	if !hasTable {
 		return ErrAdtyFundAllocationTableMissing
 	}
 	return nil
@@ -367,7 +371,11 @@ func outstandingAdtyFundAllocationByBatchTx(tx *gorm.DB, userID int) (map[int64]
 	if tx == nil || userID <= 0 {
 		return out, nil
 	}
-	if !tx.Migrator().HasTable(&AdtyFundAllocation{}) {
+	hasTable, err := AdtyTableExists(tx, &AdtyFundAllocation{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasTable {
 		return out, nil
 	}
 	var rows []struct {
@@ -637,7 +645,11 @@ func ReleaseAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string) e
 	// 所以真正的留痕提前到了启动期：`service.CheckAdtyStartupSchema` 缺表即点名，
 	// 让运维知道「从这次启动起，退款没有分摊可释放，整段窗口退款不可对账」。
 	// 这里这行只作补充证据：日志要是还在，它能指出**哪一笔**退款受影响。
-	if !tx.Migrator().HasTable(&AdtyFundAllocation{}) {
+	hasAllocTable, err := AdtyTableExists(tx, &AdtyFundAllocation{})
+	if err != nil {
+		return err
+	}
+	if !hasAllocTable {
 		common.SysError(common.LogText(
 			"refund released without allocation table: user=%d operation=%s", userID, operationID))
 		return nil
@@ -669,7 +681,14 @@ func adtyResolveFundBatchSiteIDTx(tx *gorm.DB, batch *AdtyFundBatch) (int, error
 		}
 		return 0, nil
 	}
-	if batch.Source == "" || !tx.Migrator().HasTable(&AdtyTopupOrder{}) {
+	if batch.Source == "" {
+		return 0, nil
+	}
+	hasOrderTable, err := AdtyTableExists(tx, &AdtyTopupOrder{})
+	if err != nil {
+		return 0, err
+	}
+	if !hasOrderTable {
 		return 0, nil
 	}
 	var orders []AdtyTopupOrder
@@ -694,7 +713,15 @@ func ReverseSettledAdtyFundAllocationsTx(tx *gorm.DB, userID int, sourceOperatio
 }
 
 func reverseSettledAdtyFundSourcesTx(tx *gorm.DB, userID int, sources []string, reverseOperationID string, refundQuota int64) error {
-	if !tx.Migrator().HasTable(&AdtyFundAllocation{}) || !tx.Migrator().HasTable(&AdtyFundBatch{}) {
+	hasAllocTable, err := AdtyTableExists(tx, &AdtyFundAllocation{})
+	if err != nil {
+		return err
+	}
+	hasBatchTable, err := AdtyTableExists(tx, &AdtyFundBatch{})
+	if err != nil {
+		return err
+	}
+	if !hasAllocTable || !hasBatchTable {
 		return nil
 	}
 	var shares []AdtyFundAllocation

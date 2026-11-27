@@ -1197,7 +1197,11 @@ func LoadAdtyOwnerSiteReferralOverview(siteID int, now time.Time) (AdtyOwnerSite
 	for _, uid := range inviteInviters {
 		affiliatesSet[uid] = struct{}{}
 	}
-	if model.DB.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
+	hasAffTable, err := model.AdtyTableExists(model.DB, &model.AdtySiteReferralAffiliate{})
+	if err != nil {
+		return out, err
+	}
+	if hasAffTable {
 		var controlledAffiliates []int
 		if err := model.DB.Model(&model.AdtySiteReferralAffiliate{}).
 			Where("site_id = ? AND user_id > 0", siteID).
@@ -1328,7 +1332,11 @@ func ListAdtyOwnerSiteReferralAffiliates(siteID int, q string, offset, limit int
 	for _, uid := range commInviters {
 		affiliateSet[uid] = struct{}{}
 	}
-	if model.DB.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
+	hasAffTable, err := model.AdtyTableExists(model.DB, &model.AdtySiteReferralAffiliate{})
+	if err != nil {
+		return nil, 0, err
+	}
+	if hasAffTable {
 		var configuredAffs []int
 		if err := model.DB.Model(&model.AdtySiteReferralAffiliate{}).
 			Where("site_id = ? AND user_id > 0", siteID).
@@ -1351,7 +1359,14 @@ func ListAdtyOwnerSiteReferralAffiliates(siteID int, q string, offset, limit int
 
 	inviteCodes := map[int]string{}
 	loadInviteCodes := func(ids []int) error {
-		if len(ids) == 0 || !model.DB.Migrator().HasTable(&model.AdtySiteCustomer{}) {
+		if len(ids) == 0 {
+			return nil
+		}
+		hasCustTable, err := model.AdtyTableExists(model.DB, &model.AdtySiteCustomer{})
+		if err != nil {
+			return err
+		}
+		if !hasCustTable {
 			return nil
 		}
 		var custs []model.AdtySiteCustomer
@@ -1422,7 +1437,7 @@ func ListAdtyOwnerSiteReferralAffiliates(siteID int, q string, offset, limit int
 	}
 
 	affControls := map[int]model.AdtySiteReferralAffiliate{}
-	if model.DB.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
+	if hasAffTable {
 		var affRows []model.AdtySiteReferralAffiliate
 		if err := model.DB.Where("site_id = ? AND user_id IN ?", siteID, pageIDs).Find(&affRows).Error; err != nil {
 			return nil, 0, err
@@ -1688,7 +1703,14 @@ func ListAdtyOwnerSiteReferralCommissions(siteID int, status, q string, offset, 
 }
 
 func loadSiteReferralAffiliateTx(tx *gorm.DB, siteID, userID int) (model.AdtySiteReferralAffiliate, bool, error) {
-	if tx == nil || siteID <= 0 || userID <= 0 || !tx.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
+	if tx == nil || siteID <= 0 || userID <= 0 {
+		return model.AdtySiteReferralAffiliate{}, false, nil
+	}
+	hasAffTable, err := model.AdtyTableExists(tx, &model.AdtySiteReferralAffiliate{})
+	if err != nil {
+		return model.AdtySiteReferralAffiliate{}, false, err
+	}
+	if !hasAffTable {
 		return model.AdtySiteReferralAffiliate{}, false, nil
 	}
 	var row model.AdtySiteReferralAffiliate
@@ -1708,7 +1730,14 @@ func isSiteReferralAffiliateWithdrawalBlockedTx(tx *gorm.DB, siteID, userID int)
 }
 
 func recordSiteReferralAuditTx(tx *gorm.DB, siteID int, action string, targetUserID, operatorID int, reason, ip, ua string, oldValue, newValue any) error {
-	if tx == nil || siteID <= 0 || !tx.Migrator().HasTable(&model.AdtySiteReferralAuditLog{}) {
+	if tx == nil || siteID <= 0 {
+		return nil
+	}
+	hasAuditTable, err := model.AdtyTableExists(tx, &model.AdtySiteReferralAuditLog{})
+	if err != nil {
+		return err
+	}
+	if !hasAuditTable {
 		return nil
 	}
 	oldJSON := ""
@@ -1733,7 +1762,14 @@ func recordSiteReferralAuditTx(tx *gorm.DB, siteID int, action string, targetUse
 }
 
 func upsertSiteReferralAffiliateRiskTx(tx *gorm.DB, siteID, userID int, freezeSettlement bool, riskReason, riskNote string) error {
-	if tx == nil || siteID <= 0 || userID <= 0 || !tx.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
+	if tx == nil || siteID <= 0 || userID <= 0 {
+		return nil
+	}
+	hasAffTable, err := model.AdtyTableExists(tx, &model.AdtySiteReferralAffiliate{})
+	if err != nil {
+		return err
+	}
+	if !hasAffTable {
 		return nil
 	}
 	seed := model.AdtySiteReferralAffiliate{
@@ -1907,7 +1943,11 @@ func ListAdtyOwnerSiteReferralAuditLogs(siteID, offset, limit int) ([]AdtySiteRe
 	if siteID <= 0 {
 		return nil, 0, common.NewMessage("Invalid parameters")
 	}
-	if !model.DB.Migrator().HasTable(&model.AdtySiteReferralAuditLog{}) {
+	hasAuditTable, err := model.AdtyTableExists(model.DB, &model.AdtySiteReferralAuditLog{})
+	if err != nil {
+		return nil, 0, err
+	}
+	if !hasAuditTable {
 		return []AdtySiteReferralAuditLogItem{}, 0, nil
 	}
 	if offset < 0 {

@@ -23,6 +23,7 @@ const (
 
 var batchUpdateStores []map[int]int
 var batchUpdateLocks []sync.Mutex
+var batchUpdateFlushMu sync.Mutex
 
 func init() {
 	for range BatchUpdateTypeCount {
@@ -72,6 +73,9 @@ func addNewRecord(type_ int, id int, value int) {
 }
 
 func batchUpdate() error {
+	batchUpdateFlushMu.Lock()
+	defer batchUpdateFlushMu.Unlock()
+
 	var failures []error
 	// check if there's any data to update
 	hasData := false

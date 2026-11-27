@@ -444,7 +444,11 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 		if targetUser.SiteId > 0 {
 			return ErrAdtySiteCustomer
 		}
-		if adtyTeamTableReadyFor(tx, &model.AdtyTeamMember{}) {
+		hasTeamMemberTable, err := model.AdtyTableExists(tx, &model.AdtyTeamMember{})
+		if err != nil {
+			return err
+		}
+		if hasTeamMemberTable {
 			var empCount int64
 			if err := tx.Model(&model.AdtyTeamMember{}).Where("user_id = ? AND independent_employee = ?", userId, true).Count(&empCount).Error; err != nil {
 				return err
@@ -1355,27 +1359,33 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 		if err := InheritAdtyVouchersOnCloseTx(tx, site.Id, moved); err != nil {
 			return err
 		}
-		if movedPrincipal > 0 && tx.Migrator().HasTable(&model.AdtySiteWallet{}) {
-			// R3-015: Debit the migrated customer principal from the closing site's operating
-			// wallet so no ghost operating balance remains after principal lots move to site_id=0.
-			debitUSD := decimal.NewFromInt(movedPrincipal).Div(common.QuotaPerUnitDecimal())
-			var opWallet model.AdtySiteWallet
-			res := model.AdtyLockForUpdate(tx).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletOperating).Limit(1).Find(&opWallet)
-			if res.Error != nil {
-				return res.Error
+		if movedPrincipal > 0 {
+			hasWalletTable, err := model.AdtyTableExists(tx, &model.AdtySiteWallet{})
+			if err != nil {
+				return err
 			}
-			if res.RowsAffected > 0 && opWallet.Balance.IsPositive() {
-				if debitUSD.GreaterThan(opWallet.Balance) {
-					debitUSD = opWallet.Balance
+			if hasWalletTable {
+				// R3-015: Debit the migrated customer principal from the closing site's operating
+				// wallet so no ghost operating balance remains after principal lots move to site_id=0.
+				debitUSD := decimal.NewFromInt(movedPrincipal).Div(common.QuotaPerUnitDecimal())
+				var opWallet model.AdtySiteWallet
+				res := model.AdtyLockForUpdate(tx).Where("site_id = ? AND kind = ?", site.Id, model.AdtySiteWalletOperating).Limit(1).Find(&opWallet)
+				if res.Error != nil {
+					return res.Error
 				}
-				if debitUSD.IsPositive() {
-					if _, err := applyAdtySiteWalletChangeTx(tx, site.Id, model.AdtySiteWalletOperating, debitUSD.Neg(), AdtySiteWalletChange{
-						Type:           "principal_site_close_migrate",
-						RefType:        "site_close",
-						RefID:          fmt.Sprintf("site:%d", site.Id),
-						IdempotencyKey: fmt.Sprintf("operating:close-migrate:%d", site.Id),
-					}); err != nil {
-						return err
+				if res.RowsAffected > 0 && opWallet.Balance.IsPositive() {
+					if debitUSD.GreaterThan(opWallet.Balance) {
+						debitUSD = opWallet.Balance
+					}
+					if debitUSD.IsPositive() {
+						if _, err := applyAdtySiteWalletChangeTx(tx, site.Id, model.AdtySiteWalletOperating, debitUSD.Neg(), AdtySiteWalletChange{
+							Type:           "principal_site_close_migrate",
+							RefType:        "site_close",
+							RefID:          fmt.Sprintf("site:%d", site.Id),
+							IdempotencyKey: fmt.Sprintf("operating:close-migrate:%d", site.Id),
+						}); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -1389,14 +1399,22 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 		}
 		// R14-031: Require reconfirmation of closed-site Telegram bindings after users
 		// inherit to main site, and skip unsent closed-site deliveries cleanly.
-		if tx.Migrator().HasTable(&model.AdtyTelegramBinding{}) {
+		hasTgBindingTable, err := model.AdtyTableExists(tx, &model.AdtyTelegramBinding{})
+		if err != nil {
+			return err
+		}
+		if hasTgBindingTable {
 			if err := tx.Model(&model.AdtyTelegramBinding{}).
 				Where("site_id = ? AND status = ?", site.Id, model.AdtyTelegramBindActive).
 				Update("status", model.AdtyTelegramBindConfirm).Error; err != nil {
 				return err
 			}
 		}
-		if tx.Migrator().HasTable(&model.AdtyTelegramDelivery{}) {
+		hasTgDeliveryTable, err := model.AdtyTableExists(tx, &model.AdtyTelegramDelivery{})
+		if err != nil {
+			return err
+		}
+		if hasTgDeliveryTable {
 			if err := tx.Model(&model.AdtyTelegramDelivery{}).
 				Where("site_id = ? AND status IN ?", site.Id, []string{model.AdtyTelegramDeliveryWait, model.AdtyTelegramDeliveryFail}).
 				Updates(map[string]any{"status": model.AdtyTelegramDeliverySkip, "last_error": "site closed"}).Error; err != nil {
@@ -1404,14 +1422,22 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 			}
 		}
 		// R7-27 & R8-16: Stop pending/failed/in-flight subsite system email retries once the site closes.
-		if tx.Migrator().HasTable(&AdtySystemEmailDelivery{}) {
+		hasSysEmailTable, err := model.AdtyTableExists(tx, &AdtySystemEmailDelivery{})
+		if err != nil {
+			return err
+		}
+		if hasSysEmailTable {
 			if err := tx.Model(&AdtySystemEmailDelivery{}).
 				Where("site_id = ? AND status IN ?", site.Id, []string{AdtySystemEmailStatusPending, AdtySystemEmailStatusFailed, AdtySystemEmailStatusSending}).
 				Updates(map[string]any{"status": AdtySystemEmailStatusDead, "body_cipher": "", "last_error": "site closed", "updated_at": now}).Error; err != nil {
 				return err
 			}
 		}
-		if tx.Migrator().HasTable(&model.AdtyTeamRegistrationLink{}) {
+		hasTeamRegLinkTable, err := model.AdtyTableExists(tx, &model.AdtyTeamRegistrationLink{})
+		if err != nil {
+			return err
+		}
+		if hasTeamRegLinkTable {
 			if err := tx.Model(&model.AdtyTeamRegistrationLink{}).
 				Where("site_id = ? AND used_at = 0 AND revoked_at = 0", site.Id).
 				Update("revoked_at", now).Error; err != nil {
@@ -1429,7 +1455,11 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 		}).Error; err != nil {
 			return err
 		}
-		if tx.Migrator().HasTable(&model.AdtySitePrice{}) {
+		hasSitePriceTable, err := model.AdtyTableExists(tx, &model.AdtySitePrice{})
+		if err != nil {
+			return err
+		}
+		if hasSitePriceTable {
 			if err := tx.Model(&model.AdtySitePrice{}).
 				Where("site_id = ? AND (pending_at > 0 OR pending_markup <> 0)", site.Id).
 				Updates(map[string]any{"pending_markup": 0, "pending_at": 0}).Error; err != nil {

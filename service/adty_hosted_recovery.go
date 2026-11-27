@@ -86,6 +86,7 @@ func isPermanentAdtyTopUpCreditReject(err error) bool {
 		errors.Is(err, model.ErrTopUpQuotaLimitExceeded) ||
 		errors.Is(err, model.ErrInvalidTopUpQuota) ||
 		errors.Is(err, model.ErrTopUpNotFound) ||
+		errors.Is(err, model.ErrAdtyEpayChannelRevoked) ||
 		errors.Is(err, ErrAdtyTeamInvalid) ||
 		errors.Is(err, gorm.ErrRecordNotFound)
 }
@@ -206,7 +207,11 @@ const (
 // unexpired pending orders (every 60s) in a dedicated pass so terminal orders
 // or already-queued orphans can never cause head-of-line starvation.
 func recoverAdtyHostedPayments(now int64) {
-	hasOrphanTable := model.DB.Migrator().HasTable(&model.PaymentOrphanEvent{})
+	hasOrphanTable, err := model.AdtyTableExists(model.DB, &model.PaymentOrphanEvent{})
+	if err != nil {
+		common.SysError(common.LogText("hosted payment recovery orphan table check failed: %s", err.Error()))
+		return
+	}
 	applyOrphanFilter := func(q *gorm.DB) *gorm.DB {
 		if !hasOrphanTable {
 			return q

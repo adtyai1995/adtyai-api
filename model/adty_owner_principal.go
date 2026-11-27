@@ -11,20 +11,26 @@ type ownerLotScopeKey struct{}
 type ownerWalletPreAdjustedKey struct{}
 
 // Attach the immutable payer scope to all batch queries in this transaction.
-func withOwnerFundScope(tx *gorm.DB, op *BillingOperation) *gorm.DB {
+func withOwnerFundScope(tx *gorm.DB, op *BillingOperation) (*gorm.DB, error) {
 	ctx := tx.Statement.Context
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx = context.WithValue(ctx, ownerWalletPreAdjustedKey{}, true)
-	if op.PayerKind != BillingPayerOwner && !tx.Migrator().HasTable(&AdtySite{}) {
-		return tx.WithContext(ctx)
+	if op.PayerKind != BillingPayerOwner {
+		hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
+		if err != nil {
+			return nil, err
+		}
+		if !hasSiteTable {
+			return tx.WithContext(ctx), nil
+		}
 	}
 	id := 0
 	if op.PayerKind == BillingPayerOwner {
 		id = op.SiteId
 	}
-	return tx.WithContext(context.WithValue(ctx, ownerLotScopeKey{}, id))
+	return tx.WithContext(context.WithValue(ctx, ownerLotScopeKey{}, id)), nil
 }
 
 // Reverse only settled shares belonging to this original self-use request.
@@ -130,12 +136,18 @@ func AdtyOwnerScopedWallet(tx *gorm.DB, op *BillingOperation, balance int) (int,
 }
 
 func ownerScopedWallet(tx *gorm.DB, op *BillingOperation, balance int) (int, error) {
-	if op.PayerKind != BillingPayerOwner && !tx.Migrator().HasTable(&AdtySite{}) {
-		overdueGift, err := overdueUnsweptExpiringGiftQuotaTx(tx, op.UserId, time.Now())
+	if op.PayerKind != BillingPayerOwner {
+		hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
 		if err != nil {
 			return 0, err
 		}
-		return int(max(0, int64(balance)-overdueGift)), nil
+		if !hasSiteTable {
+			overdueGift, err := overdueUnsweptExpiringGiftQuotaTx(tx, op.UserId, time.Now())
+			if err != nil {
+				return 0, err
+			}
+			return int(max(0, int64(balance)-overdueGift)), nil
+		}
 	}
 	siteID := 0
 	if op.PayerKind == BillingPayerOwner {

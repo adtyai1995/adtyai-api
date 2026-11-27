@@ -56,16 +56,21 @@ func RunAdtyTopUpMaintenanceOnce(now int64) {
 	if _, err := ResumePendingAdtyGiftFulfillments(0); err != nil {
 		common.SysError(common.LogText("resume main-site pending gift fulfillments: %s", err.Error()))
 	}
-	if model.DB != nil && model.DB.Migrator().HasTable(&model.AdtyGiftFulfillment{}) {
-		var pendingGiftSites []int
-		if err := model.DB.Model(&model.AdtyGiftFulfillment{}).Distinct("site_id").
-			Where("site_id > 0 AND status = ?", model.AdtyGiftFulfillmentPending).
-			Pluck("site_id", &pendingGiftSites).Error; err != nil {
-			common.SysError(common.LogText("query pending subsite gift fulfillments: %s", err.Error()))
-		} else {
-			for _, siteID := range pendingGiftSites {
-				if _, err := ResumePendingAdtyGiftFulfillments(siteID); err != nil {
-					common.SysError(common.LogText("resume subsite pending gift fulfillments site=%d: %s", siteID, err.Error()))
+	if model.DB != nil {
+		hasGiftTable, tblErr := model.AdtyTableExists(model.DB, &model.AdtyGiftFulfillment{})
+		if tblErr != nil {
+			common.SysError(common.LogText("check pending subsite gift fulfillments table: %s", tblErr.Error()))
+		} else if hasGiftTable {
+			var pendingGiftSites []int
+			if err := model.DB.Model(&model.AdtyGiftFulfillment{}).Distinct("site_id").
+				Where("site_id > 0 AND status = ?", model.AdtyGiftFulfillmentPending).
+				Pluck("site_id", &pendingGiftSites).Error; err != nil {
+				common.SysError(common.LogText("query pending subsite gift fulfillments: %s", err.Error()))
+			} else {
+				for _, siteID := range pendingGiftSites {
+					if _, err := ResumePendingAdtyGiftFulfillments(siteID); err != nil {
+						common.SysError(common.LogText("resume subsite pending gift fulfillments site=%d: %s", siteID, err.Error()))
+					}
 				}
 			}
 		}
@@ -129,12 +134,17 @@ func verifyExpiredOrdersUnpaidBeforeExpire(now int64) {
 		if checkErr != nil || !requiresRemote {
 			continue
 		}
-		if model.DB.Migrator().HasTable(&model.PaymentOrphanEvent{}) {
+		hasOrphanTable, tblErr := model.AdtyTableExists(model.DB, &model.PaymentOrphanEvent{})
+		if tblErr != nil {
+			common.SysError(common.LogText("check orphan table before pre-expire query: %s", tblErr.Error()))
+			continue
+		}
+		if hasOrphanTable {
 			var orphanCount int64
 			if cErr := model.DB.Model(&model.PaymentOrphanEvent{}).
 				Where("reference_id = ? AND provider = ? AND event_type IN ? AND event_id NOT LIKE ? AND status <> ?",
 					ext.TradeNo, ext.Provider, []string{"payment_callback", "payment_query"}, "reversal:%", model.PaymentOrphanStatusDismissed).
-				Count(&orphanCount).Error; cErr == nil && orphanCount > 0 {
+				Count(&orphanCount).Error; cErr != nil || orphanCount > 0 {
 				continue
 			}
 		}

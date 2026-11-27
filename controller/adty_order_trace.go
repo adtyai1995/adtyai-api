@@ -433,24 +433,31 @@ func adtyOrderTraceQuery(section string, order rechargeAuditOrder, ownerSiteID *
 			return nil, "", false
 		}
 		q := model.DB.Model(&model.AdtySiteWalletLedger{})
-		if order.PaymentProvider == model.AdtyVoucherProvider && model.DB.Migrator().HasTable(&model.AdtyVoucher{}) {
-			var voucher model.AdtyVoucher
-			if err := model.DB.Select("id", "source_site_id", "code_hash").Where("trade_no = ?", order.TradeNo).Limit(1).Find(&voucher).Error; err == nil && voucher.Id > 0 && len(voucher.CodeHash) >= 16 {
-				prefix := voucher.CodeHash[:16]
-				siteIDs := make([]int, 0, 2)
-				if order.SiteId != nil && *order.SiteId > 0 {
-					siteIDs = append(siteIDs, *order.SiteId)
+		if order.PaymentProvider == model.AdtyVoucherProvider {
+			hasVoucherTable, tblErr := model.AdtyTableExists(model.DB, &model.AdtyVoucher{})
+			if tblErr != nil {
+				common.SysError(common.LogText("check voucher table in order trace: %s", tblErr.Error()))
+				return nil, "", false
+			}
+			if hasVoucherTable {
+				var voucher model.AdtyVoucher
+				if err := model.DB.Select("id", "source_site_id", "code_hash").Where("trade_no = ?", order.TradeNo).Limit(1).Find(&voucher).Error; err == nil && voucher.Id > 0 && len(voucher.CodeHash) >= 16 {
+					prefix := voucher.CodeHash[:16]
+					siteIDs := make([]int, 0, 2)
+					if order.SiteId != nil && *order.SiteId > 0 {
+						siteIDs = append(siteIDs, *order.SiteId)
+					}
+					if voucher.SourceSiteId > 0 && (len(siteIDs) == 0 || siteIDs[0] != voucher.SourceSiteId) {
+						siteIDs = append(siteIDs, voucher.SourceSiteId)
+					}
+					if len(siteIDs) == 0 {
+						q = q.Where("1 = 0")
+					} else {
+						q = q.Where("site_id IN ? AND ((ref_id = ? AND ref_type IN ?) OR (ref_type = ? AND ref_id = ?))",
+							siteIDs, order.TradeNo, []string{"topup", "site_invite", "voucher"}, "voucher", prefix)
+					}
+					return q, "id, 'Site wallet movement' AS kind, wallet_kind AS source, type AS status, ref_id AS reference, delta AS amount, balance_before, balance_after, reason AS note, operator_id, created_at", true
 				}
-				if voucher.SourceSiteId > 0 && (len(siteIDs) == 0 || siteIDs[0] != voucher.SourceSiteId) {
-					siteIDs = append(siteIDs, voucher.SourceSiteId)
-				}
-				if len(siteIDs) == 0 {
-					q = q.Where("1 = 0")
-				} else {
-					q = q.Where("site_id IN ? AND ((ref_id = ? AND ref_type IN ?) OR (ref_type = ? AND ref_id = ?))",
-						siteIDs, order.TradeNo, []string{"topup", "site_invite", "voucher"}, "voucher", prefix)
-				}
-				return q, "id, 'Site wallet movement' AS kind, wallet_kind AS source, type AS status, ref_id AS reference, delta AS amount, balance_before, balance_after, reason AS note, operator_id, created_at", true
 			}
 		}
 		q = q.Where("ref_id = ? AND ref_type IN ?", order.TradeNo, []string{"topup", "site_invite", "voucher"})

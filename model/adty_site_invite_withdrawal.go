@@ -75,14 +75,22 @@ func (AdtySiteInviteWithdrawalItem) TableName() string { return "adty_site_invit
 // Site-only upgrades can encounter either no customer withdrawals or the older
 // table. Use the previous platform window once for requests already submitted.
 func backfillSiteInviteWithdrawals(db *gorm.DB) error {
-	if !db.Migrator().HasTable(&AdtySiteInviteWithdrawal{}) {
+	hasWithdrawTable, err := AdtyTableExists(db, &AdtySiteInviteWithdrawal{})
+	if err != nil {
+		return err
+	}
+	if !hasWithdrawTable {
 		return nil
 	}
 	if err := db.AutoMigrate(&AdtySiteInviteWithdrawal{}); err != nil {
 		return err
 	}
 	minutes := int64(adty_setting.GetReferralSetting().CancelWindowMinutes)
-	if db.Migrator().HasTable(&Option{}) {
+	hasOptionTable, err := AdtyTableExists(db, &Option{})
+	if err != nil {
+		return err
+	}
+	if hasOptionTable {
 		var opt Option
 		result := db.Where(&Option{Key: "adty_referral_setting.cancel_window_minutes"}).Limit(1).Find(&opt)
 		if result.Error != nil {

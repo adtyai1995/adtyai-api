@@ -59,6 +59,7 @@ func UpdateQuotaData() {
 
 var CacheQuotaData = make(map[string]*QuotaData)
 var CacheQuotaDataLock = sync.Mutex{}
+var saveQuotaDataFlushMu sync.Mutex
 
 func logQuotaDataCache(quotaData *QuotaData) {
 	key := fmt.Sprintf("%d\x00%s\x00%s\x00%d\x00%s\x00%d\x00%d\x00%s",
@@ -111,6 +112,9 @@ func LogQuotaData(params QuotaDataLogParams) {
 }
 
 func SaveQuotaDataCache() {
+	saveQuotaDataFlushMu.Lock()
+	defer saveQuotaDataFlushMu.Unlock()
+
 	CacheQuotaDataLock.Lock()
 	if len(CacheQuotaData) == 0 {
 		CacheQuotaDataLock.Unlock()
@@ -194,7 +198,11 @@ func mergeQuotaDataDuplicates(db *gorm.DB) error {
 	if db == nil || db.Dialector.Name() != "postgres" {
 		return nil
 	}
-	if !db.Migrator().HasTable(&QuotaData{}) {
+	hasTable, err := AdtyTableExists(db, &QuotaData{})
+	if err != nil {
+		return err
+	}
+	if !hasTable {
 		return nil
 	}
 	merge := `

@@ -248,7 +248,14 @@ var ErrModelNameDuplicated = errors.New("model name already exists")
 // EnsureLiveModelNameIndex 保证未删除的模型名唯一。
 // 含 deleted_at 的唯一索引拦不住多条 NULL，PostgreSQL、SQLite 和 MySQL 都会把空删除时间当成互不相同。
 func EnsureLiveModelNameIndex(db *gorm.DB) error {
-	if db == nil || !db.Migrator().HasTable(&Model{}) {
+	if db == nil {
+		return nil
+	}
+	hasModelTable, err := AdtyTableExists(db, &Model{})
+	if err != nil {
+		return err
+	}
+	if !hasModelTable {
 		return nil
 	}
 	if err := db.Exec(`
@@ -291,7 +298,11 @@ func ResolveModelContextLength(modelName string) (int, error) {
 	}
 	lookupNames := []string{modelName}
 	aliasContext := 0
-	if DB.Migrator().HasTable(&AdtyModelAlias{}) {
+	hasAliasTable, err := AdtyTableExists(DB, &AdtyModelAlias{})
+	if err != nil {
+		return 0, err
+	}
+	if hasAliasTable {
 		var alias AdtyModelAlias
 		if err := DB.Where("alias = ? AND enabled = ?", modelName, true).Limit(1).Find(&alias).Error; err != nil {
 			return 0, err
@@ -307,7 +318,11 @@ func ResolveModelContextLength(modelName string) (int, error) {
 			lookupNames = append(lookupNames, target)
 		}
 	}
-	if DB.Migrator().HasTable(&Model{}) {
+	hasModelTable, err := AdtyTableExists(DB, &Model{})
+	if err != nil {
+		return 0, err
+	}
+	if hasModelTable {
 		var records []Model
 		if err := DB.Where("context_length > 0").Order("id").Find(&records).Error; err != nil {
 			return 0, err
@@ -495,7 +510,7 @@ func DeleteModelMetadata(ids []int, removeFromChannels, removePricing bool) (Mod
 		// writes share one transaction; runtime prices publish only after commit.
 		metadataMutationMu.Lock()
 		defer metadataMutationMu.Unlock()
-		err = mutateModelPricingOptions(func(tx *gorm.DB, values map[string]map[string]any) error {
+		err = mutateModelPricingOptions(func(tx *gorm.DB, _ taskAliasSnapshot, values map[string]map[string]any) error {
 			if err := lockMetadataMutation(tx); err != nil {
 				return err
 			}

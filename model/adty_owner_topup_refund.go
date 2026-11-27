@@ -112,7 +112,14 @@ func lockOwnerRefundShareTx(tx *gorm.DB, ext *AdtyTopupOrder, row *AdtyManualRef
 }
 
 func isOwnerRefundSiteClosedTx(tx *gorm.DB, siteID int) (bool, error) {
-	if tx == nil || siteID <= 0 || !tx.Migrator().HasTable(&AdtySite{}) {
+	if tx == nil || siteID <= 0 {
+		return false, nil
+	}
+	hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
+	if err != nil {
+		return false, err
+	}
+	if !hasSiteTable {
 		return false, nil
 	}
 	var status string
@@ -197,7 +204,11 @@ func migrateClosedOwnerBatchIfUnencumberedTx(tx *gorm.DB, siteID, ownerUserID in
 	if res.RowsAffected == 0 || fresh.SiteId == nil || *fresh.SiteId != siteID {
 		return nil
 	}
-	if tx.Migrator().HasTable(&AdtyFundAllocation{}) {
+	hasAllocTable, err := AdtyTableExists(tx, &AdtyFundAllocation{})
+	if err != nil {
+		return err
+	}
+	if hasAllocTable {
 		var activeAllocs int64
 		if err := tx.Model(&AdtyFundAllocation{}).Where("batch_id = ? AND held > settled", fresh.Id).Count(&activeAllocs).Error; err != nil {
 			return err
@@ -206,18 +217,24 @@ func migrateClosedOwnerBatchIfUnencumberedTx(tx *gorm.DB, siteID, ownerUserID in
 			return nil
 		}
 	}
-	if fresh.Source != "" && tx.Migrator().HasTable(&AdtyManualRefund{}) {
-		q := tx.Model(&AdtyManualRefund{}).
-			Where("trade_no = ? AND status NOT IN ?", fresh.Source, []string{AdtyManualRefundStatusCompleted, AdtyManualRefundStatusTerminated})
-		if excludeRefundID != "" {
-			q = q.Where("refund_id <> ?", excludeRefundID)
-		}
-		var otherActiveRefunds int64
-		if err := q.Count(&otherActiveRefunds).Error; err != nil {
+	if fresh.Source != "" {
+		hasRefundTable, err := AdtyTableExists(tx, &AdtyManualRefund{})
+		if err != nil {
 			return err
 		}
-		if otherActiveRefunds != 0 {
-			return nil
+		if hasRefundTable {
+			q := tx.Model(&AdtyManualRefund{}).
+				Where("trade_no = ? AND status NOT IN ?", fresh.Source, []string{AdtyManualRefundStatusCompleted, AdtyManualRefundStatusTerminated})
+			if excludeRefundID != "" {
+				q = q.Where("refund_id <> ?", excludeRefundID)
+			}
+			var otherActiveRefunds int64
+			if err := q.Count(&otherActiveRefunds).Error; err != nil {
+				return err
+			}
+			if otherActiveRefunds != 0 {
+				return nil
+			}
 		}
 	}
 	if err := RejectRestrictedAdtyFundWrite(tx, AdtyFundWrite{SiteID: siteID, AccountID: ownerUserID, OrderRef: fresh.Source}); err != nil {
@@ -233,7 +250,14 @@ func migrateClosedOwnerBatchIfUnencumberedTx(tx *gorm.DB, siteID, ownerUserID in
 	if err := tx.Model(&AdtyFundBatch{}).Where("id = ?", fresh.Id).Update("site_id", 0).Error; err != nil {
 		return err
 	}
-	if fresh.Remaining <= 0 || fresh.Source == adtyLegacyBatchSource || !tx.Migrator().HasTable(&AdtySiteWallet{}) {
+	if fresh.Remaining <= 0 || fresh.Source == adtyLegacyBatchSource {
+		return nil
+	}
+	hasWalletTable, err := AdtyTableExists(tx, &AdtySiteWallet{})
+	if err != nil {
+		return err
+	}
+	if !hasWalletTable {
 		return nil
 	}
 	var wallet AdtySiteWallet
@@ -286,7 +310,18 @@ func migrateClosedOwnerLotIfUnencumberedTx(tx *gorm.DB, ext *AdtyTopupOrder, lot
 // (after User lock and operating principal callbacks) to migrate any touched
 // owner principal batches on already-closed subsites once unencumbered (R11-002).
 func migrateTouchedClosedOwnerBatchesTx(tx *gorm.DB, userID int, batchIDs []int64, keySuffix string) error {
-	if tx == nil || userID <= 0 || len(batchIDs) == 0 || !tx.Migrator().HasTable(&AdtySite{}) || !tx.Migrator().HasTable(&AdtyFundBatch{}) {
+	if tx == nil || userID <= 0 || len(batchIDs) == 0 {
+		return nil
+	}
+	hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
+	if err != nil {
+		return err
+	}
+	hasBatchTable, err := AdtyTableExists(tx, &AdtyFundBatch{})
+	if err != nil {
+		return err
+	}
+	if !hasSiteTable || !hasBatchTable {
 		return nil
 	}
 	seen := make(map[int64]bool, len(batchIDs))
@@ -326,7 +361,18 @@ func migrateTouchedClosedOwnerBatchesTx(tx *gorm.DB, userID int, batchIDs []int6
 // for owner principal lots that stayed pinned due to in-flight holds/refunds
 // during site close, migrating them in canonical AdtySite -> User -> AdtyFundBatch -> AdtySiteWallet order (R11-002).
 func MigrateUnencumberedOwnerLotsOnClosedSites() error {
-	if DB == nil || !DB.Migrator().HasTable(&AdtySite{}) || !DB.Migrator().HasTable(&AdtyFundBatch{}) {
+	if DB == nil {
+		return nil
+	}
+	hasSiteTable, err := AdtyTableExists(DB, &AdtySite{})
+	if err != nil {
+		return err
+	}
+	hasBatchTable, err := AdtyTableExists(DB, &AdtyFundBatch{})
+	if err != nil {
+		return err
+	}
+	if !hasSiteTable || !hasBatchTable {
 		return nil
 	}
 	var targets []struct {

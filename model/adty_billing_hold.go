@@ -58,7 +58,14 @@ func RecordAdtyBillingHoldTx(tx *gorm.DB, userID int, requestID string, shortfal
 	if userID <= 0 || shortfall <= 0 {
 		return nil
 	}
-	if tx == nil || !tx.Migrator().HasTable(&AdtyBillingHold{}) {
+	if tx == nil {
+		return ErrAdtyBillingHoldTableMissing
+	}
+	hasHoldTable, err := AdtyTableExists(tx, &AdtyBillingHold{})
+	if err != nil {
+		return err
+	}
+	if !hasHoldTable {
 		return ErrAdtyBillingHoldTableMissing
 	}
 	if requestID == "" {
@@ -100,7 +107,11 @@ func syncAdtyBillingHoldForOperationTx(tx *gorm.DB, op *BillingOperation, fromBa
 	if tx == nil || op == nil || op.UserId <= 0 {
 		return nil
 	}
-	if !tx.Migrator().HasTable(&AdtyBillingHold{}) {
+	hasHoldTable, err := AdtyTableExists(tx, &AdtyBillingHold{})
+	if err != nil {
+		return err
+	}
+	if !hasHoldTable {
 		return ErrAdtyBillingHoldTableMissing
 	}
 	reqID := billingHoldRequestIDFromOperationKey(op.OperationKey)
@@ -112,7 +123,11 @@ func syncAdtyBillingHoldForOperationTx(tx *gorm.DB, op *BillingOperation, fromBa
 	}
 	totalShortfall := max(0, op.Shortfall)
 	rootFinalized := false
-	if tx.Migrator().HasTable(&BillingOperation{}) {
+	hasOpTable, err := AdtyTableExists(tx, &BillingOperation{})
+	if err != nil {
+		return err
+	}
+	if hasOpTable {
 		rootKey := "request:" + reqID
 		directPrefix := "direct:" + reqID + ":%"
 		var rootOps []BillingOperation
@@ -235,8 +250,14 @@ func HasOpenAdtyBillingHoldTx(tx *gorm.DB, userID int) (bool, error) {
 	if tx == nil || userID <= 0 {
 		return false, nil
 	}
-	hasHoldTable := tx.Migrator().HasTable(&AdtyBillingHold{})
-	hasOpTable := tx.Migrator().HasTable(&BillingOperation{})
+	hasHoldTable, err := AdtyTableExists(tx, &AdtyBillingHold{})
+	if err != nil {
+		return false, err
+	}
+	hasOpTable, err := AdtyTableExists(tx, &BillingOperation{})
+	if err != nil {
+		return false, err
+	}
 	if hasHoldTable {
 		var openHolds []AdtyBillingHold
 		if err := tx.Where("user_id = ? AND status = ?", userID, AdtyBillingHoldOpen).Find(&openHolds).Error; err != nil {
@@ -301,7 +322,18 @@ func HasOpenAdtyBillingHoldTx(tx *gorm.DB, userID int) (bool, error) {
 // settled operations that recorded a positive shortfall while the hold table
 // was unavailable or after an interrupted post-settle note.
 func BackfillMissingAdtyBillingHolds(ctx context.Context, limit int) error {
-	if DB == nil || !DB.Migrator().HasTable(&AdtyBillingHold{}) || !DB.Migrator().HasTable(&BillingOperation{}) {
+	if DB == nil {
+		return nil
+	}
+	hasHoldTable, err := AdtyTableExists(DB.WithContext(ctx), &AdtyBillingHold{})
+	if err != nil {
+		return err
+	}
+	hasOpTable, err := AdtyTableExists(DB.WithContext(ctx), &BillingOperation{})
+	if err != nil {
+		return err
+	}
+	if !hasHoldTable || !hasOpTable {
 		return nil
 	}
 	if limit <= 0 {
@@ -360,7 +392,14 @@ func BackfillMissingAdtyBillingHolds(ctx context.Context, limit int) error {
 }
 
 func adtyRequireBillingHoldTable() error {
-	if DB == nil || !DB.Migrator().HasTable(&AdtyBillingHold{}) {
+	if DB == nil {
+		return ErrAdtyBillingHoldTableMissing
+	}
+	hasHoldTable, err := AdtyTableExists(DB, &AdtyBillingHold{})
+	if err != nil {
+		return err
+	}
+	if !hasHoldTable {
 		return ErrAdtyBillingHoldTableMissing
 	}
 	return nil

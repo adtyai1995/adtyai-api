@@ -277,7 +277,11 @@ func loadAdtySiteMailConfigTx(db *gorm.DB, siteID int) (*model.AdtySiteMailConfi
 	if siteID <= 0 || db == nil {
 		return nil, false, nil
 	}
-	if !db.Migrator().HasTable(&model.AdtySiteMailConfig{}) {
+	hasTable, err := model.AdtyTableExists(db, &model.AdtySiteMailConfig{})
+	if err != nil {
+		return nil, false, err
+	}
+	if !hasTable {
 		return nil, false, nil
 	}
 	var row model.AdtySiteMailConfig
@@ -507,7 +511,11 @@ func SaveAdtySiteMailConfig(ctx context.Context, ownerUserID int, input AdtySite
 			}
 		}
 
-		if tx.Migrator().HasTable(&model.AdtySiteAudit{}) {
+		hasSiteAuditTable, err := model.AdtyTableExists(tx, &model.AdtySiteAudit{})
+		if err != nil {
+			return err
+		}
+		if hasSiteAuditTable {
 			if err := tx.Create(&model.AdtySiteAudit{
 				SiteId:     site.Id,
 				Action:     "mail_config_update",

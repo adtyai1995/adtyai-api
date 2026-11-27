@@ -161,6 +161,7 @@ func bepusdtPermanentError(err error) bool {
 		errors.Is(err, model.ErrPaymentOrphanNotCredit) ||
 		errors.Is(err, model.ErrTopUpQuotaLimitExceeded) ||
 		errors.Is(err, model.ErrInvalidTopUpQuota) ||
+		errors.Is(err, model.ErrAdtyEpayChannelRevoked) ||
 		errors.Is(err, service.ErrAdtyTeamInvalid) ||
 		errors.Is(err, gorm.ErrRecordNotFound)
 }

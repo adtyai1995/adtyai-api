@@ -22,7 +22,11 @@ func EnsureActiveTeamMembershipUniqueIndex(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("active team membership unique index: database is nil")
 	}
-	if !db.Migrator().HasTable(&AdtyTeamMember{}) {
+	hasTeamMemberTable, err := AdtyTableExists(db, &AdtyTeamMember{})
+	if err != nil {
+		return err
+	}
+	if !hasTeamMemberTable {
 		return nil
 	}
 	duplicates, err := countActiveTeamMembershipCollisions(db)

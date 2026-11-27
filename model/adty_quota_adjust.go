@@ -255,13 +255,19 @@ func AdjustUserQuotaWithLedgerForActor(userID, operatorID, operatorRole int, den
 			// and do not debit the closed site's drained operating wallet.
 			if batchSiteID > 0 && user.SiteId == 0 {
 				batchSiteID = 0
-			} else if batchSiteID > 0 && tx.Migrator().HasTable(&AdtySite{}) {
-				var siteStatus string
-				if err := tx.Model(&AdtySite{}).Select("status").Where("id = ?", batchSiteID).Limit(1).Scan(&siteStatus).Error; err != nil {
+			} else if batchSiteID > 0 {
+				hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
+				if err != nil {
 					return err
 				}
-				if siteStatus == AdtySiteStatusClosed {
-					batchSiteID = 0
+				if hasSiteTable {
+					var siteStatus string
+					if err := tx.Model(&AdtySite{}).Select("status").Where("id = ?", batchSiteID).Limit(1).Scan(&siteStatus).Error; err != nil {
+						return err
+					}
+					if siteStatus == AdtySiteStatusClosed {
+						batchSiteID = 0
+					}
 				}
 			}
 			if err := ReduceAdtyAdjustmentBatchTx(tx, userID, batchSiteID, prov.BatchSource, prov.BatchKind, -delta); err != nil {

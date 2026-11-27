@@ -545,7 +545,10 @@ func adtyEnsureEdgeCertRows(ctx context.Context, cfg *adty_setting.ResellerSetti
 	nowUnix := now.Unix()
 	cutoff := now.Add(-adtyEdgeCertCleanupGrace).Unix()
 	graceSecs := int64(adtyEdgeCertCleanupGrace.Seconds())
-	hasStateTable := model.DB.WithContext(ctx).Migrator().HasTable(&model.AdtyEdgeState{})
+	hasStateTable, err := model.AdtyTableExists(model.DB.WithContext(ctx), &model.AdtyEdgeState{})
+	if err != nil {
+		return nil, err
+	}
 	staleSince := make(map[string]int64)
 	stateDirty := false
 	if hasStateTable {

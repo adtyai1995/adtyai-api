@@ -189,33 +189,39 @@ func (midjourney *Midjourney) Insert() error {
 		// persisted Midjourney row in the same transaction (mirroring Task.InsertWithContext)
 		// so a crash or DB hiccup before SettleMidjourneyTaskBilling cannot
 		// leave reference_id=0 eligible for lease-expiry auto-refund or starve recovery.
-		if midjourney.BillingChargePending && midjourney.BillingOperationKey != "" && tx.Migrator().HasTable(&BillingOperation{}) {
-			var existing []BillingOperation
-			if err := lockForUpdate(tx).Where("operation_key = ?", midjourney.BillingOperationKey).Limit(1).Find(&existing).Error; err != nil {
+		if midjourney.BillingChargePending && midjourney.BillingOperationKey != "" {
+			hasOpTable, err := AdtyTableExists(tx, &BillingOperation{})
+			if err != nil {
 				return err
 			}
-			if len(existing) > 0 {
-				cur := existing[0]
-				if cur.UserId != midjourney.UserId || cur.State != BillingReserved {
-					return ErrBillingOperationConflict
+			if hasOpTable {
+				var existing []BillingOperation
+				if err := lockForUpdate(tx).Where("operation_key = ?", midjourney.BillingOperationKey).Limit(1).Find(&existing).Error; err != nil {
+					return err
 				}
-				updates := map[string]any{
-					"kind":         "mj_charge",
-					"reference_id": int64(midjourney.Id),
-					"actual_quota": midjourney.Quota,
-					"state":        BillingSettlePending,
-				}
-				if cur.EarningRootKey == "" {
-					updates["earning_root_key"] = midjourney.BillingOperationKey
-				}
-				res := tx.Model(&BillingOperation{}).
-					Where("operation_key = ? AND state = ?", midjourney.BillingOperationKey, BillingReserved).
-					Updates(updates)
-				if res.Error != nil {
-					return res.Error
-				}
-				if res.RowsAffected != 1 {
-					return ErrBillingOperationConflict
+				if len(existing) > 0 {
+					cur := existing[0]
+					if cur.UserId != midjourney.UserId || cur.State != BillingReserved {
+						return ErrBillingOperationConflict
+					}
+					updates := map[string]any{
+						"kind":         "mj_charge",
+						"reference_id": int64(midjourney.Id),
+						"actual_quota": midjourney.Quota,
+						"state":        BillingSettlePending,
+					}
+					if cur.EarningRootKey == "" {
+						updates["earning_root_key"] = midjourney.BillingOperationKey
+					}
+					res := tx.Model(&BillingOperation{}).
+						Where("operation_key = ? AND state = ?", midjourney.BillingOperationKey, BillingReserved).
+						Updates(updates)
+					if res.Error != nil {
+						return res.Error
+					}
+					if res.RowsAffected != 1 {
+						return ErrBillingOperationConflict
+					}
 				}
 			}
 		}

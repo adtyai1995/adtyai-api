@@ -82,7 +82,10 @@ func GetUserGroups(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusServiceUnavailable, err)
 		return
 	}
-	applyPricingTeamMultiplier(c, userId, siteID, rawGroupRatios, groupRatios, nil)
+	if _, err := applyPricingTeamMultiplier(c, userId, siteID, rawGroupRatios, groupRatios, nil); err != nil {
+		common.ApiErrorStatus(c, http.StatusServiceUnavailable, err)
+		return
+	}
 	for groupName, ratio := range groupRatios {
 		usableGroups[groupName] = map[string]any{
 			"ratio": ratio,

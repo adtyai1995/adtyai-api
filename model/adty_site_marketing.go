@@ -30,7 +30,11 @@ func backfillAdtySiteMarketingPolicies(db *gorm.DB) error {
 		}
 		updates := map[string]any{"marketing_policy_initialized": true}
 		var options []Option
-		if tx.Migrator().HasTable(&Option{}) {
+		hasOptionTable, err := AdtyTableExists(tx, &Option{})
+		if err != nil {
+			return err
+		}
+		if hasOptionTable {
 			if err := tx.Where(map[string]any{"key": keys}).Find(&options).Error; err != nil {
 				return err
 			}
@@ -56,7 +60,11 @@ func backfillAdtySiteMarketingPolicies(db *gorm.DB) error {
 			updates[column] = value
 		}
 		// Older orders without a referral snapshot used the enabled flag and bind-time rate.
-		if tx.Migrator().HasTable(&AdtySiteReferralRate{}) {
+		hasSiteRefRateTable, err := AdtyTableExists(tx, &AdtySiteReferralRate{})
+		if err != nil {
+			return err
+		}
+		if hasSiteRefRateTable {
 			legacySites := tx.Model(&AdtySite{}).Select("id").Where(needsPolicy, false)
 			rateUpdates := map[string]any{"legacy_enabled": gorm.Expr("enabled")}
 			if updates["pending_coverage_cap"] == nil || updates["observation_days"] == nil {

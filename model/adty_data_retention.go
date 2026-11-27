@@ -110,9 +110,9 @@ func adtyModelTableName(db *gorm.DB, modelOrTable any) string {
 	return ""
 }
 
-// AdtyTableExists checks table existence across PostgreSQL, MySQL, and SQLite
-// without aborting an active PostgreSQL transaction and without swallowing DB
-// errors (unlike gorm.Migrator().HasTable).
+// AdtyTableExists checks table existence across PostgreSQL, MySQL, ClickHouse,
+// and SQLite without aborting an active PostgreSQL transaction and without
+// swallowing DB errors (unlike gorm.Migrator().HasTable).
 func AdtyTableExists(db *gorm.DB, modelOrTable any) (bool, error) {
 	if db == nil {
 		return false, errors.New("database unavailable")
@@ -132,6 +132,8 @@ func AdtyTableExists(db *gorm.DB, modelOrTable any) (bool, error) {
 		err = db.Raw("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = CURRENT_SCHEMA() AND table_name = ?", table).Scan(&count).Error
 	case "mysql":
 		err = db.Raw("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?", table).Scan(&count).Error
+	case "clickhouse":
+		err = db.Raw("SELECT toInt64(COUNT(*)) FROM system.tables WHERE database = currentDatabase() AND name = ?", table).Scan(&count).Error
 	default:
 		err = db.Raw("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&count).Error
 	}
@@ -141,8 +143,9 @@ func AdtyTableExists(db *gorm.DB, modelOrTable any) (bool, error) {
 	return count > 0, nil
 }
 
-// AdtyColumnExists checks column existence across PostgreSQL, MySQL, and SQLite
-// without aborting an active PostgreSQL transaction or swallowing DB errors.
+// AdtyColumnExists checks column existence across PostgreSQL, MySQL, ClickHouse,
+// and SQLite without aborting an active PostgreSQL transaction or swallowing DB
+// errors.
 func AdtyColumnExists(db *gorm.DB, modelOrTable any, column string) (bool, error) {
 	if db == nil {
 		return false, errors.New("database unavailable")
@@ -163,6 +166,8 @@ func AdtyColumnExists(db *gorm.DB, modelOrTable any, column string) (bool, error
 		err = db.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = CURRENT_SCHEMA() AND table_name = ? AND column_name = ?", table, column).Scan(&count).Error
 	case "mysql":
 		err = db.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?", table, column).Scan(&count).Error
+	case "clickhouse":
+		err = db.Raw("SELECT toInt64(COUNT(*)) FROM system.columns WHERE database = currentDatabase() AND table = ? AND name = ?", table, column).Scan(&count).Error
 	default:
 		err = db.Raw("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", table, column).Scan(&count).Error
 	}

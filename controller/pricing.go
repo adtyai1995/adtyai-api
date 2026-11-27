@@ -57,34 +57,51 @@ func pricingPreferredLangs(c *gin.Context, userID int) []string {
 	return langs
 }
 
-func activePricingTeamForUser(userID, siteID int) *model.AdtyTeam {
+func activePricingTeamForUser(userID, siteID int) (*model.AdtyTeam, error) {
 	if userID <= 0 || model.DB == nil {
-		return nil
+		return nil, nil
 	}
-	if !model.DB.Migrator().HasTable(&model.AdtyTeamMember{}) || !model.DB.Migrator().HasTable(&model.AdtyTeam{}) {
-		return nil
+	hasTeamMemberTable, err := model.AdtyTableExists(model.DB, &model.AdtyTeamMember{})
+	if err != nil {
+		return nil, err
+	}
+	hasTeamTable, err := model.AdtyTableExists(model.DB, &model.AdtyTeam{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasTeamMemberTable || !hasTeamTable {
+		return nil, nil
 	}
 	var member model.AdtyTeamMember
 	res := model.DB.Where("user_id = ? AND status = ?", userID, model.AdtyTeamMemberActive).Limit(1).Find(&member)
-	if res.Error != nil || res.RowsAffected == 0 {
-		return nil
+	if res.Error != nil {
+		return nil, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return nil, nil
 	}
 	var team model.AdtyTeam
-	if err := model.DB.Where("id = ? AND site_id = ? AND status = ?", member.TeamId, siteID, model.AdtyTeamStatusActive).Limit(1).Find(&team).Error; err != nil || team.Id == 0 {
-		return nil
+	if err := model.DB.Where("id = ? AND site_id = ? AND status = ?", member.TeamId, siteID, model.AdtyTeamStatusActive).Limit(1).Find(&team).Error; err != nil {
+		return nil, err
 	}
-	return &team
+	if team.Id == 0 {
+		return nil, nil
+	}
+	return &team, nil
 }
 
-func applyPricingTeamMultiplier(c *gin.Context, userID, siteID int, rawGroupRatio, groupRatio map[string]float64, pricing []model.Pricing) []model.Pricing {
-	team := activePricingTeamForUser(userID, siteID)
+func applyPricingTeamMultiplier(c *gin.Context, userID, siteID int, rawGroupRatio, groupRatio map[string]float64, pricing []model.Pricing) ([]model.Pricing, error) {
+	team, err := activePricingTeamForUser(userID, siteID)
+	if err != nil {
+		return nil, err
+	}
 	if team == nil {
-		return pricing
+		return pricing, nil
 	}
 	maxDiscount := decimal.NewFromInt(10)
 	if siteID == 0 {
 		if !team.Discount.IsPositive() || team.Discount.GreaterThan(maxDiscount) {
-			return pricing
+			return pricing, nil
 		}
 		for g, rawRatio := range rawGroupRatio {
 			groupRatio[g] = decimal.NewFromFloat(rawRatio).Mul(team.Discount).InexactFloat64()
@@ -94,25 +111,25 @@ func applyPricingTeamMultiplier(c *gin.Context, userID, siteID int, rawGroupRati
 				pricing[i].GroupRatio = maps.Clone(groupRatio)
 			}
 		}
-		return pricing
+		return pricing, nil
 	}
 	if !adty_setting.GetResellerSetting().Enabled {
-		return pricing
+		return pricing, nil
 	}
 	minSubsiteMult := decimal.NewFromInt(1)
 	if team.Discount.LessThan(minSubsiteMult) || team.Discount.GreaterThan(maxDiscount) {
-		return pricing
+		return pricing, nil
 	}
 	site := service.AdtyBillingSiteForUser(userID)
 	if site == nil || site.Id != siteID {
 		site = service.AdtySiteForRequest(c)
 	}
 	if site == nil || site.Id != siteID || !service.AdtySiteServesCustomers(site) {
-		return pricing
+		return pricing, nil
 	}
 	d, ok := service.AdtySiteCostFactor(site)
 	if !ok {
-		return pricing
+		return pricing, nil
 	}
 	for g, rawRatio := range rawGroupRatio {
 		supply := decimal.NewFromFloat(rawRatio).Mul(d)
@@ -122,7 +139,7 @@ func applyPricingTeamMultiplier(c *gin.Context, userID, siteID int, rawGroupRati
 	for i := range pricing {
 		pricing[i].GroupRatio = maps.Clone(groupRatio)
 	}
-	return pricing
+	return pricing, nil
 }
 
 func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string]string, siteID int) []model.Pricing {
@@ -309,7 +326,11 @@ func GetPricing(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	pricing = applyPricingTeamMultiplier(c, userID, siteID, rawGroupRatio, groupRatio, pricing)
+	pricing, err = applyPricingTeamMultiplier(c, userID, siteID, rawGroupRatio, groupRatio, pricing)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 
 	adtyGroupMeta := make(map[string]adtyPricingGroupMeta)
 	for g := range usableGroup {

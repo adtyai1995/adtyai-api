@@ -578,7 +578,11 @@ func GetAdtyStaffCustomerLogs(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if err := query.Select("id", "created_at", "type", "model_name", "quota", "prompt_tokens", "completion_tokens").Order("id DESC").Offset(offset).Limit(limit).Find(&items).Error; err != nil {
+	order := "id DESC"
+	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+		order = "created_at DESC, request_id DESC"
+	}
+	if err := query.Select("id", "created_at", "type", "model_name", "quota", "prompt_tokens", "completion_tokens").Order(order).Offset(offset).Limit(limit).Find(&items).Error; err != nil {
 		common.ApiError(c, err)
 		return
 	}

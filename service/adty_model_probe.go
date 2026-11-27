@@ -1003,7 +1003,14 @@ func runAdtyModelProbes(ctx context.Context, filterGroupID string, scheduled boo
 	if err := ValidateAdtyGroupProbeIdentity(AdtyGroupProbeIdentity, AdtyGroupProbeUserID, ""); err != nil {
 		return summary, err
 	}
-	if model.DB == nil || !model.DB.Migrator().HasTable(&model.AdtyModelProbe{}) {
+	if model.DB == nil {
+		return summary, nil
+	}
+	hasProbeTable, err := model.AdtyTableExists(model.DB, &model.AdtyModelProbe{})
+	if err != nil {
+		return summary, err
+	}
+	if !hasProbeTable {
 		return summary, nil
 	}
 	if scheduled {
@@ -1277,15 +1284,26 @@ func inferAdtyPlatformFromChannelType(channelType int) string {
 	}
 }
 
-func lookupAdtyGroupChannelType(groupKey, modelName string) int {
-	if model.DB == nil || groupKey == "" || !model.DB.Migrator().HasTable(&model.Channel{}) {
-		return 0
+func lookupAdtyGroupChannelType(groupKey, modelName string) (int, error) {
+	if model.DB == nil || groupKey == "" {
+		return 0, nil
+	}
+	hasChannelTable, err := model.AdtyTableExists(model.DB, &model.Channel{})
+	if err != nil {
+		return 0, err
+	}
+	if !hasChannelTable {
+		return 0, nil
 	}
 	groupCol := model.AdtyGroupColumn()
 	if groupCol == "" {
 		groupCol = `"group"`
 	}
-	if model.DB.Migrator().HasTable(&model.Ability{}) {
+	hasAbilityTable, err := model.AdtyTableExists(model.DB, &model.Ability{})
+	if err != nil {
+		return 0, err
+	}
+	if hasAbilityTable {
 		var channelType int
 		if modelName != "" {
 			res := model.DB.Table("abilities").
@@ -1296,8 +1314,11 @@ func lookupAdtyGroupChannelType(groupKey, modelName string) int {
 				Order("COALESCE(abilities.priority, 0) DESC, abilities.weight DESC, channels.id DESC").
 				Limit(1).
 				Scan(&channelType)
-			if res.Error == nil && res.RowsAffected > 0 && channelType > 0 {
-				return channelType
+			if res.Error != nil {
+				return 0, res.Error
+			}
+			if res.RowsAffected > 0 && channelType > 0 {
+				return channelType, nil
 			}
 		}
 		res := model.DB.Table("abilities").
@@ -1308,11 +1329,14 @@ func lookupAdtyGroupChannelType(groupKey, modelName string) int {
 			Order("COALESCE(abilities.priority, 0) DESC, abilities.weight DESC, channels.id DESC").
 			Limit(1).
 			Scan(&channelType)
-		if res.Error == nil && res.RowsAffected > 0 && channelType > 0 {
-			return channelType
+		if res.Error != nil {
+			return 0, res.Error
+		}
+		if res.RowsAffected > 0 && channelType > 0 {
+			return channelType, nil
 		}
 	}
-	return 0
+	return 0, nil
 }
 
 // ResolveAdtyGroupPlatform resolves a group's public platform family from explicit
@@ -1327,7 +1351,10 @@ func ResolveAdtyGroupPlatform(group console_setting.UptimeKumaGroup, probeModel 
 	if p := inferAdtyPlatformFromModel(probeModel); p != "" {
 		return p
 	}
-	if chType := lookupAdtyGroupChannelType(effectiveProbeGroupKey(group), probeModel); chType > 0 {
+	chType, err := lookupAdtyGroupChannelType(effectiveProbeGroupKey(group), probeModel)
+	if err != nil {
+		common.SysError(common.LogText("lookup group %s channel type failed: %s", effectiveProbeGroupKey(group), err.Error()))
+	} else if chType > 0 {
 		if p := inferAdtyPlatformFromChannelType(chType); p != "" {
 			return p
 		}

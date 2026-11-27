@@ -387,11 +387,15 @@ func referralCommissionRecoveriesByKindTx(tx *gorm.DB, commissionID int) (extern
 }
 
 func referralCommissionConvertedClawedTx(tx *gorm.DB, commissionID int) (decimal.Decimal, error) {
-	if !tx.Migrator().HasTable(&model.AdtyBalanceLedger{}) {
+	hasLedgerTable, err := model.AdtyTableExists(tx, &model.AdtyBalanceLedger{})
+	if err != nil {
+		return decimal.Zero, err
+	}
+	if !hasLedgerTable {
 		return decimal.Zero, nil
 	}
 	var sumQuota int64
-	err := tx.Model(&model.AdtyBalanceLedger{}).
+	err = tx.Model(&model.AdtyBalanceLedger{}).
 		Select("COALESCE(SUM(-delta_quota), 0)").
 		Where("type = ? AND ref_type = ? AND ref_id = ? AND delta_quota < 0",
 			model.AdtyLedgerTypeCommissionTransfer, "referral_commission_clawback", strconv.Itoa(commissionID)).
@@ -672,7 +676,11 @@ func reclaimConvertedReferralCommissionTx(tx *gorm.DB, commission *model.Referra
 	}
 	var reclaimed int64
 	left := int64(wanted)
-	if tx.Migrator().HasTable(&model.AdtyFundBatch{}) {
+	hasFundBatchTable, err := model.AdtyTableExists(tx, &model.AdtyFundBatch{})
+	if err != nil {
+		return decimal.Zero, err
+	}
+	if hasFundBatchTable {
 		for _, item := range balanceItems {
 			if left <= 0 {
 				break
@@ -718,7 +726,15 @@ func reclaimConvertedReferralCommissionTx(tx *gorm.DB, commission *model.Referra
 				return decimal.Zero, err
 			}
 			var siblingClawed int64
-			if len(siblingItems) > 0 && tx.Migrator().HasTable(&model.AdtyBalanceLedger{}) {
+			hasLedgerTable := false
+			if len(siblingItems) > 0 {
+				var tblErr error
+				hasLedgerTable, tblErr = model.AdtyTableExists(tx, &model.AdtyBalanceLedger{})
+				if tblErr != nil {
+					return decimal.Zero, tblErr
+				}
+			}
+			if len(siblingItems) > 0 && hasLedgerTable {
 				allocThisByComm := make(map[int]int64, len(siblingItems))
 				siblingCommIDs := make([]int, 0, len(siblingItems))
 				for _, sib := range siblingItems {

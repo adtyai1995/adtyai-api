@@ -294,7 +294,11 @@ func adtySiteCustomerPrincipalAndGiftQuota(siteID int) (principalQuota int64, gi
 		hasAnyLots    bool
 	}
 	byUser := make(map[int]batchSplit, len(users))
-	if model.DB.Migrator().HasTable(&model.AdtyFundBatch{}) {
+	hasFundBatchTable, err := model.AdtyTableExists(model.DB, &model.AdtyFundBatch{})
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if hasFundBatchTable {
 		var batches []model.AdtyFundBatch
 		if err := model.DB.Where("user_id IN ?", userIDs).
 			Find(&batches).Error; err != nil {
@@ -321,7 +325,11 @@ func adtySiteCustomerPrincipalAndGiftQuota(siteID int) (principalQuota int64, gi
 	}
 
 	heldByUser := map[int]int64{}
-	if model.DB.Migrator().HasTable(&model.AdtyFundAllocation{}) && model.DB.Migrator().HasTable(&model.AdtyFundBatch{}) {
+	hasAllocTable, err := model.AdtyTableExists(model.DB, &model.AdtyFundAllocation{})
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if hasAllocTable && hasFundBatchTable {
 		var held []struct {
 			UserId int
 			Quota  int64
@@ -499,16 +507,22 @@ func detectUnbookedSuccessfulOrders(siteID int) ([]adtyFundAnomalyItem, error) {
 			if faceQuota > 0 && faceQuota < expected {
 				expected = faceQuota
 			}
-		} else if row.GiftFulfillmentStatus == model.AdtyGiftFulfillmentFulfilled && model.DB.Migrator().HasTable(&model.AdtyGiftFulfillment{}) {
-			var fulfill model.AdtyGiftFulfillment
-			if err := model.DB.Select("bonus_quota").Where("trade_no = ?", row.TradeNo).Limit(1).Find(&fulfill).Error; err != nil {
+		} else if row.GiftFulfillmentStatus == model.AdtyGiftFulfillmentFulfilled {
+			hasGiftTable, err := model.AdtyTableExists(model.DB, &model.AdtyGiftFulfillment{})
+			if err != nil {
 				return nil, err
 			}
-			if fulfill.BonusQuota > 0 {
-				faceQuota := row.FaceUSD.Mul(common.QuotaPerUnitDecimal()).Floor().IntPart()
-				fulfilledExpected := faceQuota + fulfill.BonusQuota
-				if fulfilledExpected > 0 && fulfilledExpected < expected {
-					expected = fulfilledExpected
+			if hasGiftTable {
+				var fulfill model.AdtyGiftFulfillment
+				if err := model.DB.Select("bonus_quota").Where("trade_no = ?", row.TradeNo).Limit(1).Find(&fulfill).Error; err != nil {
+					return nil, err
+				}
+				if fulfill.BonusQuota > 0 {
+					faceQuota := row.FaceUSD.Mul(common.QuotaPerUnitDecimal()).Floor().IntPart()
+					fulfilledExpected := faceQuota + fulfill.BonusQuota
+					if fulfilledExpected > 0 && fulfilledExpected < expected {
+						expected = fulfilledExpected
+					}
 				}
 			}
 		}
@@ -641,7 +655,14 @@ type giftBatchRemainingInfo struct {
 
 func loadGiftBatchRemainingByTrade(siteID int, tradeNos []string) (map[string]giftBatchRemainingInfo, error) {
 	out := map[string]giftBatchRemainingInfo{}
-	if len(tradeNos) == 0 || !model.DB.Migrator().HasTable(&model.AdtyFundBatch{}) {
+	if len(tradeNos) == 0 {
+		return out, nil
+	}
+	hasFundBatchTable, err := model.AdtyTableExists(model.DB, &model.AdtyFundBatch{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasFundBatchTable {
 		return out, nil
 	}
 	var batches []model.AdtyFundBatch
@@ -700,7 +721,11 @@ func currentRequiredGiftGuaranteeUSD(ext *model.AdtyTopupOrder, status string, b
 		return adtyProportionalGiftUSD(siteBonus, rem, totalBonusQuota), nil
 	}
 	reclaimedQuota := ext.RefundBonusQuota
-	if model.DB.Migrator().HasTable(&model.AdtyManualRefund{}) {
+	hasRefundTable, err := model.AdtyTableExists(model.DB, &model.AdtyManualRefund{})
+	if err != nil {
+		return decimal.Zero, err
+	}
+	if hasRefundTable {
 		hasRows, _, cumReclaimed, err := adtyCompletedManualRefundBonusStatsTx(model.DB, ext)
 		if err != nil {
 			return decimal.Zero, err

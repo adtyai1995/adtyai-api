@@ -710,7 +710,12 @@ func IsAdtyReferralEnabledForSite(siteID int) bool {
 	if rate.Rate.IsPositive() {
 		return true
 	}
-	if !model.DB.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
+	hasAffTable, err := model.AdtyTableExists(model.DB, &model.AdtySiteReferralAffiliate{})
+	if err != nil {
+		common.SysError(common.LogText("check site referral affiliate table: %s", err.Error()))
+		return false
+	}
+	if !hasAffTable {
 		return false
 	}
 	var overrides []model.AdtySiteReferralAffiliate
@@ -812,14 +817,19 @@ func AdtyPublicReferralInfoForSite(siteID int) AdtyPublicReferralInfo {
 		return empty
 	}
 	enabled := rate.Rate.IsPositive()
-	if !enabled && model.DB.Migrator().HasTable(&model.AdtySiteReferralAffiliate{}) {
-		var overrides []model.AdtySiteReferralAffiliate
-		if err := model.DB.Select("rate_override").
-			Where("site_id = ? AND status <> ? AND rate_override IS NOT NULL", siteID, model.AdtySiteAffiliateStatusDisabled).
-			Find(&overrides).Error; err == nil {
-			enabled = slices.ContainsFunc(overrides, func(aff model.AdtySiteReferralAffiliate) bool {
-				return aff.RateOverride != nil && aff.RateOverride.IsPositive()
-			})
+	if !enabled {
+		hasAffTable, tblErr := model.AdtyTableExists(model.DB, &model.AdtySiteReferralAffiliate{})
+		if tblErr != nil {
+			common.SysError(common.LogText("check public referral affiliate table: %s", tblErr.Error()))
+		} else if hasAffTable {
+			var overrides []model.AdtySiteReferralAffiliate
+			if err := model.DB.Select("rate_override").
+				Where("site_id = ? AND status <> ? AND rate_override IS NOT NULL", siteID, model.AdtySiteAffiliateStatusDisabled).
+				Find(&overrides).Error; err == nil {
+				enabled = slices.ContainsFunc(overrides, func(aff model.AdtySiteReferralAffiliate) bool {
+					return aff.RateOverride != nil && aff.RateOverride.IsPositive()
+				})
+			}
 		}
 	}
 	if !enabled {

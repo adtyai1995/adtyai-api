@@ -120,7 +120,11 @@ func PreviewAdtyTopUpRefund(tradeNo string) (*AdtyTopUpRefundResult, error) {
 		}
 		// R7-029: Compute prior accounted bonus from persisted completed manual refunds
 		// (ext.RefundBonusQuota is gorm:"-" and always 0 on DB reads).
-		if tx.Migrator().HasTable(&AdtyManualRefund{}) {
+		hasManualRefundTable, err := AdtyTableExists(tx, &AdtyManualRefund{})
+		if err != nil {
+			return err
+		}
+		if hasManualRefundTable {
 			var completed []AdtyManualRefund
 			if err := tx.Select("request_quota", "bonus_deducted_quota", "bonus_shortfall_quota").
 				Where("trade_no = ? AND status = ?", tradeNo, AdtyManualRefundStatusCompleted).

@@ -62,22 +62,36 @@ func bonusTableExists(db *gorm.DB, tableName string) (bool, error) {
 	return count > 0, nil
 }
 
-func readOptionFromDB(db *gorm.DB, key string) (string, bool) {
+func readOptionFromDBStrict(db *gorm.DB, key string) (string, bool, error) {
 	if db == nil {
-		return "", false
+		return "", false, nil
 	}
 	exists, err := bonusTableExists(db, "options")
-	if err != nil || !exists {
-		return "", false
+	if err != nil {
+		return "", false, err
+	}
+	if !exists {
+		return "", false, nil
 	}
 	var row struct {
 		Value string `gorm:"column:value"`
 	}
 	res := db.Table("options").Select("value").Where(map[string]any{"key": key}).Limit(1).Find(&row)
-	if res.Error != nil || res.RowsAffected == 0 {
+	if res.Error != nil {
+		return "", false, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return "", false, nil
+	}
+	return row.Value, true, nil
+}
+
+func readOptionFromDB(db *gorm.DB, key string) (string, bool) {
+	val, ok, err := readOptionFromDBStrict(db, key)
+	if err != nil || !ok {
 		return "", false
 	}
-	return row.Value, true
+	return val, true
 }
 
 // MethodBonusRule is one site's gift switch and rate for a payment method.
@@ -672,17 +686,30 @@ func SiteBonusMarginFillAllowed(siteID int) bool {
 	return SiteBonusMarginFillAllowedTx(nil, siteID)
 }
 
-// SiteBonusMarginFillAllowedTx reports the Root authorization for margin fill
-// using tx when provided so transactional callers never open an outer DB query.
-func SiteBonusMarginFillAllowedTx(tx *gorm.DB, siteID int) bool {
+// SiteBonusMarginFillAllowedStrictTx reports the Root authorization for margin
+// fill using tx when provided, propagating database and JSON parse errors
+// instead of falling back to stale in-memory cache.
+func SiteBonusMarginFillAllowedStrictTx(tx *gorm.DB, siteID int) (bool, error) {
 	db := tx
 	if db == nil {
 		db = getAuthoritativeBonusDB()
 	}
-	if raw, ok := readOptionFromDB(db, TopupSettingKeySiteBonusMarginFill); ok {
-		if allowed, err := ParseSiteBonusMarginFillAllowed(raw, siteID); err == nil {
-			return allowed
-		}
+	raw, ok, err := readOptionFromDBStrict(db, TopupSettingKeySiteBonusMarginFill)
+	if err != nil {
+		return false, err
+	}
+	if ok {
+		return ParseSiteBonusMarginFillAllowed(raw, siteID)
+	}
+	ts := GetTopupSetting()
+	return ts.SiteBonusMarginFill != nil && ts.SiteBonusMarginFill[siteID], nil
+}
+
+// SiteBonusMarginFillAllowedTx reports the Root authorization for margin fill
+// using tx when provided so transactional callers never open an outer DB query.
+func SiteBonusMarginFillAllowedTx(tx *gorm.DB, siteID int) bool {
+	if allowed, err := SiteBonusMarginFillAllowedStrictTx(tx, siteID); err == nil {
+		return allowed
 	}
 	ts := GetTopupSetting()
 	return ts.SiteBonusMarginFill != nil && ts.SiteBonusMarginFill[siteID]

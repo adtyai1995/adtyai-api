@@ -27,7 +27,12 @@ func clearAccountLoginFailuresWithDB(db *gorm.DB, userID int, username, email st
 	if userID <= 0 || siteID != 0 || strings.TrimSpace(email) == "" || db == nil {
 		return
 	}
-	if !db.Migrator().HasTable(&AdtySite{}) {
+	hasSiteTable, err := AdtyTableExists(db, &AdtySite{})
+	if err != nil {
+		common.SysError(common.LogText("clearAccountLoginFailuresWithDB site table check failed: %s", err.Error()))
+		return
+	}
+	if !hasSiteTable {
 		return
 	}
 	var ownedSiteIDs []int

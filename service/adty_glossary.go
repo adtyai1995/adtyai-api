@@ -156,13 +156,20 @@ func DeleteAdtyGlossaryTerm(id int64) error {
 	return nil
 }
 
-func adtyMatchedGlossaryTerms(db *gorm.DB, source string) []model.AdtyGlossaryTerm {
-	if db == nil || strings.TrimSpace(source) == "" || !db.Migrator().HasTable(&model.AdtyGlossaryTerm{}) {
-		return nil
+func adtyMatchedGlossaryTerms(db *gorm.DB, source string) ([]model.AdtyGlossaryTerm, error) {
+	if db == nil || strings.TrimSpace(source) == "" {
+		return nil, nil
+	}
+	hasTable, err := model.AdtyTableExists(db, &model.AdtyGlossaryTerm{})
+	if err != nil {
+		return nil, err
+	}
+	if !hasTable {
+		return nil, nil
 	}
 	var terms []model.AdtyGlossaryTerm
 	if err := db.Where("locale = ?", AdtyOfficialGlossaryLocaleEN).Order("id ASC").Find(&terms).Error; err != nil {
-		return nil
+		return nil, err
 	}
 	seen := make(map[string]struct{}, len(terms))
 	matched := make([]model.AdtyGlossaryTerm, 0, len(terms))
@@ -182,13 +189,16 @@ func adtyMatchedGlossaryTerms(db *gorm.DB, source string) []model.AdtyGlossaryTe
 			matched = append(matched, term)
 		}
 	}
-	return matched
+	return matched, nil
 }
 
-func buildAdtyTranslationSystemPrompt(source string) string {
-	terms := adtyMatchedGlossaryTerms(model.DB, source)
+func buildAdtyTranslationSystemPrompt(source string) (string, error) {
+	terms, err := adtyMatchedGlossaryTerms(model.DB, source)
+	if err != nil {
+		return "", err
+	}
 	if len(terms) == 0 {
-		return adtyTranslationSystemPrompt
+		return adtyTranslationSystemPrompt, nil
 	}
 	var b strings.Builder
 	b.WriteString(adtyTranslationSystemPrompt)
@@ -202,7 +212,7 @@ func buildAdtyTranslationSystemPrompt(source string) string {
 		b.WriteString(strconv.Quote(term.Target))
 	}
 	b.WriteByte('.')
-	return b.String()
+	return b.String(), nil
 }
 
 func adtyTranslationKeepsGlossary(source, english string) bool {

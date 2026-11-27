@@ -2,6 +2,7 @@ package openai
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -187,16 +188,25 @@ func OaiResponsesBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 					imageCounter.Observe(streamResp.Item, streamResp.OutputIndex)
 				}
 			}
-		case "response.completed", "response.done", "response.incomplete":
+		case "response.completed", "response.done", "response.incomplete", "response.cancelled", "response.canceled":
 			terminalEventType = streamResp.Type
 			terminalRaw = append([]byte(nil), data...)
 			finalResponse = streamResp.Response
-			if streamResp.Type == "response.incomplete" {
+			if streamResp.Type == "response.incomplete" || streamResp.Type == "response.cancelled" || streamResp.Type == "response.canceled" {
 				if finalResponse == nil {
-					finalResponse = &dto.OpenAIResponsesResponse{}
+					finalResponse = &dto.OpenAIResponsesResponse{
+						ID:        helper.GetResponseID(c),
+						Object:    "response",
+						CreatedAt: dto.IntValue(time.Now().Unix()),
+						Model:     info.GetUpstreamModelName(),
+					}
 				}
 				if len(finalResponse.Status) == 0 {
-					finalResponse.Status = []byte(`"incomplete"`)
+					if streamResp.Type == "response.incomplete" {
+						finalResponse.Status = []byte(`"incomplete"`)
+					} else {
+						finalResponse.Status = []byte(`"cancelled"`)
+					}
 				}
 			}
 		case "error", "response.failed", "response.error":
@@ -213,7 +223,7 @@ func OaiResponsesBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 		return nil, streamErr
 	}
 	if err := scanner.Err(); err != nil {
-		if helper.ClientRequestCanceled(c) {
+		if helper.ClientRequestCanceled(c) || errors.Is(err, context.Canceled) {
 			return nil, types.NewError(err, types.ErrorCodeRequestCancelled, types.ErrOptionWithStatusCode(499), types.ErrOptionWithSkipRetry(), types.ErrOptionWithHideErrMsg("client closed request"))
 		}
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
@@ -268,6 +278,10 @@ func OaiResponsesBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 			responseBody = []byte(rawResp.Raw)
 			if terminalEventType == "response.incomplete" && !gjson.GetBytes(responseBody, "status").Exists() {
 				if patched, err := sjson.SetBytes(responseBody, "status", "incomplete"); err == nil {
+					responseBody = patched
+				}
+			} else if (terminalEventType == "response.cancelled" || terminalEventType == "response.canceled") && !gjson.GetBytes(responseBody, "status").Exists() {
+				if patched, err := sjson.SetBytes(responseBody, "status", "cancelled"); err == nil {
 					responseBody = patched
 				}
 			}
@@ -328,6 +342,7 @@ func OaiResponsesBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 		}
 		jsonResp.Header.Set("Content-Type", "application/json")
 		jsonResp.Header.Del("Transfer-Encoding")
+		jsonResp.Header.Del("Content-Length")
 		service.IOCopyBytesGracefully(c, &jsonResp, responseBody)
 	}
 

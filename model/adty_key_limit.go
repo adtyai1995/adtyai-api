@@ -73,8 +73,14 @@ func GetAdtyKeyLimits(tokenID int) (AdtyKeyLimits, error) {
 			key = sqlDB
 		}
 		if _, ok := migratedKeyLimitDBs.Load(key); !ok {
-			if DB.Migrator().HasTable(&AdtyKeyLimits{}) {
-				_ = EnsureAdtyKeyLimitSchema(DB)
+			hasKeyLimitsTable, err := AdtyTableExists(DB, &AdtyKeyLimits{})
+			if err != nil {
+				return AdtyKeyLimits{}, err
+			}
+			if hasKeyLimitsTable {
+				if err := EnsureAdtyKeyLimitSchema(DB); err != nil {
+					return AdtyKeyLimits{}, err
+				}
 			}
 		}
 	}

@@ -172,6 +172,7 @@ var (
 	ErrAdtyTopUpNotCancel       = errors.New("adty topup cannot be canceled")
 	ErrAdtyDuplicatePayment     = errors.New("duplicate payment on a completed order")
 	ErrAdtyOwnerTopupReview     = errors.New("owner self-use payment requires review for the original closed site")
+	ErrAdtyEpayChannelRevoked   = common.NewMessage("This payment channel has been permanently revoked")
 	ErrAdtyTooManyPendingOrders = common.NewMessage("Too many pending payment orders. Please complete or cancel an existing order first")
 )
 
@@ -377,10 +378,16 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 	switch topUp.Status {
 	case common.TopUpStatusSuccess:
 		if facts.ActorRole > 0 || facts.DenyAdminTarget {
-			if ext.TeamId > 0 && tx.Migrator().HasTable(&AdtyTeam{}) {
-				var team AdtyTeam
-				if err := lockForUpdate(tx).Select("id").Where("id = ?", ext.TeamId).Limit(1).Find(&team).Error; err != nil {
+			if ext.TeamId > 0 {
+				hasTeamTable, err := AdtyTableExists(tx, &AdtyTeam{})
+				if err != nil {
 					return false, 0, nil, nil, err
+				}
+				if hasTeamTable {
+					var team AdtyTeam
+					if err := lockForUpdate(tx).Select("id").Where("id = ?", ext.TeamId).Limit(1).Find(&team).Error; err != nil {
+						return false, 0, nil, nil, err
+					}
 				}
 			}
 			var targetUser User
@@ -431,7 +438,7 @@ func CompleteAdtyTopUpTx(tx *gorm.DB, tradeNo string, facts AdtyPaymentFacts) (a
 				return false, 0, nil, nil, err
 			}
 			if channel.Status == AdtyEpayStatusRevoked {
-				return false, 0, nil, nil, common.NewMessage("This payment channel has been permanently revoked")
+				return false, 0, nil, nil, ErrAdtyEpayChannelRevoked
 			}
 		}
 	}

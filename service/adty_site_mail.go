@@ -1432,7 +1432,11 @@ func collectAdtySiteCloseMailEligibleUsers(tx *gorm.DB, siteId int) ([]model.Use
 	addUsers(inheritedUsers)
 
 	archivedIDs := make([]int, 0)
-	if tx.Migrator().HasTable(&model.AdtySiteCustomer{}) {
+	hasSiteCustomerTable, err := model.AdtyTableExists(tx, &model.AdtySiteCustomer{})
+	if err != nil {
+		return nil, err
+	}
+	if hasSiteCustomerTable {
 		var custIDs []int
 		if err := tx.Model(&model.AdtySiteCustomer{}).Where("site_id = ?", siteId).Pluck("user_id", &custIDs).Error; err != nil {
 			return nil, err
@@ -1443,7 +1447,11 @@ func collectAdtySiteCloseMailEligibleUsers(tx *gorm.DB, siteId int) ([]model.Use
 			}
 		}
 	}
-	if tx.Migrator().HasTable(&model.AdtyUserSiteMigration{}) {
+	hasMigrationTable, err := model.AdtyTableExists(tx, &model.AdtyUserSiteMigration{})
+	if err != nil {
+		return nil, err
+	}
+	if hasMigrationTable {
 		var migIDs []int
 		if err := tx.Model(&model.AdtyUserSiteMigration{}).Where("source_site_id = ?", siteId).Pluck("user_id", &migIDs).Error; err != nil {
 			return nil, err

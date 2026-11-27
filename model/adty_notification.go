@@ -153,13 +153,25 @@ func UpdateAdtyNotificationPublicationTx(tx *gorm.DB, row *AdtyNotificationPubli
 		// later edits carry the stored value forward unchanged.
 		"published_at": row.PublishedAt,
 	}
-	if tx.Migrator().HasColumn(&AdtyNotificationPublication{}, "target_audiences") {
+	hasTargetAudiencesCol, err := AdtyColumnExists(tx, &AdtyNotificationPublication{}, "target_audiences")
+	if err != nil {
+		return err
+	}
+	if hasTargetAudiencesCol {
 		updates["target_audiences"] = row.TargetAudiences
 	}
-	if tx.Migrator().HasColumn(&AdtyNotificationPublication{}, "target_site_ids") {
+	hasTargetSiteIDsCol, err := AdtyColumnExists(tx, &AdtyNotificationPublication{}, "target_site_ids")
+	if err != nil {
+		return err
+	}
+	if hasTargetSiteIDsCol {
 		updates["target_site_ids"] = row.TargetSiteIDs
 	}
-	if tx.Migrator().HasColumn(&AdtyNotificationPublication{}, "content_format") {
+	hasContentFormatCol, err := AdtyColumnExists(tx, &AdtyNotificationPublication{}, "content_format")
+	if err != nil {
+		return err
+	}
+	if hasContentFormatCol {
 		format := row.ContentFormat
 		if format == "" {
 			format = "markdown"
@@ -268,8 +280,14 @@ func ListAdtyNotificationsForSite(siteID int, limit int) ([]AdtyNotificationPubl
 	query := DB.Model(&AdtyNotificationPublication{}).Where("status = ?", "published")
 	// 与登录收件箱的 platformAudiences 对齐。两处规则必须一起改。
 	platformAudiences := []string{"all_users", "all_sites", "all"}
-	hasTargetAudiences := DB.Migrator().HasColumn(&AdtyNotificationPublication{}, "target_audiences")
-	hasTargetSiteIDs := DB.Migrator().HasColumn(&AdtyNotificationPublication{}, "target_site_ids")
+	hasTargetAudiences, err := AdtyColumnExists(DB, &AdtyNotificationPublication{}, "target_audiences")
+	if err != nil {
+		return nil, err
+	}
+	hasTargetSiteIDs, err := AdtyColumnExists(DB, &AdtyNotificationPublication{}, "target_site_ids")
+	if err != nil {
+		return nil, err
+	}
 
 	if !hasTargetAudiences {
 		if siteID == 0 {
@@ -297,7 +315,7 @@ func ListAdtyNotificationsForSite(siteID int, limit int) ([]AdtyNotificationPubl
 			args...,
 		)
 	}
-	err := query.Order("published_at DESC, id DESC").Limit(limit).Find(&items).Error
+	err = query.Order("published_at DESC, id DESC").Limit(limit).Find(&items).Error
 	return items, err
 }
 

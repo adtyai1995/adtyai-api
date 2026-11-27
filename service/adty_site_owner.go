@@ -429,7 +429,11 @@ func ListAdtyOwnerCustomerLogs(site *model.AdtySite, userId, offset, limit int) 
 		return nil, 0, err
 	}
 	var logs []model.Log
-	if err := query.Order("id DESC").Offset(offset).Limit(limit).Find(&logs).Error; err != nil {
+	order := "id DESC"
+	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+		order = "created_at DESC, request_id DESC"
+	}
+	if err := query.Order(order).Offset(offset).Limit(limit).Find(&logs).Error; err != nil {
 		return nil, 0, err
 	}
 	items := make([]AdtyOwnerLog, 0, len(logs))

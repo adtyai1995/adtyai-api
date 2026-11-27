@@ -134,7 +134,11 @@ func EnsureUsernameUniqueIndex(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("username unique index: database is nil")
 	}
-	if !db.Migrator().HasTable(&User{}) {
+	hasUserTable, err := AdtyTableExists(db, &User{})
+	if err != nil {
+		return err
+	}
+	if !hasUserTable {
 		return nil
 	}
 	duplicates, err := countNormalizedUsernameCollisions(db)

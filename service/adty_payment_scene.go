@@ -254,7 +254,11 @@ func adtyPaymentIdentity(db *gorm.DB, userID int, lock bool) (*model.User, strin
 		kind = "site_customer"
 	default:
 		var ownedSites int64
-		if db.Migrator().HasTable(&model.AdtySite{}) {
+		hasSiteTable, err := model.AdtyTableExists(db, &model.AdtySite{})
+		if err != nil {
+			return nil, "", err
+		}
+		if hasSiteTable {
 			if err := db.Model(&model.AdtySite{}).
 				Where("owner_user_id = ? AND status NOT IN ?", userID, []string{model.AdtySiteStatusClosed, model.AdtySiteStatusDeleting}).
 				Count(&ownedSites).Error; err != nil {

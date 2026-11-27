@@ -34,7 +34,14 @@ var (
 var referralAssetExt = map[string]string{"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 
 func countUnboundReferralAssets(ownerUserId int) (int, error) {
-	if ownerUserId <= 0 || model.DB == nil || !model.DB.Migrator().HasTable(&model.ReferralAsset{}) {
+	if ownerUserId <= 0 || model.DB == nil {
+		return 0, nil
+	}
+	hasAssetTable, err := model.AdtyTableExists(model.DB, &model.ReferralAsset{})
+	if err != nil {
+		return 0, err
+	}
+	if !hasAssetTable {
 		return 0, nil
 	}
 	var assets []model.ReferralAsset
@@ -50,7 +57,11 @@ func countUnboundReferralAssets(ownerUserId int) (int, error) {
 			used[name] = struct{}{}
 		}
 	}
-	if model.DB.Migrator().HasTable(&model.ReferralWithdrawal{}) {
+	hasRefWithdrawTable, err := model.AdtyTableExists(model.DB, &model.ReferralWithdrawal{})
+	if err != nil {
+		return 0, err
+	}
+	if hasRefWithdrawTable {
 		var rows []model.ReferralWithdrawal
 		if err := model.DB.Select("qr_image_url", "payment_proof_url", "reject_proof_url").Where("user_id = ?", ownerUserId).Find(&rows).Error; err != nil {
 			return 0, err
@@ -61,7 +72,11 @@ func countUnboundReferralAssets(ownerUserId int) (int, error) {
 			markUsed(r.RejectProofURL)
 		}
 	}
-	if model.DB.Migrator().HasTable(&model.AdtySiteWithdrawal{}) {
+	hasSiteWithdrawTable, err := model.AdtyTableExists(model.DB, &model.AdtySiteWithdrawal{})
+	if err != nil {
+		return 0, err
+	}
+	if hasSiteWithdrawTable {
 		var rows []model.AdtySiteWithdrawal
 		if err := model.DB.Select("qr_image_url", "proof_note").Where("owner_user_id = ?", ownerUserId).Find(&rows).Error; err != nil {
 			return 0, err
@@ -71,9 +86,17 @@ func countUnboundReferralAssets(ownerUserId int) (int, error) {
 			markUsed(r.ProofNote)
 		}
 	}
-	if model.DB.Migrator().HasTable(&model.AdtySiteInviteWithdrawal{}) {
+	hasInviteWithdrawTable, err := model.AdtyTableExists(model.DB, &model.AdtySiteInviteWithdrawal{})
+	if err != nil {
+		return 0, err
+	}
+	if hasInviteWithdrawTable {
 		var ownedSiteIDs []int
-		if model.DB.Migrator().HasTable(&model.AdtySite{}) {
+		hasSiteTable, err := model.AdtyTableExists(model.DB, &model.AdtySite{})
+		if err != nil {
+			return 0, err
+		}
+		if hasSiteTable {
 			if err := model.DB.Model(&model.AdtySite{}).Where("owner_user_id = ?", ownerUserId).Pluck("id", &ownedSiteIDs).Error; err != nil {
 				return 0, err
 			}

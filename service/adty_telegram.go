@@ -268,7 +268,11 @@ func adtyTelegramAdminAccess(tx *gorm.DB, user *model.User) (bool, error) {
 		if user.Role >= common.RoleRootUser {
 			return true, nil
 		}
-		if tx.Migrator().HasTable(&model.CasbinRule{}) {
+		hasCasbinTable, err := model.AdtyTableExists(tx, &model.CasbinRule{})
+		if err != nil {
+			return false, err
+		}
+		if hasCasbinTable {
 			check, err := authz.PermissionCheckerInTx(tx.Where("v1 = ?", authz.ResourceAdtyTicket))
 			if err != nil {
 				return false, err
@@ -280,7 +284,11 @@ func adtyTelegramAdminAccess(tx *gorm.DB, user *model.User) (bool, error) {
 	}
 	// 2. 现役活跃分站站长
 	activeStatuses := []string{model.AdtySiteStatusActive, model.AdtySiteStatusPaused, model.AdtySiteStatusClosing}
-	if tx.Migrator().HasTable(&model.AdtySite{}) {
+	hasSiteTable, err := model.AdtyTableExists(tx, &model.AdtySite{})
+	if err != nil {
+		return false, err
+	}
+	if hasSiteTable {
 		var site model.AdtySite
 		owned := tx.Where("owner_user_id = ? AND status IN ?", user.Id, activeStatuses).Limit(1).Find(&site)
 		if owned.Error != nil {
@@ -290,7 +298,11 @@ func adtyTelegramAdminAccess(tx *gorm.DB, user *model.User) (bool, error) {
 			return true, nil
 		}
 		// 3. 具备分站工单权限的现役员工
-		if tx.Migrator().HasTable(&model.AdtySiteStaff{}) {
+		hasStaffTable, err := model.AdtyTableExists(tx, &model.AdtySiteStaff{})
+		if err != nil {
+			return false, err
+		}
+		if hasStaffTable {
 			var staff model.AdtySiteStaff
 			lookup := tx.Where("user_id = ? AND status = ?", user.Id, "enabled").Limit(1).Find(&staff)
 			if lookup.Error != nil {

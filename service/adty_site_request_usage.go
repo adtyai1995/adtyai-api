@@ -125,71 +125,141 @@ func GetAdtySiteUsageBreakdown(siteID int, from, to string) (*AdtySiteUsageBreak
 	}
 	byModel, byGroup, byPayer := usageBuckets{}, usageBuckets{}, usageBuckets{}
 	result := new(AdtySiteUsageBreakdown)
-	var logs []model.Log
-	err = model.LOG_DB.Model(&model.Log{}).
-		Select("id, request_id, user_id, token_id, model_name, "+model.AdtyGroupColumn()+", quota, other").
-		Where("type = ? AND created_at >= ? AND created_at < ?", model.LogTypeConsume, start, end).
-		FindInBatches(&logs, 500, func(_ *gorm.DB, _ int) error {
-			evidence := make([]usageLogEvidence, len(logs))
-			keys := make([]string, 0, len(logs))
-			for i, l := range logs {
-				var data struct {
-					Admin usageLogEvidence `json:"admin_info"`
-				}
-				if common.Unmarshal([]byte(l.Other), &data) == nil {
-					evidence[i] = data.Admin
-				}
-				if owner := evidence[i].Owner; owner != nil && owner.SiteID != nil && owner.payer() != "" && l.UserId > 0 {
-					continue
-				}
-				if evidence[i].OperationKey == "" && l.RequestId != "" {
-					evidence[i].OperationKey = "request:" + l.RequestId
-				}
-				if key := evidence[i].OperationKey; key != "" {
-					keys = append(keys, key)
-				}
-			}
-			ops := map[string]usageBillingEvidence{}
-			if len(keys) > 0 {
-				var matches []usageBillingEvidence
-				if err := model.DB.Model(&model.BillingOperation{}).Select("operation_key,site_id,user_id,token_id,payer_kind,payer_team_id").Where("operation_key IN ?", keys).Scan(&matches).Error; err != nil {
-					return err
-				}
-				for _, op := range matches {
-					ops[op.OperationKey] = op
-				}
-			}
-			for i, l := range logs {
-				site := evidence[i].SiteID
-				payer := ""
-				if owner := evidence[i].Owner; owner != nil && owner.SiteID != nil && owner.payer() != "" && l.UserId > 0 {
-					site, payer = owner.SiteID, owner.payer()
-				} else if op, ok := ops[evidence[i].OperationKey]; ok && op.UserId == l.UserId && l.UserId > 0 && op.TokenId == l.TokenId {
-					if site != nil && op.SiteId != nil && *site != *op.SiteId {
-						site = nil
-					} else {
-						if op.SiteId != nil {
-							site = op.SiteId
-						}
-						payer = (requestUsageOwner{SiteID: site, PayerKind: op.PayerKind, PayerTeamID: op.PayerTeamId}).payer()
-					}
-				}
-				quota := int64(l.Quota)
-				switch {
-				case site == nil || *site < 0:
-					result.UnknownSite.add(quota)
-				case *site != siteID:
-					continue
-				case payer == "":
-					result.Unverified.add(quota)
-				default:
-					byModel.add(l.ModelName, quota)
-					byGroup.add(l.Group, quota)
-					byPayer.add(payer, quota)
-				}
-			}
+	selectCols := "id, created_at, request_id, user_id, token_id, model_name, " + model.AdtyGroupColumn() + ", quota, other"
+	processBatch := func(batch []model.Log) error {
+		if len(batch) == 0 {
 			return nil
-		}).Error
+		}
+		evidence := make([]usageLogEvidence, len(batch))
+		keys := make([]string, 0, len(batch))
+		for i, l := range batch {
+			var data struct {
+				Admin usageLogEvidence `json:"admin_info"`
+			}
+			if common.Unmarshal([]byte(l.Other), &data) == nil {
+				evidence[i] = data.Admin
+			}
+			if owner := evidence[i].Owner; owner != nil && owner.SiteID != nil && owner.payer() != "" && l.UserId > 0 {
+				continue
+			}
+			if evidence[i].OperationKey == "" && l.RequestId != "" {
+				evidence[i].OperationKey = "request:" + l.RequestId
+			}
+			if key := evidence[i].OperationKey; key != "" {
+				keys = append(keys, key)
+			}
+		}
+		ops := map[string]usageBillingEvidence{}
+		if len(keys) > 0 {
+			var matches []usageBillingEvidence
+			if err := model.DB.Model(&model.BillingOperation{}).Select("operation_key,site_id,user_id,token_id,payer_kind,payer_team_id").Where("operation_key IN ?", keys).Scan(&matches).Error; err != nil {
+				return err
+			}
+			for _, op := range matches {
+				ops[op.OperationKey] = op
+			}
+		}
+		for i, l := range batch {
+			site := evidence[i].SiteID
+			payer := ""
+			if owner := evidence[i].Owner; owner != nil && owner.SiteID != nil && owner.payer() != "" && l.UserId > 0 {
+				site, payer = owner.SiteID, owner.payer()
+			} else if op, ok := ops[evidence[i].OperationKey]; ok && op.UserId == l.UserId && l.UserId > 0 && op.TokenId == l.TokenId {
+				if site != nil && op.SiteId != nil && *site != *op.SiteId {
+					site = nil
+				} else {
+					if op.SiteId != nil {
+						site = op.SiteId
+					}
+					payer = (requestUsageOwner{SiteID: site, PayerKind: op.PayerKind, PayerTeamID: op.PayerTeamId}).payer()
+				}
+			}
+			quota := int64(l.Quota)
+			switch {
+			case site == nil || *site < 0:
+				result.UnknownSite.add(quota)
+			case *site != siteID:
+				continue
+			case payer == "":
+				result.Unverified.add(quota)
+			default:
+				byModel.add(l.ModelName, quota)
+				byGroup.add(l.Group, quota)
+				byPayer.add(payer, quota)
+			}
+		}
+		return nil
+	}
+	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+		const batchSize = 500
+		cursorCreatedAt := start
+		for cursorCreatedAt < end {
+			var batch []model.Log
+			if err = model.LOG_DB.Model(&model.Log{}).
+				Select(selectCols).
+				Where("type = ? AND created_at >= ? AND created_at < ?", model.LogTypeConsume, cursorCreatedAt, end).
+				Order("created_at ASC, request_id ASC").
+				Limit(batchSize).
+				Find(&batch).Error; err != nil {
+				return nil, err
+			}
+			if len(batch) == 0 {
+				break
+			}
+			if len(batch) < batchSize {
+				if err = processBatch(batch); err != nil {
+					return nil, err
+				}
+				break
+			}
+			firstSec := batch[0].CreatedAt
+			lastSec := batch[len(batch)-1].CreatedAt
+			if lastSec > firstSec {
+				cut := len(batch)
+				for cut > 0 && batch[cut-1].CreatedAt == lastSec {
+					cut--
+				}
+				if err = processBatch(batch[:cut]); err != nil {
+					return nil, err
+				}
+				cursorCreatedAt = lastSec
+				continue
+			}
+			// All batchSize rows share the exact same created_at second: drain
+			// that single second deterministically so duplicate (created_at, request_id)
+			// rows are neither skipped nor double-counted.
+			for offset := 0; ; offset += batchSize {
+				var secBatch []model.Log
+				if err = model.LOG_DB.Model(&model.Log{}).
+					Select(selectCols).
+					Where("type = ? AND created_at = ?", model.LogTypeConsume, firstSec).
+					Order("request_id ASC, user_id ASC, token_id ASC, model_name ASC, quota ASC, other ASC").
+					Offset(offset).
+					Limit(batchSize).
+					Find(&secBatch).Error; err != nil {
+					return nil, err
+				}
+				if len(secBatch) == 0 {
+					break
+				}
+				if err = processBatch(secBatch); err != nil {
+					return nil, err
+				}
+				if len(secBatch) < batchSize {
+					break
+				}
+			}
+			cursorCreatedAt = firstSec + 1
+		}
+	} else {
+		var logs []model.Log
+		err = model.LOG_DB.Model(&model.Log{}).
+			Select(selectCols).
+			Where("type = ? AND created_at >= ? AND created_at < ?", model.LogTypeConsume, start, end).
+			FindInBatches(&logs, 500, func(_ *gorm.DB, _ int) error {
+				return processBatch(logs)
+			}).Error
+	}
 	if err != nil {
 		return nil, err
 	}

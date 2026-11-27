@@ -150,6 +150,13 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 		return nil, newConvertRequestFailedError(c, info, err)
 	}
 	relaycommon.AppendRequestConversionFromRequest(info, convertedRequest)
+	if !isOpenAIResponsesUpstream(info) {
+		return nil, types.NewError(
+			fmt.Errorf("channel %s does not use OpenAI Responses wire format", constant.GetChannelTypeName(info.ChannelType)),
+			types.ErrorCodeConvertRequestFailed,
+			types.ErrOptionWithSkipRetry(),
+		)
+	}
 
 	jsonData, err := common.Marshal(convertedRequest)
 	if err != nil {

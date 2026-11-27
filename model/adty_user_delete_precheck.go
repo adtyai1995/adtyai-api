@@ -87,7 +87,11 @@ func rejectActiveStaffIdentityForDelete(tx *gorm.DB, userId int) error {
 	if err := tx.Model(&User{}).Where("id = ?", userId).Select("staff_site_id").Scan(&staffSiteId).Error; err != nil {
 		return err
 	}
-	if !tx.Migrator().HasTable(&AdtySiteStaff{}) {
+	hasStaffTable, err := AdtyTableExists(tx, &AdtySiteStaff{})
+	if err != nil {
+		return err
+	}
+	if !hasStaffTable {
 		if staffSiteId != 0 {
 			return ErrUserDeleteActiveStaff
 		}
@@ -117,7 +121,11 @@ func rejectActiveStaffIdentityForDelete(tx *gorm.DB, userId int) error {
 }
 
 func rejectUnfinishedTeamFinanceForDelete(tx *gorm.DB, userId int) error {
-	if !tx.Migrator().HasTable(&AdtyTeam{}) {
+	hasTeamTable, err := AdtyTableExists(tx, &AdtyTeam{})
+	if err != nil {
+		return err
+	}
+	if !hasTeamTable {
 		return nil
 	}
 	var team AdtyTeam
@@ -128,11 +136,19 @@ func rejectUnfinishedTeamFinanceForDelete(tx *gorm.DB, userId int) error {
 	if lookup.RowsAffected == 0 {
 		return nil
 	}
-	if !tx.Migrator().HasTable(&AdtyTopupOrder{}) || !tx.Migrator().HasTable(&TopUp{}) {
+	hasTopupOrderTable, err := AdtyTableExists(tx, &AdtyTopupOrder{})
+	if err != nil {
+		return err
+	}
+	hasTopUpTable, err := AdtyTableExists(tx, &TopUp{})
+	if err != nil {
+		return err
+	}
+	if !hasTopupOrderTable || !hasTopUpTable {
 		return nil
 	}
 	var count int64
-	err := tx.Model(&TopUp{}).
+	err = tx.Model(&TopUp{}).
 		Joins("JOIN adty_topup_orders ON adty_topup_orders.trade_no = top_ups.trade_no").
 		Where("adty_topup_orders.team_id = ? AND top_ups.status = ?", team.Id, common.TopUpStatusPending).
 		Count(&count).Error
@@ -172,7 +188,15 @@ func rejectUnfinishedVouchersForDelete(tx *gorm.DB, userId int) error {
 	} else if blocked {
 		return ErrUserDeleteUnfinishedVoucher
 	}
-	if !tx.Migrator().HasTable(&AdtySite{}) || !tx.Migrator().HasTable(&AdtyVoucher{}) {
+	hasSiteTable, err := AdtyTableExists(tx, &AdtySite{})
+	if err != nil {
+		return err
+	}
+	hasVoucherTable, err := AdtyTableExists(tx, &AdtyVoucher{})
+	if err != nil {
+		return err
+	}
+	if !hasSiteTable || !hasVoucherTable {
 		return nil
 	}
 	var siteIDs []int
@@ -241,11 +265,19 @@ func rejectAttributablePaymentOrphansForDelete(tx *gorm.DB, userId int) error {
 // event's ReferenceID is an existing trade_no of this user's unfinished order.
 // ReferenceID is never treated as a user_id, even when it happens to be numeric.
 func userHasReferenceAttributedPaymentOrphan(tx *gorm.DB, userId int) (bool, error) {
-	if !tx.Migrator().HasTable(&PaymentOrphanEvent{}) || !tx.Migrator().HasTable(&TopUp{}) {
+	hasOrphanTable, err := AdtyTableExists(tx, &PaymentOrphanEvent{})
+	if err != nil {
+		return false, err
+	}
+	hasTopUpTable, err := AdtyTableExists(tx, &TopUp{})
+	if err != nil {
+		return false, err
+	}
+	if !hasOrphanTable || !hasTopUpTable {
 		return false, nil
 	}
 	var count int64
-	err := tx.Model(&PaymentOrphanEvent{}).
+	err = tx.Model(&PaymentOrphanEvent{}).
 		Joins("JOIN top_ups ON top_ups.trade_no = adty_payment_orphan_events.reference_id").
 		Where("adty_payment_orphan_events.status = ? AND adty_payment_orphan_events.reference_id <> ? AND top_ups.user_id = ? AND top_ups.status IN ?",
 			PaymentOrphanStatusPendingReview, "", userId, userDeleteUnfinishedTopUpStatuses,
@@ -263,7 +295,19 @@ func userHasReferenceAttributedPaymentOrphan(tx *gorm.DB, userId int) (bool, err
 // Zero or multiple matches, a missing provider, or an order owned by someone
 // else are not safe attribution.
 func userHasSessionAttributedPaymentOrphan(tx *gorm.DB, userId int) (bool, error) {
-	if !tx.Migrator().HasTable(&PaymentOrphanEvent{}) || !tx.Migrator().HasTable(&AdtyTopupOrder{}) || !tx.Migrator().HasTable(&TopUp{}) {
+	hasOrphanTable, err := AdtyTableExists(tx, &PaymentOrphanEvent{})
+	if err != nil {
+		return false, err
+	}
+	hasTopupOrderTable, err := AdtyTableExists(tx, &AdtyTopupOrder{})
+	if err != nil {
+		return false, err
+	}
+	hasTopUpTable, err := AdtyTableExists(tx, &TopUp{})
+	if err != nil {
+		return false, err
+	}
+	if !hasOrphanTable || !hasTopupOrderTable || !hasTopUpTable {
 		return false, nil
 	}
 	var orders []AdtyTopupOrder
@@ -338,7 +382,11 @@ func userHasSessionAttributedPaymentOrphan(tx *gorm.DB, userId int) (bool, error
 }
 
 func userDeleteHasRows(tx *gorm.DB, model any, query string, args ...any) (bool, error) {
-	if !tx.Migrator().HasTable(model) {
+	hasTable, err := AdtyTableExists(tx, model)
+	if err != nil {
+		return false, err
+	}
+	if !hasTable {
 		return false, nil
 	}
 	var count int64
@@ -349,7 +397,14 @@ func userDeleteHasRows(tx *gorm.DB, model any, query string, args ...any) (bool,
 }
 
 func revokeLiveAPIKeysWithTx(tx *gorm.DB, userId int) error {
-	if tx == nil || userId <= 0 || !tx.Migrator().HasTable(&Token{}) {
+	if tx == nil || userId <= 0 {
+		return nil
+	}
+	hasTokenTable, err := AdtyTableExists(tx, &Token{})
+	if err != nil {
+		return err
+	}
+	if !hasTokenTable {
 		return nil
 	}
 	return tx.Model(&Token{}).Where("user_id = ? AND status = ?", userId, common.TokenStatusEnabled).

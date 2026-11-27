@@ -254,7 +254,7 @@ func PreviewModelPricing(name string, draft PricingValues) (PricingValues, error
 	if err != nil {
 		return nil, err
 	}
-	if err := validateModelPricing(name, draft, modelPricingValues(values, name)); err != nil {
+	if err := validateModelPricingWithSnapshot(captureTaskAliasSnapshot(), name, draft, modelPricingValues(values, name)); err != nil {
 		return nil, err
 	}
 	replaceModelPricing(values, name, draft)
@@ -519,16 +519,21 @@ func ValidateModelPricing(name string, values PricingValues) error {
 	if expression, ok := billing_setting.GetBillingExpr(name); ok {
 		previous["billing_setting.billing_expr"] = expression
 	}
-	return validateModelPricing(name, values, previous)
+	return validateModelPricingWithSnapshot(captureTaskAliasSnapshot(), name, values, previous)
 }
 
 // Writes pass the locked database snapshot here, so allowing an unchanged stale
 // override cannot bypass validation through an out-of-date process-local cache.
-func validateModelPricing(name string, values, previous PricingValues) error {
+// Callers inside a transaction pass a pre-captured taskAliasSnapshot so neither
+// TTL expiry nor a concurrent plugin reload can trigger an outer DB query.
+func validateModelPricingWithSnapshot(snapshot taskAliasSnapshot, name string, values, previous PricingValues) error {
 	if strings.TrimSpace(name) == "" {
 		return common.NewMessage("Model name is required")
 	}
-	generation := jsplugin.DefaultRegistry.Generation()
+	generation := snapshot.generation
+	if generation == nil {
+		generation = jsplugin.DefaultRegistry.Generation()
+	}
 	previousVariants, _ := previous[billing_setting.PluginBillingExprOption].(map[string]any)
 	variants := map[string]any{}
 	if value, exists := values[billing_setting.PluginBillingExprOption]; exists {
@@ -600,7 +605,7 @@ func validateModelPricing(name string, values, previous PricingValues) error {
 						return common.NewMessage("Model {{model}} plugin {{plugin}}: {{error}}", map[string]any{"model": name, "plugin": plugin.Meta.Key, "error": err.Error()})
 					}
 				}
-			} else if target, resolved := ResolveTaskModelAlias(generation, name); resolved {
+			} else if target, resolved := snapshot.resolve(name); resolved {
 				if plugin, ok := generation.Get(target.PluginKey); ok {
 					if !unchanged || generation.SharedModel(target.Declared) {
 						schema, _ := plugin.Meta.UsageForModel(target.Declared)
@@ -649,7 +654,7 @@ func UpdateModelPricing(changes []ModelPricingChange) error {
 			return ErrModelPricingConflict
 		}
 	}
-	return mutateModelPricingOptions(func(_ *gorm.DB, values map[string]map[string]any) error {
+	return mutateModelPricingOptions(func(_ *gorm.DB, snapshot taskAliasSnapshot, values map[string]map[string]any) error {
 		defaults := defaultPricingMaps()
 		for _, change := range changes {
 			previous := modelPricingValues(values, change.ModelName)
@@ -660,7 +665,7 @@ func UpdateModelPricing(changes []ModelPricingChange) error {
 			if change.Reset {
 				pricing = modelPricingValues(defaults, change.ModelName)
 			}
-			if err := validateModelPricing(change.ModelName, pricing, previous); err != nil {
+			if err := validateModelPricingWithSnapshot(snapshot, change.ModelName, pricing, previous); err != nil {
 				return err
 			}
 			replaceModelPricing(values, change.ModelName, pricing)
@@ -678,7 +683,7 @@ func UpdateModelPricingPartial(changes []ModelPricingChange) (updated []string, 
 	}
 	updated = make([]string, 0, len(changes))
 	failed = make([]FailedModelPricingUpdate, 0)
-	err = mutateModelPricingOptions(func(_ *gorm.DB, values map[string]map[string]any) error {
+	err = mutateModelPricingOptions(func(_ *gorm.DB, snapshot taskAliasSnapshot, values map[string]map[string]any) error {
 		defaults := defaultPricingMaps()
 		seen := make(map[string]bool, len(changes))
 		for _, change := range changes {
@@ -709,7 +714,7 @@ func UpdateModelPricingPartial(changes []ModelPricingChange) (updated []string, 
 			if change.Reset {
 				pricing = modelPricingValues(defaults, change.ModelName)
 			}
-			if vErr := validateModelPricing(change.ModelName, pricing, previous); vErr != nil {
+			if vErr := validateModelPricingWithSnapshot(snapshot, change.ModelName, pricing, previous); vErr != nil {
 				failed = append(failed, FailedModelPricingUpdate{
 					ModelName: change.ModelName,
 					Error:     vErr.Error(),
@@ -741,7 +746,7 @@ func UpdateModelPricingPartial(changes []ModelPricingChange) (updated []string, 
 // UpdateModelPricingOptions keeps legacy single-option callers on the same
 // locking, validation and transaction path as the model-level API.
 func UpdateModelPricingOptions(updates map[string]string, audits ...func(*gorm.DB) error) error {
-	return mutateModelPricingOptions(func(tx *gorm.DB, values map[string]map[string]any) error {
+	return mutateModelPricingOptions(func(tx *gorm.DB, snapshot taskAliasSnapshot, values map[string]map[string]any) error {
 		for _, audit := range audits {
 			if err := audit(tx); err != nil {
 				return err
@@ -775,7 +780,7 @@ func UpdateModelPricingOptions(updates map[string]string, audits ...func(*gorm.D
 			values[key] = entries
 		}
 		for name := range names {
-			if err := validateModelPricing(name, modelPricingValues(values, name), modelPricingValues(previous, name)); err != nil {
+			if err := validateModelPricingWithSnapshot(snapshot, name, modelPricingValues(values, name), modelPricingValues(previous, name)); err != nil {
 				return err
 			}
 		}
@@ -783,12 +788,13 @@ func UpdateModelPricingOptions(updates map[string]string, audits ...func(*gorm.D
 	})
 }
 
-func mutateModelPricingOptions(mutate func(*gorm.DB, map[string]map[string]any) error) error {
+func mutateModelPricingOptions(mutate func(*gorm.DB, taskAliasSnapshot, map[string]map[string]any) error) error {
 	modelPricingMutationMu.Lock()
 	defer modelPricingMutationMu.Unlock()
-	// Pre-warm the 60s task-alias cache before starting the FOR UPDATE
-	// transaction so validateModelPricing never queries outer DB inside tx.
-	prewarmTaskAliasView()
+	// Capture a consistent (generation, taskAliasView) snapshot before starting
+	// the FOR UPDATE transaction so validateModelPricing never queries outer DB
+	// inside tx even on TTL expiry or concurrent plugin reloads.
+	snapshot := captureTaskAliasSnapshot()
 	sortedKeys := slices.Clone(modelPricingOptionKeys)
 	slices.Sort(sortedKeys)
 	var committed map[string]map[string]any
@@ -814,7 +820,7 @@ func mutateModelPricingOptions(mutate func(*gorm.DB, map[string]map[string]any) 
 		if len(duplicated) > 0 {
 			common.SysError(common.LogText("options table has duplicate pricing keys [%s]; the table is missing a primary key", strings.Join(duplicated, ", ")))
 		}
-		if err := mutate(tx, values); err != nil {
+		if err := mutate(tx, snapshot, values); err != nil {
 			return err
 		}
 		for _, key := range sortedKeys {
