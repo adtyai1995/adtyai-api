@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"context"
 	"net/http"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/service"
@@ -79,6 +81,22 @@ func AddAdtySiteDomainPair(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, domains)
+}
+
+// CheckAdtySiteDomainNow 站长立即检测自定义域名 DNS 并触发一次对账：POST /api/adty/site/domains/:id/check。
+func CheckAdtySiteDomainNow(c *gin.Context) {
+	id, ok := siteIdParam(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	domain, err := service.CheckAdtySiteDomainNow(ctx, c.GetInt("id"), id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, domain)
 }
 
 // RemoveAdtySiteDomain 删除自定义域名：DELETE /api/adty/site/domains/:id（任务 11.8）。

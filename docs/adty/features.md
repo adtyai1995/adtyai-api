@@ -329,12 +329,12 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 - **两种 role 与强制成对绑定（`[R-37] #3`）**：每个自定义域名带 `role`，每站每种 role **最多绑定 1 个自定义域名**（即至多 1 个网站域名 `role=site` + 1 个 API 域名 `role=base_url`；超出同 role 槽位上限拒绝 `ErrAdtyCustomDomainRoleLimit`）。前端通过 `POST /api/adty/site/domains/pair {site_hostname, api_hostname}` 在同一事务内**强制成对同时绑定**网站域名与 API 域名（两者均必填且不可相同，见 `controller/adty_reseller.go:66-82`、`service/adty_cloudflare_saas.go:652-780`、`model/adty_site_domain.go:13-28`）；单域名接口 `POST /api/adty/site/domains {hostname, role}` 保留后端兼容并同样执行每 role 最多 1 个的槽位上限：
   - `role=site`（默认）承接网站、登录、充值、支付返回和账户接口。模型调用在转发与预扣前返回 403。
   - `role=base_url`：API 地址，承接全部模型中转（`/v1`、`/v1beta`、`/mj`）以及本站客户端页面与探活/元信息接口（`/api/status`、`/api/ready`、`/api/uptime/status`、`/api/ratio_config`、`/api/pricing`、`/api/adty/groups/display`、`/api/adty/site`），同时禁止平台管理接口（返回 403）且不参与搜索引擎收录；关站后全部路径返回 403。
-- **流程**：站长在站点设置里成对填写网站子域名与 API 子域名（不能是根域名，两者不能相同，不能在我们的根域名、主站域名、CNAME 目标、回源主机名下）→ 后端先为两个域名生成归属校验令牌并进入 `pending_verify` 状态，站长添加对应的归属验证 DNS TXT 记录 → 验证归属通过后，后端调 Cloudflare 建自定义主机名（HTTP 验证、DV 证书），3 秒后再查一次取验证记录 → 站长中心显示「把这个域名 CNAME 到 `cname_target`」和要加的 TXT 记录 → 主节点每 5 分钟查一次，主机名和证书都是 active 才启用；72 小时还不通标失败，站长重新提交就是重试。
+- **流程**：站长在站点设置里成对填写网站子域名与 API 子域名（不能是根域名，两者不能相同，不能在我们的根域名、主站域名、CNAME 目标、回源主机名下）→ 后端先为两个域名生成归属校验令牌并进入 `pending` 状态，站长添加对应的归属验证 DNS TXT 记录与 CNAME 记录 → 后台按指数退避（30 秒起至 1 小时封顶）及生效前每 5 分钟自动核验，站长也可随时在待验证自定义域名卡片点击**「立即检测 DNS」**（`POST /api/adty/site/domains/:id/check`，单域名 10 秒冷却 + 租约互斥，跳过退避立即执行一次 DNS/Cloudflare 核验并实时回显结果）→ 验证归属通过后，后端调 Cloudflare 建自定义主机名（HTTP 验证、DV 证书），主机名和证书均为 `active` 且 HTTPS 探活通过即启用；72 小时还不通标失败，站长删除或重新提交即可重试。
 - **Turnstile**：域名启用后，按 `turnstile_widgets` 的顺序登记进第一个还有空位的 widget（每个 widget 最多 10 个域名）；名额满了域名照常能用，之后每 5 分钟重试登记。`/api/status` 按当前站点返回对应的 site key，校验时用对应的 secret，并核对 Cloudflare 返回的主机名。
 - `/api/status` 的 `server_address` 优先使用本站已激活的 `role=base_url` 域名，否则使用 `api-s<site_id>.<root_domain>`。原有主机名发生冲突时以站长后台返回的地址为准。同站 Key 换入口后继续按原个人或团队账户计费（原站长自用 Key 已退役返 410）。
 - 分站首份 HTML 根据请求主机名提供站名、标题与图标。未配置 Logo 时使用站名。外部客服使用本站联系方式，缺省时通过支持中心（`/support`）联系本站。
 - 切换前在现有版本先绑定独立 API 自定义域名并验证 DNS、TLS、模型列表、流式调用及在途任务查询，再向客户公布 Base URL 和切换日期。使用新默认域名的部署可先将专用主机引流到新版节点，迁移完成后升级网站入口。CDN 保留原始 Host，仅缓存静态资源，账户、支付及模型调用绕过共享缓存，流式接口支持 SSE/WebSocket。
-- 表：`adty_site_domains`（`role` 列）。接口：`GET /api/adty/site/domains`、`POST /api/adty/site/domains/pair`（推荐成对绑定）、`POST /api/adty/site/domains`（兼容单槽位接口，受每 role 上限 1 约束），`DELETE /api/adty/site/domains/:id`（要重新验证）。
+- 表：`adty_site_domains`（`role` 列）。接口：`GET /api/adty/site/domains`、`POST /api/adty/site/domains/pair`（推荐成对绑定）、`POST /api/adty/site/domains`（兼容单槽位接口，受每 role 上限 1 约束）、`POST /api/adty/site/domains/:id/check`（站长立即检测待验证自定义域名 DNS，10 秒冷却）、`DELETE /api/adty/site/domains/:id`（要重新验证）。
 - 2026-11-01 还没用真实的 Cloudflare 账号测过，代码按官方 API 文档写，上线前按任务 11.0 实测。
 
 ### 分站发件配置

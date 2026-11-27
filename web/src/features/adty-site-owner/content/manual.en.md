@@ -21,7 +21,7 @@ After receiving your owner account and default domains, complete these steps in 
 
 1. **Enable Two-Factor Authentication (2FA)** (`Security & Access`): Bind a TOTP authenticator app and store recovery codes offline. Sensitive actions (pricing changes, vouchers, withdrawals, password resets, staff management) require step-up verification.
 2. **Configure Branding & Support** (`Site settings → Brand`): Set your site name, page title, announcement, wallet notice, support contact, upload PNG/JPEG/WebP Logo & Favicon (≤ 200 KB), and click **Save brand**. If using Tawk.to live chat, fill in both `property_id` and `widget_id`.
-3. **Bind Custom Dual Domains (Optional)** (`Site settings → Custom domains`): Copy the platform's **default DNS CNAME target**, prepare two **distinct subdomains** (such as `www.yourdomain.com` for the website and `api.yourdomain.com` for API requests—**apex/root domains are prohibited**), submit them together, and add the generated `TXT` + `CNAME` records within 72 hours. If Mainland China homepage acceleration is enabled by the platform, you may optionally complete its two-step setup for your active custom website domain.
+3. **Bind Custom Dual Domains (Optional)** (`Site settings → Custom domains`): Copy the platform's **default DNS CNAME target**, prepare two **distinct subdomains** (such as `www.yourdomain.com` for the website and `api.yourdomain.com` for API requests—**apex/root domains are prohibited**), submit them together, add the generated `TXT` + `CNAME` records at your DNS provider, and click **Check DNS now** to verify immediately within 72 hours. If Mainland China homepage acceleration is enabled by the platform, you may optionally complete its two-step setup for your active custom website domain.
 4. **Publish Legal Documents** (`Site settings → Multilingual legal pages`): Subsites **never inherit** the main site's legal documents. Fill in `zh-CN` and `en` versions of your User Agreement, Privacy Policy, and Refund Policy as needed; publishing a User Agreement or Privacy Policy automatically enables the sign-up consent checkbox and footer links.
 5. **Configure Outbound Email & Test** (`Email configuration`): Subsites do not use a platform default mail transport. Configure **Custom SMTP** or your own **Resend API**, click **Save**, and then send a test email to confirm delivery. Until configured, subsite operational emails return an error prompting configuration.
 6. **Configure Basic Authentication** (`Basic Authentication`): Independently manage password login, new user sign-up, password registration, email verification (**disabled by default** and requires Step 5 outbound email first), email domain/alias restrictions, and the domain whitelist—completely isolated from main site settings.
@@ -76,10 +76,10 @@ Provides three tabs (`Teams`, `Create team`, `Team registration links`) matching
 
 ### 3.6 Recharge Bonus
 
-- Configure the **USDT** recharge bonus rate (all USDT chains share one rule; Alipay and WeChat Pay do not support recharge bonuses) from `0%` to `100%` when USDT is enabled on the main site. Applies only to regular customer online USDT wallet top-ups (not team top-ups or owner margin top-ups). Requires **step-up verification**.
+- Configure the **USDT** recharge bonus rate (shared across all enabled USDT deposit chains: TRC20 / ERC20 / BEP20 / Polygon / X Layer; Alipay and WeChat Pay do not support recharge bonuses) from `0%` to `100%` when USDT is enabled on the main site. Applies only to regular customer online USDT wallet top-ups (not team top-ups or owner margin top-ups). Requires **step-up verification**.
 - **Funding Pre-Freeze Warning**:
-  - The bonus amount is pre-frozen the instant a customer creates an online top-up order—first from **available earnings**, and then from your **margin cycle allowance** only if platform admins authorized margin bonus coverage.
-  - **If available funds cannot cover the bonus, customer checkout fails immediately.**
+  - The bonus amount is pre-frozen the instant a customer creates an online USDT top-up order—first from **available earnings**, and then from your **margin cycle allowance** only if platform admins authorized margin bonus coverage.
+  - **If available funds cannot cover the bonus, customer USDT checkout fails immediately.**
   - Canceled/expired orders release the pre-freeze; refunds only claw back the unconsumed bonus proportion.
 
 ### 3.7 Promotion Management
@@ -125,7 +125,7 @@ Displays your **Earnings Wallet (`earnings`)** and **Margin Wallet (`margin`)** 
 | **90% Cycle Allowance** (10% reserve floor) | Customer recharge bonus coverage & referral commission coverage | **Required** (independent switches) | Once exhausted, a **new real deposit** (online margin top-up, earnings-to-margin transfer, margin recharge code redemption, or admin credit) opens a fresh cycle and clears backlogged items |
 | **Excess Margin** (above 100% tier floor) | Customer quota voucher issuance when earnings are insufficient | **Not required** (automatic) | Does not consume the 90% cycle pool and never breaches your tier's 100% deposit floor; check this page or contact platform support for exact deposit requirements |
 
-- **Funding Margin**: Online margin top-up, instant earnings-to-margin transfer (no step-up needed, starts a new cycle immediately), or redeeming a platform-issued `site_margin` recharge code.
+- **Funding Margin**: Online margin top-up (via enabled Epay or USDT deposit chains; Epay checkout displays the USD amount due), instant earnings-to-margin transfer (no step-up needed, starts a new cycle immediately), or redeeming a platform-issued `site_margin` recharge code.
 - **Site Tiers**: Evaluated automatically based on cumulative net valid customer recharge principal (owner top-ups, margin deposits, and team top-ups do not count). Refer to your Site Owner Center or contact platform support for tier and supply discount details.
 
 ### 3.12 Redemption Codes
@@ -179,6 +179,8 @@ Choose one of two mutually exclusive outbound mail modes (secrets are stored enc
 3. **Multilingual Legal Pages**: Independent `en` and `zh-CN` User Agreement, Privacy Policy, and Refund Policy (never inherited from main site).
 4. **Custom Domains**:
    - Submit two **distinct subdomains** (`Website Domain` + `API Domain`, **never an apex/root domain**) together and complete `TXT + CNAME` verification within **72 hours**.
+   - **DNS Host Record Tip**: Most DNS providers (such as Aliyun DNS and Cloudflare) automatically append your root domain. Omit the trailing root domain when entering host names (for example, enter `_cf-custom-hostname.api` for the TXT record and `api` for the CNAME record of `api.yourdomain.com`) to avoid duplicated suffixes that prevent verification.
+   - **Automatic Check Schedule & "Check DNS now"**: While TXT ownership is not yet verified, background checks retry with exponential backoff (starting at 30 seconds up to 1 hour max); once TXT verifies, status checks run every 5 minutes until SSL activates. After adding DNS records, you can click **Check DNS now** on any pending custom domain card to verify immediately and refresh status right away (10-second cooldown per domain; no step-up required).
    - **Dual-Domain Boundary**: Website domain serves pages/console only (calling `/v1` returns HTTP 403); API domain serves model requests (and console access) with `noindex`.
    - **Mainland China Homepage Acceleration (Optional)**: Supported for active custom **Website Domains** only—Step 1 adds `_acme-challenge` CNAME delegation until the edge certificate is ready; Step 2 adds the Mainland China DNS line CNAME to the platform's mainland target. **Never configure Mainland DNS routing on an API domain.**
 5. **Search Engine Indexing**: Toggle indexing for your website domain (API domain is always `noindex`).
@@ -199,7 +201,7 @@ Manage password, email binding, active sessions, 2FA, and scoped Personal Access
 | Action | Step-Up Required | Digest-Bound | PAT Allowed |
 |---|:---:|:---:|:---:|
 | Save retail multiplier (`Pricing & Multiplier`) | Yes | No | Yes (`site_owner_setting:write`) |
-| Save recharge bonus (`Recharge Bonus`) | Yes | No | Yes (`site_owner_order:write`) |
+| Save USDT recharge bonus (`Recharge Bonus`) | Yes | No | Yes (`site_owner_order:write`) |
 | Save basic authentication (`Basic Authentication`) | Yes | No | Yes (`site_owner_setting:write`) |
 | Save email configuration (`Email configuration`) | Yes | No | Yes (`site_owner_setting:write`) |
 | Delete active or archived custom domain | Yes | No | Yes (`site_owner_setting:write`) |
@@ -209,7 +211,7 @@ Manage password, email binding, active sessions, 2FA, and scoped Personal Access
 | Submit USDT earnings withdrawal | Yes | **Yes** | Yes (`site_owner_order:write`) |
 | Initiate / advance customer manual refund | Yes | **Yes** | Yes (`site_owner_order:write`) |
 | Create / edit / reset / delete staff account | Yes | **Yes** | **No (live browser session only)** |
-| Brand, homepage, legal, SEO, referral settings, team multiplier, earnings-to-margin, notices, closure request | **No** | — | Yes (matching `site_owner_*` scope) |
+| Brand, homepage, legal, SEO, Check DNS now, referral settings, team multiplier, earnings-to-margin, notices, closure request | **No** | — | Yes (matching `site_owner_*` scope) |
 | Ticket management (`/api/adty/tickets*`) | **No** | — | Yes (both `profile:read` + `site_owner_customer:read` for reads, or both `profile:write` + `site_owner_customer:write` for writes) |
 
 ---
@@ -227,7 +229,7 @@ Manage password, email binding, active sessions, 2FA, and scoped Personal Access
 
 ## 6. Key Operational Pitfalls to Avoid
 
-1. **Check available funds before enabling Recharge Bonus**: Insufficient earnings without authorized margin coverage will cause customer top-up creation to fail.
+1. **Check available funds before enabling USDT Recharge Bonus**: Recharge bonuses apply to USDT only; insufficient earnings without authorized margin coverage will cause customer USDT top-up creation to fail.
 2. **Keep the two margin pools distinct**: The 90% cycle pool backs authorized bonus/commission coverage; excess margin backs voucher issuance.
 3. **Increasing the retail multiplier takes effect immediately and emails customers**: Verify decimals carefully before saving.
 4. **Voucher codes are shown once; Freeze has no Unfreeze**: Export codes immediately; use Cancel to return locked funds.
@@ -236,7 +238,7 @@ Manage password, email binding, active sessions, 2FA, and scoped Personal Access
 7. **Owner withdrawals are USDT-only across 4 networks**: Double-check network and address prefix (`T...` for TRC20, `0x...` for EVM chains).
 8. **Affiliate balance transfer is always free and instant**: Account for the up to 30% cap when pricing; observation days only start once a commission is 100% funded.
 9. **Affiliate cash withdrawals are paid offline by the site owner**: Transfer via USDT/Alipay and upload `TxID` or receipt proof.
-10. **Never bind apex domains, and always share your API Domain with customers**: Website domains reject `/v1` calls with 403; Mainland acceleration applies only to custom website domains after `_acme-challenge` certificate issuance.
+10. **Never bind apex domains, avoid duplicating the root suffix in DNS host records, and always share your API Domain with customers**: Click **Check DNS now** after adding records; website domains reject `/v1` calls with 403; Mainland acceleration applies only to custom website domains after `_acme-challenge` certificate issuance.
 11. **Subsite legal pages never fall back to main site text**: Fill both `en` and `zh-CN` where needed.
 12. **Custom SMTP blocks internal IPs—save before testing**; always click **Save brand** after uploading logos.
 13. **Exact customer lookup consumes hourly quota even on misses** (default 20/hour).

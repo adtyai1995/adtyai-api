@@ -2,9 +2,13 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -337,4 +341,132 @@ func TestR37DomainPairQuotaAndRateLimits(t *testing.T) {
 			t.Fatalf("expected 0 domains created on rate error, got %d", count)
 		}
 	})
+}
+
+func TestCheckAdtySiteDomainNowOwnerTrigger(t *testing.T) {
+	db := setupR37DomainTest(t, func(rs *adty_setting.ResellerSetting) {
+		rs.DomainAutomationEnabled = true
+	})
+	oldCF := AdtyCloudflare
+	oldProbe := adtyProbeDomainHTTPS
+	oldCooldown := adtyOwnerDomainCheckCooldown
+	t.Cleanup(func() {
+		AdtyCloudflare = oldCF
+		adtyProbeDomainHTTPS = oldProbe
+		adtyOwnerDomainCheckCooldown = oldCooldown
+	})
+
+	adtyProbeDomainHTTPS = func(context.Context, *model.AdtySiteDomain) error { return nil }
+	cfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/test-zone-id/custom_hostnames":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": []any{}})
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/test-zone-id/custom_hostnames":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result": map[string]any{
+					"id":       "cf-host-check-1",
+					"hostname": "api.checknow.org",
+					"status":   "active",
+					"ssl":      map[string]any{"status": "active"},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/test-zone-id/custom_hostnames/cf-host-check-1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result": map[string]any{
+					"id":       "cf-host-check-1",
+					"hostname": "api.checknow.org",
+					"status":   "active",
+					"ssl":      map[string]any{"status": "active"},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(cfSrv.Close)
+	AdtyCloudflare = &AdtyCloudflareClient{
+		BaseURL: cfSrv.URL,
+		HTTP:    cfSrv.Client(),
+		Token:   func() string { return "test-cf-token" },
+	}
+
+	site := createR37TestSite(t, db, 601, "checksite")
+	createR37TestSite(t, db, 602, "othersite")
+	ctx := context.Background()
+
+	pair, err := AddAdtySiteDomainPair(ctx, 601, "www.checknow.org", "api.checknow.org")
+	require.NoError(t, err)
+	require.Len(t, pair, 2)
+	apiDomain := pair[1]
+
+	// Put the domain into long retry backoff (+1 hour) and stale last_checked_at.
+	require.NoError(t, db.Model(&model.AdtySiteDomain{}).Where("id = ?", apiDomain.Id).Updates(map[string]any{
+		"automation_state": "retry",
+		"attempts":         6,
+		"next_run_at":      time.Now().Add(time.Hour).Unix(),
+		"last_checked_at":  time.Now().Add(-time.Minute).Unix(),
+	}).Error)
+
+	// 1. Immediate check bypasses 1-hour backoff and surfaces missing TXT right away.
+	checked, err := CheckAdtySiteDomainNow(ctx, 601, apiDomain.Id)
+	require.NoError(t, err)
+	assert.Equal(t, model.AdtySiteDomainPending, checked.Status)
+	assert.Equal(t, "retry", checked.AutomationState)
+	assert.Equal(t, "Domain ownership TXT is not verified", checked.LastError)
+	assert.Empty(t, checked.LeaseToken)
+	assert.Zero(t, checked.LeaseUntil)
+
+	// 2. Immediate repeat call within cooldown is rejected.
+	_, err = CheckAdtySiteDomainNow(ctx, 601, apiDomain.Id)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Please wait")
+
+	// 3. Cross-site owner is blocked.
+	_, err = CheckAdtySiteDomainNow(ctx, 602, apiDomain.Id)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Domain not found")
+
+	// 4. Platform-managed domain is blocked.
+	platformDom := model.AdtySiteDomain{
+		SiteId:          site.Id,
+		Hostname:        "checksite.platform.test",
+		Role:            model.AdtySiteDomainRoleSite,
+		ManagedBy:       "platform",
+		DesiredState:    "serve",
+		AutomationState: "retry",
+		Status:          model.AdtySiteDomainPending,
+		CreatedAt:       time.Now().Unix(),
+	}
+	require.NoError(t, db.Create(&platformDom).Error)
+	_, err = CheckAdtySiteDomainNow(ctx, 601, platformDom.Id)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Platform domains are managed by the platform")
+
+	// 5. Once TXT propagates and cooldown passes, CheckAdtySiteDomainNow activates immediately.
+	var stored model.AdtySiteDomain
+	require.NoError(t, db.First(&stored, apiDomain.Id).Error)
+	adtyLookupOwnershipTXT = func(ctx context.Context, name string) ([]string, error) {
+		if name == adtyOwnershipTXTName(apiDomain.Hostname) {
+			return []string{stored.OwnershipToken}, nil
+		}
+		return nil, &net.DNSError{IsNotFound: true}
+	}
+	require.NoError(t, db.Model(&model.AdtySiteDomain{}).Where("id = ?", apiDomain.Id).Update("last_checked_at", time.Now().Add(-time.Minute).Unix()).Error)
+
+	activated, err := CheckAdtySiteDomainNow(ctx, 601, apiDomain.Id)
+	require.NoError(t, err)
+	assert.Equal(t, model.AdtySiteDomainActive, activated.Status)
+	assert.Equal(t, "ready", activated.AutomationState)
+	assert.Empty(t, activated.LastError)
+	assert.Zero(t, activated.Attempts)
+	assert.Equal(t, "cf-host-check-1", activated.CFHostnameId)
+
+	// 6. Failed domain cannot be checked directly.
+	require.NoError(t, db.Model(&model.AdtySiteDomain{}).Where("id = ?", pair[0].Id).Update("status", model.AdtySiteDomainFailed).Error)
+	_, err = CheckAdtySiteDomainNow(ctx, 601, pair[0].Id)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed verification")
 }

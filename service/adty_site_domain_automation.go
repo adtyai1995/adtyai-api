@@ -19,6 +19,8 @@ import (
 
 const adtyActiveDomainProbeDemoteThreshold = 3
 
+var adtyOwnerDomainCheckCooldown = 10 * time.Second
+
 var (
 	adtyCloudflareZoneIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 	errAdtyDomainLeaseLost      = errors.New("domain automation lease lost")
@@ -157,6 +159,145 @@ func RunAdtyDomainAutomationOnce(ctx context.Context, now time.Time) error {
 		failures = append(failures, err)
 	}
 	return errors.Join(failures...)
+}
+
+// CheckAdtySiteDomainNow runs a single immediate DNS/Cloudflare verification check
+// for an owner's pending custom domain, bypassing retry backoff while preserving
+// ownership checks, active-site checks, per-domain cooldown, and lease isolation.
+func CheckAdtySiteDomainNow(ctx context.Context, ownerUserID int, domainID int) (*model.AdtySiteDomain, error) {
+	if domainID <= 0 {
+		return nil, common.NewMessage("Invalid parameters")
+	}
+	site, err := AdtyOwnerSite(ownerUserID)
+	if errors.Is(err, ErrAdtySiteNotOwner) {
+		return nil, ErrAdtySiteNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if site.Status != model.AdtySiteStatusActive {
+		return nil, ErrAdtySiteStatus
+	}
+	var row model.AdtySiteDomain
+	if err := model.DB.WithContext(ctx).
+		Where("id = ? AND site_id = ?", domainID, site.Id).
+		First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, common.NewMessage("Domain not found")
+		}
+		return nil, err
+	}
+	if row.ManagedBy == "platform" {
+		return nil, common.NewMessage("Platform domains are managed by the platform")
+	}
+	if row.Status == model.AdtySiteDomainRemoved || row.DesiredState == "removed" {
+		return nil, common.NewMessage("Domain not found")
+	}
+	if row.Status == model.AdtySiteDomainActive {
+		return &row, nil
+	}
+	if row.Status != model.AdtySiteDomainPending {
+		return nil, common.NewMessage("This domain failed verification. Delete it and add it again.")
+	}
+	now := time.Now()
+	if row.LeaseUntil > now.Unix() {
+		return nil, common.NewMessage("A DNS check is already in progress for this domain. Please try again in a few seconds.")
+	}
+	hasBeenChecked := row.LastCheckedAt > 0 &&
+		(row.LastCheckedAt > row.CreatedAt || row.Attempts > 0 || strings.TrimSpace(row.LastError) != "" || strings.TrimSpace(row.CFHostnameId) != "")
+	if hasBeenChecked && adtyOwnerDomainCheckCooldown > 0 {
+		cooldownSec := int64(adtyOwnerDomainCheckCooldown / time.Second)
+		elapsed := now.Unix() - row.LastCheckedAt
+		if elapsed >= 0 && elapsed < cooldownSec {
+			return nil, common.NewMessage("Please wait {{seconds}} seconds before checking DNS again", map[string]any{"seconds": cooldownSec - elapsed})
+		}
+	}
+
+	if strings.TrimSpace(row.AutomationState) == "" {
+		if !resellerSetting().CloudflareConfigured() {
+			return nil, common.NewMessage("Custom domain service is not configured")
+		}
+		runctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		changed, checkErr := adtyCheckDomainSnapshot(runctx, &row, now)
+		cancel()
+		if changed {
+			InvalidateAdtySiteCache()
+		}
+		if checkErr != nil {
+			return nil, adtyDomainAutomationUserError(checkErr)
+		}
+		var updated model.AdtySiteDomain
+		if err := model.DB.WithContext(ctx).Where("id = ? AND site_id = ?", row.Id, site.Id).First(&updated).Error; err != nil {
+			return &row, nil
+		}
+		return &updated, nil
+	}
+
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
+	leaseToken := hex.EncodeToString(nonce)
+	claim := model.DB.WithContext(ctx).Model(&model.AdtySiteDomain{}).
+		Where("id = ? AND site_id = ? AND lease_until <= ? AND generation = ? AND status = ?",
+			row.Id, site.Id, now.Unix(), row.Generation, model.AdtySiteDomainPending).
+		Updates(map[string]any{
+			"lease_token": leaseToken,
+			"lease_until": now.Add(2 * time.Minute).Unix(),
+			"next_run_at": 0,
+		})
+	if claim.Error != nil {
+		return nil, claim.Error
+	}
+	if claim.RowsAffected == 0 {
+		return nil, common.NewMessage("A DNS check is already in progress for this domain. Please try again in a few seconds.")
+	}
+	var fresh model.AdtySiteDomain
+	if err := model.DB.WithContext(ctx).
+		Where("id = ? AND lease_token = ? AND generation = ?", row.Id, leaseToken, row.Generation).
+		First(&fresh).Error; err != nil {
+		return nil, err
+	}
+
+	runctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	rowChanged, recErr := adtyReconcileDomain(runctx, &fresh)
+	cancel()
+
+	finished := time.Now()
+	updates := map[string]any{
+		"lease_token":     "",
+		"lease_until":     0,
+		"last_checked_at": finished.Unix(),
+		"next_run_at":     finished.Add(5 * time.Minute).Unix(),
+	}
+	if recErr != nil {
+		safeErr := adtyDomainAutomationUserError(recErr)
+		updates["attempts"] = fresh.Attempts + 1
+		updates["last_error"] = safeErr.Error()
+		updates["automation_state"] = "retry"
+		updates["next_run_at"] = finished.Add(time.Duration(min(3600, 30*(1<<min(fresh.Attempts, 7)))) * time.Second).Unix()
+	} else {
+		updates["attempts"] = 0
+		updates["last_error"] = ""
+	}
+	if err := model.DB.Model(&model.AdtySiteDomain{}).
+		Where("id = ? AND lease_token = ? AND generation = ?", fresh.Id, fresh.LeaseToken, fresh.Generation).
+		Updates(updates).Error; err != nil {
+		return nil, err
+	}
+	if err := model.DB.Model(&model.AdtySiteDomain{}).
+		Where("id = ? AND lease_token = ? AND generation <> ?", fresh.Id, fresh.LeaseToken, fresh.Generation).
+		Updates(map[string]any{"lease_token": "", "lease_until": 0, "next_run_at": 0}).Error; err != nil {
+		return nil, err
+	}
+	if rowChanged {
+		InvalidateAdtySiteCache()
+	}
+	var updated model.AdtySiteDomain
+	if err := model.DB.WithContext(ctx).Where("id = ? AND site_id = ?", fresh.Id, site.Id).First(&updated).Error; err != nil {
+		return &fresh, nil
+	}
+	return &updated, nil
 }
 
 func adtyBackfillActiveCustomBaseURLTurnstile(ctx context.Context, now time.Time) (bool, error) {

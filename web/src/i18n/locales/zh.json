@@ -11886,6 +11886,16 @@
     "USDT Recharge Bonus": "USDT 充值赠送",
     "Configure the main-site USDT recharge bonus rate (0 to 1, e.g. 0.025 for 2.5%). Applies to all USDT networks. Bonus credits do not earn referral commissions.": "配置主站 USDT 充值赠送比例（0 到 1 之间的小数，例如 0.025 表示 2.5%），适用于全部 USDT 网络。赠送额度不参与推广返佣。",
     "Configure the USDT recharge bonus rate for your site (applies to all USDT networks). Eligible customer USDT recharges receive the configured bonus paid from your earnings.": "配置本站 USDT 充值赠送比例（适用于全部 USDT 网络）。符合条件的客户 USDT 充值将获得对应赠金，由您的站长收益承担。",
-    "USDT payment is not currently enabled on the main site.": "主站当前暂未启用 USDT 支付。"
+    "USDT payment is not currently enabled on the main site.": "主站当前暂未启用 USDT 支付。",
+    "Check DNS now": "立即检测 DNS",
+    "Checking DNS...": "检测中...",
+    "Domain DNS verified and active": "域名 DNS 已验证并生效",
+    "DNS ownership verified; waiting for SSL certificate issuance": "DNS 记录已验证，正在等待 SSL 证书签发",
+    "DNS check completed": "DNS 检测已完成",
+    "Domain not found": "未找到该域名",
+    "Custom domain service is not configured": "尚未配置自定义域名服务",
+    "Please wait {{seconds}} seconds before checking DNS again": "请等待 {{seconds}} 秒后再重新检测 DNS",
+    "A DNS check is already in progress for this domain. Please try again in a few seconds.": "该域名正在进行 DNS 检测，请稍后几秒再试。",
+    "This domain failed verification. Delete it and add it again.": "该域名验证已失败，请删除后重新添加。"
   }
 }

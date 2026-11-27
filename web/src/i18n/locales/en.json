@@ -11886,6 +11886,16 @@
     "USDT Recharge Bonus": "USDT Recharge Bonus",
     "Configure the main-site USDT recharge bonus rate (0 to 1, e.g. 0.025 for 2.5%). Applies to all USDT networks. Bonus credits do not earn referral commissions.": "Configure the main-site USDT recharge bonus rate (0 to 1, e.g. 0.025 for 2.5%). Applies to all USDT networks. Bonus credits do not earn referral commissions.",
     "Configure the USDT recharge bonus rate for your site (applies to all USDT networks). Eligible customer USDT recharges receive the configured bonus paid from your earnings.": "Configure the USDT recharge bonus rate for your site (applies to all USDT networks). Eligible customer USDT recharges receive the configured bonus paid from your earnings.",
-    "USDT payment is not currently enabled on the main site.": "USDT payment is not currently enabled on the main site."
+    "USDT payment is not currently enabled on the main site.": "USDT payment is not currently enabled on the main site.",
+    "Check DNS now": "Check DNS now",
+    "Checking DNS...": "Checking DNS...",
+    "Domain DNS verified and active": "Domain DNS verified and active",
+    "DNS ownership verified; waiting for SSL certificate issuance": "DNS ownership verified; waiting for SSL certificate issuance",
+    "DNS check completed": "DNS check completed",
+    "Domain not found": "Domain not found",
+    "Custom domain service is not configured": "Custom domain service is not configured",
+    "Please wait {{seconds}} seconds before checking DNS again": "Please wait {{seconds}} seconds before checking DNS again",
+    "A DNS check is already in progress for this domain. Please try again in a few seconds.": "A DNS check is already in progress for this domain. Please try again in a few seconds.",
+    "This domain failed verification. Delete it and add it again.": "This domain failed verification. Delete it and add it again."
   }
 }

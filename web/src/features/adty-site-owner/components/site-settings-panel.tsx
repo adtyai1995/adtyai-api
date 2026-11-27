@@ -43,6 +43,7 @@ import { STATUS_QUERY_KEY } from '@/lib/status-query'
 import {
   addDomain,
   addDomainPair,
+  checkDomainNow,
   requestSiteClose,
   removeDomain,
   saveOwnerSite,
@@ -459,6 +460,7 @@ function DomainsCard(props: { site: OwnerSite }) {
   const [apiHostname, setApiHostname] = useState('')
   useDraftNavigation(siteHostname !== '' || apiHostname !== '')
   const [deleting, setDeleting] = useState<SiteDomain | null>(null)
+  const [checkingId, setCheckingId] = useState<number | null>(null)
   const domains = props.site.domains ?? []
   const customSiteDomain = domains.find(
     (d) =>
@@ -514,6 +516,38 @@ function DomainsCard(props: { site: OwnerSite }) {
     run: (id, proof) => removeDomain(id, proof),
     successMessage: t('Deleted successfully'),
     onSuccess: () => setDeleting(null),
+  })
+  const checkNow = useMutation({
+    mutationFn: (id: number) => checkDomainNow(id),
+    onMutate: (id) => setCheckingId(id),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<OwnerSite | undefined>(
+        siteOwnerKeys.site,
+        (prev) =>
+          prev
+            ? {
+                ...prev,
+                domains: (prev.domains ?? []).map((item) =>
+                  item.id === updated.id ? { ...item, ...updated } : item
+                ),
+              }
+            : prev
+      )
+      void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
+      if (updated.status === 'active') {
+        toast.success(t('Domain DNS verified and active'))
+      } else if (updated.last_error) {
+        toast.error(formatDomainLastError(updated.last_error, t))
+      } else if (updated.automation_state === 'validating') {
+        toast.success(
+          t('DNS ownership verified; waiting for SSL certificate issuance')
+        )
+      } else {
+        toast.success(t('DNS check completed'))
+      }
+    },
+    onError: (err) => handleServerError(err),
+    onSettled: () => setCheckingId(null),
   })
 
   const platformSiteUrl = normalizeDisplayUrl(
@@ -614,6 +648,19 @@ function DomainsCard(props: { site: OwnerSite }) {
                             variant={domainVariant(domain.status)}
                             label={domainLabel(t, domain.status)}
                           />
+                          {domain.managed_by !== 'platform' &&
+                            domain.status === 'pending' && (
+                              <Button
+                                size='sm'
+                                variant='outline'
+                                disabled={closing || checkNow.isPending}
+                                onClick={() => checkNow.mutate(domain.id)}
+                              >
+                                {checkingId === domain.id && checkNow.isPending
+                                  ? t('Checking DNS...')
+                                  : t('Check DNS now')}
+                              </Button>
+                            )}
                           <Button
                             size='sm'
                             variant='outline'

@@ -513,6 +513,7 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/domains", ownerSetRead, []gin.HandlerFunc{controller.GetAdtySiteDomains}},
 		{http.MethodPost, "/domains", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-domain"), controller.AddAdtySiteDomain}},
 		{http.MethodPost, "/domains/pair", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-domain"), controller.AddAdtySiteDomainPair}},
+		{http.MethodPost, "/domains/:id/check", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-domain-check"), controller.CheckAdtySiteDomainNow}},
 		{http.MethodDelete, "/domains/:id", ownerSetWrite, []gin.HandlerFunc{controller.RemoveAdtySiteDomainWithProof}},
 		// 站长中心（任务 11.6、11.7）。接受协议不走站长中心的协议门。
 		{http.MethodPost, "/terms/accept", "profile:write", []gin.HandlerFunc{controller.AcceptAdtySiteTerms}},

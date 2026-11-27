@@ -18,9 +18,12 @@ For commercial licensing, please contact support@quantumnous.com
 */
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
+import { toast } from 'sonner'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { api } from '@/lib/api'
 
 import { OwnerVerificationProvider } from '../components/owner-verification'
 import { SiteSettingsPanel } from '../components/site-settings-panel'
@@ -174,5 +177,105 @@ describe('owner custom domain two-step mainland acceleration card', () => {
         'Step 2: Point your mainland China DNS line to the acceleration target'
       )
     ).toBeTruthy()
+  })
+
+  it('shows Check DNS now only for pending owner custom domains and surfaces check results', async () => {
+    const pendingOwnerDomain: SiteDomain = {
+      id: 21,
+      hostname: 'api.n8-n.top',
+      role: 'base_url',
+      managed_by: 'owner',
+      status: 'pending',
+      automation_state: 'retry',
+      ssl_status: '',
+      verify_records: JSON.stringify([
+        {
+          type: 'TXT',
+          name: '_cf-custom-hostname.api.n8-n.top',
+          value: 'tok-123',
+        },
+        { type: 'CNAME', name: 'api.n8-n.top', value: 'edge.adtyaicf.top' },
+      ]),
+      last_error: 'Domain ownership TXT is not verified',
+      created_at: 1700000000,
+    }
+    const platformPendingDomain: SiteDomain = {
+      id: 22,
+      hostname: 'shop.adtyai-fz.top',
+      role: 'site',
+      managed_by: 'platform',
+      status: 'pending',
+      ssl_status: '',
+      verify_records: '[]',
+      last_error: '',
+      created_at: 1700000000,
+    }
+    const activeOwnerDomain: SiteDomain = {
+      id: 23,
+      hostname: 'www.n8-n.top',
+      role: 'site',
+      managed_by: 'owner',
+      status: 'active',
+      ssl_status: 'active',
+      verify_records: '[]',
+      last_error: '',
+      created_at: 1700000000,
+    }
+
+    const postSpy = vi
+      .spyOn(api, 'post')
+      .mockResolvedValueOnce({
+        data: {
+          success: true,
+          data: {
+            ...pendingOwnerDomain,
+            last_error: 'Domain ownership TXT is not verified',
+          },
+        },
+      } as never)
+      .mockResolvedValueOnce({
+        data: {
+          success: true,
+          data: {
+            ...pendingOwnerDomain,
+            status: 'active',
+            automation_state: 'ready',
+            ssl_status: 'active',
+            last_error: '',
+          },
+        },
+      } as never)
+
+    try {
+      renderWithQuery(
+        <SiteSettingsPanel
+          site={makeOwnerSite([
+            pendingOwnerDomain,
+            platformPendingDomain,
+            activeOwnerDomain,
+          ])}
+        />
+      )
+
+      const buttons = screen.getAllByRole('button', { name: 'Check DNS now' })
+      expect(buttons).toHaveLength(1)
+
+      fireEvent.click(buttons[0])
+      await waitFor(() => {
+        expect(postSpy).toHaveBeenCalledWith('/api/adty/site/domains/21/check')
+        expect(toast.error).toHaveBeenCalledWith(
+          'Domain ownership TXT is not verified'
+        )
+      })
+
+      fireEvent.click(buttons[0])
+      await waitFor(() => {
+        expect(toast.success).toHaveBeenCalledWith(
+          'Domain DNS verified and active'
+        )
+      })
+    } finally {
+      postSpy.mockRestore()
+    }
   })
 })

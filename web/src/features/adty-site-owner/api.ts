@@ -1050,6 +1050,14 @@ export async function saveOwnerSiteAuthConfig(
   return requireServerSuccess(res.data).data
 }
 
+/** Triggers an immediate DNS & verification check for one pending custom domain. */
+export async function checkDomainNow(id: number): Promise<SiteDomain> {
+  const res = await api.post<ApiResponse<SiteDomain>>(
+    `${BASE}/domains/${id}/check`
+  )
+  return requireServerSuccess(res.data).data
+}
+
 /** Proof: action `domain.delete`, target = domain id. */
 export async function removeDomain(id: number, proof: string): Promise<void> {
   const res = await api.delete<ApiResponse<unknown>>(
