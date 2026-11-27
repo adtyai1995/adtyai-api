@@ -241,7 +241,8 @@ const adtyUnifiedOrderSelect = `o.*, COALESCE(u.username, '') AS username,
 	COALESCE(a.expire_at, 0) AS expire_at,
 	COALESCE(a.bonus_usd, 0) AS bonus_usd, COALESCE(a.pay_amount, 0) AS pay_amount, COALESCE(a.pay_currency, '') AS pay_currency,
 	COALESCE(t.money, o.face_usd) AS money, COALESCE(a.paid_tx_hash, '') AS paid_tx_hash,
-	COALESCE(a.paid_source, '') AS paid_source, COALESCE(a.method_label, '') AS method_label`
+	COALESCE(a.paid_source, '') AS paid_source, COALESCE(a.method_label, '') AS method_label,
+	COALESCE(a.channel_name, '') AS channel_name`
 
 func getAdtyUnifiedOrders(c *gin.Context, ownerSiteID *int, selfUserID *int) {
 	query, ok := adtyUnifiedOrdersQuery(c, ownerSiteID, selfUserID)
@@ -302,6 +303,10 @@ func getAdtyUnifiedOrders(c *gin.Context, ownerSiteID *int, selfUserID *int) {
 			}
 		}
 	}
+	var channelNames map[int]string
+	if ownerSiteID == nil && selfUserID == nil {
+		channelNames = adtyEpayChannelNames()
+	}
 	for i := range orders {
 		order := &orders[i]
 		if order.SiteId != nil {
@@ -310,7 +315,9 @@ func getAdtyUnifiedOrders(c *gin.Context, ownerSiteID *int, selfUserID *int) {
 		if order.SourceType == "topup" {
 			order.Anomaly = rechargeAuditAnomaly(*order)
 			if ownerSiteID == nil && selfUserID == nil {
-				order.ChannelName = adtyEpayChannelNames()[order.ChannelId]
+				if order.ChannelName == "" && order.ChannelId > 0 {
+					order.ChannelName = channelNames[order.ChannelId]
+				}
 			} else {
 				order.ChannelId = 0
 				order.ChannelName = ""
@@ -492,7 +499,7 @@ const rechargeAuditSelect = `t.id, t.user_id, COALESCE(u.username, '') AS userna
 	COALESCE(a.pay_amount, 0) AS pay_amount, COALESCE(a.pay_currency, '') AS pay_currency,
 	COALESCE(a.paid_amount, 0) AS paid_amount, COALESCE(a.paid_currency, '') AS paid_currency,
 	COALESCE(a.paid_tx_hash, '') AS paid_tx_hash, COALESCE(a.paid_source, '') AS paid_source,
-	COALESCE(a.channel_id, 0) AS channel_id, COALESCE(a.method_label, '') AS method_label`
+	COALESCE(a.channel_id, 0) AS channel_id, COALESCE(a.channel_name, '') AS channel_name, COALESCE(a.method_label, '') AS method_label`
 
 // GetRechargeAudit 分页列出统一财务订单（含充值、API消费、兑换码、退款、提现、佣金及员工调额）。
 func GetRechargeAudit(c *gin.Context) {
@@ -528,7 +535,12 @@ func enrichTopupAuditOrders(orders []rechargeAuditOrder, ownerSiteID *int, siteN
 			orders[i].SiteName = siteNames[*orders[i].SiteId]
 		}
 		orders[i].Anomaly = rechargeAuditAnomaly(orders[i])
-		orders[i].ChannelName = channelNames[orders[i].ChannelId]
+		if ownerSiteID != nil {
+			orders[i].ChannelId = 0
+			orders[i].ChannelName = ""
+		} else if orders[i].ChannelName == "" && orders[i].ChannelId > 0 {
+			orders[i].ChannelName = channelNames[orders[i].ChannelId]
+		}
 		capability, supported := capabilities[orders[i].PaymentProvider]
 		if !supported || !orders[i].HasExt {
 			continue

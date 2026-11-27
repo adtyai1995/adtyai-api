@@ -162,6 +162,10 @@ export function SiteMailPanel(props: { site: OwnerSite }) {
     onSuccess: (updated) => {
       if (!updated) return
       queryClient.setQueryData(mailConfigQueryKey, updated)
+      void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.site })
+      void queryClient.invalidateQueries({
+        queryKey: [...siteOwnerKeys.all, 'auth-config'],
+      })
       const next = toDraft(updated)
       setDraft(next)
       setBaseline(next)

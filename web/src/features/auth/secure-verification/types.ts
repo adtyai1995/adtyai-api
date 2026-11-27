@@ -69,6 +69,7 @@ export type SiteOwnerAction =
   | 'domain.delete'
   | 'sender.delete'
   | 'mail.config'
+  | 'auth.config'
   | 'staff.create'
   | 'staff.update'
   | 'staff.password'

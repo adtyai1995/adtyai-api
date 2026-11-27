@@ -23,7 +23,7 @@ type ChainIconProps = {
   className?: string
 }
 
-/** Official USDT + chain network vector logo for TRC20, BEP20, Polygon, and X Layer. */
+/** Official USDT + chain network vector logo for TRC20, ERC20, BEP20, Polygon, and X Layer. */
 export function ChainIcon(props: ChainIconProps) {
   return (
     <UsdtChainLogo

@@ -786,7 +786,7 @@ func adtyOrderRequiresRemoteUnpaidConfirmAt(tx *gorm.DB, ext *model.AdtyTopupOrd
 		if err := tx.Where("id = ?", ext.ChannelId).Limit(1).Find(&channel).Error; err != nil {
 			return false, err
 		}
-		if channel.Id == 0 || channel.Status == model.AdtyEpayStatusRevoked || channel.Status == model.AdtyEpayStatusDisabled {
+		if channel.Id == 0 || channel.Status == model.AdtyEpayStatusRevoked || channel.Status == model.AdtyEpayStatusDisabled || !model.AdtyEpayOrderMatchesChannelMerchantGateway(ext, &channel) {
 			return false, nil
 		}
 		endpoint, err := url.Parse(strings.TrimSpace(channel.GatewayURL))

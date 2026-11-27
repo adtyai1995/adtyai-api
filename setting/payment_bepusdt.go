@@ -19,6 +19,7 @@ const (
 // ValidBEpusdtTradeTypes lists the supported USDT trade_type values accepted by BEpusdt.
 var ValidBEpusdtTradeTypes = []string{
 	"usdt.trc20",
+	"usdt.erc20",
 	"usdt.bep20",
 	"usdt.polygon",
 	"usdt.xlayer",
@@ -30,7 +31,7 @@ type BEpusdtSetting struct {
 	Enabled    bool     `json:"enabled"`
 	BaseURL    string   `json:"base_url"`
 	Secret     string   `json:"secret"`
-	TradeTypes []string `json:"trade_types"` // usdt.trc20、usdt.bep20、usdt.polygon、usdt.xlayer
+	TradeTypes []string `json:"trade_types"` // usdt.trc20、usdt.erc20、usdt.bep20、usdt.polygon、usdt.xlayer
 }
 
 var bepusdtSetting = BEpusdtSetting{

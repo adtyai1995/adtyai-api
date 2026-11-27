@@ -272,6 +272,11 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
         badge: ownerTicketsBadge,
       },
       {
+        title: t('Basic Authentication'),
+        url: '/site-owner/auth',
+        icon: ShieldCheck,
+      },
+      {
         title: t('Email configuration'),
         url: '/site-owner/mail',
         icon: Mail,

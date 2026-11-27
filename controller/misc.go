@@ -276,7 +276,8 @@ func GetHomePageContent(c *gin.Context) {
 }
 
 func SendEmailVerification(c *gin.Context) {
-	email, err := service.ValidateAccountEmail(c.Query("email"))
+	reqSite := service.AdtySiteForRequest(c)
+	email, err := service.ValidateAccountEmailForSite(reqSite, c.Query("email"))
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -286,8 +287,7 @@ func SendEmailVerification(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Please try again later"))
 		return
 	}
-	reqSite := service.AdtySiteForRequest(c)
-	if err := service.EnsureAdtySiteMailConfigured(reqSite); err != nil {
+	if err := service.EnsureAdtyRequestMailConfigured(reqSite); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -332,7 +332,7 @@ func SendPasswordResetEmail(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusServiceUnavailable, common.NewMessage("Please try again later"))
 		return
 	}
-	if err := service.EnsureAdtySiteMailConfigured(service.AdtySiteForRequest(c)); err != nil {
+	if err := service.EnsureAdtyRequestMailConfigured(service.AdtySiteForRequest(c)); err != nil {
 		common.ApiError(c, err)
 		return
 	}

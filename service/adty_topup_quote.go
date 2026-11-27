@@ -16,6 +16,7 @@ const (
 	AdtyProviderEpay    = "adty_epay"
 
 	AdtyMethodUSDTTRC20   = "usdt.trc20"
+	AdtyMethodUSDTERC20   = "usdt.erc20"
 	AdtyMethodUSDTBEP20   = "usdt.bep20"
 	AdtyMethodUSDTPolygon = "usdt.polygon"
 	AdtyMethodUSDTXLayer  = "usdt.xlayer"
@@ -27,7 +28,7 @@ const (
 )
 
 // AdtyUSDTMethods 是支持的 USDT 链，值和 BEpusdt 的 trade_type 相同。
-var AdtyUSDTMethods = []string{AdtyMethodUSDTTRC20, AdtyMethodUSDTBEP20, AdtyMethodUSDTPolygon, AdtyMethodUSDTXLayer}
+var AdtyUSDTMethods = []string{AdtyMethodUSDTTRC20, AdtyMethodUSDTERC20, AdtyMethodUSDTBEP20, AdtyMethodUSDTPolygon, AdtyMethodUSDTXLayer}
 
 // AdtyEpayMethods 是易支付的支付方式。
 var AdtyEpayMethods = []string{AdtyMethodAlipay, AdtyMethodWxpay}

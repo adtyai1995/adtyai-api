@@ -10,7 +10,7 @@
 - **Pure Management Account**: Subsites are provisioned by platform administrators with a dedicated management-only owner account. Pure site owners only see the **Site Management** and **Account** sidebar groups—no personal API keys, no personal consumption wallet, no direct model relay calls, and no personal referral participation.
 - **Strict Tenant Isolation**: You can only view and manage customers, teams, orders, tickets, earnings, and ledgers belonging to your own subsite. Upstream model channels, platform internal wallets, and other subsites are never exposed.
 - **Sidebar Overview**:
-  - **Site Management**: `Site Overview`, `Customers`, `Team management`, `Order management`, `Pricing & Multiplier`, `Recharge Bonus`, `Promotion Management`, `Earnings Details`, `Earnings Withdrawals`, `Settlement Sheets`, `Owner Wallets`, `Redemption Codes`, `Notifications`, `Staff accounts`, `Ticket management`, `Email configuration`, `Site settings`, `Site Owner Manual`.
+  - **Site Management**: `Site Overview`, `Customers`, `Team management`, `Order management`, `Pricing & Multiplier`, `Recharge Bonus`, `Promotion Management`, `Earnings Details`, `Earnings Withdrawals`, `Settlement Sheets`, `Owner Wallets`, `Redemption Codes`, `Notifications`, `Staff accounts`, `Ticket management`, `Basic Authentication`, `Email configuration`, `Site settings`, `Site Owner Manual`.
   - **Account**: `Historical site accounts` (shown only if you previously owned a closed or transferred subsite), `Security & Access`.
 
 ---
@@ -24,8 +24,9 @@ After receiving your owner account and default domains, complete these steps in 
 3. **Bind Custom Dual Domains (Optional)** (`Site settings → Custom domains`): Copy the platform's **default DNS CNAME target**, prepare two **distinct subdomains** (such as `www.yourdomain.com` for the website and `api.yourdomain.com` for API requests—**apex/root domains are prohibited**), submit them together, and add the generated `TXT` + `CNAME` records within 72 hours. If Mainland China homepage acceleration is enabled by the platform, you may optionally complete its two-step setup for your active custom website domain.
 4. **Publish Legal Documents** (`Site settings → Multilingual legal pages`): Subsites **never inherit** the main site's legal documents. Fill in `zh-CN` and `en` versions of your User Agreement, Privacy Policy, and Refund Policy as needed; publishing a User Agreement or Privacy Policy automatically enables the sign-up consent checkbox and footer links.
 5. **Configure Outbound Email & Test** (`Email configuration`): Subsites do not use a platform default mail transport. Configure **Custom SMTP** or your own **Resend API**, click **Save**, and then send a test email to confirm delivery. Until configured, subsite operational emails return an error prompting configuration.
-6. **Review Supply Cost Factor & Set Retail Multiplier** (`Site Overview` → `Pricing & Multiplier`): Verify your `cost_factor` and configure a unified site retail multiplier (`1.0x – 10.0x`, default `1.0x` with zero markup).
-7. **Configure Marketing Tools (Optional)** (`Recharge Bonus` / `Promotion Management`): Before enabling bonuses or referrals, ensure your **Earnings Wallet available balance** (or authorized margin cycle allowance) is sufficient so customer checkouts are never blocked.
+6. **Configure Basic Authentication** (`Basic Authentication`): Independently manage password login, new user sign-up, password registration, email verification (**disabled by default** and requires Step 5 outbound email first), email domain/alias restrictions, and the domain whitelist—completely isolated from main site settings.
+7. **Review Supply Cost Factor & Set Retail Multiplier** (`Site Overview` → `Pricing & Multiplier`): Verify your `cost_factor` and configure a unified site retail multiplier (`1.0x – 10.0x`, default `1.0x` with zero markup).
+8. **Configure Marketing Tools (Optional)** (`Recharge Bonus` / `Promotion Management`): Before enabling bonuses or referrals, ensure your **Earnings Wallet available balance** (or authorized margin cycle allowance) is sufficient so customer checkouts are never blocked.
 
 ---
 
@@ -154,7 +155,15 @@ Displays your **Earnings Wallet (`earnings`)** and **Margin Wallet (`margin`)** 
 - Handle subsite customer tickets with queue/status/priority/assignee filters, JSON export, public replies, internal staff notes, and assignment to owner or eligible staff.
 - Image attachments: ≤ 5 MB each, ≤ 6 per ticket, ≤ 20 MB total; API-key-like strings are automatically redacted.
 
-### 3.16 Email Configuration
+### 3.16 Basic Authentication
+
+Independently configure sign-in, registration, and email validation rules for your subsite customers (fully isolated from the main site's global switches). Saving requires **step-up verification**:
+
+- **Allow password login** (default on), **Allow new user registration** (default on), and **Allow password registration** (default on).
+- **Enable email verification** (**disabled by default** on subsites): Requires valid Custom SMTP or Resend credentials saved under **Email configuration** first; disabled in the UI and rejected by the server until outbound mail is configured.
+- **Enable email domain restriction** (default off) & **Email domain whitelist** (up to 200 domains; cannot be empty when domain restriction is enabled), and **Enable email alias restriction** (default off; blocks `+` aliases).
+
+### 3.17 Email Configuration
 
 Choose one of two mutually exclusive outbound mail modes (secrets are stored encrypted and never displayed back):
 1. **Custom SMTP (`smtp`)**: Configure host, port, encryption (`None` / `SSL/TLS` / `STARTTLS`), credentials, and sender address. `localhost` and private/internal IPs are blocked (SSRF protection).
@@ -163,7 +172,7 @@ Choose one of two mutually exclusive outbound mail modes (secrets are stored enc
 - **Unconfigured Policy**: There is no platform default transport for subsites. Until valid SMTP or Resend credentials are saved, subsite operational mail sends return an error asking you to configure SMTP or Resend first (official site-closure migration emails continue to be delivered by the platform).
 - Always click **Save** before clicking **Send test email**.
 
-### 3.17 Site Settings
+### 3.18 Site Settings
 
 1. **Brand**: Name, website title, announcement, wallet notice, support contact, optional custom external docs URL (leave blank to use the built-in white-label `/docs/`), Tawk.to IDs, and Logo / Favicon (PNG/JPEG/WebP ≤ 200 KB; **click Save brand after uploading**).
 2. **Custom Homepage**: Markdown, HTML, or iframe URL; clear to restore the default homepage.
@@ -175,11 +184,11 @@ Choose one of two mutually exclusive outbound mail modes (secrets are stored enc
 5. **Search Engine Indexing**: Toggle indexing for your website domain (API domain is always `noindex`).
 6. **Request Site Closure**: Submit a reason for platform review and scheduled notice period.
 
-### 3.18 Historical Site Accounts
+### 3.19 Historical Site Accounts
 
 For closed or transferred subsites previously owned by your account: inspect historical earnings, submit and track remaining USDT withdrawals, export past settlement sheets, and remove archived website domains.
 
-### 3.19 Security & Access
+### 3.20 Security & Access
 
 Manage password, email binding, active sessions, 2FA, and scoped Personal Access Tokens (select matching `site_owner_*` scopes for site management endpoints; for site-owner ticket endpoints `/api/adty/tickets*`, select **both** `profile:read` + `site_owner_customer:read` for read requests or **both** `profile:write` + `site_owner_customer:write` for write actions; staff management endpoints reject PATs).
 
@@ -191,6 +200,7 @@ Manage password, email binding, active sessions, 2FA, and scoped Personal Access
 |---|:---:|:---:|:---:|
 | Save retail multiplier (`Pricing & Multiplier`) | Yes | No | Yes (`site_owner_setting:write`) |
 | Save recharge bonus (`Recharge Bonus`) | Yes | No | Yes (`site_owner_order:write`) |
+| Save basic authentication (`Basic Authentication`) | Yes | No | Yes (`site_owner_setting:write`) |
 | Save email configuration (`Email configuration`) | Yes | No | Yes (`site_owner_setting:write`) |
 | Delete active or archived custom domain | Yes | No | Yes (`site_owner_setting:write`) |
 | Freeze / cancel customer vouchers | Yes | No | Yes (`site_owner_order:write`) |

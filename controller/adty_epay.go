@@ -334,6 +334,9 @@ func completeAdtyEpayCallback(channel *model.AdtyEpayChannel, tradeNo string, pa
 	if ext.ChannelId != channel.Id {
 		return errors.Join(model.ErrPaymentMethodMismatch, errors.New("order belongs to another channel"))
 	}
+	if !model.AdtyEpayOrderMatchesChannelMerchantGateway(ext, channel) {
+		return errors.Join(model.ErrPaymentMethodMismatch, errors.New("channel merchant or gateway changed"))
+	}
 	method := channel.MethodByTypeCode(params["type"])
 	if method == nil || method.Method != ext.Method {
 		return errors.Join(model.ErrPaymentMethodMismatch, errors.New("payment type does not match the order"))

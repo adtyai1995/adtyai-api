@@ -28,7 +28,7 @@ ADTY AI 是一个 AI API 中转平台：把多家上游模型服务放在同一�
 - 分站由 Root 开设，各自独立经营、独立核算；每个站点有自己的账号空间、品牌（名称、Logo、Favicon、标题、客服、法律条款、可选的自定义首页）。分站不能改主题色和标语。
 - 默认首页在构建时按站点预渲染中英文首屏，首屏 HTML 就带本站名称、Logo、API 地址；首页不请求价格和分组倍率数据。
 - 主站和分站都可以把默认首页换成 Markdown、HTML 或全屏 iframe 链接。
-- 支付：易支付多通道（支付宝、微信）与 BEpusdt 的 USDT（TRC20、BEP20、Polygon、X Layer）；按支付方式配置永久充值赠金；一种充值额度兑换码。
+- 支付：易支付多通道（支付宝、微信）与 BEpusdt 的 USDT（TRC20、ERC20、BEP20、Polygon、X Layer）；按支付方式配置永久充值赠金；一种充值额度兑换码。
 
 ## Capabilities and Constraints
 

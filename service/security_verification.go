@@ -486,8 +486,12 @@ func GetVerificationRequirementsForSite(identity AuthIdentity, scope string, sit
 		methods = filtered
 		requirements.Methods = methods
 	}
+	passwordLoginEnabled := common.GetPasswordLoginEnabled()
+	if siteID > 0 && scope != VerificationScopeAdtySiteOwnerManage {
+		passwordLoginEnabled = AdtyEffectiveAuthSettingsForSite(AdtySiteById(siteID)).PasswordLoginEnabled
+	}
 	for i := range methods {
-		if methods[i].Method == VerificationMethodPassword && !common.GetPasswordLoginEnabled() {
+		if methods[i].Method == VerificationMethodPassword && !passwordLoginEnabled {
 			switch scope {
 			case VerificationScopeAccountBind, VerificationScopePasswordSet, VerificationScopePasswordChange, VerificationScopeAccountDelete,
 				VerificationScopeAdminUserCreate, VerificationScopeAdminUserUpdate, VerificationScopeAdminUserDelete,

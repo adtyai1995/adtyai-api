@@ -308,7 +308,9 @@ func getAdtyOrderTrace(c *gin.Context, ownerSiteID *int, selfUserID ...int) {
 	isSelf := len(selfUserID) > 0
 	isAdmin := ownerSiteID == nil && !isSelf
 	if isAdmin {
-		order.ChannelName = adtyEpayChannelNames()[order.ChannelId]
+		if order.ChannelName == "" && order.ChannelId > 0 {
+			order.ChannelName = adtyEpayChannelNames()[order.ChannelId]
+		}
 	} else {
 		order.ChannelId = 0
 		order.ChannelName = ""

@@ -33,7 +33,7 @@ func EmailBindStart(c *gin.Context) {
 		writeSecurityOperationError(c, service.ErrVerificationContextInvalid)
 		return
 	}
-	email, err := service.ValidateAccountEmail(request.Email)
+	email, err := service.ValidateAccountEmailForSite(service.AdtySiteForRequest(c), request.Email)
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return

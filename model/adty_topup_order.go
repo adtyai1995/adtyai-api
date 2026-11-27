@@ -77,7 +77,9 @@ type AdtyTopupOrder struct {
 	QRCode                 string          `json:"qr_code" gorm:"column:qr_code;type:text"`
 	URLScheme              string          `json:"url_scheme" gorm:"column:url_scheme;type:text"`
 	ChannelId              int             `json:"channel_id" gorm:"index"`
-	MethodLabel            string          `json:"method_label" gorm:"type:varchar(64);not null;default:''"` // 下单时通道方式的显示名称（快照）
+	ChannelName            string          `json:"channel_name" gorm:"type:varchar(128);not null;default:''"` // 下单时通道名称（快照），通道改名或删除后历史订单保留原名
+	ChannelConfigVersion   int64           `json:"-" gorm:"not null;default:0"`                               // 下单时通道配置版本，凭据/网关变更后阻止复用旧待支付单
+	MethodLabel            string          `json:"method_label" gorm:"type:varchar(64);not null;default:''"`  // 下单时通道方式的显示名称（快照）
 	UnpaidCounted          bool            `json:"-"`
 	PaidAmount             decimal.Decimal `json:"paid_amount" gorm:"type:decimal(20,8);not null;default:0"`
 	PaidCurrency           string          `json:"paid_currency" gorm:"type:varchar(16)"`

@@ -69,7 +69,7 @@ func bepusdtTokenMatches(method, got, want string) bool {
 		return false
 	}
 	switch method {
-	case AdtyMethodUSDTBEP20, AdtyMethodUSDTPolygon, AdtyMethodUSDTXLayer:
+	case AdtyMethodUSDTERC20, AdtyMethodUSDTBEP20, AdtyMethodUSDTPolygon, AdtyMethodUSDTXLayer:
 		return strings.EqualFold(got, want)
 	default:
 		return got == want

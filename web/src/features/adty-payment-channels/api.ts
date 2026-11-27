@@ -55,6 +55,8 @@ export type EpayChannel = {
   has_platform_public_key?: boolean
   credential_decrypt_error?: boolean
   today_cny: Record<string, string>
+  order_count?: number
+  scene_names?: string[]
   methods: EpayMethodConfig[]
 }
 
@@ -69,10 +71,35 @@ export type EpayChannelInput = Omit<
   | 'has_platform_public_key'
   | 'credential_decrypt_error'
   | 'today_cny'
+  | 'order_count'
+  | 'scene_names'
 > & {
   merchant_key: string
   merchant_private_key: string
   platform_public_key: string
+}
+
+export type EpayChannelDeleteResult = {
+  id: number
+  name: string
+  updated_scenes: number
+  disabled_scenes: number
+}
+
+export type EpayChannelReplaceInput = {
+  target_channel_id?: number
+  new_channel?: EpayChannelInput
+  delete_old: boolean
+  enable_target: boolean
+}
+
+export type EpayChannelReplaceResult = {
+  old_id: number
+  old_name: string
+  new_id: number
+  new_name: string
+  deleted_old: boolean
+  updated_scenes: number
 }
 
 export type EpayTestResult = {
@@ -108,11 +135,24 @@ export async function saveEpayChannel(
   requireServerSuccess(res.data)
 }
 
-export async function deleteEpayChannel(id: number) {
-  const res = await api.delete<ApiResponse<null>>(
+export async function deleteEpayChannel(
+  id: number
+): Promise<EpayChannelDeleteResult | null> {
+  const res = await api.delete<ApiResponse<EpayChannelDeleteResult | null>>(
     `/api/adty/admin/epay/channels/${id}`
   )
-  requireServerSuccess(res.data)
+  return requireServerSuccess(res.data).data ?? null
+}
+
+export async function replaceEpayChannel(
+  id: number,
+  input: EpayChannelReplaceInput
+): Promise<EpayChannelReplaceResult> {
+  const res = await api.post<ApiResponse<EpayChannelReplaceResult>>(
+    `/api/adty/admin/epay/channels/${id}/replace`,
+    input
+  )
+  return requireServerSuccess(res.data).data
 }
 
 export async function revokeEpayChannel(id: number) {

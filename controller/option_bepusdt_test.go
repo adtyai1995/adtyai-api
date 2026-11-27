@@ -183,9 +183,9 @@ func TestUpdateOptionBEpusdtAndTopupOrderMinutesValidation(t *testing.T) {
 		_, resp := callUpdateOption(t, setting.BEpusdtOptionKeyTradeTypes, bad)
 		assert.Equal(t, false, resp["success"], "trade_types=%q should fail", bad)
 	}
-	_, resp = callUpdateOption(t, setting.BEpusdtOptionKeyTradeTypes, `["usdt.trc20","usdt.bep20","usdt.trc20"]`)
+	_, resp = callUpdateOption(t, setting.BEpusdtOptionKeyTradeTypes, `["usdt.trc20","usdt.erc20","usdt.bep20","usdt.trc20"]`)
 	assert.Equal(t, true, resp["success"])
-	assert.Equal(t, []string{"usdt.trc20", "usdt.bep20"}, setting.GetBEpusdtSetting().TradeTypes)
+	assert.Equal(t, []string{"usdt.trc20", "usdt.erc20", "usdt.bep20"}, setting.GetBEpusdtSetting().TradeTypes)
 
 	// Enabling BEpusdt without secret must fail.
 	_, resp = callUpdateOption(t, setting.BEpusdtOptionKeyEnabled, true)

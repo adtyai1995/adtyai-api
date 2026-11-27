@@ -32,7 +32,7 @@ func TestBEpusdtProviderQueryConfirmingEVMCaseAndOverpayment(t *testing.T) {
 	bepusdtHTTPClient = func() *http.Client { return server.Client() }
 	t.Cleanup(func() { bepusdtHTTPClient = origClient })
 
-	setTestBEpusdtConfig(t, false, server.URL, "secret", []string{AdtyMethodUSDTBEP20, AdtyMethodUSDTTRC20})
+	setTestBEpusdtConfig(t, false, server.URL, "secret", []string{AdtyMethodUSDTERC20, AdtyMethodUSDTBEP20, AdtyMethodUSDTTRC20})
 
 	evmOrder := &model.AdtyTopupOrder{
 		TradeNo:         "EPU20261126010",
@@ -93,6 +93,26 @@ func TestBEpusdtProviderQueryConfirmingEVMCaseAndOverpayment(t *testing.T) {
 		}
 		_, err := (adtyBEpusdtProvider{}).Query(context.Background(), evmOrder)
 		require.ErrorIs(t, err, model.ErrPaymentAmountMismatch)
+	})
+
+	t.Run("ERC20 token matches case-insensitively as EVM chain", func(t *testing.T) {
+		ercOrder := *evmOrder
+		ercOrder.Method = AdtyMethodUSDTERC20
+		payload = map[string]any{
+			"trade_id":      ercOrder.GatewayTradeId,
+			"order_id":      ercOrder.TradeNo,
+			"trade_type":    ercOrder.Method,
+			"status":        2,
+			"money":         "10.00",
+			"actual_amount": "10.0005",
+			"token":         "0xabcdef012345678901234567890123456789abcd",
+			"fiat":          "USD",
+		}
+		facts, err := (adtyBEpusdtProvider{}).Query(context.Background(), &ercOrder)
+		require.NoError(t, err)
+		require.NotNil(t, facts)
+		assert.Equal(t, AdtyMethodUSDTERC20, facts.Method)
+		assert.True(t, IsAdtyUSDTMethod(AdtyMethodUSDTERC20))
 	})
 
 	t.Run("TRC20 token comparison stays case-sensitive", func(t *testing.T) {

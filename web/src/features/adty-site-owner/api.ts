@@ -38,6 +38,8 @@ import type {
   OwnerSite,
   OwnerTopUp,
   PricingResult,
+  SiteAuthConfig,
+  SiteAuthConfigView,
   SiteBrand,
   SiteDomain,
   SiteDomainRole,
@@ -1026,6 +1028,26 @@ export async function testOwnerSiteMailConfig(to: string): Promise<void> {
     to,
   })
   requireServerSuccess(res.data)
+}
+
+export async function getOwnerSiteAuthConfig(): Promise<SiteAuthConfigView> {
+  const res = await api.get<ApiResponse<SiteAuthConfigView>>(
+    `${BASE}/auth-config`
+  )
+  return requireServerSuccess(res.data).data
+}
+
+/** Proof: action `auth.config`, target = site id. */
+export async function saveOwnerSiteAuthConfig(
+  body: SiteAuthConfig,
+  proof?: string
+): Promise<SiteAuthConfigView> {
+  const res = await api.put<ApiResponse<SiteAuthConfigView>>(
+    `${BASE}/auth-config`,
+    body,
+    proof ? proofHeaders(proof) : undefined
+  )
+  return requireServerSuccess(res.data).data
 }
 
 /** Proof: action `domain.delete`, target = domain id. */

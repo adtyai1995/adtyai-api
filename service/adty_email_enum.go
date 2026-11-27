@@ -305,7 +305,7 @@ func validateAdtySystemEmailRecipient(db *gorm.DB, req AdtySystemEmailRequest) (
 		return "", ErrAdtySystemEmailRecipientInvalid
 	}
 	if req.Category == AdtySystemEmailCategoryVerification {
-		validated, err := ValidateAccountEmail(to)
+		validated, err := ValidateAccountEmailForSite(AdtySiteById(req.SiteID), to)
 		if err != nil {
 			return "", ErrAdtySystemEmailRecipientInvalid
 		}

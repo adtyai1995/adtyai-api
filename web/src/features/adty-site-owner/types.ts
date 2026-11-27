@@ -142,6 +142,21 @@ export type SiteMailConfigUpdate = {
   clear_resend_api_key?: boolean
 }
 
+/** Per-subsite basic authentication settings (GET/PUT /api/adty/site/auth-config). */
+export type SiteAuthConfig = {
+  password_login_enabled: boolean
+  register_enabled: boolean
+  password_register_enabled: boolean
+  email_verification_enabled: boolean
+  email_domain_restriction_enabled: boolean
+  email_alias_restriction_enabled: boolean
+  email_domain_whitelist: string[]
+}
+
+export type SiteAuthConfigView = SiteAuthConfig & {
+  mail_configured: boolean
+}
+
 /** GET /api/adty/site/self (controller/adty_site_owner.go). */
 export type OwnerSite = {
   id: number
@@ -165,6 +180,8 @@ export type OwnerSite = {
   legal_docs?: SiteLegalDocs
   /** Payment methods Root authorized for this site's gift, with the owner's rule. */
   bonus_methods: OwnerBonusMethod[]
+  auth_config?: SiteAuthConfig
+  mail_configured?: boolean
   seo_index: boolean
   close_execute_at: number
   close_requested_at?: number

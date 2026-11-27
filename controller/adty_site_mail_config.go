@@ -2,6 +2,7 @@ package controller
 
 import (
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
@@ -61,4 +62,41 @@ func PostAdtySiteMailConfigTest(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, gin.H{"sent": true})
+}
+
+// GetAdtySiteAuthConfig returns the site owner's per-subsite basic
+// authentication settings along with whether outbound mail is configured.
+func GetAdtySiteAuthConfig(c *gin.Context) {
+	if _, ok := adtyOwnerSiteOr403(c); !ok {
+		return
+	}
+	cfg, err := service.GetAdtySiteAuthConfig(c.GetInt("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, cfg)
+}
+
+// PutAdtySiteAuthConfig validates and persists the site owner's per-subsite
+// basic authentication settings (protected by step-up verification).
+func PutAdtySiteAuthConfig(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	var body model.AdtySiteAuthConfig
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if !adtyRequireOwnerProof(c, service.AdtySiteOwnerActionAuthConfig, site.Id) {
+		return
+	}
+	cfg, err := service.SaveAdtySiteAuthConfig(c.GetInt("id"), body)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, cfg)
 }

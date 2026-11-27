@@ -31,8 +31,15 @@ type EmailBindingData struct {
 }
 
 // ValidateAccountEmail is shared with registration mail delivery so binding
-// cannot bypass the site's existing domain, alias and address-length rules.
+// cannot bypass the main site's existing domain, alias and address-length rules.
 func ValidateAccountEmail(email string) (string, error) {
+	return ValidateAccountEmailForSite(nil, email)
+}
+
+// ValidateAccountEmailForSite validates an account email address against the
+// target site's domain whitelist and alias restriction policy (or the main
+// site's global policy when site is nil).
+func ValidateAccountEmailForSite(site *model.AdtySite, email string) (string, error) {
 	email = model.NormalizeEmail(email)
 	if common.Validate.Var(email, "required,email,max=50") != nil {
 		return "", ErrAccountEmailInvalid
@@ -41,28 +48,25 @@ func ValidateAccountEmail(email string) (string, error) {
 	if len(parts) != 2 {
 		return "", ErrAccountEmailInvalid
 	}
-	common.OptionMapRWMutex.RLock()
-	domainRestrict := common.EmailDomainRestrictionEnabled
-	aliasRestrict := common.EmailAliasRestrictionEnabled
-	var whitelist []string
-	if domainRestrict {
-		whitelist = append([]string(nil), common.EmailDomainWhitelist...)
-	}
-	common.OptionMapRWMutex.RUnlock()
-	if domainRestrict {
-		allowed := slices.Contains(whitelist, parts[1])
+	authCfg := AdtyEffectiveAuthSettingsForSite(site)
+	if authCfg.EmailDomainRestrictionEnabled {
+		allowed := slices.Contains(authCfg.EmailDomainWhitelist, parts[1])
 		if !allowed {
 			return "", ErrAccountEmailRestricted
 		}
 	}
-	if aliasRestrict && strings.ContainsAny(parts[0], "+.") {
+	if authCfg.EmailAliasRestrictionEnabled && strings.ContainsAny(parts[0], "+.") {
 		return "", ErrAccountEmailRestricted
 	}
 	return email, nil
 }
 
 func StartEmailBinding(identity AuthIdentity, authorization *model.AuthFlowAuthorization, email string, lang string, originHost ...string) (*EmailBindingData, error) {
-	email, err := ValidateAccountEmail(email)
+	user, err := model.GetUserById(identity.UserID, false)
+	if err != nil {
+		return nil, err
+	}
+	email, err = ValidateAccountEmailForSite(AdtySiteById(user.SiteId), email)
 	if err != nil {
 		return nil, err
 	}
@@ -71,10 +75,6 @@ func StartEmailBinding(identity AuthIdentity, authorization *model.AuthFlowAutho
 		return nil, err
 	}
 	if err := ValidateFlowAuthorization(identity, VerificationOperation{Scope: VerificationScopeAccountBind, Context: context}, authorization); err != nil {
-		return nil, err
-	}
-	user, err := model.GetUserById(identity.UserID, false)
-	if err != nil {
 		return nil, err
 	}
 	state := model.EmailBindingState{Authorization: authorization, SiteID: user.SiteId, CurrentEmail: model.NormalizeEmail(user.Email), Email: email, ResendAt: time.Now().Add(model.EmailBindingResendDelay).Unix()}
@@ -151,7 +151,7 @@ func FinishEmailBinding(identity AuthIdentity, token, newCode, oldCode string, o
 	if err := ValidateFlowAuthorization(identity, VerificationOperation{Scope: VerificationScopeAccountBind, Context: context}, state.Authorization); err != nil {
 		return nil, err
 	}
-	if _, err := ValidateAccountEmail(state.Email); err != nil {
+	if _, err := ValidateAccountEmailForSite(AdtySiteById(state.SiteID), state.Email); err != nil {
 		return nil, err
 	}
 	return model.CompleteEmailBinding(identity, token, state.Email, newCode, oldCode, originHost...)

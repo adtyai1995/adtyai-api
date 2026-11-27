@@ -51,7 +51,7 @@ func GetPasswordEncryptionKey(c *gin.Context) {
 }
 
 func Login(c *gin.Context) {
-	if !common.GetPasswordLoginEnabled() {
+	if !service.AdtyEffectiveAuthSettings(c).PasswordLoginEnabled {
 		common.ApiErrorT(c, "Password login has been disabled by administrator")
 		return
 	}
@@ -276,11 +276,13 @@ func writeLoginResponse(c *gin.Context, user *model.User, bundle *service.AuthBu
 }
 
 func Register(c *gin.Context) {
-	if !common.GetRegisterEnabled() {
+	reqSite := service.AdtySiteForRequest(c)
+	authCfg := service.AdtyEffectiveAuthSettingsForSite(reqSite)
+	if !authCfg.RegisterEnabled {
 		common.ApiErrorT(c, "New user registration has been disabled by administrator")
 		return
 	}
-	if !common.GetPasswordRegisterEnabled() {
+	if !authCfg.PasswordRegisterEnabled {
 		common.ApiErrorT(c, "Password registration has been disabled by administrator")
 		return
 	}
@@ -315,11 +317,17 @@ func Register(c *gin.Context) {
 		common.ApiErrorT(c, "New user registration has been disabled by administrator")
 		return
 	}
-	if common.GetEmailVerificationEnabled() {
+	if authCfg.EmailVerificationEnabled {
 		if user.Email == "" || user.VerificationCode == "" {
 			common.ApiErrorT(c, "Email verification is enabled, please enter email address and verification code")
 			return
 		}
+		validatedEmail, emailErr := service.ValidateAccountEmailForSite(reqSite, user.Email)
+		if emailErr != nil {
+			writeSecurityOperationError(c, emailErr)
+			return
+		}
+		user.Email = validatedEmail
 		// G.14.5: consume on a successful check. If a later register write
 		// fails, the client must request a new code; do not restore this one.
 		_, status := common.ConsumeVerificationCodeWithKeyStatus(model.SiteEmailCodeKey(user.Email, siteId), user.VerificationCode, common.EmailVerificationPurpose)
@@ -342,7 +350,7 @@ func Register(c *gin.Context) {
 		}
 	}
 	emailForExistCheck := ""
-	if common.GetEmailVerificationEnabled() {
+	if authCfg.EmailVerificationEnabled {
 		emailForExistCheck = user.Email
 	}
 	exist, err := model.CheckUserExistOrDeleted(user.Username, emailForExistCheck, siteId)
@@ -363,7 +371,7 @@ func Register(c *gin.Context) {
 		Group:       "",
 		SiteId:      siteId,
 	}
-	if common.GetEmailVerificationEnabled() {
+	if authCfg.EmailVerificationEnabled {
 		cleanUser.Email = user.Email
 	}
 	if !service.AdtyRegisterTermsAccepted(c, siteId) {

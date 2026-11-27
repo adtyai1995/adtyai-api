@@ -21,6 +21,7 @@ import type { AdtyMethod, AdtyOrderStatus } from '../types'
 /** Display names; the method IDs are what the API stores. */
 export const METHOD_LABELS: Record<string, string> = {
   'usdt.trc20': 'USDT · TRC20',
+  'usdt.erc20': 'USDT · ERC20',
   'usdt.bep20': 'USDT · BEP20',
   'usdt.polygon': 'USDT · Polygon',
   'usdt.xlayer': 'USDT · X Layer',
@@ -39,6 +40,7 @@ export const VOUCHER_METHOD_LABELS: Record<string, string> = {
 
 export const CHAIN_NAMES: Record<string, string> = {
   'usdt.trc20': 'TRC20',
+  'usdt.erc20': 'ERC20',
   'usdt.bep20': 'BEP20',
   'usdt.polygon': 'Polygon',
   'usdt.xlayer': 'X Layer',

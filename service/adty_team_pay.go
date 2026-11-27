@@ -517,7 +517,7 @@ func findReusableTeamPendingOrder(pendingList []model.AdtyTopupOrder, leaderID i
 				continue
 			}
 			channel, err := model.GetAdtyEpayChannel(ext.ChannelId)
-			if err != nil || channel == nil || channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || !adtyEpayMethodAllowsAmount(channel.MethodFor(method), ext.PayAmount) {
+			if err != nil || channel == nil || channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || !model.AdtyEpayOrderMatchesChannelIdentity(ext, channel) || !adtyEpayMethodAllowsAmount(channel.MethodFor(method), ext.PayAmount) {
 				continue
 			}
 			return ext
@@ -608,7 +608,7 @@ func refreshTeamEpaySubmitURLIfNeeded(ext *model.AdtyTopupOrder, clientIP, devic
 		return ErrAdtyEpayChosenChannelUnavailable
 	}
 	method := channel.MethodFor(ext.Method)
-	if channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || !adtyEpayMethodAllowsAmount(method, ext.PayAmount) {
+	if channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || !model.AdtyEpayOrderMatchesChannelIdentity(ext, channel) || !adtyEpayMethodAllowsAmount(method, ext.PayAmount) {
 		return ErrAdtyEpayChosenChannelUnavailable
 	}
 	if !channel.IsRSA() || channel.OrderMode != model.AdtyEpayOrderModeSubmit {

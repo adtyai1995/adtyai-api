@@ -22,7 +22,7 @@
 - 余额沿用上游额度整数：1 USD = 500000 额度。`QuotaPerUnit` 只接受 500000；保存其他值必须拒绝，已存的其他值加载时不生效，也不能在内存里改成另一个比例。入账额度 = (面额 + 加赠) × 500000，先 `.Floor()` 再转成整数。退款不能超过原单可退额度，不调用支付商退款 API；已消费部分只有主站明确授权时才能登记，差额和责任留在人工记录。旧「只退未消费本金」的句子若与本节或约定 I 冲突，以约定 I 为准。
 - 余额不能变负：每个钱包请求都要先预扣，余额不够就拒绝；结算补扣最多扣到 0，没扣到的差额记入日志和账户短差记录，不暂停后续有余额时的新付费请求（见 features.md 的「余额下限」）。新写的扣费代码要走「预扣分摊 → `model.ApplyBillingSettlement` 结算」这条路，不要直接改余额，也不要用不执行余额下限准入的 `model.DecreaseUserQuota`。（原来的 `model.ChargeUserQuotaUpTo` 已在 `ISS-R4-0054` 删除：它唯一的生产调用在运行期不可达。）
 - 显示：美元、人民币保留 2 位；USDT 按网关返回的位数原样显示。
-- 支付商名：`bepusdt`、`adty_epay`。支付方式：`usdt.trc20`、`usdt.bep20`、`usdt.polygon`、`usdt.xlayer`、`alipay`、`wxpay`。
+- 支付商名：`bepusdt`、`adty_epay`。支付方式：`usdt.trc20`、`usdt.erc20`、`usdt.bep20`、`usdt.polygon`、`usdt.xlayer`、`alipay`、`wxpay`。
 - 订单状态沿用上游 `top_ups.status` 的 `pending`、`success`、`expired`、`failed`（`common/constants.go:256-260`），新增 `canceled`、`refunded`；`canceled` 定义在 extended 模型里（`model/adty_topup_order.go:21`）。注意表名是 `top_ups`。
 - 后台「货币显示」设为 USD（上线清单）。TOKENS 显示模式会改变金额含义（`controller/topup.go:148-155`，该文件多处按 `QuotaDisplayTypeTokens` 换算），这时报价接口直接拒绝（`service/adty_topup_quote.go:94`）。
 

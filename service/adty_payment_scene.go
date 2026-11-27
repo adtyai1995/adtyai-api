@@ -624,6 +624,10 @@ func CreateAdtyPaymentOrder(topUp *model.TopUp, ext *model.AdtyTopupOrder, key s
 			if channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || len(selected) != 1 || !channel.SamePaymentIdentity(selected[0]) {
 				return common.NewMessage("This payment method is not available")
 			}
+			ext.ChannelName = channel.Name
+			ext.CheckoutGateway = strings.TrimRight(strings.TrimSpace(channel.GatewayURL), "/")
+			ext.ProviderMerchantId = strings.TrimSpace(channel.MerchantId)
+			ext.ChannelConfigVersion = channel.ConfigVersion
 		}
 		return nil
 	}

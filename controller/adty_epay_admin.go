@@ -24,6 +24,8 @@ type adtyEpayChannelView struct {
 	HasMerchantPrivateKey bool              `json:"has_merchant_private_key"`
 	HasPlatformPublicKey  bool              `json:"has_platform_public_key"`
 	TodayCNY              map[string]string `json:"today_cny"`
+	OrderCount            int64             `json:"order_count"`
+	SceneNames            []string          `json:"scene_names,omitempty"`
 }
 
 // GetAdtyEpayChannels 列出通道，带今天每种方式已到账的人民币。商户密钥与商户私钥不返回。
@@ -32,6 +34,22 @@ func GetAdtyEpayChannels(c *gin.Context) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	orderCounts, err := model.CountAdtyEpayOrdersByChannel()
+	if err != nil {
+		orderCounts = map[int]int64{}
+	}
+	sceneNamesByChannel := map[int][]string{}
+	if sceneData, sceneErr := service.GetAdtyPaymentScenes(); sceneErr == nil && sceneData != nil {
+		for _, scene := range sceneData.Scenes {
+			label := strings.TrimSpace(scene.Name)
+			if label == "" {
+				label = scene.Key
+			}
+			for _, cid := range scene.ChannelIDs {
+				sceneNamesByChannel[cid] = append(sceneNamesByChannel[cid], label)
+			}
+		}
 	}
 	loc := model.AdtyBusinessLocation(nil)
 	dayStart := time.Now().In(loc)
@@ -52,6 +70,8 @@ func GetAdtyEpayChannels(c *gin.Context) {
 			HasMerchantPrivateKey: channel.MerchantPrivateKey != "",
 			HasPlatformPublicKey:  channel.PlatformPublicKey != "",
 			TodayCNY:              today,
+			OrderCount:            orderCounts[channel.Id],
+			SceneNames:            sceneNamesByChannel[channel.Id],
 		})
 	}
 	common.ApiSuccess(c, out)
@@ -179,6 +199,20 @@ func (req *adtyEpayChannelRequest) toChannel() (*model.AdtyEpayChannel, error) {
 	return channel, nil
 }
 
+func validateNewAdtyEpayChannelCredentials(channel *model.AdtyEpayChannel) error {
+	if channel.IsRSA() {
+		if channel.MerchantPrivateKey == "" {
+			return common.NewMessage("The Epay merchant private key is missing or invalid")
+		}
+		if channel.PlatformPublicKey == "" {
+			return common.NewMessage("The Epay platform public key is missing or invalid")
+		}
+	} else if channel.MerchantKey == "" {
+		return common.NewMessage("The merchant key is required")
+	}
+	return nil
+}
+
 // CreateAdtyEpayChannel 新建通道（只有超级管理员）。新通道默认停用，测试通过后再启用。
 func CreateAdtyEpayChannel(c *gin.Context) {
 	var req adtyEpayChannelRequest
@@ -191,17 +225,8 @@ func CreateAdtyEpayChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if channel.IsRSA() {
-		if channel.MerchantPrivateKey == "" {
-			common.ApiErrorT(c, "The Epay merchant private key is missing or invalid")
-			return
-		}
-		if channel.PlatformPublicKey == "" {
-			common.ApiErrorT(c, "The Epay platform public key is missing or invalid")
-			return
-		}
-	} else if channel.MerchantKey == "" {
-		common.ApiErrorT(c, "The merchant key is required")
+	if err := validateNewAdtyEpayChannelCredentials(channel); err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	channel.Status = model.AdtyEpayStatusDisabled
@@ -278,19 +303,86 @@ func UpdateAdtyEpayChannel(c *gin.Context) {
 	common.ApiSuccess(c, nil)
 }
 
-// DeleteAdtyEpayChannel 删除没有订单的通道（只有超级管理员）。
+// DeleteAdtyEpayChannel 删除支付通道（只有超级管理员）。有历史订单时先快照通道名并安全更新关联支付场景。
 func DeleteAdtyEpayChannel(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
+	if err != nil || id <= 0 {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if err := model.DeleteAdtyEpayChannel(id); err != nil {
+	res, err := model.DeleteAdtyEpayChannelWithActor(id, c.GetInt("id"))
+	if err != nil {
 		writeAdtyEpayAdminError(c, err)
 		return
 	}
-	recordManageAudit(c, "adty.epay_channel.delete", map[string]any{"id": id})
-	common.ApiSuccess(c, nil)
+	recordManageAudit(c, "adty.epay_channel.delete", map[string]any{
+		"id":              id,
+		"name":            res.Name,
+		"updated_scenes":  res.UpdatedScenes,
+		"disabled_scenes": res.DisabledScenes,
+	})
+	common.ApiSuccess(c, res)
+}
+
+type adtyEpayChannelReplaceRequest struct {
+	TargetChannelID int                     `json:"target_channel_id"`
+	NewChannel      *adtyEpayChannelRequest `json:"new_channel"`
+	DeleteOld       bool                    `json:"delete_old"`
+	EnableTarget    bool                    `json:"enable_target"`
+}
+
+// ReplaceAdtyEpayChannel 用已有通道或新建通道替换旧通道（只有超级管理员），同步迁移支付场景绑定并停用或删除旧通道。
+func ReplaceAdtyEpayChannel(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	var req adtyEpayChannelReplaceRequest
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	opts := model.AdtyEpayChannelReplaceOptions{
+		TargetChannelID: req.TargetChannelID,
+		DeleteOld:       req.DeleteOld,
+		EnableTarget:    req.EnableTarget,
+		ActorID:         c.GetInt("id"),
+	}
+	if req.NewChannel != nil {
+		if req.TargetChannelID > 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		channel, convErr := req.NewChannel.toChannel()
+		if convErr != nil {
+			common.ApiError(c, convErr)
+			return
+		}
+		if credErr := validateNewAdtyEpayChannelCredentials(channel); credErr != nil {
+			common.ApiError(c, credErr)
+			return
+		}
+		opts.NewChannel = channel
+	} else if req.TargetChannelID <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	res, err := model.ReplaceAdtyEpayChannel(id, opts)
+	if err != nil {
+		writeAdtyEpayAdminError(c, err)
+		return
+	}
+	recordManageAudit(c, "adty.epay_channel.replace", map[string]any{
+		"id":             res.OldID,
+		"old_name":       res.OldName,
+		"new_id":         res.NewID,
+		"new_name":       res.NewName,
+		"deleted_old":    res.DeletedOld,
+		"enable_target":  req.EnableTarget,
+		"updated_scenes": res.UpdatedScenes,
+	})
+	common.ApiSuccess(c, res)
 }
 
 // RevokeAdtyEpayChannel permanently removes the historical credential. Old

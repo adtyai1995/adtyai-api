@@ -65,6 +65,13 @@ func MigrateAdtyTablesOn(db *gorm.DB) error {
 	if err := db.AutoMigrate(&AdtyNotificationRead{}, &AdtyNotificationPublication{}, &AdtyBadgeSeen{}, &AdtyVoucher{}, &AdtyVoucherLiability{}, &AdtyVoucherCloseGrant{}, &AdtyTeam{}, &AdtyTeamMember{}, &AdtyTeamLedger{}, &AdtyTeamFundLot{}, &AdtyTeamFundAllocation{}, &AdtyTeamInvite{}, &AdtyTeamRegistrationLink{}, &AdtyTeamKey{}); err != nil {
 		return err
 	}
+	// Backfill frozen Epay channel names onto existing top-up orders so renaming
+	// or deleting a channel never erases historical order channel names.
+	if db.Migrator().HasTable(&AdtyTopupOrder{}) && db.Migrator().HasTable(&AdtyEpayChannel{}) {
+		if err := db.Exec(`UPDATE adty_topup_orders SET channel_name = COALESCE((SELECT c.name FROM adty_epay_channels c WHERE c.id = adty_topup_orders.channel_id), '') WHERE channel_id > 0 AND channel_name = ''`).Error; err != nil {
+			return err
+		}
+	}
 	// A surviving subsite team has never migrated; its original invite scope
 	// is recoverable. For teams already on main, pre-binding credentials
 	// without evidence must be reissued.

@@ -55,6 +55,7 @@ type AdtySite struct {
 	Visibility                 string           `json:"visibility" gorm:"type:text"`
 	AllowedGroups              string           `json:"allowed_groups" gorm:"type:text"`
 	Brand                      string           `json:"brand" gorm:"type:text"`
+	AuthConfig                 string           `json:"-" gorm:"type:text"`
 	HomePageContent            string           `json:"home_page_content" gorm:"type:text"`
 	LegalDocs                  string           `json:"-" gorm:"type:text"`
 	BonusRates                 string           `json:"bonus_rates" gorm:"type:text"`
@@ -84,6 +85,19 @@ type AdtySite struct {
 }
 
 func (AdtySite) TableName() string { return "adty_sites" }
+
+// AdtySiteAuthConfig stores per-subsite Basic Authentication rules.
+// Subsites default to password login/registration enabled and email verification
+// disabled until the site owner configures their own email provider (SMTP/Resend).
+type AdtySiteAuthConfig struct {
+	PasswordLoginEnabled          bool     `json:"password_login_enabled"`
+	RegisterEnabled               bool     `json:"register_enabled"`
+	PasswordRegisterEnabled       bool     `json:"password_register_enabled"`
+	EmailVerificationEnabled      bool     `json:"email_verification_enabled"`
+	EmailDomainRestrictionEnabled bool     `json:"email_domain_restriction_enabled"`
+	EmailAliasRestrictionEnabled  bool     `json:"email_alias_restriction_enabled"`
+	EmailDomainWhitelist          []string `json:"email_domain_whitelist"`
+}
 
 // New sites configure their own policies. Upgraded rows are initialized once
 // from the settings in force before the site-specific fields existed.

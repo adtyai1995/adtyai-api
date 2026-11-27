@@ -81,6 +81,7 @@ export function CapabilityBento() {
     t('Alipay'),
     t('WeChat Pay'),
     'USDT · TRC20',
+    'USDT · ERC20',
     'USDT · BEP20',
     'USDT · Polygon',
     'USDT · X Layer',

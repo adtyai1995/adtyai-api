@@ -26,11 +26,8 @@ import {
   sideDrawerFormClassName,
   sideDrawerHeaderClassName,
 } from '@/components/drawer-layout'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { NativeSelect } from '@/components/ui/native-select'
 import {
   Sheet,
   SheetContent,
@@ -38,54 +35,18 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
-import { Textarea } from '@/components/ui/textarea'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
   saveEpayChannel,
   type EpayChannel,
   type EpayChannelInput,
-  type EpayMethodConfig,
-  type EpaySignType,
 } from '../api'
-
-const METHODS: Array<{ id: EpayMethodConfig['method']; label: string }> = [
-  { id: 'alipay', label: 'Alipay' },
-  { id: 'wxpay', label: 'WeChat Pay' },
-]
-
-function emptyMethod(method: EpayMethodConfig['method']): EpayMethodConfig {
-  return {
-    method,
-    display_name: '',
-    type_code: method,
-    min_cny: '0',
-    max_cny: '0',
-    daily_limit_cny: '0',
-    enabled: false,
-  }
-}
-
-function toInput(channel: EpayChannel | null): EpayChannelInput {
-  const methods = METHODS.map(
-    (m) => channel?.methods.find((x) => x.method === m.id) ?? emptyMethod(m.id)
-  )
-  return {
-    name: channel?.name ?? '',
-    gateway_url: channel?.gateway_url ?? '',
-    merchant_id: channel?.merchant_id ?? '',
-    sign_type: channel?.sign_type === 'RSA' ? 'RSA' : 'MD5',
-    merchant_key: '',
-    merchant_private_key: '',
-    platform_public_key: channel?.platform_public_key ?? '',
-    priority: channel?.priority ?? 0,
-    weight: channel?.weight ?? 1,
-    order_mode: channel?.order_mode ?? 'api',
-    probe_mode: channel?.probe_mode ?? 'off',
-    unpaid_threshold: channel?.unpaid_threshold ?? 0,
-    methods: methods.map((m) => ({ ...m, type_code: m.type_code || m.method })),
-  }
-}
+import {
+  epayInputNeedsCredentials,
+  toEpayChannelInput,
+} from '../channel-form-helpers'
+import { ChannelFormFields } from './channel-form-fields'
 
 type ChannelDrawerProps = {
   open: boolean
@@ -94,14 +55,14 @@ type ChannelDrawerProps = {
   onSaved: () => void
 }
 
-/** Add or edit an epay channel (root only). The key field is empty when editing; empty keeps it. */
+/** Add or edit an Epay channel (root only). All fields are editable; empty key keeps existing credentials on active channels. */
 export function ChannelDrawer(props: ChannelDrawerProps) {
   const { t } = useTranslation()
   const [input, setInput] = useState<EpayChannelInput>(() =>
-    toInput(props.channel)
+    toEpayChannelInput(props.channel)
   )
   useEffect(() => {
-    if (props.open) setInput(toInput(props.channel))
+    if (props.open) setInput(toEpayChannelInput(props.channel))
   }, [props.open, props.channel])
 
   const save = useMutation({
@@ -114,30 +75,14 @@ export function ChannelDrawer(props: ChannelDrawerProps) {
     onError: (error) => handleServerError(error),
   })
 
-  const set = <K extends keyof EpayChannelInput>(
-    key: K,
-    value: EpayChannelInput[K]
-  ) => setInput((prev) => ({ ...prev, [key]: value }))
-  const setMethod = (index: number, patch: Partial<EpayMethodConfig>) =>
-    setInput((prev) => ({
-      ...prev,
-      methods: prev.methods.map((m, i) =>
-        i === index ? { ...m, ...patch } : m
-      ),
-    }))
   const anyMethod = input.methods.some((m) => m.enabled)
-  const isRSA = input.sign_type === 'RSA'
-  let needsKey = false
-  if (isRSA) {
-    const hasPrivateKey = Boolean(props.channel?.has_merchant_private_key)
-    const hasPublicKey = Boolean(props.channel?.has_platform_public_key)
-    needsKey =
-      (!hasPrivateKey && input.merchant_private_key.trim() === '') ||
-      (!hasPublicKey && input.platform_public_key.trim() === '')
-  } else {
-    const hasMd5Key = Boolean(props.channel?.has_key)
-    needsKey = !hasMd5Key && input.merchant_key.trim() === ''
-  }
+  const needsKey = epayInputNeedsCredentials(input, props.channel)
+  const missingBasic =
+    input.name.trim() === '' ||
+    input.gateway_url.trim() === '' ||
+    input.merchant_id.trim() === ''
+  const isRevoked = props.channel?.status === 'revoked'
+  const hasOrders = (props.channel?.order_count ?? 0) > 0
 
   return (
     <Sheet open={props.open} onOpenChange={props.onOpenChange}>
@@ -159,289 +104,31 @@ export function ChannelDrawer(props: ChannelDrawerProps) {
             save.mutate()
           }}
         >
-          <div className='space-y-2'>
-            <Label htmlFor='epay-name'>{t('Name')}</Label>
-            <Input
-              id='epay-name'
-              value={input.name}
-              onChange={(e) => set('name', e.target.value)}
-            />
-          </div>
-          <div className='space-y-2'>
-            <Label htmlFor='epay-url'>{t('Gateway address')}</Label>
-            <Input
-              id='epay-url'
-              value={input.gateway_url}
-              placeholder='https://pay.example.com'
-              onChange={(e) => set('gateway_url', e.target.value)}
-            />
-          </div>
-          <div className='grid grid-cols-2 gap-3'>
-            <div className='space-y-2'>
-              <Label htmlFor='epay-pid'>{t('Merchant ID')}</Label>
-              <Input
-                id='epay-pid'
-                value={input.merchant_id}
-                onChange={(e) => set('merchant_id', e.target.value)}
-              />
-            </div>
-            <div className='space-y-2'>
-              <Label htmlFor='epay-sign-type'>{t('Signature type')}</Label>
-              <NativeSelect
-                id='epay-sign-type'
-                value={input.sign_type}
-                onChange={(e) =>
-                  set('sign_type', e.target.value as EpaySignType)
-                }
-              >
-                <option value='MD5'>MD5</option>
-                <option value='RSA'>RSA</option>
-              </NativeSelect>
-            </div>
-          </div>
-          {isRSA ? (
-            <div className='space-y-3'>
-              <div className='space-y-2'>
-                <Label htmlFor='epay-private-key'>
-                  {t('Merchant private key')}
-                </Label>
-                <Textarea
-                  id='epay-private-key'
-                  rows={4}
-                  autoComplete='off'
-                  spellCheck={false}
-                  className='font-mono text-xs break-all'
-                  value={input.merchant_private_key}
-                  placeholder={
-                    props.channel?.has_merchant_private_key
-                      ? t('Leave empty to keep the current key')
-                      : 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC...'
-                  }
-                  onChange={(e) => set('merchant_private_key', e.target.value)}
-                />
-              </div>
-              <div className='space-y-2'>
-                <Label htmlFor='epay-public-key'>
-                  {t('Platform public key')}
-                </Label>
-                <Textarea
-                  id='epay-public-key'
-                  rows={4}
-                  autoComplete='off'
-                  spellCheck={false}
-                  className='font-mono text-xs break-all'
-                  value={input.platform_public_key}
-                  placeholder={
-                    props.channel?.has_platform_public_key
-                      ? t('Leave empty to keep the current key')
-                      : 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A...'
-                  }
-                  onChange={(e) => set('platform_public_key', e.target.value)}
-                />
-              </div>
-            </div>
-          ) : (
-            <div className='space-y-2'>
-              <Label htmlFor='epay-key'>{t('Merchant key')}</Label>
-              <Input
-                id='epay-key'
-                type='password'
-                autoComplete='new-password'
-                value={input.merchant_key}
-                placeholder={
-                  props.channel?.has_key
-                    ? t('Leave empty to keep the current key')
-                    : ''
-                }
-                onChange={(e) => set('merchant_key', e.target.value)}
-              />
-            </div>
+          {isRevoked && (
+            <Alert>
+              <AlertDescription>
+                {t(
+                  'This channel was revoked. Enter valid credentials and save to restore it to Disabled so you can test and enable it again.'
+                )}
+              </AlertDescription>
+            </Alert>
           )}
-          <div className='grid grid-cols-3 gap-3'>
-            <div className='space-y-2'>
-              <Label htmlFor='epay-priority'>{t('Priority')}</Label>
-              <Input
-                id='epay-priority'
-                type='number'
-                value={input.priority}
-                onChange={(e) => set('priority', Number(e.target.value) || 0)}
-              />
-            </div>
-            <div className='space-y-2'>
-              <Label htmlFor='epay-weight'>{t('Weight')}</Label>
-              <Input
-                id='epay-weight'
-                type='number'
-                min={1}
-                value={input.weight}
-                onChange={(e) => set('weight', Number(e.target.value) || 1)}
-              />
-            </div>
-            <div className='space-y-2'>
-              <Label htmlFor='epay-threshold'>{t('Unpaid limit')}</Label>
-              <Input
-                id='epay-threshold'
-                type='number'
-                min={0}
-                value={input.unpaid_threshold}
-                onChange={(e) =>
-                  set('unpaid_threshold', Number(e.target.value) || 0)
-                }
-              />
-            </div>
-          </div>
-          <div className='grid grid-cols-2 gap-3'>
-            <div className='space-y-2'>
-              <Label htmlFor='epay-mode'>{t('Order mode')}</Label>
-              <NativeSelect
-                id='epay-mode'
-                value={input.order_mode}
-                onChange={(e) =>
-                  set(
-                    'order_mode',
-                    e.target.value as EpayChannelInput['order_mode']
-                  )
-                }
-              >
-                <option value='api'>
-                  {isRSA ? t('API (/api/pay/create)') : t('API (mapi.php)')}
-                </option>
-                <option value='submit'>
-                  {isRSA
-                    ? t('Page redirect (/api/pay/submit)')
-                    : t('Page redirect (submit.php)')}
-                </option>
-              </NativeSelect>
-            </div>
-            <div className='space-y-2'>
-              <Label htmlFor='epay-probe'>{t('Health check')}</Label>
-              <NativeSelect
-                id='epay-probe'
-                value={input.probe_mode}
-                onChange={(e) => set('probe_mode', e.target.value)}
-              >
-                <option value='off'>{t('Off')}</option>
-                <option value='query'>
-                  {isRSA ? t('Merchant info (/api/merchant/info)') : 'act=query'}
-                </option>
-                <option value='balance'>
-                  {isRSA
-                    ? t('Merchant balance (/api/merchant/info)')
-                    : 'act=balance'}
-                </option>
-                <option value='order'>
-                  {isRSA
-                    ? t('Query a missing order (/api/pay/query)')
-                    : t('Query a missing order')}
-                </option>
-              </NativeSelect>
-            </div>
-          </div>
-          <fieldset className='space-y-3'>
-            <legend className='text-sm font-medium'>
-              {t('Payment methods')}
-            </legend>
-            {input.methods.map((m, index) => (
-              <div key={m.method} className='space-y-2 rounded-lg border p-3'>
-                <label className='flex items-center gap-2 text-sm font-medium'>
-                  <Checkbox
-                    checked={m.enabled}
-                    onCheckedChange={(checked) =>
-                      setMethod(index, { enabled: checked === true })
-                    }
-                  />
-                  {t(METHODS[index].label)}
-                </label>
-                {m.enabled && (
-                  <div className='space-y-1'>
-                    <Label htmlFor={`name-${m.method}`} className='text-xs'>
-                      {t('Display name')}
-                    </Label>
-                    <Input
-                      id={`name-${m.method}`}
-                      value={m.display_name ?? ''}
-                      maxLength={32}
-                      placeholder={t(METHODS[index].label)}
-                      onChange={(e) =>
-                        setMethod(index, { display_name: e.target.value })
-                      }
-                    />
-                    <p className='text-muted-foreground text-xs'>
-                      {t(
-                        'Shown to customers on the wallet page, for example Alipay 1. Leave empty to show the method name.'
-                      )}
-                    </p>
-                  </div>
+          {!isRevoked && hasOrders && (
+            <Alert>
+              <AlertDescription>
+                {t(
+                  'This channel has {{count}} historical orders. You can edit the gateway address, merchant ID, keys, and all other settings; historical orders keep their original channel snapshot, and changes apply to new orders.',
+                  { count: props.channel?.order_count ?? 0 }
                 )}
-                {m.enabled && (
-                  <div className='grid grid-cols-2 gap-2 sm:grid-cols-4'>
-                    <div className='space-y-1'>
-                      <Label htmlFor={`type-${m.method}`} className='text-xs'>
-                        {t('Type code')}
-                      </Label>
-                      <Input
-                        id={`type-${m.method}`}
-                        value={m.type_code}
-                        onChange={(e) =>
-                          setMethod(index, { type_code: e.target.value })
-                        }
-                      />
-                    </div>
-                    <div className='space-y-1'>
-                      <Label htmlFor={`min-${m.method}`} className='text-xs'>
-                        {t('Min ¥')}
-                      </Label>
-                      <Input
-                        id={`min-${m.method}`}
-                        type='number'
-                        min={0}
-                        step='0.01'
-                        value={m.min_cny}
-                        onChange={(e) =>
-                          setMethod(index, { min_cny: e.target.value })
-                        }
-                      />
-                    </div>
-                    <div className='space-y-1'>
-                      <Label htmlFor={`max-${m.method}`} className='text-xs'>
-                        {t('Max ¥')}
-                      </Label>
-                      <Input
-                        id={`max-${m.method}`}
-                        type='number'
-                        min={0}
-                        step='0.01'
-                        value={m.max_cny}
-                        onChange={(e) =>
-                          setMethod(index, { max_cny: e.target.value })
-                        }
-                      />
-                    </div>
-                    <div className='space-y-1'>
-                      <Label htmlFor={`daily-${m.method}`} className='text-xs'>
-                        {t('Daily limit ¥')}
-                      </Label>
-                      <Input
-                        id={`daily-${m.method}`}
-                        type='number'
-                        min={0}
-                        step='0.01'
-                        value={m.daily_limit_cny}
-                        onChange={(e) =>
-                          setMethod(index, { daily_limit_cny: e.target.value })
-                        }
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
-            {!anyMethod && (
-              <p className='text-destructive text-xs'>
-                {t('Enable at least one payment method')}
-              </p>
-            )}
-          </fieldset>
+              </AlertDescription>
+            </Alert>
+          )}
+          <ChannelFormFields
+            idPrefix='epay'
+            input={input}
+            existingChannel={props.channel}
+            onChange={setInput}
+          />
           <div className='flex justify-end gap-2'>
             <Button
               type='button'
@@ -453,7 +140,7 @@ export function ChannelDrawer(props: ChannelDrawerProps) {
             <Button
               variant='brand'
               type='submit'
-              disabled={!anyMethod || needsKey || save.isPending}
+              disabled={!anyMethod || needsKey || missingBasic || save.isPending}
             >
               {t('Save')}
             </Button>

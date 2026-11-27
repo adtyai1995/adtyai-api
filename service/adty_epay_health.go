@@ -153,7 +153,7 @@ func runAdtyEpayFollowUpQueries(now int64) {
 			continue
 		}
 		channel, chErr := model.GetAdtyEpayChannel(ext.ChannelId)
-		if chErr != nil || channel == nil || strings.TrimSpace(channel.GatewayURL) == "" {
+		if chErr != nil || channel == nil || strings.TrimSpace(channel.GatewayURL) == "" || !model.AdtyEpayOrderMatchesChannelMerchantGateway(&ext, channel) {
 			continue
 		}
 		httpsQueryable := adtyEpayChannelHTTPSQueryable(channel)
@@ -436,7 +436,7 @@ func (adtyEpayProvider) Cancel(ext *model.AdtyTopupOrder) error {
 		}
 		return err
 	}
-	if channel.Status == model.AdtyEpayStatusRevoked {
+	if channel.Status == model.AdtyEpayStatusRevoked || !model.AdtyEpayOrderMatchesChannelMerchantGateway(ext, channel) {
 		return nil
 	}
 	endpoint, err := url.Parse(strings.TrimSpace(channel.GatewayURL))
@@ -466,6 +466,9 @@ func (adtyEpayProvider) Query(ctx context.Context, ext *model.AdtyTopupOrder) (*
 	}
 	if channel.Status == model.AdtyEpayStatusRevoked {
 		return nil, common.NewMessage("This payment channel has been permanently revoked")
+	}
+	if !model.AdtyEpayOrderMatchesChannelMerchantGateway(ext, channel) {
+		return nil, errors.Join(model.ErrPaymentMethodMismatch, errors.New("channel merchant or gateway changed"))
 	}
 	endpoint, err := url.Parse(strings.TrimSpace(channel.GatewayURL))
 	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || channel.MerchantId == "" || !channel.HasCredentials() {

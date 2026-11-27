@@ -592,6 +592,8 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'adty.epay_channel.create': 'Created payment channel {{name}} (ID: {{id}})',
   'adty.epay_channel.update': 'Updated payment channel {{name}} (ID: {{id}})',
   'adty.epay_channel.delete': 'Deleted payment channel {{id}}',
+  'adty.epay_channel.replace':
+    'Replaced payment channel {{id}} with channel {{new_id}}',
   'adty.epay_channel.revoke': 'Revoked payment channel {{id}} credentials',
   'adty.epay_channel.status': 'Set payment channel {{id}} to {{status}}',
   'adty.epay_channel.test': 'Tested payment channel {{id}}',
@@ -621,6 +623,7 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'adty.site.sender_domain_disable': 'Disabled site sender domain {{site_id}}',
   'adty.site.legal_update': 'Updated site legal documents',
   'adty.site.mail_config_update': 'Updated site email configuration',
+  'adty.site.auth_config_update': 'Updated site basic authentication settings',
   'adty.site.close_mail_retry': 'Retried site closure migration email',
   'adty.site.close_mail_delivered':
     'Marked site closure migration email as delivered',

@@ -888,6 +888,11 @@ func AdtyOverrideStatus(c *gin.Context, data map[string]any) {
 	}
 	data["server_address"] = AdtySiteAPIBaseURL(site)
 	data["adty_site"] = map[string]any{"id": site.Id, "status": site.Status, "subdomain": site.Subdomain}
+	authCfg := AdtySiteAuthConfigFor(site)
+	data["password_login_enabled"] = authCfg.PasswordLoginEnabled
+	data["register_enabled"] = authCfg.RegisterEnabled
+	data["password_register_enabled"] = authCfg.PasswordRegisterEnabled
+	data["email_verification"] = authCfg.EmailVerificationEnabled
 	for _, key := range []string{"github_oauth", "discord_oauth", "linuxdo_oauth", "telegram_oauth", "wechat_login", "oidc_enabled", "passkey_login", "faq_enabled"} {
 		data[key] = false
 	}

@@ -33,6 +33,7 @@ export const SITE_OWNER_SECTIONS = [
   'notices',
   'staff',
   'tickets',
+  'auth',
   'mail',
   'settings',
   'manual',

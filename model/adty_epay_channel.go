@@ -59,6 +59,7 @@ type AdtyEpayChannel struct {
 	ProbeFailCount       int                     `json:"probe_fail_count"`
 	ProbeOkCount         int                     `json:"probe_ok_count"`
 	LastProbeAt          int64                   `json:"last_probe_at"`
+	ConfigVersion        int64                   `json:"-" gorm:"not null;default:0"`
 	CreatedAt            int64                   `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt            int64                   `json:"updated_at" gorm:"autoUpdateTime"`
 	Methods              []AdtyEpayChannelMethod `json:"methods" gorm:"foreignKey:ChannelId"`
@@ -259,7 +260,141 @@ func (channel *AdtyEpayChannel) SamePaymentIdentity(other *AdtyEpayChannel) bool
 	return channel.MerchantKey == other.MerchantKey
 }
 
+// AdtyEpayOrderMatchesChannelMerchantGateway reports whether an order's frozen
+// merchant ID and gateway URL still match the channel's current configuration.
+// Legacy orders without those frozen columns remain compatible until the
+// channel's identity is edited (which backfills the pre-edit identity onto them).
+func AdtyEpayOrderMatchesChannelMerchantGateway(ext *AdtyTopupOrder, channel *AdtyEpayChannel) bool {
+	if ext == nil || channel == nil || ext.ChannelId != channel.Id {
+		return false
+	}
+	if merchant := strings.TrimSpace(ext.ProviderMerchantId); merchant != "" && merchant != strings.TrimSpace(channel.MerchantId) {
+		return false
+	}
+	if gateway := strings.TrimRight(strings.TrimSpace(ext.CheckoutGateway), "/"); gateway != "" &&
+		gateway != strings.TrimRight(strings.TrimSpace(channel.GatewayURL), "/") {
+		return false
+	}
+	return true
+}
+
+// AdtyEpayOrderMatchesChannelIdentity reports whether an active pending order
+// still matches the channel's current payment configuration version, merchant
+// ID, and gateway URL, preventing reuse of stale checkout links after edits.
+func AdtyEpayOrderMatchesChannelIdentity(ext *AdtyTopupOrder, channel *AdtyEpayChannel) bool {
+	if !AdtyEpayOrderMatchesChannelMerchantGateway(ext, channel) {
+		return false
+	}
+	return ext.ChannelConfigVersion == channel.ConfigVersion
+}
+
+func backfillAdtyEpayOrderSnapshotsTx(tx *gorm.DB, channel *AdtyEpayChannel, includeIdentity bool) error {
+	if channel == nil || channel.Id <= 0 {
+		return nil
+	}
+	hasOrders, err := AdtyTableExists(tx, &AdtyTopupOrder{})
+	if err != nil || !hasOrders {
+		return err
+	}
+	if name := strings.TrimSpace(channel.Name); name != "" {
+		if err := tx.Model(&AdtyTopupOrder{}).
+			Where("channel_id = ? AND channel_name = ?", channel.Id, "").
+			Update("channel_name", name).Error; err != nil {
+			return err
+		}
+	}
+	if !includeIdentity {
+		return nil
+	}
+	if merchant := strings.TrimSpace(channel.MerchantId); merchant != "" {
+		if err := tx.Model(&AdtyTopupOrder{}).
+			Where("channel_id = ? AND provider_merchant_id = ?", channel.Id, "").
+			Update("provider_merchant_id", merchant).Error; err != nil {
+			return err
+		}
+	}
+	if gateway := strings.TrimRight(strings.TrimSpace(channel.GatewayURL), "/"); gateway != "" {
+		if err := tx.Model(&AdtyTopupOrder{}).
+			Where("channel_id = ? AND checkout_gateway = ?", channel.Id, "").
+			Update("checkout_gateway", gateway).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func updatePaymentScenesForChannelTx(tx *gorm.DB, oldID, replacementID, actorID int) (updatedScenes, disabledScenes int, err error) {
+	hasSceneCfgTable, err := AdtyTableExists(tx, &AdtyPaymentSceneConfig{})
+	if err != nil || !hasSceneCfgTable {
+		return 0, 0, err
+	}
+	sceneCfg, err := GetAdtyPaymentSceneConfig(tx, true)
+	if err != nil {
+		return 0, 0, err
+	}
+	var scenes []AdtyPaymentScene
+	if strings.TrimSpace(sceneCfg.Payload) != "" {
+		if err := common.Unmarshal([]byte(sceneCfg.Payload), &scenes); err != nil {
+			return 0, 0, err
+		}
+	}
+	for i := range scenes {
+		if !slices.Contains(scenes[i].ChannelIDs, oldID) {
+			continue
+		}
+		nextIDs := make([]int, 0, len(scenes[i].ChannelIDs))
+		for _, cid := range scenes[i].ChannelIDs {
+			if cid != oldID {
+				nextIDs = append(nextIDs, cid)
+			}
+		}
+		if replacementID > 0 {
+			if !slices.Contains(nextIDs, replacementID) {
+				nextIDs = append(nextIDs, replacementID)
+			}
+			scenes[i].ChannelIDs = nextIDs
+		} else if len(nextIDs) > 0 {
+			scenes[i].ChannelIDs = nextIDs
+		} else {
+			// R8-15: Removing the sole restricted Epay channel must never silently
+			// widen the scene to all Epay channels (empty channel_ids means unrestricted).
+			scenes[i].ChannelIDs = []int{}
+			otherProviders := make([]string, 0, len(scenes[i].Providers))
+			for _, p := range scenes[i].Providers {
+				if p != PaymentProviderAdtyEpay {
+					otherProviders = append(otherProviders, p)
+				}
+			}
+			if len(otherProviders) > 0 {
+				scenes[i].Providers = otherProviders
+			} else {
+				scenes[i].Enabled = false
+				disabledScenes++
+			}
+		}
+		updatedScenes++
+	}
+	if updatedScenes == 0 {
+		return 0, 0, nil
+	}
+	payload, err := common.Marshal(scenes)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Model(sceneCfg).Where("id = ?", sceneCfg.ID).Updates(map[string]any{
+		"version":    sceneCfg.Version + 1,
+		"payload":    string(payload),
+		"updated_by": actorID,
+		"updated_at": time.Now().Unix(),
+	}).Error; err != nil {
+		return 0, 0, err
+	}
+	return updatedScenes, disabledScenes, nil
+}
+
 // SaveAdtyEpayChannel 新建或改一个通道，方式整组替换。keepKey 为真时不改商户密钥；编辑时留空的 RSA 密钥也会保留原值。
+// 允许修改已有订单或已撤销通道的全部配置（名称、地址、商户 ID、密钥、签名方式、下单方式、支付方式等）：
+// 修改支付凭据或网关身份前会先把旧通道名/商户号/网关快照到历史订单，并递增配置版本、重置故障计数。
 func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 	return DB.Transaction(func(tx *gorm.DB) error {
 		channel.SignType = channel.EffectiveSignType()
@@ -268,6 +403,7 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 		keepPublicKey := false
 		keepCorruptedKey := false
 		keepCorruptedPrivateKey := false
+		identityChanged := false
 		if channel.Id != 0 {
 			var existing AdtyEpayChannel
 			if err := AdtyLockForUpdate(tx).Preload("Methods").First(&existing, channel.Id).Error; err != nil {
@@ -275,9 +411,6 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 					return ErrAdtyEpayChannelNotFound
 				}
 				return err
-			}
-			if existing.Status == AdtyEpayStatusRevoked {
-				return common.NewMessage("This payment channel has been permanently revoked")
 			}
 			if channel.IsRSA() {
 				// Clear inactive MD5 key so stale/corrupted columns never poison an RSA channel.
@@ -303,28 +436,33 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 					channel.MerchantKey = existing.MerchantKey
 				}
 			}
-			identityChanged := !existing.SamePaymentIdentity(channel)
-			if identityChanged && existing.CredentialDecryptErr {
-				// Only exempt the active scheme's undecryptable secret field so Root can
-				// re-key it while non-secret routing/verification identity stays locked.
-				activeSecretOK := (!existing.IsRSA() && existing.MerchantKey == "") ||
-					(existing.IsRSA() && existing.MerchantPrivateKey == "")
-				if existing.SameNonSecretPaymentIdentity(channel) && activeSecretOK {
-					identityChanged = false
+			identityChanged = existing.Status == AdtyEpayStatusRevoked || !existing.SamePaymentIdentity(channel)
+			if identityChanged || existing.Name != channel.Name {
+				if err := backfillAdtyEpayOrderSnapshotsTx(tx, &existing, identityChanged); err != nil {
+					return err
 				}
 			}
 			if identityChanged {
-				var count int64
-				if err := tx.Model(&AdtyTopupOrder{}).Where("channel_id = ?", channel.Id).Count(&count).Error; err != nil {
-					return err
+				channel.ConfigVersion = existing.ConfigVersion + 1
+				channel.UnpaidStreak = 0
+				channel.ProbeFailCount = 0
+				channel.ProbeOkCount = 0
+				channel.LastProbeAt = 0
+				for i := range methods {
+					methods[i].ReturnType = ""
 				}
-				if count > 0 {
-					return common.NewMessage("This channel has orders. Create a new channel to change payment credentials or method codes")
-				}
+			} else {
+				channel.ConfigVersion = existing.ConfigVersion
 			}
-			// Status writes use their own operation; do not restore a stale
-			// status read by the editor before this transaction acquired its lock.
-			channel.Status, channel.StatusReason = existing.Status, existing.StatusReason
+			// Status writes use their own operation; do not restore a stale status read
+			// before acquiring the row lock. Re-configuring a revoked channel restores it
+			// to disabled so Root can test and enable it again.
+			if existing.Status == AdtyEpayStatusRevoked {
+				channel.Status = AdtyEpayStatusDisabled
+				channel.StatusReason = AdtyEpayReasonManual
+			} else {
+				channel.Status, channel.StatusReason = existing.Status, existing.StatusReason
+			}
 		}
 		channel.Methods = nil
 		toSave := *channel
@@ -339,7 +477,10 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 			channel.CreatedAt = toSave.CreatedAt
 			channel.UpdatedAt = toSave.UpdatedAt
 		} else {
-			omit := []string{"created_at", "unpaid_streak", "probe_fail_count", "probe_ok_count", "last_probe_at"}
+			omit := []string{"created_at"}
+			if !identityChanged {
+				omit = append(omit, "unpaid_streak", "probe_fail_count", "probe_ok_count", "last_probe_at")
+			}
 			if keepCorruptedKey {
 				omit = append(omit, "merchant_key")
 			}
@@ -378,48 +519,234 @@ func SaveAdtyEpayChannel(channel *AdtyEpayChannel, keepKey bool) error {
 	})
 }
 
-// DeleteAdtyEpayChannel 删除通道。旧订单的回调仍按 channelId 路由，所以有订单的通道只能停用；
-// 仍被支付场景引用的通道也必须先从场景中移除，避免删除后静默放开或卡死配置保存（R8-15）。
+// AdtyEpayChannelDeleteResult summarizes side effects of deleting a payment channel.
+type AdtyEpayChannelDeleteResult struct {
+	Id             int    `json:"id"`
+	Name           string `json:"name"`
+	UpdatedScenes  int    `json:"updated_scenes"`
+	DisabledScenes int    `json:"disabled_scenes"`
+}
+
+// DeleteAdtyEpayChannel deletes any Epay payment channel while preserving
+// historical order channel names and keeping payment scene restrictions safe.
 func DeleteAdtyEpayChannel(id int) error {
-	return DB.Transaction(func(tx *gorm.DB) error {
-		// R8-15: Follow canonical lock order adty_payment_scene_configs -> adty_epay_channels.
+	_, err := DeleteAdtyEpayChannelWithActor(id, 0)
+	return err
+}
+
+// DeleteAdtyEpayChannelWithActor deletes a payment channel, snapshotting its
+// name onto historical orders and cleaning up payment scene references in one
+// transaction (canonical lock order: adty_payment_scene_configs -> adty_epay_channels).
+func DeleteAdtyEpayChannelWithActor(id, actorID int) (*AdtyEpayChannelDeleteResult, error) {
+	var res *AdtyEpayChannelDeleteResult
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		updatedScenes, disabledScenes, err := updatePaymentScenesForChannelTx(tx, id, 0, actorID)
+		if err != nil {
+			return err
+		}
+		var channel AdtyEpayChannel
+		if err := AdtyLockForUpdate(tx).First(&channel, id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAdtyEpayChannelNotFound
+			}
+			return err
+		}
+		if err := backfillAdtyEpayOrderSnapshotsTx(tx, &channel, true); err != nil {
+			return err
+		}
+		if err := tx.Where("channel_id = ?", id).Delete(&AdtyEpayChannelMethod{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("id = ?", id).Delete(&AdtyEpayChannel{}).Error; err != nil {
+			return err
+		}
+		res = &AdtyEpayChannelDeleteResult{
+			Id:             id,
+			Name:           channel.Name,
+			UpdatedScenes:  updatedScenes,
+			DisabledScenes: disabledScenes,
+		}
+		return nil
+	})
+	return res, err
+}
+
+// AdtyEpayChannelReplaceOptions describes how to replace an existing payment channel.
+type AdtyEpayChannelReplaceOptions struct {
+	TargetChannelID int
+	NewChannel      *AdtyEpayChannel
+	DeleteOld       bool
+	EnableTarget    bool
+	ActorID         int
+}
+
+// AdtyEpayChannelReplaceResult summarizes a payment channel replacement.
+type AdtyEpayChannelReplaceResult struct {
+	OldID         int    `json:"old_id"`
+	OldName       string `json:"old_name"`
+	NewID         int    `json:"new_id"`
+	NewName       string `json:"new_name"`
+	DeletedOld    bool   `json:"deleted_old"`
+	UpdatedScenes int    `json:"updated_scenes"`
+}
+
+// ReplaceAdtyEpayChannel replaces oldID with either an existing channel
+// (TargetChannelID) or a newly created channel (NewChannel), atomically
+// migrating all payment scene references and disabling or deleting the old
+// channel while preserving historical order snapshots.
+func ReplaceAdtyEpayChannel(oldID int, opts AdtyEpayChannelReplaceOptions) (*AdtyEpayChannelReplaceResult, error) {
+	hasTarget := opts.TargetChannelID > 0
+	hasNew := opts.NewChannel != nil
+	if hasTarget == hasNew {
+		return nil, common.NewMessage("Invalid parameters")
+	}
+	if hasTarget && opts.TargetChannelID == oldID {
+		return nil, common.NewMessage("Cannot replace a payment channel with itself")
+	}
+	var result *AdtyEpayChannelReplaceResult
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		// Acquire adty_payment_scene_configs lock before adty_epay_channels to match
+		// the canonical lock order used by DeleteAdtyEpayChannel and SaveAdtyPaymentScenes.
 		hasSceneCfgTable, err := AdtyTableExists(tx, &AdtyPaymentSceneConfig{})
 		if err != nil {
 			return err
 		}
 		if hasSceneCfgTable {
-			sceneCfg, cfgErr := GetAdtyPaymentSceneConfig(tx, true)
-			if cfgErr != nil {
-				return cfgErr
+			if _, err := GetAdtyPaymentSceneConfig(tx, true); err != nil {
+				return err
 			}
-			var scenes []AdtyPaymentScene
-			if strings.TrimSpace(sceneCfg.Payload) != "" {
-				if err := common.Unmarshal([]byte(sceneCfg.Payload), &scenes); err != nil {
+		}
+
+		var oldChannel AdtyEpayChannel
+		var targetChannel AdtyEpayChannel
+		if hasTarget {
+			firstID, secondID := min(oldID, opts.TargetChannelID), max(oldID, opts.TargetChannelID)
+			var first, second AdtyEpayChannel
+			if err := AdtyLockForUpdate(tx).First(&first, firstID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAdtyEpayChannelNotFound
+				}
+				return err
+			}
+			if err := AdtyLockForUpdate(tx).First(&second, secondID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAdtyEpayChannelNotFound
+				}
+				return err
+			}
+			if first.Id == oldID {
+				oldChannel, targetChannel = first, second
+			} else {
+				oldChannel, targetChannel = second, first
+			}
+			if targetChannel.Status == AdtyEpayStatusRevoked || !targetChannel.HasCredentials() {
+				return common.NewMessage("The replacement payment channel is revoked or missing credentials")
+			}
+			if opts.EnableTarget {
+				if targetChannel.CredentialDecryptErr {
+					return common.NewMessage("Cannot enable this payment channel because its stored credentials cannot be decrypted. Re-enter the credentials first")
+				}
+				if err := setAdtyEpayChannelStatus(tx, targetChannel.Id, AdtyEpayStatusEnabled, AdtyEpayReasonManual); err != nil {
 					return err
 				}
 			}
-			for _, scene := range scenes {
-				if slices.Contains(scene.ChannelIDs, id) {
-					return common.NewMessage("Remove this payment channel from payment scenes before deleting it")
+		} else {
+			if err := AdtyLockForUpdate(tx).First(&oldChannel, oldID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAdtyEpayChannelNotFound
+				}
+				return err
+			}
+			newCh := *opts.NewChannel
+			newCh.Id = 0
+			newCh.SignType = newCh.EffectiveSignType()
+			methods := append([]AdtyEpayChannelMethod(nil), newCh.Methods...)
+			newCh.Methods = nil
+			if opts.EnableTarget {
+				newCh.Status = AdtyEpayStatusEnabled
+				newCh.StatusReason = ""
+			} else {
+				newCh.Status = AdtyEpayStatusDisabled
+				newCh.StatusReason = AdtyEpayReasonManual
+			}
+			if err := sealAdtyEpayChannelCredentials(&newCh, false, false); err != nil {
+				return err
+			}
+			if err := tx.Create(&newCh).Error; err != nil {
+				return err
+			}
+			for i := range methods {
+				methods[i].Id = 0
+				methods[i].ChannelId = newCh.Id
+				if methods[i].TypeCode == "" {
+					methods[i].TypeCode = methods[i].Method
 				}
 			}
+			if len(methods) > 0 {
+				if err := tx.Create(&methods).Error; err != nil {
+					return err
+				}
+			}
+			targetChannel = newCh
+			opts.NewChannel.Id = newCh.Id
 		}
-		var channel AdtyEpayChannel
-		if err := AdtyLockForUpdate(tx).First(&channel, id).Error; err != nil {
+
+		updatedScenes, _, err := updatePaymentScenesForChannelTx(tx, oldID, targetChannel.Id, opts.ActorID)
+		if err != nil {
 			return err
 		}
-		var count int64
-		if err := tx.Model(&AdtyTopupOrder{}).Where("channel_id = ?", id).Count(&count).Error; err != nil {
-			return err
+
+		if opts.DeleteOld {
+			if err := backfillAdtyEpayOrderSnapshotsTx(tx, &oldChannel, true); err != nil {
+				return err
+			}
+			if err := tx.Where("channel_id = ?", oldID).Delete(&AdtyEpayChannelMethod{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("id = ?", oldID).Delete(&AdtyEpayChannel{}).Error; err != nil {
+				return err
+			}
+		} else if oldChannel.Status != AdtyEpayStatusRevoked {
+			if err := setAdtyEpayChannelStatus(tx, oldID, AdtyEpayStatusDisabled, AdtyEpayReasonManual); err != nil {
+				return err
+			}
 		}
-		if count > 0 {
-			return common.NewMessage("This channel has orders. Disable it instead of deleting it")
+
+		result = &AdtyEpayChannelReplaceResult{
+			OldID:         oldChannel.Id,
+			OldName:       oldChannel.Name,
+			NewID:         targetChannel.Id,
+			NewName:       targetChannel.Name,
+			DeletedOld:    opts.DeleteOld,
+			UpdatedScenes: updatedScenes,
 		}
-		if err := tx.Where("channel_id = ?", id).Delete(&AdtyEpayChannelMethod{}).Error; err != nil {
-			return err
-		}
-		return tx.Where("id = ?", id).Delete(&AdtyEpayChannel{}).Error
+		return nil
 	})
+	return result, err
+}
+
+// CountAdtyEpayOrdersByChannel returns historical order counts grouped by channel_id.
+func CountAdtyEpayOrdersByChannel() (map[int]int64, error) {
+	counts := map[int]int64{}
+	hasOrders, err := AdtyTableExists(DB, &AdtyTopupOrder{})
+	if err != nil || !hasOrders {
+		return counts, err
+	}
+	var rows []struct {
+		ChannelId int
+		Count     int64
+	}
+	if err := DB.Model(&AdtyTopupOrder{}).
+		Select("channel_id, COUNT(*) AS count").
+		Where("channel_id > 0").
+		Group("channel_id").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		counts[row.ChannelId] = row.Count
+	}
+	return counts, nil
 }
 
 // SetAdtyEpayChannelStatus 改通道状态和原因；启用时清零连续未付和探活计数。

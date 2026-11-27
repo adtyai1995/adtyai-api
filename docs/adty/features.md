@@ -28,7 +28,7 @@
 **规则**：
 
 - **面额**：普通自选面额为正整数美元，不低于最低充值额 `MinTopUp`（默认 1）。钱包总额不能超过 2^53 − 1 额度，下单时会检查。易支付还受通道的单笔和每日限额限制。
-- **加赠按支付方式**：现行配置键为 `adty_topup_setting.method_bonus`（主站规则）和 `adty_topup_setting.site_method_bonus`（站长针对主站已启用支付方式的本站规则）；历史 `adty_topup_setting.site_method_auth` 已退役仅作历史兼容保留。每条规则是 `{"enabled": bool, "rate": "0.025"}`，`rate` 是 **0–1 的小数比例**（0.025 = 2.5%），不是百分数，也不是金额档位；没有规则或 `enabled=false` 就不送（`setting/adty_setting/bonus_method.go`）。支付方式规范化成 `alipay`、`wxpay`、`usdt`，USDT 的 TRC20 / BEP20 / Polygon / X Layer **共用一条 `usdt` 规则**（`service/adty_method_bonus.go:15-26`）。
+- **加赠按支付方式**：现行配置键为 `adty_topup_setting.method_bonus`（主站规则）和 `adty_topup_setting.site_method_bonus`（站长针对主站已启用支付方式的本站规则）；历史 `adty_topup_setting.site_method_auth` 已退役仅作历史兼容保留。每条规则是 `{"enabled": bool, "rate": "0.025"}`，`rate` 是 **0–1 的小数比例**（0.025 = 2.5%），不是百分数，也不是金额档位；没有规则或 `enabled=false` 就不送（`setting/adty_setting/bonus_method.go`）。支付方式规范化成 `alipay`、`wxpay`、`usdt`，USDT 的 TRC20 / ERC20 / BEP20 / Polygon / X Layer **共用一条 `usdt` 规则**（`service/adty_method_bonus.go:15-26`）。
 - **金额档位已退役**：`adty_topup_setting.bonus_rates` 和 `adty_reseller_setting.max_site_bonus_extra` 只保留历史读取，不参与现行报价、开站必填项或设置校验。通用配置接口拒绝保存旧档位，分站设置接口拒绝写入旧 extra（包括 null），已有历史值保留。`SaveAdtySiteBonusRates` 一律返回 `ErrAdtyAmountTierRetired`。
 - **加赠配置流程**：主站比例 Root 用 `PUT /api/adty/admin/bonus-methods {method, enabled, rate}`。原分站逐站授权接口 `PUT /api/adty/admin/sites/:id/bonus-methods` 已退役返回 410 Gone；现行直接按主站已启用的支付方式放行，站长调 `PUT /api/adty/site/bonus-methods {method, enabled, rate}` 设本站规则，主站未启用的支付方式不会发放分站赠金（`setting/adty_setting/bonus_method.go`、`controller/adty_bonus_method.go`）。
 - **报价保障**：先按主站支付方式启用状态和本站启用规则计算赠金；未启用则不送。分站加赠为正时，`SiteBonusEarningCovers` 校验收益钱包可用余额（`balance − frozen_usd`）；不足部分只有 Root 授权了保证金补位（`adty_topup_setting.site_bonus_margin_fill`）且保证金本周期允许支取才放行。保障不足拒绝报价。不存在按主站历史金额档位或旧 extra 计算的上限。
@@ -77,7 +77,7 @@
 
 **USDT**：
 
-- **链**：TRC20、BEP20、Polygon、X Layer（支付方式 `usdt.trc20`、`usdt.bep20`、`usdt.polygon`、`usdt.xlayer`）。只有勾在 `adty_bepusdt.trade_types` 里的链才显示、才能下单，默认只有 TRC20。
+- **链**：TRC20、ERC20、BEP20、Polygon、X Layer（支付方式 `usdt.trc20`、`usdt.erc20`、`usdt.bep20`、`usdt.polygon`、`usdt.xlayer`）。只有勾在 `adty_bepusdt.trade_types` 里的链才显示、才能下单，默认只有 TRC20。
 - **站内支付窗**：显示收款地址、应付数量和二维码，不跳出网站。
 - **有效期**：`adty_topup_setting.usdt_order_minutes`，默认 15 分钟。下单时固定传 `fiat=USD`、`rate="1"`，应付数量以网关返回的为准。
 - **回调** `POST /api/user/bepusdt/notify`：md5 验签；只有 `status=2` 入账；核对金额、实付 ≥ 应付、收款地址、网关订单号。金额不符、订单不存在、超出额度上限这类问题，必须先将「充值对账」的人工审核记录持久化，再回网关 ok；审核记录写入失败或其他临时错误回 500 和 fail，让网关重发。
@@ -86,8 +86,8 @@
 
 **支付宝、微信（易支付多通道）**：
 
-- **通道**：每个通道可以开支付宝、微信，每种方式可以设显示名称（比如「支付宝1」，最多 32 个字）和单笔最小、最大、每日限额（人民币，0 表示不限）。新建的通道默认停用，测试下单通过后手动启用；有订单的通道只能停用不能删；商户密钥不返回给前端。
-- **凭据轮换与撤销**：通道一旦有关联订单，商户号、密钥、网关地址、下单模式和支付方式代码映射固定，轮换须新建通道；名称、限额、启停等运营设置仍可调整。旧通道停用后保留原密钥处理旧单，保留到 Root 在通道列表确认「撤销凭据」为止，不设未经确认的自动删除期限。撤销会永久清除密钥，不能重新启用、编辑或探活恢复；旧单自动验签、补查和撤销前已取得结果的延迟入账均被阻止，订单与资金历史保留，凭证补单和人工核查入口仍可用。撤销接口为 `POST /api/adty/admin/epay/channels/:id/revoke`，仅 Root 可用；清除凭据与审计意图在主库同一事务提交，日志库故障后可重投。审计只记录操作者、原因、状态和凭据是否存在，不记录密钥。建单与配置编辑共用通道行锁，并核对选中通道的认证身份，避免选中旧配置后写入新配置的订单。
+- **通道**：每个通道可以开支付宝、微信，每种方式可以设显示名称（比如「支付宝1」，最多 32 个字）和单笔最小、最大、每日限额（人民币，0 表示不限）。新建的通道默认停用，测试下单通过后手动启用；商户密钥与商户私钥不返回给前端。
+- **全量编辑、更换、撤销与删除**：超级管理员可以编辑任意易支付通道的全部信息（名称、网关地址、商户 ID、签名方式 MD5/RSA、商户密钥/RSA 密钥、下单模式、探活模式、优先级/权重/阈值及支付方式代码和限额），即使通道已有历史订单或曾被撤销凭据；编辑网关/商户/凭据前会先把旧通道名、商户号和网关快照到历史订单并递增配置版本、重置故障计数，已撤销通道重填有效凭据后恢复为停用。超级管理员也可以在列表直接「更换」通道（新建替换通道或切到已有通道，原子迁移关联支付场景绑定，可选立即启用新通道及停用或删除旧通道），或直接「删除」任意通道（历史订单保留通道名称快照，关联支付场景安全移除引用；若该通道是某场景唯一限定的易支付通道，则从多服务场景移除易支付或停用纯易支付场景，绝不静默放开为全部通道）。「撤销凭据」接口 `POST /api/adty/admin/epay/channels/:id/revoke` 与「更换」接口 `POST /api/adty/admin/epay/channels/:id/replace` 仅 Root 可用；审计只记录操作者、状态、关联场景变更和凭据是否存在，不记录密钥。建单与配置编辑共用通道行锁，并核对选中通道的认证身份与配置版本，避免选中旧配置后写入新配置的订单或复用过期付款链接。
 - **钱包按通道平铺（2026-11-16）**：钱包里每个启用的通道、每种启用的方式各一个按钮，按通道优先级排列，名字用显示名称；没填显示名称就显示「支付宝」「微信支付」，同名的自动编号。支付场景限定了通道时只列允许的通道。「我的团队」页面（`/my-team`）的团队充值也用同一排按钮。客户点哪个按钮，报价和下单就只用这个通道（请求带 `channel_id`）；这个通道下不了单（报错、超时、超限额、已停用）就提示「这个支付通道暂时不可用，请换一个支付方式」，不替客户换到别的通道。支付窗里的「换一个支付方式」取消这笔订单、回到钱包重新选。
 - **订单记下单时的名字**：订单保存下单那一刻的显示名称（`adty_topup_orders.method_label`），之后后台改名不影响历史订单。用户的充值记录、待支付提醒、后台充值对账和站长订单都优先显示它；充值对账另外显示通道名称，没填显示名称的订单也能分清是哪个商户。
 - **挑通道**（不带 `channel_id` 的下单，比如直接调接口）：先只留启用、支持这种方式、金额在单笔范围内、今天到账加这笔不超过每日限额的通道；在里面取优先级最高的一组；电脑端优先挑能返回二维码的；最后按权重随机。
@@ -97,7 +97,7 @@
 - **探活**：`probe_enabled` 默认关，间隔 `probe_interval_minutes`（默认 5 分钟）；失败转维护，探活转的维护连续 3 次正常就自动恢复，手动设的不会。
 - **有效期**：`adty_topup_setting.epay_order_minutes`，默认 10 分钟。电脑端显示二维码，手机跳转支付。
 - **回调**：每个通道独立回调 `/api/user/epay/notify/:channelId`（GET、POST 都收），用这个通道自己的密钥验签；停用或维护中的通道照样接收旧单回调。永久性入账错误必须先持久化人工审核记录，再返回 success；写入失败返回 fail，重投复用同一审核事件。易支付没有取消接口，本地取消后用户仍然付了钱，照样入账。
-- **设置**：系统设置 → 计费 → 支付网关 → Epay 页签（`?tab=epay`，上面这些参数和通道列表都在这里）。查看要 支付通道·查看，启停和测试要 支付通道·操作，新增、编辑、删除只有超级管理员。旧地址 `/payment-channels` 和 `/system-settings/billing/epay` 都会跳到这个页签。列表加载失败时显示错误并可以重试，不再显示成空列表。
+- **设置**：系统设置 → 计费 → 支付网关 → Epay 页签（`?tab=epay`，上面这些参数和通道列表都在这里）。查看要 支付通道·查看，启停和测试要 支付通道·操作，新增、编辑、更换、撤销、删除只有超级管理员。旧地址 `/payment-channels` 和 `/system-settings/billing/epay` 都会跳到这个页签。列表加载失败时显示错误并可以重试，不再显示成空列表。
 
 **晚到的回调与过期边界（两种都一样，`[R-41] #1`）**：未过期的待支付、已失败或已取消订单，收到验签通过、金额一致的成功回调照样入账；已经入账的直接返回成功，不会重复入账。**已过期订单永久禁止一切非人工自动入账**：无论迟到回调还是后台自动/手动补查，均不再自动入账，而是转入 `adty_payment_orphan_events`（`/recharge-audit` 异常支付队列）供人工核实凭证后处理。已经退款的订单再收到回调，同样进人工审核，不再入账。
 
@@ -107,7 +107,7 @@
 
 BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同源的 HTTPS 网关，不跟随重定向，也不向公开查询接口发送商户密钥。只有成功状态且本地订单号、网关单号、链、收款地址、USD 面额和应付 USDT 完全匹配才入账；确认中、过期、取消和失败不算成功。缺少原始网关事实或网关更换时保留人工对账，不猜测到账。查询响应没有原始链上 hash，记录来源为 query，不伪造交易 hash。停用新收款后仍能对原订单补查。后台复用每分钟最多20单、创建至少120秒、最近七天及至少60秒查询间隔的恢复任务；并发回调和补查共用唯一入账流水。
 
-**表和接口**：`adty_topup_orders`、`top_ups`、`adty_epay_channels`、`adty_epay_channel_methods`、`adty_payment_orphan_events`。下单 `POST /api/user/bepusdt/pay`、`POST /api/adty/epay/pay`；回调 `POST /api/user/bepusdt/notify`、`GET`/`POST /api/user/epay/notify/:channelId`；通道 `GET /api/adty/admin/epay/channels`、`POST /api/adty/admin/epay/channels/:id/status`、`POST /api/adty/admin/epay/channels/:id/test`（新增、编辑、删除 `POST /api/adty/admin/epay/channels`、`PUT`/`DELETE /api/adty/admin/epay/channels/:id` 只有超级管理员）；对账 `GET /api/user/admin/finance/recharge-audit`、`GET /api/user/admin/finance/payment-orphans`，补单 `POST /api/adty/admin/topup/:trade_no/complete`；付完跳回 `GET /pay/result/:token`。
+**表和接口**：`adty_topup_orders`、`top_ups`、`adty_epay_channels`、`adty_epay_channel_methods`、`adty_payment_orphan_events`。下单 `POST /api/user/bepusdt/pay`、`POST /api/adty/epay/pay`；回调 `POST /api/user/bepusdt/notify`、`GET`/`POST /api/user/epay/notify/:channelId`；通道 `GET /api/adty/admin/epay/channels`、`POST /api/adty/admin/epay/channels/:id/status`、`POST /api/adty/admin/epay/channels/:id/test`（新增、编辑、更换、删除 `POST /api/adty/admin/epay/channels`、`PUT`/`DELETE /api/adty/admin/epay/channels/:id`、`POST /api/adty/admin/epay/channels/:id/replace` 只有超级管理员）；对账 `GET /api/user/admin/finance/recharge-audit`、`GET /api/user/admin/finance/payment-orphans`，补单 `POST /api/adty/admin/topup/:trade_no/complete`；付完跳回 `GET /pay/result/:token`。
 
 **补查边界（`[R-41] #1`）**：易支付与 BEpusdt 的自动补查及手动查询均严格遵守过期不自动入账原则——未过期订单核对支付身份、收款地址与金额后调用统一入账事务；已过期订单（含过期宽限期内查到已付款的订单）不再自动入账，而是写入 `adty_payment_orphan_events` 待管理员凭凭证人工核实处理。易支付自动补查发现支付身份或方式不符、或入账失败时，写入人工审核；BEpusdt 对超过 120 秒且在七天恢复窗口内的待付、失败、过期、取消订单自动执行认证查询，每单至少间隔 60 秒，每轮最多 20 单（更早的订单通过支付商重送或有凭证的手动补单处理）。存在尚未排除的撤销或孤儿事件时，查询和成功回调都不能自动补入账。
 
@@ -294,9 +294,9 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 **站长自用功能已全面退役（返回 410 Gone）**：站长账号为纯管理端账号，不再具备自用消费或 API 能力。原站长自用在线充值（`owner_self_use_topup`）、站长自用 API Key、可用收益转本人自用余额以及站长本人消费兑换码均已退役返回 410 Gone（涉及 `/api/adty/site/wallets/self-use`、`/api/adty/site/wallets/earning-to-personal`、`/api/adty/site/self-use/keys|transfers|usage` 等写入口）。历史已产生的自用订单、流水与日结单列项仅保留只读兼容展示，历史自用在线充值订单的退款仍由主站财务核查处理。
 
-站长中心（`/site-owner/<分区>`，侧边栏只对站长显示；原合并「收益」页已拆分为独立菜单）：概览（`/site-owner/overview`，收益数字、近 30 天、趋势）；客户（`/site-owner/customers`，列表、精确查找、详情：请求记录、充值、密钥、举报；不再提供按客户单独定价）；团队（`/site-owner/teams`）；订单管理（`/site-owner/orders`）；定价（`/site-owner/pricing`，单一全站售价倍率 `1.0x–10.0x` 与修订历史）；充值赠送（`/site-owner/bonus`）；推广管理（`/site-owner/commissions`）；收益明细（`/site-owner/earnings`，含 CSV 导出，邮箱一律打码）；收益提现（`/site-owner/withdrawals`，USDT 提现）；日结单（`/site-owner/settlements`）；站长钱包（`/site-owner/wallets`，收益钱包、保证金钱包、保证金充值码核销、收益转保证金、在线充值保证金与钱包流水）；兑换码（`/site-owner/vouchers`，仅签发 `site_customer` 兑换码；仅 Root 签发的 `site_margin` 称为「保证金充值码」）；公告（`/site-owner/notices`）；员工账号（`/site-owner/staff`）；工单管理（`/site-owner/tickets`）；邮件配置（`/site-owner/mail`）；站点设置（`/site-owner/settings`，品牌和 Logo、自定义域名、独立多语言条款、SEO 开关）；历史站点账号（`/site-owner/history`，有归档站点时显示）。
+站长中心（`/site-owner/<分区>`，侧边栏只对站长显示；原合并「收益」页已拆分为独立菜单）：概览（`/site-owner/overview`，收益数字、近 30 天、趋势）；客户（`/site-owner/customers`，列表、精确查找、详情：请求记录、充值、密钥、举报；不再提供按客户单独定价）；团队（`/site-owner/teams`）；订单管理（`/site-owner/orders`）；定价（`/site-owner/pricing`，单一全站售价倍率 `1.0x–10.0x` 与修订历史）；充值赠送（`/site-owner/bonus`）；推广管理（`/site-owner/commissions`）；收益明细（`/site-owner/earnings`，含 CSV 导出，邮箱一律打码）；收益提现（`/site-owner/withdrawals`，USDT 提现）；日结单（`/site-owner/settlements`）；站长钱包（`/site-owner/wallets`，收益钱包、保证金钱包、保证金充值码核销、收益转保证金、在线充值保证金与钱包流水）；兑换码（`/site-owner/vouchers`，仅签发 `site_customer` 兑换码；仅 Root 签发的 `site_margin` 称为「保证金充值码」）；公告（`/site-owner/notices`）；员工账号（`/site-owner/staff`）；工单管理（`/site-owner/tickets`）；基本身份验证（`/site-owner/auth`，独立配置本站密码登录、注册开关、邮箱验证、域名与别名限制及白名单，存于 `adty_sites.auth_config`，接口 `GET`/`PUT /api/adty/site/auth-config`，默认关闭邮箱验证且须先配置本站 SMTP/Resend 后才可开启，与主站全局配置完全隔离）；邮件配置（`/site-owner/mail`，仅支持自定义 SMTP 与自有 Resend API，未配置前本站业务发信直接报错）；站点设置（`/site-owner/settings`，品牌和 Logo、自定义域名、独立多语言条款、SEO 开关）；历史站点账号（`/site-owner/history`，有归档站点时显示）。
 
-改全站售价倍率、改充值赠送、签发/冻结/作废兑换码、USDT 提现、修改邮件配置、删自定义域名（及清理历史发件域名），都要重新验证身份（二次验证支持 2FA/TOTP、邮箱验证码或密码；前端 Passkey 已退役，产品不对外提供 Passkey 登录与验证；验证一次只能用一次，绑定具体操作和对象）。
+改全站售价倍率、改充值赠送、签发/冻结/作废兑换码、USDT 提现、修改基本身份验证（`auth.config`）、修改邮件配置、删自定义域名（及清理历史发件域名），都要重新验证身份（二次验证支持 2FA/TOTP、邮箱验证码或密码；前端 Passkey 已退役，产品不对外提供 Passkey 登录与验证；验证一次只能用一次，绑定具体操作和对象）。
 
 品牌图片：Logo 和独立 Favicon 均接受 PNG、JPEG、WebP，不超过 200 KB，存在 `/data/uploads/site-assets`；新上传拒绝 SVG。站长可保存站名、最多 80 字符的网站标题、公告、客服联系方式、钱包公告、兑换码购买链接与可选外部文档链接 `docs_url`（按纯文本显示；外链仅接受 `http://` / `https://`）；分站仅替换站名、标题、Logo 与 Favicon，不覆盖平台配色或主题色（历史 `theme_color` / `tagline` 字段已退役并由服务端剥离）。标题留空沿用站名；Favicon 留空回退 Logo，再回退平台图标；`docs_url` 留空时分站使用本站同域 `/docs/` 白标文档（支持源站 `ADTY_DOCS_DIR` 宿主机热覆盖与 `docs-site/` 随镜像内置 `/app/docs` 的 VitePress 产物，兼容海外源站与大陆边缘缓存，`ADTY_DOCS_DIR=off` 回退内置 React 文档页），填写 `docs_url` 后分站 `/api/status` 的 `docs_link`、界面文档入口及 `/docs` 访问均覆盖跳转至站长外链（且不泄露主站文档地址）。保存按当前站长归属更新，公开配置按 Host 隔离。
 

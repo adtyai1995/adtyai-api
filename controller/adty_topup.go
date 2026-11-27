@@ -220,7 +220,7 @@ func sanitizePendingAdtyTopUpView(c *gin.Context, view *model.AdtyTopUpView, all
 		methodValid := chMethod != nil && chMethod.Enabled &&
 			(!chMethod.MinCNY.IsPositive() || !view.Ext.PayAmount.LessThan(chMethod.MinCNY)) &&
 			(!chMethod.MaxCNY.IsPositive() || !view.Ext.PayAmount.GreaterThan(chMethod.MaxCNY))
-		if chErr != nil || channel == nil || channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || !methodValid {
+		if chErr != nil || channel == nil || channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || !methodValid || !model.AdtyEpayOrderMatchesChannelIdentity(view.Ext, channel) {
 			view.Ext.PayURL = ""
 			view.Ext.QRCode = ""
 			view.Ext.URLScheme = ""
@@ -707,7 +707,7 @@ func adtyPendingOrderReusable(ext *model.AdtyTopupOrder, filter adtyPendingReuse
 			return false
 		}
 		channel, err := model.GetAdtyEpayChannel(ext.ChannelId)
-		if err != nil || channel == nil || channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() {
+		if err != nil || channel == nil || channel.Status != model.AdtyEpayStatusEnabled || !channel.HasCredentials() || !model.AdtyEpayOrderMatchesChannelIdentity(ext, channel) {
 			return false
 		}
 		methodEnabled := false

@@ -131,6 +131,8 @@ export function paymentProviderLabel(
       return t('USDT')
     case 'usdt.trc20':
       return 'USDT · TRC20'
+    case 'usdt.erc20':
+      return 'USDT · ERC20'
     case 'usdt.bep20':
       return 'USDT · BEP20'
     case 'usdt.polygon':

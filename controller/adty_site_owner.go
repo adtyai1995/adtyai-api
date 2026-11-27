@@ -176,6 +176,8 @@ func GetAdtyOwnerSite(c *gin.Context) {
 		"sender_domain_enabled": false, "brand": brand, "home_page_content": site.HomePageContent,
 		"legal_docs":         legalDocs,
 		"bonus_methods":      service.AdtySiteBonusMethods(site),
+		"auth_config":        service.AdtySiteAuthConfigFor(site),
+		"mail_configured":    service.EnsureAdtySiteMailConfigured(site) == nil,
 		"seo_index":          site.SeoIndex,
 		"close_requested_at": site.CloseRequestedAt, "close_execute_at": site.CloseExecuteAt,
 		"prices": prices, "pricing_version": version, "domains": domains, "visibility": service.AdtySiteVisibility(site),

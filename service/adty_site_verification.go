@@ -33,6 +33,7 @@ const (
 	AdtySiteOwnerActionDomain           = "domain.delete" // target：自定义域名 id
 	AdtySiteOwnerActionSender           = "sender.delete" // target：站点 id
 	AdtySiteOwnerActionMailConfig       = "mail.config"   // target：站点 id
+	AdtySiteOwnerActionAuthConfig       = "auth.config"   // target：站点 id
 	AdtySiteOwnerActionStaffCreate      = "staff.create"  // target: site ID
 	AdtySiteOwnerActionStaffUpdate      = "staff.update"  // target: membership ID
 	AdtySiteOwnerActionStaffPassword    = "staff.password"
@@ -44,7 +45,7 @@ const (
 	AdtySiteOwnerActionWithdrawalCreate = "withdrawal.create" // target: site ID
 )
 
-var adtySiteOwnerActions = []string{AdtySiteOwnerActionPricing, AdtySiteOwnerActionBonus, AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender, AdtySiteOwnerActionMailConfig,
+var adtySiteOwnerActions = []string{AdtySiteOwnerActionPricing, AdtySiteOwnerActionBonus, AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender, AdtySiteOwnerActionMailConfig, AdtySiteOwnerActionAuthConfig,
 	AdtySiteOwnerActionStaffCreate, AdtySiteOwnerActionStaffUpdate, AdtySiteOwnerActionStaffPassword, AdtySiteOwnerActionStaffDelete,
 	AdtySiteOwnerActionVoucherIssue, AdtySiteOwnerActionVoucherFreeze, AdtySiteOwnerActionVoucherCancel,
 	AdtySiteOwnerActionCustomerPassword, AdtySiteOwnerActionWithdrawalCreate}
@@ -394,7 +395,7 @@ func adtySiteOwnerActionAccessTokenScope(ctx AdtySiteOwnerContext) string {
 		return AccessTokenResourceSiteOwnerSetting + ":write"
 	case AdtySiteOwnerActionBonus, AdtySiteOwnerActionVoucherIssue, AdtySiteOwnerActionVoucherFreeze, AdtySiteOwnerActionVoucherCancel, AdtySiteOwnerActionWithdrawalCreate:
 		return AccessTokenResourceSiteOwnerOrder + ":write"
-	case AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender, AdtySiteOwnerActionMailConfig:
+	case AdtySiteOwnerActionDomain, AdtySiteOwnerActionSender, AdtySiteOwnerActionMailConfig, AdtySiteOwnerActionAuthConfig:
 		return AccessTokenResourceSiteOwnerSetting + ":write"
 	default:
 		// staff.* actions require a browser session, never a PAT (R2-004).

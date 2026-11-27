@@ -41,6 +41,7 @@ import { OwnerManualPanel } from './components/owner-manual-panel'
 import { OwnerVerificationProvider } from './components/owner-verification'
 import { PricingPanel } from './components/pricing-panel'
 import { SettlementSheetPanel } from './components/settlement-sheet-panel'
+import { SiteAuthPanel } from './components/site-auth-panel'
 import { SiteMailPanel } from './components/site-mail-panel'
 import { SiteReferralAdmin } from './components/site-referral-admin'
 import { SiteSettingsPanel } from './components/site-settings-panel'
@@ -80,6 +81,7 @@ export function SiteOwnerCenter(props: {
     notices: t('Notifications'),
     staff: t('Staff accounts'),
     tickets: t('Ticket management'),
+    auth: t('Basic Authentication'),
     mail: t('Email configuration'),
     settings: t('Site settings'),
     manual: t('Site Owner Manual'),
@@ -212,6 +214,9 @@ export function SiteOwnerCenter(props: {
                   <StaffPanel siteId={site.data.id} closing={closing} />
                 )}
                 {props.section === 'tickets' && <TicketCenter scope='owner' />}
+                {props.section === 'auth' && (
+                  <SiteAuthPanel site={site.data} />
+                )}
                 {props.section === 'mail' && (
                   <SiteMailPanel site={site.data} />
                 )}

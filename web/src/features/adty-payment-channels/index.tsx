@@ -30,6 +30,7 @@ import { ContentSection } from '@/components/layout'
 import { SectionPageLayout } from '@/components/layout/components/section-page-layout'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
+import { paymentScenesKey } from '@/features/adty-payment-scenes/api'
 import { ADTY_PERMISSIONS, canAdmin } from '@/lib/adty-permissions'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
@@ -45,6 +46,7 @@ import {
   type EpayChannel,
 } from './api'
 import { ChannelDrawer } from './components/channel-drawer'
+import { ReplaceChannelDrawer } from './components/replace-channel-drawer'
 
 const STATUS_VARIANT = {
   enabled: 'success',
@@ -130,14 +132,17 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
   const canOperate = canAdmin(user, ADTY_PERMISSIONS.PAYMENT_OPERATE)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editing, setEditing] = useState<EpayChannel | null>(null)
+  const [replacing, setReplacing] = useState<EpayChannel | null>(null)
   const [deleting, setDeleting] = useState<EpayChannel | null>(null)
   const [revoking, setRevoking] = useState<EpayChannel | null>(null)
   const query = useQuery({
     queryKey: epayChannelsQueryKey,
     queryFn: getEpayChannels,
   })
-  const refresh = () =>
-    queryClient.invalidateQueries({ queryKey: epayChannelsQueryKey })
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: epayChannelsQueryKey })
+    void queryClient.invalidateQueries({ queryKey: paymentScenesKey })
+  }
 
   const status = useMutation({
     mutationFn: (args: { id: number; status: EpayChannel['status'] }) =>
@@ -178,9 +183,28 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
   })
   const remove = useMutation({
     mutationFn: (id: number) => deleteEpayChannel(id),
-    onSuccess: () => {
+    onSuccess: (res) => {
       setDeleting(null)
-      void refresh()
+      if (res && res.disabled_scenes > 0) {
+        toast.success(
+          t(
+            'Payment channel deleted. {{updated}} payment scenes were updated and {{disabled}} scenes with no remaining payment methods were disabled.',
+            {
+              updated: res.updated_scenes,
+              disabled: res.disabled_scenes,
+            }
+          )
+        )
+      } else if (res && res.updated_scenes > 0) {
+        toast.success(
+          t('Payment channel deleted and {{updated}} payment scenes updated.', {
+            updated: res.updated_scenes,
+          })
+        )
+      } else {
+        toast.success(t('Payment channel deleted'))
+      }
+      refresh()
     },
     onError: (error) => handleServerError(error),
   })
@@ -378,29 +402,35 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
                 )}
                 {isRoot && (
                   <>
+                    <Button
+                      size='sm'
+                      variant='ghost'
+                      className='h-7 px-2 text-xs'
+                      onClick={() => {
+                        setEditing(row)
+                        setDrawerOpen(true)
+                      }}
+                    >
+                      {t('Edit')}
+                    </Button>
+                    <Button
+                      size='sm'
+                      variant='ghost'
+                      className='h-7 px-2 text-xs'
+                      onClick={() => setReplacing(row)}
+                    >
+                      {t('Replace')}
+                    </Button>
                     {row.status !== 'revoked' && (
-                      <>
-                        <Button
-                          size='sm'
-                          variant='ghost'
-                          className='h-7 px-2 text-xs'
-                          onClick={() => {
-                            setEditing(row)
-                            setDrawerOpen(true)
-                          }}
-                        >
-                          {t('Edit')}
-                        </Button>
-                        <Button
-                          size='sm'
-                          variant='ghost'
-                          className='h-7 px-2 text-xs'
-                          disabled={revoke.isPending}
-                          onClick={() => setRevoking(row)}
-                        >
-                          {t('Revoke credentials')}
-                        </Button>
-                      </>
+                      <Button
+                        size='sm'
+                        variant='ghost'
+                        className='h-7 px-2 text-xs'
+                        disabled={revoke.isPending}
+                        onClick={() => setRevoking(row)}
+                      >
+                        {t('Revoke credentials')}
+                      </Button>
                     )}
                     <Button
                       size='sm'
@@ -420,15 +450,62 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
     )
   }
 
+  const deleteDesc = (() => {
+    if (!deleting) return ''
+    const hasOrders = (deleting.order_count ?? 0) > 0
+    const sceneNames = deleting.scene_names ?? []
+    if (hasOrders && sceneNames.length > 0) {
+      return t(
+        'Delete {{name}}? It has {{count}} historical orders and is referenced by payment scenes ({{scenes}}). Historical orders will keep the channel name snapshot, unpaid orders will stop automatic callbacks and queries, and referencing scenes will be updated safely. Use Replace if you want to migrate scenes to another channel.',
+        {
+          name: deleting.name,
+          count: deleting.order_count ?? 0,
+          scenes: sceneNames.join(', '),
+        }
+      )
+    }
+    if (hasOrders) {
+      return t(
+        'Delete {{name}}? It has {{count}} historical orders. Historical orders will keep the channel name snapshot, and unpaid orders on this channel will stop automatic callbacks and queries.',
+        {
+          name: deleting.name,
+          count: deleting.order_count ?? 0,
+        }
+      )
+    }
+    if (sceneNames.length > 0) {
+      return t(
+        'Delete {{name}}? Referencing payment scenes ({{scenes}}) will be updated automatically. Use Replace if you want to switch them to another channel.',
+        {
+          name: deleting.name,
+          scenes: sceneNames.join(', '),
+        }
+      )
+    }
+    return t(
+      'Delete {{name}}? This removes the payment channel configuration immediately.',
+      { name: deleting.name }
+    )
+  })()
+
   const dialogs = (
     <>
       {isRoot && (
-        <ChannelDrawer
-          open={drawerOpen}
-          channel={editing}
-          onOpenChange={setDrawerOpen}
-          onSaved={() => void refresh()}
-        />
+        <>
+          <ChannelDrawer
+            open={drawerOpen}
+            channel={editing}
+            onOpenChange={setDrawerOpen}
+            onSaved={refresh}
+          />
+          <ReplaceChannelDrawer
+            open={replacing !== null}
+            channel={replacing}
+            channels={query.data ?? []}
+            onOpenChange={(open) => !open && setReplacing(null)}
+            onReplaced={refresh}
+          />
+        </>
       )}
       <ConfirmDialog
         open={revoking !== null}
@@ -446,9 +523,7 @@ export function PaymentChannels(props: { embedded?: boolean } = {}) {
         open={deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
         title={t('Delete payment channel')}
-        desc={t('Delete {{name}}? Channels with orders can only be disabled.', {
-          name: deleting?.name ?? '',
-        })}
+        desc={deleteDesc}
         destructive
         isLoading={remove.isPending}
         handleConfirm={() => deleting && remove.mutate(deleting.id)}

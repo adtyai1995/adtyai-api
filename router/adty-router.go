@@ -404,11 +404,13 @@ func registerAdtyEpayRoutes(apiRouter *gin.RouterGroup) {
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/epay/channels", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/epay/channels/:id", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("DELETE", "/api/adty/admin/epay/channels/:id", "scope", "option:write")
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/epay/channels/:id/replace", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/epay/channels/:id/revoke", "scope", "option:write")
 	root := apiRouter.Group("/adty/admin/epay", middleware.RootAuth())
 	root.POST("/channels", controller.CreateAdtyEpayChannel)
 	root.PUT("/channels/:id", controller.UpdateAdtyEpayChannel)
 	root.DELETE("/channels/:id", controller.DeleteAdtyEpayChannel)
+	root.POST("/channels/:id/replace", controller.ReplaceAdtyEpayChannel)
 	root.POST("/channels/:id/revoke", controller.RevokeAdtyEpayChannel)
 }
 
@@ -597,6 +599,8 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/mail-config", ownerSetRead, []gin.HandlerFunc{controller.GetAdtySiteMailConfig}},
 		{http.MethodPut, "/mail-config", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-mail-config"), controller.PutAdtySiteMailConfig}},
 		{http.MethodPost, "/mail-config/test", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-mail-test"), controller.PostAdtySiteMailConfigTest}},
+		{http.MethodGet, "/auth-config", ownerSetRead, []gin.HandlerFunc{controller.GetAdtySiteAuthConfig}},
+		{http.MethodPut, "/auth-config", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-auth-config"), controller.PutAdtySiteAuthConfig}},
 	} {
 		middleware.DeclareAdtyAccessTokenRoute(route.method, "/api/adty/site"+route.path, "scope", route.scope)
 		owner.Handle(route.method, route.path, route.handlers...)

@@ -94,12 +94,20 @@ export function UsdtLogo({ className }: LogoProps) {
   )
 }
 
-type ChainKey = 'trc20' | 'bep20' | 'polygon' | 'xlayer'
+type ChainKey = 'trc20' | 'erc20' | 'bep20' | 'polygon' | 'xlayer'
 
 function normalizeChainKey(chain?: string): ChainKey | null {
   const value = (chain ?? '').toLowerCase().trim()
   if (value === 'trc20' || value === 'usdt.trc20' || value === 'tron') {
     return 'trc20'
+  }
+  if (
+    value === 'erc20' ||
+    value === 'usdt.erc20' ||
+    value === 'eth' ||
+    value === 'ethereum'
+  ) {
+    return 'erc20'
   }
   if (value === 'bep20' || value === 'usdt.bep20' || value === 'bsc' || value === 'bnb') {
     return 'bep20'
@@ -113,7 +121,7 @@ function normalizeChainKey(chain?: string): ChainKey | null {
   return null
 }
 
-/** Recognizable chain vector badges for TRON (TRC20), BNB (BEP20), Polygon, and X Layer (OKX). */
+/** Recognizable chain vector badges for TRON (TRC20), Ethereum (ERC20), BNB (BEP20), Polygon, and X Layer (OKX). */
 export function ChainBadgeLogo({
   chain,
   className,
@@ -132,6 +140,20 @@ export function ChainBadgeLogo({
           fill='#FFFFFF'
           d='M5.7 6.8 16.4 8.2l2.4 2.3-7.6 8.8L5.7 6.8Zm1.85 1.4 3.45 8.8.78-5.05-4.23-3.75Zm5.05 4.05-.75 4.95 5.45-6.3-4.7 1.35Zm-4.1-4.4 3.85 3.45 3.15-.9-7-2.55Zm7.35 1.2-.15.08 1.65.9-1.5-.98Z'
         />
+      </svg>
+    )
+  }
+
+  if (key === 'erc20') {
+    return (
+      <svg viewBox='0 0 24 24' className={sizeClass} aria-hidden='true'>
+        <circle cx='12' cy='12' r='11.5' fill='#627EEA' />
+        <path fill='#FFFFFF' fillOpacity='0.7' d='M12 4.6v5.45l4.6 2.05L12 4.6Z' />
+        <path fill='#FFFFFF' d='M12 4.6 7.4 12.1l4.6-2.05V4.6Z' />
+        <path fill='#FFFFFF' fillOpacity='0.7' d='M12 15.7v3.7l4.6-6.38L12 15.7Z' />
+        <path fill='#FFFFFF' d='M12 19.4v-3.7l-4.6-2.68L12 19.4Z' />
+        <path fill='#FFFFFF' fillOpacity='0.5' d='M12 14.82l4.6-2.72L12 10.05v4.77Z' />
+        <path fill='#FFFFFF' fillOpacity='0.85' d='M7.4 12.1 12 14.82v-4.77L7.4 12.1Z' />
       </svg>
     )
   }

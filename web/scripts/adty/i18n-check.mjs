@@ -129,6 +129,7 @@ const ADTY_LITERAL_KEYS = [
   'ADTY AI',
   'USDT',
   'TRC20',
+  'ERC20',
   'BEP20',
   'Polygon',
   'X Layer',
@@ -142,6 +143,7 @@ const ADTY_LITERAL_KEYS = [
   'CC Switch',
   // Network labels, amount formats and an ID name with no words to translate
   'USDT · TRC20',
+  'USDT · ERC20',
   'USDT · BEP20',
   'USDT · Polygon',
   'USDT · X Layer',
