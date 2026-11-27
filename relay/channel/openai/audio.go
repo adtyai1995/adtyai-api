@@ -2,6 +2,7 @@ package openai
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"math"
 	"net/http"
@@ -216,7 +217,11 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		} else {
 			ext := "." + audioFormat
 			reader := bytes.NewReader(bodyBytes)
-			duration, durationErr = common.GetAudioDuration(c.Request.Context(), reader, ext)
+			durationCtx := context.Background()
+			if c != nil && c.Request != nil && c.Request.Context() != nil {
+				durationCtx = context.WithoutCancel(c.Request.Context())
+			}
+			duration, durationErr = common.GetAudioDuration(durationCtx, reader, ext)
 		}
 
 		usage.PromptTokensDetails.TextTokens = usage.PromptTokens

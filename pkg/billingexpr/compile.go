@@ -116,6 +116,7 @@ type cachedEntry struct {
 	prog           *vm.Program
 	tree           ast.Node
 	body           string
+	bodyRunes      []rune
 	usedVars       map[string]bool
 	usedUsageKeys  map[string]bool
 	usedHeaderKeys map[string]bool
@@ -214,8 +215,16 @@ var supportedExprBuiltinNames = map[string]bool{
 	"lower": true, "upper": true, "trim": true, "round": true, "abs": true, "ceil": true, "floor": true,
 }
 
+var nonValueExprIdentifiers = map[string]bool{
+	"tier": true, "fixed": true, "header": true, "param": true, "u": true, "has": true,
+	"hour": true, "minute": true, "weekday": true, "month": true, "day": true,
+	"max": true, "min": true, "abs": true, "ceil": true, "floor": true, "round": true,
+	"int": true, "float": true, "string": true, "lower": true, "upper": true, "trim": true,
+}
+
 type exprTreeValidator struct {
-	err error
+	err         error
+	callCallees map[ast.Node]bool
 }
 
 func (v *exprTreeValidator) Visit(node *ast.Node) {
@@ -223,13 +232,17 @@ func (v *exprTreeValidator) Visit(node *ast.Node) {
 		return
 	}
 	switch n := (*node).(type) {
-	case *ast.NilNode, *ast.BoolNode, *ast.StringNode, *ast.BytesNode, *ast.ConstantNode,
+	case *ast.NilNode, *ast.BoolNode, *ast.StringNode, *ast.ConstantNode,
 		*ast.IntegerNode, *ast.FloatNode, *ast.ConditionalNode, *ast.ChainNode,
 		*ast.MemberNode, *ast.ArrayNode, *ast.MapNode, *ast.PairNode, *ast.SliceNode:
 		return
 	case *ast.IdentifierNode:
 		if n.Value == "$env" {
 			v.err = fmt.Errorf("identifier %q is not supported", n.Value)
+			return
+		}
+		if nonValueExprIdentifiers[n.Value] && !v.callCallees[n] {
+			v.err = fmt.Errorf("identifier %q cannot be used as a value", n.Value)
 		}
 	case *ast.UnaryNode:
 		switch n.Operator {
@@ -265,7 +278,14 @@ func (v *exprTreeValidator) Visit(node *ast.Node) {
 }
 
 func validateSupportedExprTree(root ast.Node) error {
-	v := &exprTreeValidator{}
+	callees := make(map[ast.Node]bool)
+	ast.Find(root, func(node ast.Node) bool {
+		if call, ok := node.(*ast.CallNode); ok && call.Callee != nil {
+			callees[call.Callee] = true
+		}
+		return false
+	})
+	v := &exprTreeValidator{callCallees: callees}
 	ast.Walk(&root, v)
 	return v.err
 }
@@ -281,9 +301,66 @@ func isNumericReflectKind(k reflect.Kind) bool {
 	}
 }
 
-func validateMinMaxArgType(name string, arg ast.Node) error {
-	if _, isNil := arg.(*ast.NilNode); isNil {
+const maxMinMaxValidationDepth = 16
+
+func validateMinMaxConstantValue(name string, val any, depth int) error {
+	if depth > maxMinMaxValidationDepth {
+		return fmt.Errorf("invalid argument for %s (nesting depth exceeded)", name)
+	}
+	if val == nil {
 		return fmt.Errorf("invalid argument for %s (type nil)", name)
+	}
+	rv := reflect.ValueOf(val)
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return fmt.Errorf("invalid argument for %s (type nil)", name)
+		}
+		rv = rv.Elem()
+	}
+	if isNumericReflectKind(rv.Kind()) {
+		return nil
+	}
+	if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+		if rv.Len() == 0 {
+			return fmt.Errorf("invalid argument for %s (empty array)", name)
+		}
+		for i := 0; i < rv.Len(); i++ {
+			if err := validateMinMaxConstantValue(name, rv.Index(i).Interface(), depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("invalid argument for %s (type %T)", name, val)
+}
+
+func validateMinMaxArgType(name string, arg ast.Node) error {
+	return validateMinMaxArgTypeDepth(name, arg, 0)
+}
+
+func validateMinMaxArgTypeDepth(name string, arg ast.Node, depth int) error {
+	if depth > maxMinMaxValidationDepth {
+		return fmt.Errorf("invalid argument for %s (nesting depth exceeded)", name)
+	}
+	if arg == nil {
+		return fmt.Errorf("invalid argument for %s (type nil)", name)
+	}
+	if _, isNil := arg.(*ast.NilNode); isNil || arg.Nature().Nil {
+		return fmt.Errorf("invalid argument for %s (type nil)", name)
+	}
+	if arr, ok := arg.(*ast.ArrayNode); ok {
+		if len(arr.Nodes) == 0 {
+			return fmt.Errorf("invalid argument for %s (empty array)", name)
+		}
+		for _, elem := range arr.Nodes {
+			if err := validateMinMaxArgTypeDepth(name, elem, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if cn, ok := arg.(*ast.ConstantNode); ok {
+		return validateMinMaxConstantValue(name, cn.Value, depth)
 	}
 	t := arg.Type()
 	if t == nil {
@@ -297,7 +374,7 @@ func validateMinMaxArgType(name string, arg ast.Node) error {
 	}
 	if t.Kind() == reflect.Slice || t.Kind() == reflect.Array {
 		elem := t.Elem()
-		for elem.Kind() == reflect.Pointer {
+		for elem.Kind() == reflect.Pointer || elem.Kind() == reflect.Slice || elem.Kind() == reflect.Array {
 			elem = elem.Elem()
 		}
 		if isNumericReflectKind(elem.Kind()) || elem.Kind() == reflect.Interface {
@@ -428,6 +505,7 @@ func compileEntryFromCacheByHash(exprStr, hash string) (*cachedEntry, error) {
 		prog:           prog,
 		tree:           tree.Node,
 		body:           body,
+		bodyRunes:      []rune(body),
 		usedVars:       extractUsedVars(prog),
 		usedUsageKeys:  extractUsedUsageKeys(prog),
 		usedHeaderKeys: extractUsedCallStringArgs(tree.Node, "header", true),

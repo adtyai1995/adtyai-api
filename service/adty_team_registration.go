@@ -398,6 +398,11 @@ func resolveAdtyTeamRegistrationLeader(tx *gorm.DB, siteId int, username, passwo
 		}
 		return 0, nil, err
 	}
+	if siteId > 0 {
+		if err := AdtyRecordSiteCustomerTx(tx, user.Id, siteId, "", "", ""); err != nil {
+			return 0, nil, err
+		}
+	}
 	return user.Id, user, nil
 }
 

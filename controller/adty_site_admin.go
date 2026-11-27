@@ -1167,6 +1167,10 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 			}
 		}
 	}
+	if _, present := body["edge_failover_to_cf"]; present {
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Use the dedicated failover endpoint to switch Cloudflare failover"))
+		return
+	}
 	var clearSecrets []string
 	if raw, ok := body["clear_secrets"]; ok {
 		if err := common.Unmarshal(raw, &clearSecrets); err != nil {
@@ -1340,10 +1344,9 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 	service.InvalidateAdtySiteCache()
 	_, touchedEdgeIP := values["edge_node_ip"]
 	_, touchedEdgeIPs := values["edge_node_ips"]
-	_, touchedEdgeFailover := values["edge_failover_to_cf"]
 	_, touchedEdgeAutoFailover := values["edge_auto_failover"]
 	_, touchedMainlandTarget := values["domain_mainland_target"]
-	if (touchedEdgeIP || touchedEdgeIPs || touchedEdgeFailover || (touchedEdgeAutoFailover && !next.EdgeAutoFailover) || touchedMainlandTarget) &&
+	if (touchedEdgeIP || touchedEdgeIPs || (touchedEdgeAutoFailover && !next.EdgeAutoFailover) || touchedMainlandTarget) &&
 		len(next.EffectiveEdgeNodeIPs()) > 0 && next.DomainMainlandTarget != "" && next.CloudflareConfigured() {
 		syncCtx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		_, _ = service.SyncAdtyEdgeMainlandDNS(syncCtx)

@@ -121,7 +121,7 @@ func Login(c *gin.Context) {
 		return
 	}
 	adtyClearLoginFailuresForSite(username, siteID)
-	common.ClearAccountLoginFailures(user.Id, user.Username, user.Email, user.SiteId)
+	model.ClearAccountLoginFailuresForLogin(user.Id, user.Username, user.Email, user.SiteId)
 	if user.SiteId != siteID && user.Email != "" {
 		adtyClearLoginFailuresForSite(user.Email, siteID)
 	}
@@ -175,7 +175,7 @@ func recordLoginAudit(user *model.User, c *gin.Context) {
 // Only a completed Passkey ceremony may go directly to session issuance.
 func setupLogin(user *model.User, c *gin.Context) {
 	// 二开：在发二次验证之前检查，不让别站的账号拿到 2FA 挑战（任务 11.2）
-	if user != nil && user.Id > 0 && !service.AdtySiteLoginAllowed(c, user.Id) {
+	if user != nil && user.Id > 0 && !service.AdtySiteLoginAllowedForUser(c, user) {
 		common.ApiErrorT(c, "Username or password is incorrect, or user has been banned")
 		return
 	}
@@ -211,7 +211,7 @@ func setupLoginAtAuthVersion(user *model.User, expectedAuthVersion int64, c *gin
 		return
 	}
 	// 二开：分站客户只能在自己的分站登录（任务 11.2）
-	if !service.AdtySiteLoginAllowed(c, user.Id) {
+	if !service.AdtySiteLoginAllowedForUser(c, user) {
 		common.ApiErrorT(c, "Username or password is incorrect, or user has been banned")
 		return
 	}
@@ -992,6 +992,8 @@ func UpdateUser(c *gin.Context) {
 	auditEvents := make([]model.AuditLog, 0, 2)
 	var ticketAudits []model.AuditLog
 	previousAuthVersion := originUser.AuthVersion
+	var prevUsername, targetEmail string
+	var targetSiteID int
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		// Maintain canonical lock order adty_groups -> users only when group is explicitly provided (R6-05 / R7-18).
 		// Allow locking an existing soft-deleted group row so callers echoing the user's
@@ -1029,6 +1031,9 @@ func UpdateUser(c *gin.Context) {
 			}
 		}
 		previousAuthVersion = current.AuthVersion
+		prevUsername = current.Username
+		targetEmail = current.Email
+		targetSiteID = current.SiteId
 		auditParams["username"], auditParams["target_role"] = current.Username, current.Role
 		auditEvents = append(auditEvents, prepareManageAudit(c, updatedUser.Id, "user.update", auditParams))
 		if err := updatedUser.EditWithOptionsTx(tx, updatePassword, groupProvided); err != nil {
@@ -1077,6 +1082,12 @@ func UpdateUser(c *gin.Context) {
 	if updatedUser.AuthVersion > previousAuthVersion {
 		if _, err := model.RevokeAllUserSessions(updatedUser.Id, "admin_user_update"); err != nil {
 			postCommitWarnings = append(postCommitWarnings, "session_revoke_failed")
+		}
+	}
+	if updatePassword {
+		model.ClearAccountLoginFailures(updatedUser.Id, updatedUser.Username, targetEmail, targetSiteID)
+		if prevUsername != "" && !strings.EqualFold(prevUsername, updatedUser.Username) {
+			common.ClearLoginFailures(prevUsername)
 		}
 	}
 	if err := model.PublishUserAuthCache(updatedUser.Id); err != nil {
@@ -1222,7 +1233,7 @@ func AdminResetUserPassword(c *gin.Context) {
 	if _, err := model.RevokeAllUserSessions(id, "admin_user_password_reset"); err != nil {
 		common.SysError(common.LogText("failed to revoke sessions after admin password reset: user=%d err=%v", id, err))
 	}
-	common.ClearAccountLoginFailures(id, targetUsername, targetEmail, targetSiteID)
+	model.ClearAccountLoginFailures(id, targetUsername, targetEmail, targetSiteID)
 	setAuthNoStore(c)
 	common.ApiSuccess(c, gin.H{
 		"user_id":            id,

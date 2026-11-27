@@ -70,6 +70,7 @@ func runProgram(entry *cachedEntry, params TokenParams, request RequestInput) (f
 	}
 	cost, err := evalBillingExpr(entry.tree, entry.body, &decimalEvalEnv{
 		src:             entry.body,
+		srcRunes:        entry.bodyRunes,
 		vars:            vars,
 		trace:           &trace,
 		headers:         normalizeHeaders(request.Headers),

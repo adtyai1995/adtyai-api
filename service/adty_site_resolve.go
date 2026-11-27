@@ -801,21 +801,37 @@ func AdtyOverrideStatus(c *gin.Context, data map[string]any) {
 	}
 }
 
+// AdtySiteLoginAllowedForUser 在已加载 *model.User 的入口强制站点域名登录绑定：
+// 即使分站总开关关闭，仍拒绝既有分站客户（site_id > 0）和分站员工（staff_site_id > 0）在主站登录，
+// 同时对普通主站用户保持零额外 SQL 查询。
+func AdtySiteLoginAllowedForUser(c *gin.Context, user *model.User) bool {
+	if user == nil || user.Id <= 0 {
+		return false
+	}
+	if !adtySessionHostAllowed(c) {
+		return false
+	}
+	if !resellerSetting().Enabled {
+		return user.SiteId == 0 && user.StaffSiteId == 0
+	}
+	return AdtySiteLoginAllowed(c, user.Id)
+}
+
 // AdtySiteLoginAllowed 按 A.15 / DEC-023 始终强制站点域名登录绑定：
 // 主站用户只能在主站登录，分站客户与分站员工只能在所属分站登录，站长可在主站或本人服务中分站登录。
 // 只在建会话的入口调用（密码、二次验证、Passkey），API 令牌不受影响。
-// 分站功能关着时中间件不识别站点，所有请求都算主站，这里不查库直接放行（上游测试数登录的查询次数）。
+// 分站功能关闭时仍拒绝已有分站归属（site_id > 0 或 staff_site_id > 0）的账号在主站登录。
 func AdtySiteLoginAllowed(c *gin.Context, userId int) bool {
 	if !adtySessionHostAllowed(c) {
 		return false
 	}
 	cfg := resellerSetting()
-	if !cfg.Enabled {
-		return true
-	}
 	var users []model.User
 	if err := model.DB.Select("id", "site_id", "staff_site_id").Where("id = ?", userId).Limit(1).Find(&users).Error; err != nil || len(users) == 0 {
 		return false
+	}
+	if !cfg.Enabled {
+		return users[0].SiteId == 0 && users[0].StaffSiteId == 0
 	}
 	current := 0
 	var reqSite *model.AdtySite

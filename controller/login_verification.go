@@ -183,7 +183,7 @@ func completeVerifiedLoginResponse(c *gin.Context, bundle *service.AuthBundle, m
 		return
 	}
 	// 二开：挑战可能在另一个站点上发起，完成时按当前站点再查一次；不符就撤掉刚建的会话（任务 11.2）
-	if !service.AdtySiteLoginAllowed(c, user.Id) {
+	if !service.AdtySiteLoginAllowedForUser(c, user) {
 		if err := service.AbandonIssuedLogin(user.Id, identity.SessionID, "adty_site_mismatch", bundle); err != nil {
 			common.SysError(common.LogText("revoke site-mismatched session failed user=%d: %s", user.Id, err.Error()))
 		}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/claude"
@@ -98,6 +99,11 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
+	if _, ok := requestBody.(channel.ContentTypeBody); ok ||
+		(info != nil && info.RelayMode == relayconstant.RelayModeImagesEdits &&
+			(c == nil || c.Request == nil || !strings.Contains(strings.ToLower(c.Request.Header.Get("Content-Type")), "application/json"))) {
+		return channel.DoFormRequest(a, c, info, requestBody)
+	}
 	return channel.DoApiRequest(a, c, info, requestBody)
 }
 

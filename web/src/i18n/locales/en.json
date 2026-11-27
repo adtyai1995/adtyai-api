@@ -10707,6 +10707,7 @@
     "Use site default": "Use site default",
     "Use template": "Use template",
     "Use the authentication header shown in the request example for this endpoint.": "Use the authentication header shown in the request example for this endpoint.",
+    "Use the dedicated failover endpoint to switch Cloudflare failover": "Use the dedicated failover endpoint to switch Cloudflare failover",
     "Use the existing token total": "Use the existing token total",
     "Use the full-width table to scan prices, then select a row to edit it here.": "Use the full-width table to scan prices, then select a row to edit it here.",
     "Use the group set on the token. If the token has no group, use the user group. The auto group tries the auto assignment order from top to bottom.": "Use the group set on the token. If the token has no group, use the user group. The auto group tries the auto assignment order from top to bottom.",

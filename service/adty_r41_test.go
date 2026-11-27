@@ -27,6 +27,7 @@ func setupR41TestDB(t *testing.T) *gorm.DB {
 		&model.AdtyBalanceLedger{},
 		&model.PaymentOrphanEvent{},
 		&model.AdtySite{},
+		&model.AdtySiteCustomer{},
 		&model.AdtySiteDomain{},
 		&model.AdtySiteAudit{},
 		&model.AdtySiteWallet{},

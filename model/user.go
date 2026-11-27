@@ -2193,7 +2193,7 @@ func resetUserPasswordWithOutcome(user *User, password string) (PasswordResetOut
 	if _, revokeErr := RevokeAllUserSessions(user.Id, "password_reset"); revokeErr != nil {
 		common.SysError(common.LogText("failed to revoke sessions after password reset for user %d: %v", user.Id, revokeErr))
 	}
-	common.ClearAccountLoginFailures(user.Id, currentUsername, outcome.Email, siteID)
+	ClearAccountLoginFailures(user.Id, currentUsername, outcome.Email, siteID)
 	return outcome, nil
 }
 

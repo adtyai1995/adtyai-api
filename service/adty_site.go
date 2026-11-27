@@ -743,8 +743,8 @@ func AdjustAdtySiteWithAuditForActor(siteId, adminId, actorRole int, denyAdminTa
 		if err := common.UnmarshalJsonStr(*adjust.Visibility, &values); err != nil {
 			return nil, "", common.NewMessage("Invalid parameters")
 		}
-		probe := adty_setting.ResellerSetting{Visibility: values, UnknownHostMode: adty_setting.ResellerUnknownHostMain, FingerprintWindowDays: 1}
-		if err := adty_setting.ValidateResellerSetting(&probe, true); err != nil {
+		probe := adty_setting.ResellerSetting{Visibility: values}
+		if err := adty_setting.ValidateResellerPatch(&probe, true, map[string]string{"visibility": ""}); err != nil {
 			return nil, "", err
 		}
 	}

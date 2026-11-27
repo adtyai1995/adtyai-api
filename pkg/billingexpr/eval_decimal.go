@@ -96,6 +96,7 @@ func literalNumericValue(node ast.Node) (float64, bool) {
 
 type decimalEvalEnv struct {
 	src             string
+	srcRunes        []rune
 	vars            map[string]decimal.Decimal
 	extras          map[string]any
 	trace           *TraceResult
@@ -111,6 +112,12 @@ type decimalEvalEnv struct {
 func evalBillingExpr(node ast.Node, src string, env *decimalEvalEnv) (decimal.Decimal, error) {
 	if env == nil {
 		env = &decimalEvalEnv{src: src}
+	}
+	if env.src == "" {
+		env.src = src
+	}
+	if env.srcRunes == nil && env.src != "" {
+		env.srcRunes = []rune(env.src)
 	}
 	out, err := evalNode(node, env)
 	if err != nil {
@@ -148,7 +155,7 @@ func evalNode(node ast.Node, env *decimalEvalEnv) (any, error) {
 	case *ast.IntegerNode:
 		return decimal.NewFromInt(int64(n.Value)), nil
 	case *ast.FloatNode:
-		return decimalFromFloatNode(env.src, n)
+		return decimalFromFloatNode(env, n)
 	case *ast.IdentifierNode:
 		return evalIdentifier(n.Value, env)
 	case *ast.UnaryNode:
@@ -322,6 +329,18 @@ func evalMember(n *ast.MemberNode, env *decimalEvalEnv) (any, error) {
 			return nil, nil
 		}
 		return val, nil
+	case *exprMap:
+		if m == nil {
+			if n.Optional && env.chainDepth > 0 {
+				return nil, errOptionalChainNil
+			}
+			return nil, nil
+		}
+		val, exists := m.get(prop)
+		if !exists {
+			return nil, nil
+		}
+		return normalizeMemberValue(val), nil
 	}
 
 	rv := reflect.ValueOf(recv)
@@ -415,8 +434,40 @@ func evalArray(n *ast.ArrayNode, env *decimalEvalEnv) (any, error) {
 	return out, nil
 }
 
+type exprMapEntry struct {
+	key   any
+	value any
+}
+
+type exprMap struct {
+	entries []exprMapEntry
+}
+
+func (m *exprMap) get(key any) (any, bool) {
+	if m == nil {
+		return nil, false
+	}
+	for _, entry := range m.entries {
+		if eq, ok := exactEquality(entry.key, key); ok && eq {
+			return entry.value, true
+		}
+	}
+	return nil, false
+}
+
+func (m *exprMap) set(key, value any) {
+	for i := range m.entries {
+		if eq, ok := exactEquality(m.entries[i].key, key); ok && eq {
+			m.entries[i].value = value
+			return
+		}
+	}
+	m.entries = append(m.entries, exprMapEntry{key: key, value: value})
+}
+
 func evalMap(n *ast.MapNode, env *decimalEvalEnv) (any, error) {
-	out := make(map[string]any, len(n.Pairs))
+	entries := make([]exprMapEntry, 0, len(n.Pairs))
+	allStrings := true
 	for _, raw := range n.Pairs {
 		pair, ok := raw.(*ast.PairNode)
 		if !ok {
@@ -426,20 +477,25 @@ func evalMap(n *ast.MapNode, env *decimalEvalEnv) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		var keyStr string
-		switch kv := k.(type) {
-		case string:
-			keyStr = kv
-		case decimal.Decimal:
-			keyStr = kv.String()
-		default:
-			keyStr = fmt.Sprint(k)
+		if _, isStr := k.(string); !isStr {
+			allStrings = false
 		}
 		v, err := evalNode(pair.Value, env)
 		if err != nil {
 			return nil, err
 		}
-		out[keyStr] = v
+		entries = append(entries, exprMapEntry{key: k, value: v})
+	}
+	if allStrings {
+		out := make(map[string]any, len(entries))
+		for _, entry := range entries {
+			out[entry.key.(string)] = entry.value
+		}
+		return out, nil
+	}
+	out := &exprMap{entries: make([]exprMapEntry, 0, len(entries))}
+	for _, entry := range entries {
+		out.set(entry.key, entry.value)
 	}
 	return out, nil
 }
@@ -820,6 +876,10 @@ func evalIn(needle, haystack any) (bool, error) {
 	if isNilValue(haystack) {
 		return false, nil
 	}
+	if em, ok := haystack.(*exprMap); ok {
+		_, found := em.get(needle)
+		return found, nil
+	}
 	rv := reflect.ValueOf(haystack)
 	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
 		if rv.IsNil() {
@@ -1181,6 +1241,9 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 		if isNilValue(args[0]) {
 			return decimal.Zero, nil
 		}
+		if em, ok := args[0].(*exprMap); ok {
+			return decimal.NewFromInt(int64(len(em.entries))), nil
+		}
 		rv := reflect.ValueOf(args[0])
 		for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
 			if rv.IsNil() {
@@ -1318,35 +1381,43 @@ func evalFunction(name string, args []any, env *decimalEvalEnv) (any, error) {
 				best = decimal.Min(best, cur)
 			}
 		}
-		for _, arg := range args {
+		var collect func(arg any, depth int) error
+		collect = func(arg any, depth int) error {
+			if depth > maxMinMaxValidationDepth {
+				return fmt.Errorf("expr run error: %s nesting depth exceeded", name)
+			}
 			if isNilValue(arg) {
-				return nil, fmt.Errorf("expr run error: %s requires numbers, got %T", name, arg)
+				return fmt.Errorf("expr run error: %s requires numbers, got %T", name, arg)
 			}
 			rv := reflect.ValueOf(arg)
 			for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
 				if rv.IsNil() {
-					return nil, fmt.Errorf("expr run error: %s requires numbers, got %T", name, arg)
+					return fmt.Errorf("expr run error: %s requires numbers, got %T", name, arg)
 				}
 				rv = rv.Elem()
 			}
 			if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
 				if rv.Len() == 0 {
-					return nil, fmt.Errorf("expr run error: %s cannot operate on empty array", name)
+					return fmt.Errorf("expr run error: %s cannot operate on empty array", name)
 				}
 				for i := 0; i < rv.Len(); i++ {
-					cur, ok := valueAsDecimal(normalizeMemberValue(rv.Index(i).Interface()))
-					if !ok {
-						return nil, fmt.Errorf("expr run error: %s requires numbers", name)
+					if err := collect(normalizeMemberValue(rv.Index(i).Interface()), depth+1); err != nil {
+						return err
 					}
-					updateBest(cur)
 				}
-				continue
+				return nil
 			}
 			cur, ok := valueAsDecimal(arg)
 			if !ok {
-				return nil, fmt.Errorf("expr run error: %s requires numbers, got %T", name, arg)
+				return fmt.Errorf("expr run error: %s requires numbers, got %T", name, arg)
 			}
 			updateBest(cur)
+			return nil
+		}
+		for _, arg := range args {
+			if err := collect(arg, 0); err != nil {
+				return nil, err
+			}
 		}
 		if !hasBest {
 			return nil, fmt.Errorf("expr run error: %s cannot operate on empty array", name)
@@ -1409,21 +1480,29 @@ func timezoneArg(args []any) (string, error) {
 	return tz, nil
 }
 
-func decimalFromFloatNode(src string, node *ast.FloatNode) (decimal.Decimal, error) {
-	if d, ok := decimalFromLocation(src, node.Location()); ok {
-		return checkExprDecimalBounds(d)
-	}
+func decimalFromFloatNode(env *decimalEvalEnv, node *ast.FloatNode) (decimal.Decimal, error) {
 	if math.IsNaN(node.Value) || math.IsInf(node.Value, 0) {
 		return decimal.Zero, errNonFiniteExpr
+	}
+	var srcRunes []rune
+	if env != nil {
+		srcRunes = env.srcRunes
+		if srcRunes == nil && env.src != "" {
+			srcRunes = []rune(env.src)
+			env.srcRunes = srcRunes
+		}
+	}
+	if d, ok := decimalFromLocation(srcRunes, node.Location(), node.Value); ok {
+		return checkExprDecimalBounds(d)
 	}
 	return checkExprDecimalBounds(decimal.NewFromFloat(node.Value))
 }
 
-func decimalFromLocation(src string, loc file.Location) (decimal.Decimal, bool) {
-	if loc.From < 0 || loc.To < loc.From || loc.To > len(src) {
+func decimalFromLocation(srcRunes []rune, loc file.Location, expected float64) (decimal.Decimal, bool) {
+	if loc.From < 0 || loc.To <= loc.From || loc.To > len(srcRunes) {
 		return decimal.Zero, false
 	}
-	lit := strings.ReplaceAll(src[loc.From:loc.To], "_", "")
+	lit := strings.ReplaceAll(string(srcRunes[loc.From:loc.To]), "_", "")
 	if lit == "" || len(lit) > maxExprStringParseLen {
 		return decimal.Zero, false
 	}
@@ -1432,6 +1511,9 @@ func decimalFromLocation(src string, loc file.Location) (decimal.Decimal, bool) 
 		return decimal.Zero, false
 	}
 	if _, err := checkExprDecimalBounds(d); err != nil {
+		return decimal.Zero, false
+	}
+	if d.InexactFloat64() != expected {
 		return decimal.Zero, false
 	}
 	return d, true
@@ -1641,7 +1723,44 @@ func compareValues(op string, left, right any) (bool, error) {
 	}
 }
 
+const maxExactEqualityDepth = 16
+
 func exactEquality(left, right any) (eq bool, handled bool) {
+	return exactEqualityDepth(left, right, 0)
+}
+
+func asExprMapEntries(v any) ([]exprMapEntry, bool) {
+	if em, ok := v.(*exprMap); ok {
+		if em == nil {
+			return nil, true
+		}
+		return em.entries, true
+	}
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return nil, false
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Map {
+		return nil, false
+	}
+	entries := make([]exprMapEntry, 0, rv.Len())
+	iter := rv.MapRange()
+	for iter.Next() {
+		entries = append(entries, exprMapEntry{
+			key:   normalizeMemberValue(iter.Key().Interface()),
+			value: normalizeMemberValue(iter.Value().Interface()),
+		})
+	}
+	return entries, true
+}
+
+func exactEqualityDepth(left, right any, depth int) (eq bool, handled bool) {
+	if depth > maxExactEqualityDepth {
+		return false, true
+	}
 	lNil := isNilValue(left)
 	rNil := isNilValue(right)
 	if lNil || rNil {
@@ -1660,6 +1779,74 @@ func exactEquality(left, right any) (eq bool, handled bool) {
 	}
 	if _, rok := right.(bool); rok {
 		return false, true
+	}
+	if ld, lok := valueAsDecimal(left); lok {
+		if rd, rok := valueAsDecimal(right); rok {
+			return ld.Cmp(rd) == 0, true
+		}
+		return false, true
+	}
+	if _, rok := valueAsDecimal(right); rok {
+		return false, true
+	}
+	if lm, lok := asExprMapEntries(left); lok {
+		rm, rok := asExprMapEntries(right)
+		if !rok || len(lm) != len(rm) {
+			return false, true
+		}
+		for _, le := range lm {
+			matched := false
+			for _, re := range rm {
+				keyEq, keyHandled := exactEqualityDepth(le.key, re.key, depth+1)
+				if keyHandled && keyEq {
+					valEq, valHandled := exactEqualityDepth(normalizeMemberValue(le.value), normalizeMemberValue(re.value), depth+1)
+					if !valHandled || !valEq {
+						return false, true
+					}
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return false, true
+			}
+		}
+		return true, true
+	}
+	if _, rok := asExprMapEntries(right); rok {
+		return false, true
+	}
+	lv := reflect.ValueOf(left)
+	for lv.Kind() == reflect.Pointer || lv.Kind() == reflect.Interface {
+		if lv.IsNil() {
+			break
+		}
+		lv = lv.Elem()
+	}
+	rv := reflect.ValueOf(right)
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			break
+		}
+		rv = rv.Elem()
+	}
+	lSeq := lv.IsValid() && (lv.Kind() == reflect.Slice || lv.Kind() == reflect.Array)
+	rSeq := rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array)
+	if lSeq || rSeq {
+		if !lSeq || !rSeq || lv.Len() != rv.Len() {
+			return false, true
+		}
+		for i := 0; i < lv.Len(); i++ {
+			elemEq, elemHandled := exactEqualityDepth(
+				normalizeMemberValue(lv.Index(i).Interface()),
+				normalizeMemberValue(rv.Index(i).Interface()),
+				depth+1,
+			)
+			if !elemHandled || !elemEq {
+				return false, true
+			}
+		}
+		return true, true
 	}
 	return false, false
 }

@@ -839,10 +839,32 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	return resp, nil
 }
 
-// DetachedNonStreamContext keeps streaming and channel-test requests bound to
-// the client disconnect context while detaching billable non-streaming requests
-// after dispatch (R-36 #5) so a mid-response client disconnect cannot abort
-// upstream response reading and trigger a 100% pre-consume refund.
+// shouldDetachUpstreamRequest reports whether a relay request should decouple
+// its upstream HTTP context from client disconnect cancellation after dispatch.
+// Non-streaming requests and billable image/TTS requests (which commonly
+// synthesize synchronously or complete billable work before/without SSE) stay
+// detached so mid-flight client aborts cannot trigger a 100% pre-consume refund
+// (R-36 #5).
+func shouldDetachUpstreamRequest(info *common.RelayInfo) bool {
+	if info == nil || info.IsChannelTest {
+		return false
+	}
+	if !info.IsStream {
+		return true
+	}
+	switch info.RelayMode {
+	case constant.RelayModeImagesGenerations, constant.RelayModeImagesEdits, constant.RelayModeAudioSpeech:
+		return true
+	default:
+		return false
+	}
+}
+
+// DetachedNonStreamContext keeps streaming chat/channel-test requests bound to
+// the client disconnect context while detaching billable non-streaming and
+// synchronous-prone image/TTS requests after dispatch (R-36 #5) so a
+// mid-response client disconnect cannot abort upstream response reading and
+// trigger a 100% pre-consume refund.
 func DetachedNonStreamContext(c *gin.Context, info *common.RelayInfo, defaultTimeout time.Duration) (context.Context, context.CancelFunc, *types.NewAPIError) {
 	var baseCtx context.Context
 	if c != nil && c.Request != nil {
@@ -851,7 +873,7 @@ func DetachedNonStreamContext(c *gin.Context, info *common.RelayInfo, defaultTim
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
-	if info == nil || info.IsStream || info.IsChannelTest {
+	if !shouldDetachUpstreamRequest(info) {
 		return baseCtx, func() {}, nil
 	}
 	if err := baseCtx.Err(); err != nil {
@@ -876,14 +898,14 @@ func DetachedNonStreamContext(c *gin.Context, info *common.RelayInfo, defaultTim
 	return upstreamCtx, cancel, nil
 }
 
-// newAPIRequestForMode keeps streaming and channel-test requests bound to the
-// client disconnect context while detaching billable non-streaming requests
-// after dispatch (R-36 #5).
+// newAPIRequestForMode keeps streaming chat and channel-test requests bound to
+// the client disconnect context while detaching billable non-streaming and
+// synchronous-prone image/TTS requests after dispatch (R-36 #5).
 func newAPIRequestForMode(c *gin.Context, info *common.RelayInfo, fullRequestURL string, requestBody io.Reader) (*http.Request, context.CancelFunc, error) {
 	if c == nil || c.Request == nil {
 		return nil, nil, errors.New("client request is missing")
 	}
-	if info == nil || info.IsStream || info.IsChannelTest {
+	if !shouldDetachUpstreamRequest(info) {
 		req, err := newClientAPIRequest(c, fullRequestURL, requestBody)
 		return req, nil, err
 	}

@@ -10707,6 +10707,7 @@
     "Use site default": "使用本站默认价",
     "Use template": "使用模板",
     "Use the authentication header shown in the request example for this endpoint.": "请使用此端点请求示例中所示的身份验证请求头。",
+    "Use the dedicated failover endpoint to switch Cloudflare failover": "请通过专用的故障切换接口切换 Cloudflare 容灾开关",
     "Use the existing token total": "使用现有 token 总长度",
     "Use the full-width table to scan prices, then select a row to edit it here.": "先在表格中快速浏览价格，然后选择一行在这里编辑。",
     "Use the group set on the token. If the token has no group, use the user group. The auto group tries the auto assignment order from top to bottom.": "使用令牌上设置的分组；令牌未设置分组时，使用用户分组。auto 分组会按自动分组顺序从上到下尝试。",

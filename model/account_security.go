@@ -5,8 +5,39 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/adty_setting"
 	"gorm.io/gorm"
 )
+
+// ClearAccountLoginFailures clears all password lockout keys associated with an
+// account, including subsite-scoped email lock keys for sites owned by a
+// main-site site owner (users.site_id == 0).
+func ClearAccountLoginFailures(userID int, username, email string, siteID int) {
+	clearAccountLoginFailuresWithDB(DB, userID, username, email, siteID, true)
+}
+
+// ClearAccountLoginFailuresForLogin clears password lockout keys on successful
+// login, skipping the owned-subsites query when reseller sites are disabled so
+// plain main-site logins incur no extra database round trip.
+func ClearAccountLoginFailuresForLogin(userID int, username, email string, siteID int) {
+	clearAccountLoginFailuresWithDB(DB, userID, username, email, siteID, adty_setting.GetResellerSetting().Enabled)
+}
+
+func clearAccountLoginFailuresWithDB(db *gorm.DB, userID int, username, email string, siteID int, clearOwnedSubsites bool) {
+	common.ClearAccountLoginFailures(userID, username, email, siteID)
+	if !clearOwnedSubsites || userID <= 0 || siteID != 0 || strings.TrimSpace(email) == "" || db == nil {
+		return
+	}
+	var ownedSiteIDs []int
+	if err := db.Model(&AdtySite{}).Where("owner_user_id = ?", userID).Pluck("id", &ownedSiteIDs).Error; err != nil {
+		return
+	}
+	for _, ownedSiteID := range ownedSiteIDs {
+		if ownedSiteID > 0 {
+			common.ClearLoginFailuresForSite(email, ownedSiteID)
+		}
+	}
+}
 
 var (
 	ErrCurrentPasswordInvalid = errors.New("Current password is incorrect.")
@@ -48,7 +79,7 @@ func ChangeUserPassword(identity AuthSessionIdentity, update *User, firstPasswor
 				}
 				return ErrCurrentPasswordInvalid
 			}
-			common.ClearAccountLoginFailures(current.Id, current.Username, current.Email, current.SiteId)
+			clearAccountLoginFailuresWithDB(tx, current.Id, current.Username, current.Email, current.SiteId, true)
 		}
 		if current.Password != "" && common.ValidatePasswordAndHash(update.Password, current.Password) {
 			return common.ErrAccountPasswordSame
