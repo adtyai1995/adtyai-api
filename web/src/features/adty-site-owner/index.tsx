@@ -43,6 +43,7 @@ import { PricingPanel } from './components/pricing-panel'
 import { SettlementSheetPanel } from './components/settlement-sheet-panel'
 import { SiteAuthPanel } from './components/site-auth-panel'
 import { SiteMailPanel } from './components/site-mail-panel'
+import { SitePartnerPanel } from './components/site-partner-panel'
 import { SiteReferralAdmin } from './components/site-referral-admin'
 import { SiteSettingsPanel } from './components/site-settings-panel'
 import { StaffPanel } from './components/staff-panel'
@@ -73,6 +74,7 @@ export function SiteOwnerCenter(props: {
     pricing: t('Pricing & Multiplier'),
     bonus: t('Recharge Bonus'),
     commissions: t('Promotion Management'),
+    partner: t('Partner Referral'),
     earnings: t('Earnings Details'),
     withdrawals: t('Earnings Withdrawals'),
     settlements: t('Settlement Sheets'),
@@ -170,6 +172,9 @@ export function SiteOwnerCenter(props: {
                 {props.section === 'bonus' && <BonusPanel site={site.data} />}
                 {props.section === 'commissions' && (
                   <SiteReferralAdmin closing={closing} />
+                )}
+                {props.section === 'partner' && (
+                  <SitePartnerPanel closing={closing} />
                 )}
                 {props.section === 'earnings' && <EarningsPanel />}
                 {props.section === 'withdrawals' && (

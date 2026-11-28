@@ -25,6 +25,7 @@ import { useStatus } from '@/hooks/use-status'
 import { parseHeaderNavModulesFromStatus } from '@/lib/nav-modules'
 import { ROLE } from '@/lib/roles'
 import { readReferralEnabledFromStatus } from '@/lib/status-query'
+import { subsiteDocument } from '@/lib/subsite-document'
 import { useAuthStore } from '@/stores/auth-store'
 
 export type { TopNavLink } from '@/components/layout/types'
@@ -144,6 +145,20 @@ export function useTopNavLinks(): TopNavLink[] {
       id: 'affiliate',
       title: t('Affiliate Program'),
       href: '/affiliate',
+    })
+  }
+
+  // R-49: Main-site-only reseller partner program entry.
+  if (
+    !isSubsite &&
+    !subsiteDocument() &&
+    !isStaff &&
+    modules?.partner !== false
+  ) {
+    links.push({
+      id: 'partner',
+      title: t('Become a Partner'),
+      href: '/partner',
     })
   }
 

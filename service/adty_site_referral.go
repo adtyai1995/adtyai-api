@@ -399,9 +399,16 @@ func SaveAdtyOwnerSiteMarketingWithAudit(siteID, ownerID int, input AdtySiteMark
 		if input.Enabled != nil {
 			rate.Enabled = *input.Enabled
 		}
+		if policy.ObservationDays == nil || rate.Enabled {
+			zero := int64(0)
+			if policy.ObservationDays == nil || *policy.ObservationDays != 0 {
+				policy.ObservationDays = &zero
+				updates["observation_days"] = zero
+			}
+		}
 		if (input.Enabled != nil || input.Rate != nil || input.PendingCoverageCap != nil || input.ObservationDays != nil) && rate.Enabled &&
-			((lookup.RowsAffected == 0 && input.Rate == nil) || policy.PendingCoverageCap == nil || policy.ObservationDays == nil) {
-			return common.NewMessage("Set an invite rate, pending coverage cap and observation days before enabling commissions")
+			((lookup.RowsAffected == 0 && input.Rate == nil) || policy.PendingCoverageCap == nil || !policy.PendingCoverageCap.IsPositive()) {
+			return common.NewMessage("Set an invite rate and pending coverage cap before enabling commissions")
 		}
 		if len(updates) > 0 {
 			if err := tx.Model(&site).Updates(updates).Error; err != nil {
@@ -586,6 +593,7 @@ type AdtySiteCustomerReferralProfile struct {
 	Rate               string                            `json:"rate,omitempty"`
 	RatePercent       string                            `json:"rate_percent,omitempty"`
 	ObservationDays   *int64                            `json:"observation_days,omitempty"`
+	PendingHourUSD    string                            `json:"pending_hour_usd"`
 	InviteCode        string                            `json:"invite_code"`
 	InviteURL          string                            `json:"invite_url"`
 	InvitedCount       int64                             `json:"invited_count"`
@@ -781,6 +789,13 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 			effectiveRate = *aff.RateOverride
 		}
 	}
+	pendingHourUSD, err := GetAdtySiteInvitePendingHourUSD(site.Id, user.Id)
+	if err != nil {
+		return nil, err
+	}
+	if pendingHourUSD.IsNegative() {
+		pendingHourUSD = decimal.Zero
+	}
 	enabled := rateConfigured && rateRow.Enabled && effectiveRate.IsPositive() && !affiliateDisabled
 	siteOpen := site.Status != model.AdtySiteStatusClosed && site.Status != model.AdtySiteStatusClosing && site.Status != model.AdtySiteStatusDeleting
 	profile := &AdtySiteCustomerReferralProfile{
@@ -791,6 +806,7 @@ func GetAdtySiteCustomerReferralProfile(userID int) (*AdtySiteCustomerReferralPr
 		AffiliateDisabled:  affiliateDisabled,
 		RateConfigured:    rateConfigured,
 		ObservationDays:   site.MarketingPolicy.ObservationDays,
+		PendingHourUSD:    pendingHourUSD.Round(8).String(),
 		InviteCode:        code,
 		InviteURL:          inviteURL,
 		InvitedCount:       invitedCount,
@@ -1044,6 +1060,7 @@ type AdtyOwnerSiteReferralOverview struct {
 	Frozen               string `json:"frozen"`
 	Withdrawn            string `json:"withdrawn"`
 	PendingCoverageCount int64  `json:"pending_coverage_count"`
+	RiskHeldCount        int64  `json:"risk_held_count"`
 	PendingWithdrawals   int64  `json:"pending_withdrawals"`
 }
 
@@ -1112,7 +1129,7 @@ func classifySiteInviteCommissionRow(row *model.AdtySiteInviteCommission, now ti
 		netEarned = decimal.Zero
 	}
 	switch row.Status {
-	case model.AdtySiteCommissionPendingCoverage:
+	case model.AdtySiteCommissionPendingCoverage, model.AdtySiteCommissionRiskHeld:
 		pending = netEarned
 	case model.AdtySiteCommissionCovered:
 		pending = siteInviteCommissionFree(row)
@@ -1139,6 +1156,8 @@ func siteInviteCommissionCoverageStatus(row *model.AdtySiteInviteCommission) str
 			return "partial"
 		}
 		return model.AdtySiteCommissionPendingCoverage
+	case model.AdtySiteCommissionRiskHeld:
+		return model.AdtySiteCommissionRiskHeld
 	case model.AdtySiteCommissionClawedBack:
 		return model.AdtySiteCommissionClawedBack
 	default:
@@ -1240,6 +1259,9 @@ func LoadAdtyOwnerSiteReferralOverview(siteID int, now time.Time) (AdtyOwnerSite
 			}
 			if row.Status == model.AdtySiteCommissionPendingCoverage {
 				out.PendingCoverageCount++
+			}
+			if row.Status == model.AdtySiteCommissionRiskHeld {
+				out.RiskHeldCount++
 			}
 			pending, available, _ := classifySiteInviteCommissionRow(row, now)
 			pendingTotal = pendingTotal.Add(pending)
@@ -1597,8 +1619,8 @@ func ListAdtyOwnerSiteReferralCommissions(siteID int, status, q string, offset, 
 	switch trimmedStatus := strings.TrimSpace(status); trimmedStatus {
 	case "", "all":
 	case "pending":
-		query = query.Where("status IN ?", []string{model.AdtySiteCommissionPendingCoverage, model.AdtySiteCommissionCovered})
-	case model.AdtySiteCommissionPendingCoverage, model.AdtySiteCommissionCovered, model.AdtySiteCommissionAvailable, model.AdtySiteCommissionClawedBack:
+		query = query.Where("status IN ?", []string{model.AdtySiteCommissionPendingCoverage, model.AdtySiteCommissionRiskHeld, model.AdtySiteCommissionCovered})
+	case model.AdtySiteCommissionPendingCoverage, model.AdtySiteCommissionRiskHeld, model.AdtySiteCommissionCovered, model.AdtySiteCommissionAvailable, model.AdtySiteCommissionClawedBack:
 		query = query.Where("status = ?", trimmedStatus)
 	default:
 		return nil, 0, common.NewMessage("Invalid parameters")

@@ -73,6 +73,7 @@ import {
   formatSettlementMoney,
   getEarningsTextTone,
   isOwnerSelfUseAllZero,
+  isZeroAmount,
   resolveSettlementVersion,
   triggerCsvDownload,
   triggerPrintHtml,
@@ -198,7 +199,22 @@ export function SettlementSheetLines({
   const { revisions, revision, activeSheet, generatedAt } =
     resolveSettlementVersion(sheet, selectedVersion)
 
-  const sections = buildSettlementSections(t, activeSheet, locale)
+  const money = (value: string | undefined) =>
+    formatSettlementMoney(value, locale)
+  const partnerReferralRaw = activeSheet.partner_referral_earning_usd ?? '0'
+  const partnerReferralLine: SettlementLine = {
+    id: 'partner-referral-earning',
+    label: t('Partner referral commission'),
+    value: money(partnerReferralRaw),
+    raw: partnerReferralRaw,
+    hideWhenZero: isZeroAmount(partnerReferralRaw),
+  }
+  const sections = buildSettlementSections(t, activeSheet, locale).map(
+    (section) =>
+      section.id === 'topup-consumption'
+        ? { ...section, lines: [...section.lines, partnerReferralLine] }
+        : section
+  )
   const regularSections = sections.filter(
     (section) => section.id !== 'owner-self-use'
   )
@@ -206,8 +222,6 @@ export function SettlementSheetLines({
     (section) => section.id === 'owner-self-use'
   )
   const allSelfUseZero = isOwnerSelfUseAllZero(activeSheet)
-  const money = (value: string | undefined) =>
-    formatSettlementMoney(value, locale)
 
   let siteLabel = ''
   if (siteName) {
@@ -257,6 +271,7 @@ export function SettlementSheetLines({
 
   const anomalyCount = activeSheet.anomaly_count ?? 0
   const spreadNegative = isNegativeAmount(activeSheet.spread_usd)
+  const partnerReferralNegative = isNegativeAmount(partnerReferralRaw)
   const earningsNegative = isNegativeAmount(activeSheet.earnings_delta_usd)
   const consumptionNegative = isNegativeAmount(activeSheet.consumption_usd)
   const supplyCostNegative = isNegativeAmount(activeSheet.supply_cost_usd)
@@ -390,7 +405,7 @@ export function SettlementSheetLines({
 
       <dl
         aria-label={t('Settlement sheet')}
-        className='border-border bg-border grid grid-cols-2 gap-px overflow-hidden rounded-[14px] border lg:grid-cols-4'
+        className='border-border bg-border grid grid-cols-2 gap-px overflow-hidden rounded-[14px] border lg:grid-cols-5'
       >
         <div className='bg-card flex flex-col gap-2 px-5 py-4'>
           <dt className='text-dim text-[12px] leading-none'>
@@ -438,6 +453,21 @@ export function SettlementSheetLines({
         </div>
 
         <div className='bg-card flex flex-col gap-2 px-5 py-4'>
+          <dt className='text-dim text-[12px] leading-none'>
+            {t('Partner referral commission')}
+          </dt>
+          <dd
+            className={cn(
+              'font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums',
+              partnerReferralNegative && 'text-destructive'
+            )}
+            data-negative={partnerReferralNegative ? 'true' : undefined}
+          >
+            {money(partnerReferralRaw)}
+          </dd>
+        </div>
+
+        <div className='bg-card col-span-2 flex flex-col gap-2 px-5 py-4 lg:col-span-1'>
           <dt className='text-dim text-[12px] leading-none'>
             {t('Earnings change')}
           </dt>

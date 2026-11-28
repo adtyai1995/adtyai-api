@@ -48,6 +48,8 @@ func setupR37TestDB(t *testing.T) *gorm.DB {
 		&model.AdtySiteInviteWithdrawalItem{},
 		&model.AdtySiteWallet{},
 		&model.AdtySiteWalletLedger{},
+		&model.AdtyPrincipalConsumeEvent{},
+		&model.AdtyCommissionOffset{},
 	}
 	tables = append(tables, model.ReferralTables()...)
 	require.NoError(t, db.AutoMigrate(tables...))
@@ -157,7 +159,7 @@ func TestR37SubsiteReferralRulesAndAuditLogs(t *testing.T) {
 	require.NotNil(t, view.CookieTTLDays)
 	assert.Equal(t, int64(14), *view.CookieTTLDays)
 	require.NotNil(t, view.ObservationDays)
-	assert.Equal(t, int64(7), *view.ObservationDays)
+	assert.Equal(t, int64(0), *view.ObservationDays)
 	require.NotNil(t, view.CancelWindowMinutes)
 	assert.Equal(t, int64(30), *view.CancelWindowMinutes)
 	require.NotNil(t, view.SelfInviteWindowDays)
@@ -275,23 +277,24 @@ func TestR37SubsiteAffiliateRateOverrideAndAudit(t *testing.T) {
 	require.NotNil(t, aff.RateOverride)
 	assert.True(t, aff.RateOverride.Equal(decimal.RequireFromString("0.25")), "got %s", aff.RateOverride.String())
 
-	// Snapshot uses overridden 0.25 rate instead of site default 0.10.
-	extOverride := &model.AdtyTopupOrder{
-		TradeNo:   "R37-RATE-OVERRIDE-1",
-		SiteId:    site.Id,
-		UserId:    invitee.Id,
-		FaceUSD:   decimal.NewFromInt(100),
-		CreatedAt: time.Now().Unix(),
-	}
-	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
-		return PrepareAdtySiteInviteCommissionSnapshotTx(tx, nil, extOverride)
-	}))
-	snapOverride, ok, err := loadAdtySiteCommissionOrderSnapshotTx(extOverride)
+	// R-49: Hourly consumption settlement uses overridden 0.25 live rate instead of site default 0.10.
+	now := time.Now().Unix()
+	require.NoError(t, db.Create(&model.AdtyPrincipalConsumeEvent{
+		OperationKey: "r37-rate-override-1",
+		Direction:    "spend",
+		SiteId:       site.Id,
+		UserId:       invitee.Id,
+		Quota:        100 * common.QuotaPerUnitDecimal().IntPart(),
+		AmountUSD:    decimal.NewFromInt(100),
+		CreatedAt:    now - 3600,
+	}).Error)
+	settledCount, err := settleSiteInviteConsumeHourTx("2026-11-28T01", now, now, site.Id)
 	require.NoError(t, err)
-	require.True(t, ok)
-	assert.True(t, snapOverride.Eligible)
-	assert.True(t, snapOverride.Rate.Equal(decimal.RequireFromString("0.25")))
-	assert.True(t, snapOverride.AmountUSD.Equal(decimal.NewFromInt(25)))
+	assert.Equal(t, 1, settledCount)
+	var commOverride model.AdtySiteInviteCommission
+	require.NoError(t, db.Where("trade_no = ?", "sconsume:2026-11-28T01:s1:u3").First(&commOverride).Error)
+	assert.True(t, commOverride.Rate.Equal(decimal.RequireFromString("0.25")))
+	assert.True(t, commOverride.AmountUSD.Equal(decimal.NewFromInt(25)))
 
 	// Boundary 0 and 30 succeed.
 	require.NoError(t, UpdateAdtyOwnerSiteReferralAffiliate(site.Id, owner.Id, inviter.Id, AdtySiteAffiliateUpdateInput{
@@ -335,23 +338,23 @@ func TestR37SubsiteAffiliateRateOverrideAndAudit(t *testing.T) {
 	require.NoError(t, db.Raw("SELECT CASE WHEN rate_override IS NULL THEN 1 ELSE 0 END FROM adty_site_referral_affiliates WHERE id = ?", cleared.Id).Scan(&isNull).Error)
 	assert.Equal(t, 1, isNull)
 
-	// Snapshot falls back to site default 0.10.
-	extDefault := &model.AdtyTopupOrder{
-		TradeNo:   "R37-RATE-DEFAULT-2",
-		SiteId:    site.Id,
-		UserId:    invitee.Id,
-		FaceUSD:   decimal.NewFromInt(100),
-		CreatedAt: time.Now().Unix(),
-	}
-	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
-		return PrepareAdtySiteInviteCommissionSnapshotTx(tx, nil, extDefault)
-	}))
-	snapDefault, ok, err := loadAdtySiteCommissionOrderSnapshotTx(extDefault)
+	// R-49: Hourly consumption settlement falls back to site default 0.10 after clearing override.
+	require.NoError(t, db.Create(&model.AdtyPrincipalConsumeEvent{
+		OperationKey: "r37-rate-default-2",
+		Direction:    "spend",
+		SiteId:       site.Id,
+		UserId:       invitee.Id,
+		Quota:        100 * common.QuotaPerUnitDecimal().IntPart(),
+		AmountUSD:    decimal.NewFromInt(100),
+		CreatedAt:    now - 1800,
+	}).Error)
+	settledCount, err = settleSiteInviteConsumeHourTx("2026-11-28T02", now, now, site.Id)
 	require.NoError(t, err)
-	require.True(t, ok)
-	assert.True(t, snapDefault.Eligible)
-	assert.True(t, snapDefault.Rate.Equal(decimal.RequireFromString("0.10")))
-	assert.True(t, snapDefault.AmountUSD.Equal(decimal.NewFromInt(10)))
+	assert.Equal(t, 1, settledCount)
+	var commDefault model.AdtySiteInviteCommission
+	require.NoError(t, db.Where("trade_no = ?", "sconsume:2026-11-28T02:s1:u3").First(&commDefault).Error)
+	assert.True(t, commDefault.Rate.Equal(decimal.RequireFromString("0.10")))
+	assert.True(t, commDefault.AmountUSD.Equal(decimal.NewFromInt(10)))
 
 	// Verify audit logs recorded OldValue & NewValue for all 4 successful rate updates.
 	var logs []model.AdtySiteReferralAuditLog
@@ -399,28 +402,23 @@ func TestR37SubsiteAffiliateDisableAndRestoreEnforcement(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "disabled")
 
-	// Disabled affiliate skips commission snapshot for existing bound invitee.
-	extDisabled := &model.AdtyTopupOrder{
-		TradeNo:   "R37-DIS-ORDER-1",
-		SiteId:    site.Id,
-		UserId:    inviteeBound.Id,
-		FaceUSD:   decimal.NewFromInt(100),
-		CreatedAt: time.Now().Unix(),
-	}
-	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
-		if err := PrepareAdtySiteInviteCommissionSnapshotTx(tx, nil, extDisabled); err != nil {
-			return err
-		}
-		return RecordAdtySiteInviteCommissionTx(tx, extDisabled, time.Now())
-	}))
-	snapDis, ok, err := loadAdtySiteCommissionOrderSnapshotTx(extDisabled)
+	// R-49: Disabled affiliate accrues zero hourly consumption commission for existing bound invitee.
+	now := time.Now().Unix()
+	require.NoError(t, db.Create(&model.AdtyPrincipalConsumeEvent{
+		OperationKey: "r37-dis-consume-1",
+		Direction:    "spend",
+		SiteId:       site.Id,
+		UserId:       inviteeBound.Id,
+		Quota:        100 * common.QuotaPerUnitDecimal().IntPart(),
+		AmountUSD:    decimal.NewFromInt(100),
+		CreatedAt:    now - 3600,
+	}).Error)
+	settledCount, err := settleSiteInviteConsumeHourTx("2026-11-28T03", now, now, site.Id)
 	require.NoError(t, err)
-	require.True(t, ok)
-	assert.False(t, snapDis.Eligible)
-	assert.Zero(t, snapDis.InviterId)
+	assert.Zero(t, settledCount)
 
 	var commCount int64
-	require.NoError(t, db.Model(&model.AdtySiteInviteCommission{}).Where("trade_no = ?", extDisabled.TradeNo).Count(&commCount).Error)
+	require.NoError(t, db.Model(&model.AdtySiteInviteCommission{}).Where("site_id = ?", site.Id).Count(&commCount).Error)
 	assert.Zero(t, commCount)
 
 	// 2. Restore affiliate.
@@ -434,30 +432,27 @@ func TestR37SubsiteAffiliateDisableAndRestoreEnforcement(t *testing.T) {
 	assert.Zero(t, aff.DisabledBy)
 	assert.Zero(t, aff.DisabledAt)
 
-	// Restored affiliate can bind inviteeNew and accrue commission again.
+	// Restored affiliate can bind inviteeNew and accrue hourly consumption commission again.
 	require.NoError(t, BindSiteInviteFromIP(site.Id, inviter.Id, inviteeNew.Id, "ip_dis_2"))
 
-	extRestored := &model.AdtyTopupOrder{
-		TradeNo:   "R37-RES-ORDER-2",
-		SiteId:    site.Id,
-		UserId:    inviteeNew.Id,
-		FaceUSD:   decimal.NewFromInt(100),
-		CreatedAt: time.Now().Unix(),
-	}
-	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
-		if err := PrepareAdtySiteInviteCommissionSnapshotTx(tx, nil, extRestored); err != nil {
-			return err
-		}
-		return RecordAdtySiteInviteCommissionTx(tx, extRestored, time.Now())
-	}))
-	snapRes, ok, err := loadAdtySiteCommissionOrderSnapshotTx(extRestored)
+	require.NoError(t, db.Create(&model.AdtyPrincipalConsumeEvent{
+		OperationKey: "r37-res-consume-2",
+		Direction:    "spend",
+		SiteId:       site.Id,
+		UserId:       inviteeNew.Id,
+		Quota:        100 * common.QuotaPerUnitDecimal().IntPart(),
+		AmountUSD:    decimal.NewFromInt(100),
+		CreatedAt:    now - 1800,
+	}).Error)
+	settledCount, err = settleSiteInviteConsumeHourTx("2026-11-28T04", now, now, site.Id)
 	require.NoError(t, err)
-	require.True(t, ok)
-	assert.True(t, snapRes.Eligible)
-	assert.Equal(t, inviter.Id, snapRes.InviterId)
-	assert.True(t, snapRes.AmountUSD.Equal(decimal.NewFromInt(12)))
+	assert.Equal(t, 1, settledCount)
+	var commRes model.AdtySiteInviteCommission
+	require.NoError(t, db.Where("site_id = ? AND invitee_id = ?", site.Id, inviteeNew.Id).First(&commRes).Error)
+	assert.Equal(t, inviter.Id, commRes.InviterId)
+	assert.True(t, commRes.AmountUSD.Equal(decimal.NewFromInt(12)))
 
-	require.NoError(t, db.Model(&model.AdtySiteInviteCommission{}).Where("trade_no = ?", extRestored.TradeNo).Count(&commCount).Error)
+	require.NoError(t, db.Model(&model.AdtySiteInviteCommission{}).Where("site_id = ?", site.Id).Count(&commCount).Error)
 	assert.Equal(t, int64(1), commCount)
 
 	// Verify audit logs for disable + restore.
@@ -720,27 +715,22 @@ func TestR37SubsiteSelfInviteWindowEnforcement(t *testing.T) {
 	require.NoError(t, db.Where("site_id = ? AND invitee_id = ?", site.Id, inviteeSameIP.Id).First(&invIP).Error)
 	assert.Equal(t, model.ReferralRiskSelfInvite, invIP.RiskFlag)
 
-	extFlagged := &model.AdtyTopupOrder{
-		TradeNo:   "R37-SELF-FLAGGED-1",
-		SiteId:    site.Id,
-		UserId:    inviteeSameIP.Id,
-		FaceUSD:   decimal.NewFromInt(100),
-		CreatedAt: now,
-	}
-	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
-		if err := PrepareAdtySiteInviteCommissionSnapshotTx(tx, nil, extFlagged); err != nil {
-			return err
-		}
-		return RecordAdtySiteInviteCommissionTx(tx, extFlagged, time.Now())
-	}))
-	snapFlagged, ok, err := loadAdtySiteCommissionOrderSnapshotTx(extFlagged)
+	// R-49: self_invite flagged binding accrues zero hourly consumption commission.
+	require.NoError(t, db.Create(&model.AdtyPrincipalConsumeEvent{
+		OperationKey: "r37-self-flagged-1",
+		Direction:    "spend",
+		SiteId:       site.Id,
+		UserId:       inviteeSameIP.Id,
+		Quota:        100 * common.QuotaPerUnitDecimal().IntPart(),
+		AmountUSD:    decimal.NewFromInt(100),
+		CreatedAt:    now - 10,
+	}).Error)
+	settledCount, err := settleSiteInviteConsumeHourTx("2026-11-28T05", now+1, now, site.Id)
 	require.NoError(t, err)
-	require.True(t, ok)
-	assert.False(t, snapFlagged.Eligible, "self_invite must skip commission eligibility")
-	assert.Zero(t, snapFlagged.InviterId)
+	assert.Zero(t, settledCount, "self_invite must skip hourly commission eligibility")
 
 	var commCount int64
-	require.NoError(t, db.Model(&model.AdtySiteInviteCommission{}).Where("trade_no = ?", extFlagged.TradeNo).Count(&commCount).Error)
+	require.NoError(t, db.Model(&model.AdtySiteInviteCommission{}).Where("site_id = ? AND invitee_id = ?", site.Id, inviteeSameIP.Id).Count(&commCount).Error)
 	assert.Zero(t, commCount)
 
 	// 2. Same device hash inside SelfInviteWindowDays -> also flagged self_invite.
@@ -749,27 +739,27 @@ func TestR37SubsiteSelfInviteWindowEnforcement(t *testing.T) {
 	require.NoError(t, db.Where("site_id = ? AND invitee_id = ?", site.Id, inviteeSameDev.Id).First(&invDev).Error)
 	assert.Equal(t, model.ReferralRiskSelfInvite, invDev.RiskFlag)
 
-	// 3. Same IP OUTSIDE SelfInviteWindowDays (10d > 7d) -> NOT flagged, snapshot eligible.
+	// 3. Same IP OUTSIDE SelfInviteWindowDays (10d > 7d) -> NOT flagged, eligible for hourly consumption commission.
 	require.NoError(t, BindSiteInviteFromIP(site.Id, inviterOld.Id, inviteeExpiredWin.Id, "fp_ip_old"))
 	var invOld model.AdtySiteInvite
 	require.NoError(t, db.Where("site_id = ? AND invitee_id = ?", site.Id, inviteeExpiredWin.Id).First(&invOld).Error)
 	assert.Empty(t, invOld.RiskFlag)
 
-	extClean := &model.AdtyTopupOrder{
-		TradeNo:   "R37-SELF-CLEAN-2",
-		SiteId:    site.Id,
-		UserId:    inviteeExpiredWin.Id,
-		FaceUSD:   decimal.NewFromInt(100),
-		CreatedAt: now,
-	}
-	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
-		return PrepareAdtySiteInviteCommissionSnapshotTx(tx, nil, extClean)
-	}))
-	snapClean, ok, err := loadAdtySiteCommissionOrderSnapshotTx(extClean)
+	require.NoError(t, db.Create(&model.AdtyPrincipalConsumeEvent{
+		OperationKey: "r37-self-clean-2",
+		Direction:    "spend",
+		SiteId:       site.Id,
+		UserId:       inviteeExpiredWin.Id,
+		Quota:        100 * common.QuotaPerUnitDecimal().IntPart(),
+		AmountUSD:    decimal.NewFromInt(100),
+		CreatedAt:    now - 10,
+	}).Error)
+	settledCount, err = settleSiteInviteConsumeHourTx("2026-11-28T06", now+1, now, site.Id)
 	require.NoError(t, err)
-	require.True(t, ok)
-	assert.True(t, snapClean.Eligible)
-	assert.Equal(t, inviterOld.Id, snapClean.InviterId)
+	assert.Equal(t, 1, settledCount)
+	var commClean model.AdtySiteInviteCommission
+	require.NoError(t, db.Where("site_id = ? AND invitee_id = ?", site.Id, inviteeExpiredWin.Id).First(&commClean).Error)
+	assert.Equal(t, inviterOld.Id, commClean.InviterId)
 }
 
 func TestR37SubsiteBatchRegisterRuleEnforcement(t *testing.T) {
@@ -878,63 +868,49 @@ func TestR37ZeroDayObservationRespectsAffiliateSettlementFreeze(t *testing.T) {
 	}, "198.51.100.9", "owner-ui"))
 
 	now := time.Now().Truncate(time.Second)
-	extFrozen := &model.AdtyTopupOrder{
-		TradeNo:   "R37-0DAY-FROZEN-1",
-		SiteId:    site.Id,
-		UserId:    invitee1.Id,
-		FaceUSD:   decimal.NewFromInt(100),
-		CreatedAt: now.Unix(),
-	}
-	extNormal := &model.AdtyTopupOrder{
-		TradeNo:   "R37-0DAY-NORMAL-2",
-		SiteId:    site.Id,
-		UserId:    invitee2.Id,
-		FaceUSD:   decimal.NewFromInt(100),
-		CreatedAt: now.Unix(),
-	}
-
-	for _, ext := range []*model.AdtyTopupOrder{extFrozen, extNormal} {
-		require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
-			if err := PrepareAdtySiteInviteCommissionSnapshotTx(tx, nil, ext); err != nil {
-				return err
-			}
-			if err := RecordAdtySiteInviteCommissionTx(tx, ext, now); err != nil {
-				return err
-			}
-			var comm model.AdtySiteInviteCommission
-			if err := tx.Where("trade_no = ?", ext.TradeNo).First(&comm).Error; err != nil {
-				return err
-			}
-			return CoverAdtySiteInviteCommissionTx(tx, comm.Id, now)
-		}))
-	}
+	// R-49: Hourly consumption settlement records risk_held (without freezing earnings) for frozen affiliate,
+	// while normal affiliate becomes available immediately (0 observation days).
+	require.NoError(t, db.Create(&model.AdtyPrincipalConsumeEvent{
+		OperationKey: "r37-0day-frozen-1",
+		Direction:    "spend",
+		SiteId:       site.Id,
+		UserId:       invitee1.Id,
+		Quota:        100 * common.QuotaPerUnitDecimal().IntPart(),
+		AmountUSD:    decimal.NewFromInt(100),
+		CreatedAt:    now.Unix() - 10,
+	}).Error)
+	require.NoError(t, db.Create(&model.AdtyPrincipalConsumeEvent{
+		OperationKey: "r37-0day-normal-2",
+		Direction:    "spend",
+		SiteId:       site.Id,
+		UserId:       invitee2.Id,
+		Quota:        100 * common.QuotaPerUnitDecimal().IntPart(),
+		AmountUSD:    decimal.NewFromInt(100),
+		CreatedAt:    now.Unix() - 10,
+	}).Error)
+	settledCount, err := settleSiteInviteConsumeHourTx("2026-11-28T07", now.Unix()+1, now.Unix(), site.Id)
+	require.NoError(t, err)
+	assert.Equal(t, 2, settledCount)
 
 	var frozenRow, normalRow model.AdtySiteInviteCommission
-	require.NoError(t, db.Where("trade_no = ?", extFrozen.TradeNo).First(&frozenRow).Error)
-	require.NoError(t, db.Where("trade_no = ?", extNormal.TradeNo).First(&normalRow).Error)
+	require.NoError(t, db.Where("site_id = ? AND invitee_id = ?", site.Id, invitee1.Id).First(&frozenRow).Error)
+	require.NoError(t, db.Where("site_id = ? AND invitee_id = ?", site.Id, invitee2.Id).First(&normalRow).Error)
 
-	// 0-day observation must keep frozen affiliate in covered (not available), while normal affiliate becomes available immediately.
-	assert.Equal(t, model.AdtySiteCommissionCovered, frozenRow.Status, "0-day observation must not bypass affiliate settlement_enabled=false")
-	assert.Equal(t, now.Unix(), frozenRow.CoveredAt)
-	assert.Equal(t, now.Unix(), frozenRow.AvailableAt)
-	assert.True(t, frozenRow.CoveredUSD.Equal(decimal.NewFromInt(10)))
+	// Frozen affiliate gets risk_held (0 wallet freeze, not withdrawable); normal affiliate becomes available immediately.
+	assert.Equal(t, model.AdtySiteCommissionRiskHeld, frozenRow.Status, "risk-frozen affiliate must be recorded as risk_held")
+	assert.True(t, frozenRow.CoveredUSD.IsZero())
 	assert.False(t, SiteInviteCommissionWithdrawable(&frozenRow, now))
 
 	assert.Equal(t, model.AdtySiteCommissionAvailable, normalRow.Status)
 	assert.True(t, SiteInviteCommissionWithdrawable(&normalRow, now))
 
-	// Release job still skips the frozen affiliate while settlement_enabled=false.
+	// Release job skips risk_held until owner explicitly releases it.
 	require.NoError(t, ReleaseAdtySiteInviteCommissions(now.Add(time.Minute)))
 	require.NoError(t, db.First(&frozenRow, frozenRow.Id).Error)
-	assert.Equal(t, model.AdtySiteCommissionCovered, frozenRow.Status)
+	assert.Equal(t, model.AdtySiteCommissionRiskHeld, frozenRow.Status)
 
-	// Restoring settlement allows ReleaseAdtySiteInviteCommissions to release it cleanly.
-	require.NoError(t, UpdateAdtyOwnerSiteReferralAffiliate(site.Id, owner.Id, inviterFrozen.Id, AdtySiteAffiliateUpdateInput{
-		Action: "restore_settlement",
-		Reason: "cleared",
-	}, "198.51.100.9", "owner-ui"))
-
-	require.NoError(t, ReleaseAdtySiteInviteCommissions(now.Add(time.Minute)))
+	// Owner explicitly releases the risk_held commission -> covered & immediately available.
+	require.NoError(t, ReleaseSiteInviteRiskHeldCommission(site.Id, owner.Id, frozenRow.Id, "cleared", "198.51.100.9", "owner-ui"))
 	require.NoError(t, db.First(&frozenRow, frozenRow.Id).Error)
 	assert.Equal(t, model.AdtySiteCommissionAvailable, frozenRow.Status)
 	assert.True(t, SiteInviteCommissionWithdrawable(&frozenRow, now.Add(time.Minute)))

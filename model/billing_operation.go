@@ -124,20 +124,23 @@ func recordBillingMovementTx(tx *gorm.DB, op *BillingOperation, stage string, wa
 // AdtySiteEarningEvent is committed with the applied wallet operation. Daily
 // earnings and optional consume logs are projections, never recovery inputs.
 type AdtySiteEarningEvent struct {
-	OperationKey     string  `json:"operation_key" gorm:"type:varchar(191);primaryKey"`
-	RootOperationKey string  `json:"root_operation_key" gorm:"type:varchar(191);index"`
-	SiteId           int     `json:"site_id" gorm:"index;not null"`
-	SiteOwnerUserId  int     `json:"site_owner_user_id" gorm:"not null;default:0"`
-	UserId           int     `json:"user_id" gorm:"index;not null"`
-	Quota            int     `json:"quota"`
-	Markup           float64 `json:"markup"`
-	CostFactor       float64 `json:"cost_factor"`
-	RiskFlag         string  `json:"risk_flag" gorm:"type:varchar(16)"`
-	RiskReleased     bool    `json:"risk_released"`
-	ReviewStatus     string  `json:"review_status" gorm:"type:varchar(24);index"`
-	Day              string  `json:"day" gorm:"type:varchar(16);index"`
-	Projected        bool    `json:"projected" gorm:"index"`
-	CreatedAt        int64   `json:"created_at" gorm:"autoCreateTime"`
+	OperationKey         string  `json:"operation_key" gorm:"type:varchar(191);primaryKey"`
+	RootOperationKey     string  `json:"root_operation_key" gorm:"type:varchar(191);index"`
+	SiteId               int     `json:"site_id" gorm:"index;not null"`
+	SiteOwnerUserId      int     `json:"site_owner_user_id" gorm:"not null;default:0"`
+	UserId               int     `json:"user_id" gorm:"index;not null"`
+	Quota                int     `json:"quota"`
+	PartnerExcludedQuota int64   `json:"partner_excluded_quota" gorm:"not null;default:0"`
+	Markup               float64 `json:"markup"`
+	CostFactor           float64 `json:"cost_factor"`
+	RiskFlag             string  `json:"risk_flag" gorm:"type:varchar(16)"`
+	RiskReleased         bool    `json:"risk_released"`
+	ReviewStatus         string  `json:"review_status" gorm:"type:varchar(24);index"`
+	Day                  string  `json:"day" gorm:"type:varchar(16);index"`
+	HourSlot             string  `json:"hour_slot" gorm:"type:varchar(48);index"`
+	Projected            bool    `json:"projected" gorm:"index"`
+	SettledAt            int64   `json:"settled_at" gorm:"not null;default:0;index"`
+	CreatedAt            int64   `json:"created_at" gorm:"autoCreateTime;index"`
 }
 
 func (AdtySiteEarningEvent) TableName() string { return "adty_site_earning_events" }
@@ -1071,9 +1074,9 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 		}
 		if hasSiteWalletTable {
 			earningsSiteSet := make(map[int]struct{})
-			if row.PayerKind != BillingPayerOwner && row.SiteId > 0 && BillingEarningFactorsUsable(row.SiteMarkup, row.SiteCostFactor) {
-				earningsSiteSet[row.SiteId] = struct{}{}
-			}
+			// R-49: Earnings spread now settles hourly rather than per request, so normal
+			// principal requests do not contend on adty_site_wallets (earnings). Only pre-lock
+			// earnings wallets when the user has subsite bonus batches (gift_spend lock order).
 			if !teamPaid && row.PayerKind != BillingPayerOwner {
 				hasFundBatchTable, err := AdtyTableExists(tx, &AdtyFundBatch{})
 				if err != nil {
@@ -1261,8 +1264,12 @@ func ApplyBillingSettlement(key string) (*BillingOperation, bool, error) {
 			if err != nil {
 				return err
 			}
+			partnerExcludedQuota, err := adtyPartnerExcludedQuotaTx(tx, row.UserId, row.OperationKey, earningQuota, teamPaid)
+			if err != nil {
+				return err
+			}
 			event := AdtySiteEarningEvent{OperationKey: row.OperationKey, SiteId: row.SiteId, SiteOwnerUserId: row.SiteOwnerUserId, UserId: row.UserId,
-				Quota: earningQuota, Markup: row.SiteMarkup, CostFactor: row.SiteCostFactor, Day: time.Now().In(bizLoc).Format("2006-01-02"),
+				Quota: earningQuota, PartnerExcludedQuota: partnerExcludedQuota, Markup: row.SiteMarkup, CostFactor: row.SiteCostFactor, Day: time.Now().In(bizLoc).Format("2006-01-02"),
 				RootOperationKey: row.EarningRootKey, RiskFlag: row.EarningRiskFlag, ReviewStatus: row.EarningReviewStatus}
 			var customers []AdtySiteCustomer
 			if err := lockForUpdate(tx).Where("user_id = ?", row.UserId).Limit(1).Find(&customers).Error; err != nil {

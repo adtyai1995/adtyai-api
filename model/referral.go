@@ -234,6 +234,7 @@ const (
 	ReferralPartnerStatusRejected = "rejected"
 
 	ReferralCommissionStatusPending    = "pending"
+	ReferralCommissionStatusRiskHeld   = "risk_held"
 	ReferralCommissionStatusAvailable  = "available"
 	ReferralCommissionStatusFrozen     = "frozen"
 	ReferralCommissionStatusPaid       = "paid"
@@ -262,7 +263,8 @@ const (
 	ReferralRiskSelfInvite    = "self_invite"
 	ReferralRiskBatchRegister = "batch_register"
 
-	ReferralSourceTopup = "topup"
+	ReferralSourceTopup   = "topup"
+	ReferralSourceConsume = "consume_hourly"
 
 	ReferralWithdrawToBalance = "balance"
 	ReferralWithdrawToUSDT    = "usdt"

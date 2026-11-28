@@ -17,8 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle2, RefreshCw } from 'lucide-react'
-import { useId, useRef, useState } from 'react'
+import { CheckCircle2, ChevronRight, RefreshCw } from 'lucide-react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -34,13 +34,24 @@ import {
   NativeSelect,
   NativeSelectOption,
 } from '@/components/ui/native-select'
+import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { createSite, getSiteTiers, siteAdminKeys } from '../api'
+import {
+  createSite,
+  getResellerSettings,
+  getSiteTiers,
+  siteAdminKeys,
+} from '../api'
 import { generateOwnerPassword } from '../lib/sites'
-import type { AdminSite, ResellerSettings } from '../types'
+import type {
+  AdminSite,
+  OpenSitePayload,
+  PartnerLeadItem,
+  ResellerSettings,
+} from '../types'
 
 const SUBDOMAIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]{3,20}$/
@@ -55,9 +66,11 @@ function newOpenIdempotencyKey(): string {
 
 export function OpenSiteDialog(props: {
   open: boolean
-  settings: ResellerSettings | undefined
+  settings?: ResellerSettings
+  initialLead?: PartnerLeadItem | null
   onOpenChange: (open: boolean) => void
-  onViewSite: (site: AdminSite) => void
+  onViewSite?: (site: AdminSite) => void
+  onOpened?: (site: AdminSite) => void
 }) {
   const { t } = useTranslation()
   const fieldId = useId()
@@ -76,6 +89,9 @@ export function OpenSiteDialog(props: {
   const [tierMode, setTierMode] = useState<'auto' | 'manual'>('auto')
   const [costFactor, setCostFactor] = useState('')
   const [contactInfo, setContactInfo] = useState('')
+  const [referrerCode, setReferrerCode] = useState('')
+  const [referrerSiteId, setReferrerSiteId] = useState('')
+  const [referrerRate, setReferrerRate] = useState('')
   const [confirmed, setConfirmed] = useState(false)
   const [createdResult, setCreatedResult] = useState<{
     site: AdminSite
@@ -84,12 +100,41 @@ export function OpenSiteDialog(props: {
   } | null>(null)
   const intentRef = useRef<{ payload: string; key: string } | null>(null)
 
-  const roots = props.settings?.root_domains ?? []
-  const automationOn = props.settings?.domain_automation_enabled === true
-  const managedRoot = props.settings?.aliyun_domain?.trim() ?? ''
+  const fallbackSettingsQuery = useQuery({
+    queryKey: siteAdminKeys.settings,
+    queryFn: getResellerSettings,
+    enabled:
+      props.open &&
+      isRoot &&
+      props.settings === undefined &&
+      createdResult === null,
+  })
+  const resolvedSettings = props.settings ?? fallbackSettingsQuery.data
+  const roots = resolvedSettings?.root_domains ?? []
+  const automationOn = resolvedSettings?.domain_automation_enabled === true
+  const managedRoot = resolvedSettings?.aliyun_domain?.trim() ?? ''
   const effectiveRoot = automationOn
     ? managedRoot || roots[0] || ''
     : rootDomain || roots[0] || ''
+  const defaultPartnerRate =
+    resolvedSettings?.partner_referral_default_rate ?? 5
+
+  const lead = props.initialLead ?? null
+
+  useEffect(() => {
+    if (!props.open || !lead) return
+    setContactInfo(
+      `${lead.contact_name} (${lead.contact_channel}: ${lead.contact_value})`
+    )
+    setReferrerCode(lead.referral_code || '')
+    setReferrerSiteId(
+      lead.referrer_site_id > 0 ? String(lead.referrer_site_id) : ''
+    )
+    setReferrerRate('')
+    setConfirmed(false)
+    setCreatedResult(null)
+    intentRef.current = null
+  }, [props.open, lead])
 
   const resetForm = () => {
     setOwnerUsername('')
@@ -103,6 +148,9 @@ export function OpenSiteDialog(props: {
     setTierMode('auto')
     setCostFactor('')
     setContactInfo('')
+    setReferrerCode('')
+    setReferrerSiteId('')
+    setReferrerRate('')
     setConfirmed(false)
     setCreatedResult(null)
     intentRef.current = null
@@ -170,12 +218,32 @@ export function OpenSiteDialog(props: {
     }
   }
 
+  const trimmedReferrerSiteId = referrerSiteId.trim()
+  let referrerSiteIdError = ''
+  if (trimmedReferrerSiteId !== '') {
+    const parsedId = Number(trimmedReferrerSiteId)
+    if (!Number.isInteger(parsedId) || parsedId <= 0) {
+      referrerSiteIdError = t('Enter a valid referrer site ID')
+    }
+  }
+
+  const trimmedReferrerRate = referrerRate.trim()
+  let referrerRateError = ''
+  if (trimmedReferrerRate !== '') {
+    const parsedRate = Number(trimmedReferrerRate)
+    if (!Number.isFinite(parsedRate) || parsedRate < 0 || parsedRate > 50) {
+      referrerRateError = t(
+        'Partner referral rate must be between 0% and 50%'
+      )
+    }
+  }
+
   const openMutation = useMutation({
     mutationFn: () => {
       if (useAuthStore.getState().auth.user?.role !== ROLE.SUPER_ADMIN) {
         throw new Error(t('No permission to perform this action'))
       }
-      const body: Parameters<typeof createSite>[0] = {
+      const body: OpenSitePayload = {
         owner_username: trimmedUsername,
         owner_password: ownerPassword,
         subdomain: subdomainMode === 'custom' ? normalizedSub : '',
@@ -199,6 +267,18 @@ export function OpenSiteDialog(props: {
       if (contactInfo.trim() !== '') {
         body.contact_info = contactInfo.trim()
       }
+      if (lead?.id) {
+        body.partner_lead_id = lead.id
+      }
+      if (referrerCode.trim() !== '') {
+        body.referrer_code = referrerCode.trim().toUpperCase()
+      }
+      if (trimmedReferrerSiteId !== '') {
+        body.referrer_site_id = Number(trimmedReferrerSiteId)
+      }
+      if (trimmedReferrerRate !== '') {
+        body.referrer_rate = trimmedReferrerRate
+      }
       const serialized = JSON.stringify(body)
       if (intentRef.current?.payload !== serialized) {
         intentRef.current = {
@@ -217,6 +297,7 @@ export function OpenSiteDialog(props: {
       })
       toast.success(t('Site opened'))
       void queryClient.invalidateQueries({ queryKey: siteAdminKeys.all })
+      void invalidateSidebarBadges(queryClient)
     },
     onError: (error) => handleServerError(error),
   })
@@ -234,6 +315,8 @@ export function OpenSiteDialog(props: {
     (subdomainMode === 'auto' || normalizedSub !== '') &&
     subdomainError === '' &&
     costFactorError === '' &&
+    referrerSiteIdError === '' &&
+    referrerRateError === '' &&
     effectiveRoot !== ''
 
   const previewWebsiteHost = effectiveRoot
@@ -289,9 +372,11 @@ export function OpenSiteDialog(props: {
             >
               {t('Close')}
             </Button>
-            <Button type='button' variant='outline' onClick={resetForm}>
-              {t('Open another site')}
-            </Button>
+            {!lead && (
+              <Button type='button' variant='outline' onClick={resetForm}>
+                {t('Open another site')}
+              </Button>
+            )}
             <Button
               type='button'
               variant='brand'
@@ -299,7 +384,7 @@ export function OpenSiteDialog(props: {
                 const target = createdSite
                 resetForm()
                 props.onOpenChange(false)
-                props.onViewSite(target)
+                ;(props.onViewSite ?? props.onOpened)?.(target)
               }}
             >
               {t('View site details')}
@@ -459,6 +544,16 @@ export function OpenSiteDialog(props: {
             openMutation.mutate()
           }}
         >
+          {lead && (
+            <Alert>
+              <AlertDescription className='text-xs'>
+                {t('Approving partner application #{{id}} for {{name}}.', {
+                  id: lead.id,
+                  name: lead.contact_name,
+                })}
+              </AlertDescription>
+            </Alert>
+          )}
           {/* Step 1: New standalone site owner account */}
           <section className='flex flex-col gap-3'>
             <div className='flex flex-col gap-1'>
@@ -745,6 +840,77 @@ export function OpenSiteDialog(props: {
                 onChange={(event) => setContactInfo(event.target.value)}
               />
             </div>
+
+            <details
+              open={Boolean(lead)}
+              className='group border-border rounded-lg border'
+            >
+              <summary className='flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-sm font-medium [&::-webkit-details-marker]:hidden'>
+                <ChevronRight
+                  aria-hidden
+                  className='text-muted-foreground size-4 transition-transform group-open:rotate-90'
+                />
+                {t('Partner referrer (optional)')}
+              </summary>
+              <div className='border-border grid gap-3 border-t p-3 sm:grid-cols-3'>
+                <div className='flex flex-col gap-1.5'>
+                  <Label htmlFor={`${fieldId}-referrer-code`}>
+                    {t('Referrer partner code')}
+                  </Label>
+                  <Input
+                    id={`${fieldId}-referrer-code`}
+                    value={referrerCode}
+                    placeholder='PTN...'
+                    autoComplete='off'
+                    onChange={(event) => setReferrerCode(event.target.value)}
+                  />
+                </div>
+                <div className='flex flex-col gap-1.5'>
+                  <Label htmlFor={`${fieldId}-referrer-site-id`}>
+                    {t('Referrer site ID')}
+                  </Label>
+                  <Input
+                    id={`${fieldId}-referrer-site-id`}
+                    type='number'
+                    min={1}
+                    step={1}
+                    value={referrerSiteId}
+                    placeholder='#'
+                    aria-invalid={referrerSiteIdError !== ''}
+                    onChange={(event) => setReferrerSiteId(event.target.value)}
+                  />
+                  {referrerSiteIdError && (
+                    <p className='text-destructive text-xs'>
+                      {referrerSiteIdError}
+                    </p>
+                  )}
+                </div>
+                <div className='flex flex-col gap-1.5'>
+                  <Label htmlFor={`${fieldId}-referrer-rate`}>
+                    {t('Custom referral rate (%)')}
+                  </Label>
+                  <Input
+                    id={`${fieldId}-referrer-rate`}
+                    type='number'
+                    min={0}
+                    max={50}
+                    step='any'
+                    inputMode='decimal'
+                    value={referrerRate}
+                    placeholder={t('Default {{rate}}%', {
+                      rate: defaultPartnerRate,
+                    })}
+                    aria-invalid={referrerRateError !== ''}
+                    onChange={(event) => setReferrerRate(event.target.value)}
+                  />
+                  {referrerRateError && (
+                    <p className='text-destructive text-xs'>
+                      {referrerRateError}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </details>
           </section>
 
           {/* Step 3: Verification & irreversible confirmation */}

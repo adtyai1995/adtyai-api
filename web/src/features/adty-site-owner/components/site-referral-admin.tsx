@@ -28,6 +28,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
@@ -52,11 +53,13 @@ import { PageSwitcher } from '@/features/referral/components/page-switcher'
 import { formatUsd } from '@/features/wallet/adty/lib/money'
 import { invalidateSidebarBadges } from '@/hooks/use-sidebar-badges'
 import { toIntlLocale } from '@/i18n/languages'
-import { getSelf } from '@/lib/api'
+import { api, getSelf } from '@/lib/api'
 import { formatNumber, formatTimestamp } from '@/lib/format'
 import { formatUserIdentity } from '@/lib/format-user-identity'
 import { handleServerError } from '@/lib/handle-server-error'
+import { requireServerSuccess } from '@/lib/server-error-message'
 import { STATUS_QUERY_KEY } from '@/lib/status-query'
+import { cn } from '@/lib/utils'
 import { useAuthStore, type AuthUser } from '@/stores/auth-store'
 
 import {
@@ -73,6 +76,7 @@ import {
   updateOwnerSiteReferralAffiliate,
   type SiteReferralAffiliateAction,
   type SiteReferralAffiliateItem,
+  type SiteReferralCommissionItem,
   type SiteReferralOverview,
 } from '../api'
 import { MAX_SITE_REFERRAL_RATE_PERCENT } from '../lib/site-owner'
@@ -86,10 +90,25 @@ type SubsiteAffiliateFilter = {
 
 const COMMISSION_STATUS_OPTIONS = [
   'pending_coverage',
+  'risk_held',
   'covered',
   'available',
   'clawed_back',
 ] as const
+
+type SiteRiskCommissionAction = 'release' | 'void'
+
+async function postOwnerSiteCommissionRiskAction(
+  id: number,
+  action: SiteRiskCommissionAction,
+  reason?: string
+): Promise<void> {
+  const res = await api.post<{ success: boolean; message?: string }>(
+    `/api/adty/site/referral/commissions/${id}/${action}`,
+    { reason: reason?.trim() || '' }
+  )
+  requireServerSuccess(res.data)
+}
 
 function formatSiteRate(raw: string | undefined): string {
   const trimmed = (raw ?? '').trim()
@@ -105,6 +124,8 @@ function siteCommissionStatusLabel(t: TFunction, status: string): string {
   switch (status) {
     case 'pending_coverage':
       return t('Pending coverage')
+    case 'risk_held':
+      return t('Risk held')
     case 'covered':
     case 'pending':
       return t('Settling')
@@ -133,7 +154,7 @@ function siteCommissionStatusVariant(status: string): StatusVariant {
     return 'warning'
   }
   if (status === 'frozen') return 'info'
-  if (status === 'clawed_back') return 'danger'
+  if (status === 'clawed_back' || status === 'risk_held') return 'danger'
   return 'neutral'
 }
 
@@ -144,6 +165,8 @@ function coverageStatusLabel(t: TFunction, status: string): string {
       return t('Fully covered')
     case 'partial':
       return t('Partially covered')
+    case 'risk_held':
+      return t('Risk held')
     case 'pending':
     case 'pending_coverage':
     case 'uncovered':
@@ -159,6 +182,10 @@ function siteAuditActionLabel(t: TFunction, action: string): string {
       return t('Updated referral settings')
     case 'coverage_resume':
       return t('Resumed pending commission coverage')
+    case 'commission_risk_release':
+      return t('Released risk-held commission')
+    case 'commission_risk_void':
+      return t('Voided risk-held commission')
     case 'invite_bind':
       return t('Bound invite manually')
     case 'withdrawal_approve':
@@ -230,10 +257,13 @@ function SiteAffiliateState(props: { affiliate: SiteReferralAffiliateItem }) {
 
 function SiteReferralKpiStrip(props: { data: SiteReferralOverview }) {
   const { t, i18n } = useTranslation()
-  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const locale = toIntlLocale(i18n?.resolvedLanguage || i18n?.language)
   const data = props.data
+  const riskHeldCount = (
+    data as SiteReferralOverview & { risk_held_count?: number }
+  )?.risk_held_count
 
-  const items = [
+  const items: Array<{ label: string; value: string; highlight?: boolean }> = [
     {
       label: t('Affiliates'),
       value: formatNumber(data.affiliates ?? 0, locale),
@@ -260,14 +290,34 @@ function SiteReferralKpiStrip(props: { data: SiteReferralOverview }) {
     },
   ]
 
+  if (typeof riskHeldCount === 'number') {
+    items.push({
+      label: t('Risk held'),
+      value: formatNumber(riskHeldCount, locale),
+      highlight: riskHeldCount > 0,
+    })
+  }
+
   return (
-    <div className='border-border bg-border grid grid-cols-2 gap-px overflow-hidden rounded-[14px] border lg:grid-cols-3 xl:grid-cols-6'>
+    <div
+      className={cn(
+        'border-border bg-border grid grid-cols-2 gap-px overflow-hidden rounded-[14px] border',
+        items.length >= 7
+          ? 'lg:grid-cols-4 xl:grid-cols-7'
+          : 'lg:grid-cols-3 xl:grid-cols-6'
+      )}
+    >
       {items.map((item) => (
         <div key={item.label} className='bg-card flex flex-col gap-1 px-5 py-4'>
           <span className='text-dim text-[12px] leading-none'>
             {item.label}
           </span>
-          <span className='font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums'>
+          <span
+            className={cn(
+              'font-display text-[22px] leading-tight font-extrabold tracking-[-0.02em] tabular-nums',
+              item.highlight && 'text-destructive'
+            )}
+          >
             {item.value}
           </span>
         </div>
@@ -801,15 +851,23 @@ function SiteAffiliatesTab(props: {
 }
 
 function SiteCommissionsTab(props: {
+  closing?: boolean
   affiliateFilter: SubsiteAffiliateFilter | null
   onClearAffiliateFilter: () => void
 }) {
   const { t, i18n } = useTranslation()
-  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const locale = toIntlLocale(i18n?.resolvedLanguage || i18n?.language)
+  const queryClient = useQueryClient()
+  const closing = Boolean(props.closing)
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState('')
   const [keyword, setKeyword] = useState('')
   const [search, setSearch] = useState('')
+  const [pendingAction, setPendingAction] = useState<{
+    row: SiteReferralCommissionItem
+    action: SiteRiskCommissionAction
+  } | null>(null)
+  const [actionReason, setActionReason] = useState('')
 
   const inviterUserId = props.affiliateFilter?.userId
 
@@ -834,6 +892,40 @@ function SiteCommissionsTab(props: {
       ),
     placeholderData: keepPreviousData,
   })
+
+  const riskActionMutation = useMutation({
+    mutationFn: (input: {
+      id: number
+      action: SiteRiskCommissionAction
+      reason: string
+    }) => postOwnerSiteCommissionRiskAction(input.id, input.action, input.reason),
+    onSuccess: (_data, variables) => {
+      toast.success(
+        variables.action === 'release'
+          ? t('Risk-held commission released')
+          : t('Risk-held commission voided')
+      )
+      setPendingAction(null)
+      setActionReason('')
+      void queryClient.invalidateQueries({ queryKey: siteOwnerKeys.all })
+      void invalidateSidebarBadges(queryClient)
+    },
+    onError: (err) => handleServerError(err),
+  })
+
+  const openRiskAction = (
+    row: SiteReferralCommissionItem,
+    action: SiteRiskCommissionAction
+  ) => {
+    setPendingAction({ row, action })
+    setActionReason('')
+  }
+
+  const closeRiskAction = () => {
+    if (riskActionMutation.isPending) return
+    setPendingAction(null)
+    setActionReason('')
+  }
 
   return (
     <div className='flex flex-col gap-3 pt-3'>
@@ -951,7 +1043,7 @@ function SiteCommissionsTab(props: {
               },
               {
                 id: 'order_amount',
-                header: t('Order amount'),
+                header: t('Base amount'),
                 className: 'text-right',
                 cellClassName: 'text-right tabular-nums',
                 cell: (row) =>
@@ -1035,6 +1127,34 @@ function SiteCommissionsTab(props: {
                   </div>
                 ),
               },
+              {
+                id: 'actions',
+                header: t('Actions'),
+                className: 'text-right',
+                cellClassName: 'text-right whitespace-nowrap',
+                cell: (row) =>
+                  row.status === 'risk_held' ||
+                  row.coverage_status === 'risk_held' ? (
+                    <div className='flex justify-end gap-1'>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        disabled={closing || riskActionMutation.isPending}
+                        onClick={() => openRiskAction(row, 'release')}
+                      >
+                        {t('Release')}
+                      </Button>
+                      <Button
+                        size='sm'
+                        variant='destructive'
+                        disabled={closing || riskActionMutation.isPending}
+                        onClick={() => openRiskAction(row, 'void')}
+                      >
+                        {t('Void')}
+                      </Button>
+                    </div>
+                  ) : null,
+              },
             ]}
           />
           <PageSwitcher
@@ -1045,6 +1165,60 @@ function SiteCommissionsTab(props: {
           />
         </>
       )}
+
+      <ConfirmDialog
+        open={pendingAction !== null}
+        onOpenChange={(open) => {
+          if (!open) closeRiskAction()
+        }}
+        title={
+          pendingAction?.action === 'release'
+            ? t('Release commission')
+            : t('Void commission')
+        }
+        desc={(() => {
+          if (!pendingAction) return ''
+          const amount = formatUsd(
+            Number(pendingAction.row.amount_usd ?? 0),
+            locale
+          )
+          if (pendingAction.action === 'release') {
+            return t(
+              'Release this risk-held commission ({{amount}}) into withdrawable balance?',
+              { amount }
+            )
+          }
+          return t(
+            'Permanently void this risk-held commission ({{amount}})? This cannot be undone.',
+            { amount }
+          )
+        })()}
+        destructive={pendingAction?.action === 'void'}
+        confirmText={
+          pendingAction?.action === 'release' ? t('Release') : t('Void')
+        }
+        isLoading={riskActionMutation.isPending}
+        handleConfirm={() => {
+          if (!pendingAction) return
+          riskActionMutation.mutate({
+            id: pendingAction.row.id,
+            action: pendingAction.action,
+            reason: actionReason,
+          })
+        }}
+      >
+        <div className='space-y-2 py-2'>
+          <Label htmlFor='site-commission-risk-reason'>
+            {t('Reason (optional)')}
+          </Label>
+          <Input
+            id='site-commission-risk-reason'
+            value={actionReason}
+            disabled={riskActionMutation.isPending}
+            onChange={(event) => setActionReason(event.target.value)}
+          />
+        </div>
+      </ConfirmDialog>
     </div>
   )
 }
@@ -1290,6 +1464,7 @@ export function SiteReferralAdmin(props: { closing?: boolean }) {
         </TabsContent>
         <TabsContent value='commissions'>
           <SiteCommissionsTab
+            closing={closing}
             affiliateFilter={commissionAffiliateFilter}
             onClearAffiliateFilter={() => setCommissionAffiliateFilter(null)}
           />

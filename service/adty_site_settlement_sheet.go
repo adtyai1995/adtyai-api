@@ -633,6 +633,10 @@ func summarizeAdtySiteSettlementTx(tx *gorm.DB, siteID int, day string, start, e
 		// breakdowns reconcile cleanly against EarningsDeltaUSD and MarginDeltaUSD.
 		if row.WalletKind == model.AdtySiteWalletEarnings || row.WalletKind == model.AdtySiteWalletMargin {
 			switch row.Type {
+			case "site_referral_earning":
+				if row.WalletKind == model.AdtySiteWalletEarnings && !row.Delta.IsZero() {
+					sheet.PartnerReferralEarningUSD = sheet.PartnerReferralEarningUSD.Add(row.Delta)
+				}
 			case "voucher_spend":
 				if row.Delta.IsNegative() {
 					sheet.VoucherFundingUSD = sheet.VoucherFundingUSD.Add(row.Delta.Neg())

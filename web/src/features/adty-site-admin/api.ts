@@ -35,6 +35,9 @@ import type {
   AdminSiteBrand,
   AdminSiteTierPrincipalAdjustResult,
   AdminSiteTierPrincipalView,
+  HourlySettlementRunResult,
+  OpenSitePayload,
+  PartnerLeadItem,
   ResellerEdgeDNSSync,
   ResellerEdgeProbe,
   ResellerEdgeStatus,
@@ -617,18 +620,7 @@ export async function getSiteCustomers(
 }
 
 export async function createSite(
-  body: {
-    owner_username: string
-    owner_password: string
-    owner_email?: string
-    owner_display_name?: string
-    subdomain: string
-    root_domain?: string
-    cost_factor?: string
-    tier_code?: string
-    tier_mode?: 'auto' | 'manual'
-    contact_info?: string
-  },
+  body: OpenSitePayload,
   idempotencyKey?: string
 ): Promise<AdminSite> {
   const res = await api.post<ApiResponse<AdminSite>>(`${BASE}/sites`, body, {
@@ -1064,4 +1056,58 @@ export async function resolveCloseMail(
     { recipient_id: row.id, attempt: row.attempt_count, decision, reason }
   )
   requireServerSuccess(res.data)
+}
+
+export async function getPartnerLeads(params: {
+  status?: string
+  page?: number
+  page_size?: number
+}): Promise<SitePage<PartnerLeadItem>> {
+  const res = await api.get<ApiResponse<SitePage<PartnerLeadItem>>>(
+    `${BASE}/partner-leads`,
+    {
+      params: {
+        status:
+          params.status && params.status !== 'all' ? params.status : undefined,
+        p: params.page ?? 1,
+        page_size: params.page_size ?? SITE_ADMIN_PAGE_SIZE,
+      },
+    }
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function rejectPartnerLead(
+  id: number,
+  review_note: string
+): Promise<PartnerLeadItem> {
+  const res = await api.post<ApiResponse<PartnerLeadItem>>(
+    `${BASE}/partner-leads/${id}/reject`,
+    { review_note }
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function updateSitePartnerReferral(
+  siteId: number,
+  payload: {
+    bind_referrer_site_id?: number
+    bind_referrer_code?: string
+    rate_percent?: string
+    stop?: boolean
+    reason?: string
+  }
+): Promise<AdminSite> {
+  const res = await api.put<ApiResponse<AdminSite>>(
+    `${BASE}/sites/${siteId}/partner-referral`,
+    payload
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function runHourlySettlementNow(): Promise<HourlySettlementRunResult> {
+  const res = await api.post<ApiResponse<HourlySettlementRunResult>>(
+    `${BASE}/hourly-settlement/run`
+  )
+  return requireServerSuccess(res.data).data
 }

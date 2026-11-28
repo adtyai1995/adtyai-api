@@ -44,6 +44,7 @@ export const CONFIRMED_SIDEBAR_BADGE_KINDS = [
   'owner_tickets_pending',
   'tickets_waiting_user',
   'payment_orphans_pending_review',
+  'pending_partner_leads',
 ] as const
 
 export const UNCONFIRMED_SIDEBAR_BADGE_KINDS = [
@@ -69,6 +70,7 @@ export const ORDER_MANAGEMENT_BADGE_KINDS = [
 export const RESELLER_SITES_BADGE_KINDS = [
   'site_withdrawals_pending',
   'fund_anomalies_open',
+  'pending_partner_leads',
 ] as const
 
 export const SITE_OWNER_EARNINGS_BADGE_KINDS = [

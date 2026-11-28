@@ -17,12 +17,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Info } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
@@ -66,7 +68,6 @@ import {
 
 type SiteRuleKey =
   | 'cookie_ttl_days'
-  | 'observation_days'
   | 'cancel_window_minutes'
   | 'self_invite_window_days'
   | 'batch_register_threshold'
@@ -74,7 +75,6 @@ type SiteRuleKey =
 
 const SITE_RULE_KEYS: SiteRuleKey[] = [
   'cookie_ttl_days',
-  'observation_days',
   'cancel_window_minutes',
   'self_invite_window_days',
   'batch_register_threshold',
@@ -88,7 +88,6 @@ type SiteSettingsDraft = {
   fee_usd: string
   cny_rate: string
   cookie_ttl_days: string
-  observation_days: string
   cancel_window_minutes: string
   self_invite_window_days: string
   batch_register_threshold: string
@@ -108,10 +107,6 @@ function toDraft(policy: SiteReferralView): SiteSettingsDraft {
       policy.cookie_ttl_days === null || policy.cookie_ttl_days === undefined
         ? ''
         : String(policy.cookie_ttl_days),
-    observation_days:
-      policy.observation_days === null || policy.observation_days === undefined
-        ? ''
-        : String(policy.observation_days),
     cancel_window_minutes:
       policy.cancel_window_minutes === null ||
       policy.cancel_window_minutes === undefined
@@ -149,6 +144,9 @@ function buildSiteReferralUpdate(
 
   if (enabled !== Boolean(saved.enabled)) {
     payload.enabled = enabled
+    if (enabled && saved.observation_days !== 0) {
+      payload.observation_days = '0'
+    }
   }
   if (draft.rate_percent.trim() !== baseline.rate_percent.trim()) {
     if (draft.rate_percent.trim() !== '') {
@@ -268,8 +266,7 @@ export function SiteReferralPanel(props: { closing?: boolean }) {
   const rateCleared = Boolean(saved.rate_configured) && rateMissing
   const rateInvalid = !rateMissing && !validSiteReferralRatePercent(rateTrimmed)
   const capMissing = draft.pending_coverage_cap.trim() === ''
-  const obsMissing = draft.observation_days.trim() === ''
-  const missingEnablePrerequisites = rateMissing || capMissing || obsMissing
+  const missingEnablePrerequisites = rateMissing || capMissing
 
   const usdtEnabled = methods.includes('usdt')
   const alipayEnabled = methods.includes('alipay')
@@ -345,7 +342,6 @@ export function SiteReferralPanel(props: { closing?: boolean }) {
 
   const ruleLabels: Record<SiteRuleKey, string> = {
     cookie_ttl_days: t('Referral cookie (days)'),
-    observation_days: t('Freeze period (days)'),
     cancel_window_minutes: t('Cancel window (minutes)'),
     self_invite_window_days: t('Self-invite check window (days)'),
     batch_register_threshold: t(
@@ -356,7 +352,6 @@ export function SiteReferralPanel(props: { closing?: boolean }) {
 
   const ruleMin: Record<SiteRuleKey, number> = {
     cookie_ttl_days: 1,
-    observation_days: 0,
     cancel_window_minutes: 0,
     self_invite_window_days: 1,
     batch_register_threshold: 0,
@@ -381,27 +376,39 @@ export function SiteReferralPanel(props: { closing?: boolean }) {
           save.mutate(payload)
         }}
       >
-        <div className='border-border flex items-center justify-between gap-4 border-b pb-4'>
-          <div className='flex flex-col gap-0.5'>
-            <Label htmlFor='site-referral-enabled'>
-              {t('Referral program')}
-            </Label>
-            <span className='text-muted-foreground text-xs'>
-              {missingEnablePrerequisites
-                ? t(
-                    'Set the default commission rate, pending coverage cap, and freeze period before enabling.'
-                  )
-                : t(
-                    'New orders use these terms. Zero freeze period makes fully covered commission available immediately.'
-                  )}
-            </span>
+        <div className='border-border flex flex-col gap-3 border-b pb-4'>
+          <div className='flex items-center justify-between gap-4'>
+            <div className='flex flex-col gap-0.5'>
+              <Label htmlFor='site-referral-enabled'>
+                {t('Referral program')}
+              </Label>
+              <span className='text-muted-foreground text-xs'>
+                {missingEnablePrerequisites
+                  ? t(
+                      'Set the default commission rate and pending coverage cap before enabling.'
+                    )
+                  : t(
+                      'Settled hourly on actual paid consumption with no observation freeze.'
+                    )}
+              </span>
+            </div>
+            <Switch
+              id='site-referral-enabled'
+              checked={enabled}
+              disabled={disabled || (missingEnablePrerequisites && !enabled)}
+              onCheckedChange={setEnabled}
+            />
           </div>
-          <Switch
-            id='site-referral-enabled'
-            checked={enabled}
-            disabled={disabled || (missingEnablePrerequisites && !enabled)}
-            onCheckedChange={setEnabled}
-          />
+          {enabled && (
+            <Alert>
+              <Info aria-hidden='true' />
+              <AlertDescription>
+                {t(
+                  'If your site multiplier is 1.0x (no spread), invite commissions will draw from your available earnings or Root-authorized margin cycle.'
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
         </div>
 
         <fieldset className='space-y-3'>
@@ -601,9 +608,14 @@ export function SiteReferralPanel(props: { closing?: boolean }) {
 
         <div className='border-border border-t pt-5'>
           <fieldset className='grid gap-4 sm:grid-cols-3'>
-            <legend className='mb-3 text-[15px] leading-snug font-semibold tracking-tight'>
+            <legend className='mb-1 text-[15px] leading-snug font-semibold tracking-tight'>
               {t('Rules')}
             </legend>
+            <p className='text-muted-foreground col-span-full text-xs'>
+              {t(
+                'Settled hourly on actual paid consumption with no observation freeze.'
+              )}
+            </p>
             {SITE_RULE_KEYS.map((key) => (
               <div key={key} className='space-y-2'>
                 <Label htmlFor={`site-policy-${key}`}>{ruleLabels[key]}</Label>

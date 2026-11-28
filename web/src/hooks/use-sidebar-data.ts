@@ -38,6 +38,7 @@ import {
   ReceiptText,
   ServerCog,
   Settings,
+  Share2,
   ShieldCheck,
   Store,
   Tags,
@@ -229,6 +230,11 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
         url: '/site-owner/commissions',
         icon: Megaphone,
         badge: siteOwnerCommissionsBadge,
+      },
+      {
+        title: t('Partner Referral'),
+        url: '/site-owner/partner',
+        icon: Share2,
       },
       {
         title: t('Earnings Details'),

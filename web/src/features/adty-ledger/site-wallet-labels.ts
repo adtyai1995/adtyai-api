@@ -103,6 +103,8 @@ export function siteWalletLedgerTypeLabel(t: TFunction, type: string): string {
       return t('Site-close principal migration')
     case 'site_earning_settlement':
       return t('Earnings settlement')
+    case 'site_referral_earning':
+      return t('Partner referral commission')
     case 'earning_withdraw_freeze':
       return t('Earnings withdrawal')
     case 'earning_withdraw_release':

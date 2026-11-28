@@ -35,7 +35,8 @@ type AdtySiteSettlementSheet struct {
 	OwnerSelfUseCostUSD       decimal.Decimal                    `json:"owner_self_use_cost_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	SupplyCostUSD             decimal.Decimal                    `json:"supply_cost_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	SpreadUSD                 decimal.Decimal                    `json:"spread_usd" gorm:"type:decimal(20,8);not null;default:0"`
-	GiftReserveUSD              decimal.Decimal                    `json:"gift_reserve_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	PartnerReferralEarningUSD decimal.Decimal                    `json:"partner_referral_earning_usd" gorm:"type:decimal(20,8);not null;default:0"`
+	GiftReserveUSD            decimal.Decimal                    `json:"gift_reserve_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	GiftFundingUSD              decimal.Decimal                    `json:"gift_funding_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	GiftReleaseUSD              decimal.Decimal                    `json:"gift_release_usd" gorm:"type:decimal(20,8);not null;default:0"`
 	VoucherFundingUSD           decimal.Decimal                    `json:"voucher_funding_usd" gorm:"type:decimal(20,8);not null;default:0"`

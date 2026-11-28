@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"strconv"
@@ -124,6 +125,7 @@ func GetReferralSettings(c *gin.Context) {
 	} else {
 		cfg.WithdrawCNYRate, cfg.WithdrawCNYRateUpdatedAt = "", 0
 	}
+	cfg.FreezeDays = max(cfg.FreezeDays, 0)
 	cfg.WithdrawMethods, cfg.WithdrawUSDTNetworks = cfg.EffectiveWithdrawConfig(hasRate)
 	common.ApiSuccess(c, cfg)
 }
@@ -179,6 +181,10 @@ func UpdateReferralSettings(c *gin.Context) {
 		return
 	}
 	if body.MinWithdrawUSD != nil && *body.MinWithdrawUSD <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if body.FreezeDays != nil && *body.FreezeDays < 0 {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
@@ -591,18 +597,96 @@ func RetryReferralCommissionJob(c *gin.Context) {
 	common.ApiSuccess(c, nil)
 }
 
-// RunReferralSettlement 手动跑一轮结算。
+// PostAdminReferralCommissionRelease 放行风控暂扣的推广佣金（转入可提现）。
+func PostAdminReferralCommissionRelease(c *gin.Context) {
+	siteID, ok := referralAdminScopeOrError(c)
+	if !ok {
+		return
+	}
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := service.EnsureAdtyReferralCommissionScope(siteID, id); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if c.Request.Body != nil {
+		if err := common.DecodeJson(c.Request.Body, &body); err != nil && !errors.Is(err, io.EOF) {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+	}
+	if err := service.ReleaseMainReferralRiskHeldCommission(id, c.GetInt("id"), body.Reason, c.ClientIP(), c.Request.UserAgent()); err != nil {
+		writeReferralError(c, err)
+		return
+	}
+	recordManageAudit(c, "adty.referral.commission_release", map[string]any{"id": id})
+	common.ApiSuccess(c, gin.H{"released": true})
+}
+
+// PostAdminReferralCommissionVoid 作废风控暂扣的推广佣金（扣减待结算）。
+func PostAdminReferralCommissionVoid(c *gin.Context) {
+	siteID, ok := referralAdminScopeOrError(c)
+	if !ok {
+		return
+	}
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := service.EnsureAdtyReferralCommissionScope(siteID, id); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if c.Request.Body != nil {
+		if err := common.DecodeJson(c.Request.Body, &body); err != nil && !errors.Is(err, io.EOF) {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+	}
+	if err := service.VoidMainReferralRiskHeldCommission(id, c.GetInt("id"), body.Reason, c.ClientIP(), c.Request.UserAgent()); err != nil {
+		writeReferralError(c, err)
+		return
+	}
+	recordManageAudit(c, "adty.referral.commission_void", map[string]any{"id": id})
+	common.ApiSuccess(c, gin.H{"voided": true})
+}
+
+func extractHourlySettledCount(summary *service.AdtyHourlySettlementSummary) int {
+	if summary == nil {
+		return 0
+	}
+	return summary.SitesSettled + summary.PartnerSettled + summary.MainRefSettled + summary.SiteRefSettled
+}
+
+// RunReferralSettlement 手动跑一轮结算（含小时级消费结算与存量待结释放）。
 func RunReferralSettlement(c *gin.Context) {
 	siteID, ok := referralAdminScopeOrError(c)
 	if !ok {
 		return
 	}
-	settled, err := service.RunReferralSettlementOnceForSite(time.Now().Unix(), 500, siteID)
+	now := time.Now()
+	hourly, err := service.RunAdtyHourlySettlement(now)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"settled": settled})
+	settled, err := service.RunReferralSettlementOnceForSite(now.Unix(), 500, siteID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	totalSettled := settled + extractHourlySettledCount(hourly)
+	common.ApiSuccess(c, gin.H{"settled": totalSettled, "hourly": hourly})
 }
 
 // GetReferralLedgers 列出返佣流水。

@@ -74,6 +74,10 @@ export function OverviewPanel() {
   ]
   const balances = earnings.data?.balances
   const total = stats.data?.total
+  const pendingHourEarning =
+    stats.data?.pending_hour?.earning_usd ?? balances?.pending_hour_usd
+  const pendingHourPartner = stats.data?.pending_hour_partner_usd
+  const hasPartnerPending = Number(pendingHourPartner ?? 0) !== 0
   const money = (value: string | undefined) =>
     value == null || value === '' ? '—' : formatUsd(Number(value), locale)
   const chartConfig = {
@@ -197,6 +201,39 @@ export function OverviewPanel() {
               },
             ]}
           />
+          {(pendingHourEarning !== undefined || hasPartnerPending) && (
+            <div className='bg-card border-border flex flex-wrap items-center justify-between gap-3 rounded-[14px] border px-5 py-3.5'>
+              <div className='flex flex-col gap-0.5'>
+                <span className='text-sm font-medium'>
+                  {t('Current hour estimate')}
+                </span>
+                <span className='text-muted-foreground text-xs'>
+                  {t('Settled hourly on the hour with no freeze')}
+                </span>
+              </div>
+              <div className='flex flex-wrap items-baseline gap-4 tabular-nums'>
+                <span
+                  data-negative={
+                    isNegativeAmount(pendingHourEarning) ? 'true' : undefined
+                  }
+                  className={cn(
+                    'font-display text-lg font-bold tracking-tight',
+                    isNegativeAmount(pendingHourEarning) && 'text-destructive'
+                  )}
+                >
+                  {money(pendingHourEarning)}
+                </span>
+                {hasPartnerPending && (
+                  <span className='text-muted-foreground text-xs'>
+                    {t('Partner referral commission')}:{' '}
+                    <span className='text-foreground font-semibold'>
+                      {money(pendingHourPartner)}
+                    </span>
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
           {Number(balances?.skipped_usd ?? 0) !== 0 && (
             <Alert>
               <AlertDescription>

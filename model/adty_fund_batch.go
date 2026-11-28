@@ -979,6 +979,7 @@ func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int
 	}
 	sortAdtyFundBatches(rows)
 	principalTaken := int64(0)
+	var principalDeltas []AdtyPrincipalBatchDelta
 	taken := int64(0)
 	backed := int64(0)
 	bonusBySource := map[string]int64{}
@@ -1016,6 +1017,13 @@ func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int
 		}
 		if rows[i].Kind == AdtyFundBatchKindPrincipal && rows[i].Source != adtyLegacyBatchSource {
 			principalTaken += take
+			siteID, err := adtyResolveFundBatchSiteIDTx(tx, &rows[i])
+			if err != nil {
+				return backed, err
+			}
+			principalDeltas = append(principalDeltas, AdtyPrincipalBatchDelta{
+				BatchId: rows[i].Id, SiteId: siteID, Source: rows[i].Source, Quota: take,
+			})
 		}
 		if !rows[i].IsExpiringGift() && rows[i].Kind == AdtyFundBatchKindBonus && rows[i].Source != "" && take > 0 {
 			bonusBySource[rows[i].Source] += take
@@ -1041,6 +1049,9 @@ func consumeAdtyFundBatchesTx(tx *gorm.DB, userID int, amount, balanceBefore int
 	}
 	if notifyPrincipalSpent && principalTaken > 0 {
 		if err := adtyNotifyPrincipalSpentTx(tx, userID, operationKey, principalTaken); err != nil {
+			return backed, err
+		}
+		if err := adtyNotifyPrincipalDeltaTx(tx, userID, operationKey, principalDeltas); err != nil {
 			return backed, err
 		}
 	}

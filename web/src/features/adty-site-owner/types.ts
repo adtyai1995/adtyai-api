@@ -206,12 +206,22 @@ export type SiteDayStats = {
   skipped_usd: string
 }
 
+export type SiteHourEstimate = {
+  revenue_usd: string
+  platform_usd: string
+  earning_usd: string
+}
+
 export type SiteStats = {
   from: string
   to: string
   total: SiteDayStats
   series: SiteDayStats[] | null
+  pending_hour?: SiteHourEstimate
+  pending_hour_partner_usd?: string
 }
+
+export type OwnerStats = SiteStats
 
 export type EarningKind =
   | 'usage'
@@ -236,11 +246,14 @@ export type EarningRow = {
 export type SiteBalances = {
   requires_review?: boolean
   pending_usd: string
+  pending_hour_usd?: string
   skipped_usd: string
   available_usd: string
   frozen_usd: string
   withdrawn_usd: string
 }
+
+export type OwnerBalances = SiteBalances
 
 export type OwnerEarnings = {
   balances: SiteBalances
@@ -319,4 +332,40 @@ export type PricingResult = {
   immediate: string[] | null
   /** Group ('' is the default) → time the increase takes effect. */
   pending: Record<string, number> | null
+}
+
+export type OwnerPartnerOverview = {
+  partner_code: string
+  share_url: string
+  site_status: string
+  link_active: boolean
+  default_rate_percent: number
+  referred_count: number
+  total_earned_usd: string
+  pending_hour_usd: string
+}
+
+export type OwnerPartnerSiteItem = {
+  id: number
+  masked_name: string
+  status: string
+  rate_percent: string
+  opened_at: number
+  stopped_at: number
+  pending_hour_usd: string
+  total_earned_usd: string
+}
+
+export type OwnerPartnerEarningItem = {
+  id: number
+  hour_slot: string
+  referrer_site_id: number
+  referred_site_id: number
+  masked_name: string
+  supply_net_usd: string
+  rate_percent: string
+  gross_commission_usd: string
+  offset_applied_usd: string
+  credited_usd: string
+  settled_at: number
 }

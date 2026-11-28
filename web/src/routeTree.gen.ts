@@ -14,6 +14,7 @@ import { Route as LangRouteImport } from './routes/$lang'
 import { Route as authRouteRouteImport } from './routes/(auth)/route'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as AffiliateRouteImport } from './routes/affiliate'
+import { Route as PartnerRouteImport } from './routes/partner'
 import { Route as PrivacyPolicyRouteImport } from './routes/privacy-policy'
 import { Route as RefundPolicyRouteImport } from './routes/refund-policy'
 import { Route as UserAgreementRouteImport } from './routes/user-agreement'
@@ -111,6 +112,11 @@ const AuthenticatedRouteRoute = AuthenticatedRouteRouteImport.update({
 const AffiliateRoute = AffiliateRouteImport.update({
   id: '/affiliate',
   path: '/affiliate',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PartnerRoute = PartnerRouteImport.update({
+  id: '/partner',
+  path: '/partner',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PrivacyPolicyRoute = PrivacyPolicyRouteImport.update({
@@ -540,6 +546,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/$lang': typeof LangRoute
   '/affiliate': typeof AffiliateRoute
+  '/partner': typeof PartnerRoute
   '/privacy-policy': typeof PrivacyPolicyRoute
   '/refund-policy': typeof RefundPolicyRoute
   '/user-agreement': typeof UserAgreementRoute
@@ -620,6 +627,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/$lang': typeof LangRoute
   '/affiliate': typeof AffiliateRoute
+  '/partner': typeof PartnerRoute
   '/privacy-policy': typeof PrivacyPolicyRoute
   '/refund-policy': typeof RefundPolicyRoute
   '/user-agreement': typeof UserAgreementRoute
@@ -702,6 +710,7 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/$lang': typeof LangRoute
   '/affiliate': typeof AffiliateRoute
+  '/partner': typeof PartnerRoute
   '/privacy-policy': typeof PrivacyPolicyRoute
   '/refund-policy': typeof RefundPolicyRoute
   '/user-agreement': typeof UserAgreementRoute
@@ -784,6 +793,7 @@ export interface FileRouteTypes {
     | '/'
     | '/$lang'
     | '/affiliate'
+    | '/partner'
     | '/privacy-policy'
     | '/refund-policy'
     | '/user-agreement'
@@ -864,6 +874,7 @@ export interface FileRouteTypes {
     | '/'
     | '/$lang'
     | '/affiliate'
+    | '/partner'
     | '/privacy-policy'
     | '/refund-policy'
     | '/user-agreement'
@@ -945,6 +956,7 @@ export interface FileRouteTypes {
     | '/_authenticated'
     | '/$lang'
     | '/affiliate'
+    | '/partner'
     | '/privacy-policy'
     | '/refund-policy'
     | '/user-agreement'
@@ -1028,6 +1040,7 @@ export interface RootRouteChildren {
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   LangRoute: typeof LangRoute
   AffiliateRoute: typeof AffiliateRoute
+  PartnerRoute: typeof PartnerRoute
   PrivacyPolicyRoute: typeof PrivacyPolicyRoute
   RefundPolicyRoute: typeof RefundPolicyRoute
   UserAgreementRoute: typeof UserAgreementRoute
@@ -1082,6 +1095,13 @@ declare module '@tanstack/react-router' {
       path: '/affiliate'
       fullPath: '/affiliate'
       preLoaderRoute: typeof AffiliateRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/partner': {
+      id: '/partner'
+      path: '/partner'
+      fullPath: '/partner'
+      preLoaderRoute: typeof PartnerRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/privacy-policy': {
@@ -1785,6 +1805,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   LangRoute: LangRoute,
   AffiliateRoute: AffiliateRoute,
+  PartnerRoute: PartnerRoute,
   PrivacyPolicyRoute: PrivacyPolicyRoute,
   RefundPolicyRoute: RefundPolicyRoute,
   UserAgreementRoute: UserAgreementRoute,

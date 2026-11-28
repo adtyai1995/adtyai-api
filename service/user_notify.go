@@ -370,6 +370,10 @@ func deliverWatcherOutboxEntry(outbox *AdtyChannelWatcherOutbox, receives func(u
 			receives = func(_ int, role int, _ dto.UserSetting) bool {
 				return role == common.RoleRootUser
 			}
+		case adtyNotifyTypePartnerLead:
+			receives = func(_ int, role int, _ dto.UserSetting) bool {
+				return role == common.RoleRootUser
+			}
 		default:
 			receives = receivesChannelWatcherNotice
 		}
@@ -666,8 +670,14 @@ func adtyWatcherNoticeAccessTx(db *gorm.DB, userID int, site *model.AdtySite, to
 	return canChannel, canEpay
 }
 
+var adtyRootOnlyWatcherNotifyTypes = []string{adtyNotifyTypeEpayMaintenance, adtyNotifyTypePartnerLead}
+
+func adtyIsRootOnlyWatcherNotifyType(notifyType string) bool {
+	return notifyType == adtyNotifyTypeEpayMaintenance || notifyType == adtyNotifyTypePartnerLead
+}
+
 func adtyWatcherNoticePermitted(notifyType string, canChannel, canEpay bool) bool {
-	if notifyType == adtyNotifyTypeEpayMaintenance {
+	if adtyIsRootOnlyWatcherNotifyType(notifyType) {
 		return canEpay
 	}
 	return canChannel
@@ -699,9 +709,9 @@ func adtyWatcherNoticeInboxItems(userID int, site *model.AdtySite, tokenScopes .
 	}
 	q := model.DB.Where("user_id = ?", userID)
 	if !canEpay {
-		q = q.Where("notify_type <> ?", adtyNotifyTypeEpayMaintenance)
+		q = q.Where("notify_type NOT IN ?", adtyRootOnlyWatcherNotifyTypes)
 	} else if !canChannel {
-		q = q.Where("notify_type = ?", adtyNotifyTypeEpayMaintenance)
+		q = q.Where("notify_type IN ?", adtyRootOnlyWatcherNotifyTypes)
 	}
 	hasHideTable, err := model.AdtyTableExists(model.DB, &model.AdtyNotificationHide{})
 	if err != nil {
@@ -770,9 +780,9 @@ func adtyUnreadWatcherNoticeCount(userID int, site *model.AdtySite, tokenScopes 
 	}
 	q := model.DB.Model(&AdtyChannelWatcherNotice{}).Where("user_id = ? AND read_key <> ''", userID)
 	if !canEpay {
-		q = q.Where("notify_type <> ?", adtyNotifyTypeEpayMaintenance)
+		q = q.Where("notify_type NOT IN ?", adtyRootOnlyWatcherNotifyTypes)
 	} else if !canChannel {
-		q = q.Where("notify_type = ?", adtyNotifyTypeEpayMaintenance)
+		q = q.Where("notify_type IN ?", adtyRootOnlyWatcherNotifyTypes)
 	}
 	hasReadTable, err := model.AdtyTableExists(model.DB, &model.AdtyNotificationRead{})
 	if err != nil {
@@ -816,9 +826,9 @@ func adtyOwnedWatcherReadKeys(userID int, site *model.AdtySite, keys []string, t
 	}
 	q := model.DB.Model(&AdtyChannelWatcherNotice{}).Where("user_id = ? AND read_key IN ?", userID, keys)
 	if !canEpay {
-		q = q.Where("notify_type <> ?", adtyNotifyTypeEpayMaintenance)
+		q = q.Where("notify_type NOT IN ?", adtyRootOnlyWatcherNotifyTypes)
 	} else if !canChannel {
-		q = q.Where("notify_type = ?", adtyNotifyTypeEpayMaintenance)
+		q = q.Where("notify_type IN ?", adtyRootOnlyWatcherNotifyTypes)
 	}
 	var found []string
 	if err := q.Pluck("read_key", &found).Error; err != nil {
@@ -897,9 +907,9 @@ func ListAdtyChannelWatcherNoticesForUser(userID int) ([]AdtyChannelWatcherNotic
 	}
 	q := model.DB.Where("user_id = ?", userID)
 	if !canEpay {
-		q = q.Where("notify_type <> ?", adtyNotifyTypeEpayMaintenance)
+		q = q.Where("notify_type NOT IN ?", adtyRootOnlyWatcherNotifyTypes)
 	} else if !canChannel {
-		q = q.Where("notify_type = ?", adtyNotifyTypeEpayMaintenance)
+		q = q.Where("notify_type IN ?", adtyRootOnlyWatcherNotifyTypes)
 	}
 	var rows []AdtyChannelWatcherNotice
 	err := q.Order("id DESC").Limit(adtyWatcherNoticeListLimit).Find(&rows).Error

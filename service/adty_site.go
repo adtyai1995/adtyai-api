@@ -74,6 +74,10 @@ type AdtySitePreset struct {
 	InitialStatus  string // 空则按开站方式决定
 	IdempotencyKey string
 	NewOwner       *AdtyNewOwnerInput
+	PartnerLeadID  int64
+	ReferrerSiteId int
+	ReferrerCode   string
+	ReferrerRate   *decimal.Decimal
 }
 
 func resellerSetting() *adty_setting.ResellerSetting { return adty_setting.GetResellerSetting() }
@@ -239,6 +243,11 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 	if err := validateSitePreset(preset.CostFactor); err != nil {
 		return nil, "", false, err
 	}
+	if preset.ReferrerRate != nil {
+		if err := validateAdtyPartnerRate(*preset.ReferrerRate); err != nil {
+			return nil, "", false, err
+		}
+	}
 	root := strings.ToLower(strings.TrimSpace(preset.ExplicitRoot))
 	if root == "" {
 		root = cfg.RootDomains[0]
@@ -255,6 +264,11 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 	if preset.CostFactor != nil {
 		costStr = preset.CostFactor.String()
 	}
+	refRateStr := ""
+	if preset.ReferrerRate != nil {
+		refRateStr = preset.ReferrerRate.String()
+	}
+	refCodeNorm := strings.ToUpper(strings.TrimSpace(preset.ReferrerCode))
 	contact := truncateText(strings.TrimSpace(preset.ContactInfo), 500)
 	var newOwnerUsername, newOwnerPassHash, newOwnerEmail, newOwnerDisplayName string
 	if preset.NewOwner != nil {
@@ -289,7 +303,9 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 	if idemKey != "" {
 		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d/%s", preset.OperatorId, idemKey))))
 		openKeyDigest = &digest
-		openFingerprint = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s|%s|%s|%s", userId, newOwnerUsername, newOwnerEmail, newOwnerDisplayName, rawSubdomain, root, costStr, tierCode, tierMode, contact))))
+		openFingerprint = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%d|%d|%s|%s",
+			userId, newOwnerUsername, newOwnerEmail, newOwnerDisplayName, rawSubdomain, root, costStr, tierCode, tierMode, contact,
+			preset.PartnerLeadID, preset.ReferrerSiteId, refCodeNorm, refRateStr))))
 	}
 	label := rawSubdomain
 	if label == "" {
@@ -521,8 +537,74 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 				return ErrAdtySiteInviteInvalid
 			}
 		}
+		partnerCode, err := model.AllocateAdtySitePartnerCodeTx(tx)
+		if err != nil {
+			return err
+		}
+		site.PartnerCode = &partnerCode
+
+		var partnerLead *model.AdtyPartnerLead
+		if preset.PartnerLeadID > 0 {
+			var lead model.AdtyPartnerLead
+			if err := model.AdtyLockForUpdate(tx).Where("id = ?", preset.PartnerLeadID).First(&lead).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAdtyPartnerLeadNotFound
+				}
+				return err
+			}
+			if lead.Status != model.AdtyPartnerLeadStatusPending {
+				return common.NewMessage("Partner lead has already been processed")
+			}
+			partnerLead = &lead
+		}
+		resolvedReferrerID := preset.ReferrerSiteId
+		if refCodeNorm != "" {
+			refSite, refErr := validateActivePartnerCodeTx(tx, refCodeNorm)
+			if refErr != nil {
+				return refErr
+			}
+			if resolvedReferrerID > 0 && resolvedReferrerID != refSite.Id {
+				return common.NewMessage("Referrer site ID and partner code do not match")
+			}
+			resolvedReferrerID = refSite.Id
+		} else if resolvedReferrerID == 0 && partnerLead != nil && partnerLead.ReferrerSiteId > 0 {
+			resolvedReferrerID = partnerLead.ReferrerSiteId
+		}
+		if resolvedReferrerID > 0 && refCodeNorm == "" {
+			var refSite model.AdtySite
+			if err := tx.Select("id", "status").Where("id = ?", resolvedReferrerID).First(&refSite).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return common.NewMessage("Referrer site not found")
+				}
+				return err
+			}
+			if refSite.Status != model.AdtySiteStatusActive {
+				return common.NewMessage("Referrer site must be active")
+			}
+		}
+		if resolvedReferrerID > 0 {
+			rate := adtyPartnerDefaultRatePercent()
+			if preset.ReferrerRate != nil {
+				rate = *preset.ReferrerRate
+			}
+			site.ReferrerSiteId = resolvedReferrerID
+			site.ReferrerRate = &rate
+			site.ReferrerBoundAt = now
+		}
 		if err := tx.Create(site).Error; err != nil {
 			return err
+		}
+		if partnerLead != nil {
+			if err := tx.Model(&model.AdtyPartnerLead{}).
+				Where("id = ? AND status = ?", partnerLead.Id, model.AdtyPartnerLeadStatusPending).
+				Updates(map[string]any{
+					"status":         model.AdtyPartnerLeadStatusApproved,
+					"opened_site_id": site.Id,
+					"reviewed_by":    preset.OperatorId,
+					"reviewed_at":    now,
+				}).Error; err != nil {
+				return err
+			}
 		}
 		if err := adtyAllocatePlatformDomainsTx(tx, site); err != nil {
 			return err
@@ -540,7 +622,8 @@ func OpenAdtySiteWithAudit(userId int, subdomain, openedBy string, preset AdtySi
 		auditEvent, auditErr = recordSiteAuditWithIntentTx(tx, site.Id, "open", preset.OperatorId, nil, map[string]any{
 			"opened_by": openedBy, "status": status, "subdomain": label, "root_domain": root,
 			"cost_factor": site.CostFactor, "tier_code": site.TierCode, "tier_mode": site.TierMode,
-			"invite_code_id": preset.InviteCodeId,
+			"invite_code_id": preset.InviteCodeId, "partner_lead_id": preset.PartnerLeadID,
+			"referrer_site_id": site.ReferrerSiteId, "referrer_rate": site.ReferrerRate,
 		}, "")
 		return auditErr
 	}, txOptions...)
@@ -1321,6 +1404,16 @@ var AdtySiteClawBackTx func(tx *gorm.DB, site *model.AdtySite, operatorId int) e
 // 迁入账号保留独立 user_id、inherited_from_site_id、迁移身份映射，并把原站 AdtySiteCustomer 归档而不是删除。
 // 关站不会作废未结收益，也不会扣回已结算佣金；这些金额继续按原来源持有，后续结算、转余额、提现或退款走原规则。
 func ExecuteAdtySiteClose(siteId int, now int64) error {
+	var preCheck model.AdtySite
+	if err := model.DB.Select("id", "status", "close_execute_at").Where("id = ?", siteId).First(&preCheck).Error; err != nil {
+		return err
+	}
+	if preCheck.Status != model.AdtySiteStatusClosing || preCheck.CloseExecuteAt > now {
+		return nil
+	}
+	if err := FlushAdtySiteBeforeClose(siteId, now); err != nil {
+		return err
+	}
 	var moved []int
 	var disabledStaff []int
 	var closed model.AdtySite
@@ -1453,6 +1546,9 @@ func ExecuteAdtySiteClose(siteId int, now int64) error {
 			"pending_tier_cost_factor":    gorm.Expr("NULL"),
 			"pending_tier_cost_factor_at": 0,
 		}).Error; err != nil {
+			return err
+		}
+		if err := StopAdtySitePartnerReferralsOnCloseTx(tx, site.Id, now); err != nil {
 			return err
 		}
 		hasSitePriceTable, err := model.AdtyTableExists(tx, &model.AdtySitePrice{})

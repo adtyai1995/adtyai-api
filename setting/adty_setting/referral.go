@@ -174,7 +174,7 @@ func (s *ReferralSetting) UsableWithdrawConfig(hasPositiveCNYRate bool) (methods
 
 var referralSetting = ReferralSetting{
 	CookieTTLDays:            30,
-	FreezeDays:               7,
+	FreezeDays:               0,
 	CancelWindowMinutes:      30,
 	SelfInviteWindowDays:     30,
 	BatchRegisterThreshold:   3,

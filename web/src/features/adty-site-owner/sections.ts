@@ -25,6 +25,7 @@ export const SITE_OWNER_SECTIONS = [
   'pricing',
   'bonus',
   'commissions',
+  'partner',
   'earnings',
   'withdrawals',
   'settlements',

@@ -78,11 +78,11 @@ export function ReferralLinkCard(props: { profile: ReferralProfile }) {
               </dd>
             </div>
             <div>
-              <dt className='text-background/70 text-xs'>
-                {t('Settles after')}
-              </dt>
+              <dt className='text-background/70 text-xs'>{t('Settlement')}</dt>
               <dd className='text-xl font-semibold'>
-                {t('{{days}} days', { days: profile.freeze_days })}
+                {profile.freeze_days > 0
+                  ? t('{{days}} days', { days: profile.freeze_days })
+                  : t('Hourly (no freeze)')}
               </dd>
             </div>
             <div>

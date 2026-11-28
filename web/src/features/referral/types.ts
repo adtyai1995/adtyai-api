@@ -46,6 +46,8 @@ export type ReferralProfile = {
   /** Percent, "10" means 10%. Empty when no rate is set. */
   rate: string
   freeze_days: number
+  /** Current hour estimated commission from unsettled paid-principal consumption (USD decimal string). */
+  pending_hour_usd?: string
   min_withdraw_usd: number | null
   usdt_withdraw_fee: number | null
   withdraw_methods?: string[]
@@ -59,8 +61,38 @@ export type ReferralProfile = {
   funnel: { clicks: number; signups: number; paying: number; earned: string }
 }
 
+export type SiteCustomerReferralInvitee = {
+  invitee_id: number
+  invitee_username: string
+  rate: string
+  rate_percent?: string
+  created_at: number
+}
+
+export type SiteCustomerReferralProfile = {
+  site_id: number
+  site_name: string
+  site_status: string
+  enabled: boolean
+  affiliate_disabled?: boolean
+  affiliate_status?: string
+  rate_configured: boolean
+  rate?: string
+  rate_percent?: string
+  observation_days?: number
+  pending_hour_usd?: string
+  invite_code: string
+  invite_url: string
+  invited_count: number
+  invites: SiteCustomerReferralInvitee[]
+  has_inviter: boolean
+  inviter_username?: string
+  can_bind: boolean
+}
+
 export type ReferralCommissionStatus =
   | 'pending'
+  | 'risk_held'
   | 'available'
   | 'frozen'
   | 'paid'
@@ -71,6 +103,7 @@ export type ReferralCommission = {
   id: number
   affiliate_id: number
   invitee_user_id: number
+  source_type?: string
   source_trade_no: string
   base_amount: number
   rate: number

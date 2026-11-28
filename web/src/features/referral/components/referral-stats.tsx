@@ -26,14 +26,22 @@ import { cn } from '@/lib/utils'
 
 import type { ReferralProfile } from '../types'
 
-type StatItem = { label: string; value: string; negative?: boolean }
+type StatItem = {
+  label: string
+  value: string
+  hint?: string
+  negative?: boolean
+}
 
 function StatGrid(props: { items: StatItem[]; testId: string }) {
-  // Connected cells share hairlines instead of floating as four cards
-  // (design system §4: 统计卡四格等分，1px 分界线相连).
+  // Connected cells share hairlines instead of floating as cards
+  // (design system §4: 统计卡等分，1px 分界线相连).
   return (
     <div
-      className='border-border bg-border grid grid-cols-2 gap-px overflow-hidden rounded-[14px] border lg:grid-cols-4'
+      className={cn(
+        'border-border bg-border grid grid-cols-2 gap-px overflow-hidden rounded-[14px] border',
+        props.items.length === 5 ? 'lg:grid-cols-5' : 'lg:grid-cols-4'
+      )}
       data-testid={props.testId}
     >
       {props.items.map((item) => (
@@ -49,21 +57,28 @@ function StatGrid(props: { items: StatItem[]; testId: string }) {
           >
             {item.value}
           </span>
+          {item.hint && (
+            <span className='text-muted-foreground text-[11px] leading-snug'>
+              {item.hint}
+            </span>
+          )}
         </div>
       ))}
     </div>
   )
 }
 
-/** Funnel (clicks, sign-ups, paying, earned) and the four account balances. */
+/** Funnel (clicks, sign-ups, paying, earned) and the commission account balances. */
 export function ReferralStats(props: {
   profile: ReferralProfile
   onWithdraw: () => void
 }) {
   const { t, i18n } = useTranslation()
-  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const locale = toIntlLocale(i18n?.resolvedLanguage || i18n?.language)
   const funnel = props.profile.funnel
   const account = props.profile.account
+  const pendingHourRaw = Number(props.profile.pending_hour_usd ?? 0)
+  const pendingHourUsd = Number.isFinite(pendingHourRaw) ? pendingHourRaw : 0
   const canWithdraw =
     props.profile.enabled &&
     props.profile.affiliate.status !== 'disabled' &&
@@ -104,7 +119,12 @@ export function ReferralStats(props: {
         testId='referral-account'
         items={[
           {
-            label: t('Settling'),
+            label: t('Current hour estimate'),
+            value: formatUsd(pendingHourUsd, locale),
+            hint: t('Settled hourly on the hour'),
+          },
+          {
+            label: t('Pending / Held'),
             value: formatUsd(account.pending_amount, locale),
           },
           {

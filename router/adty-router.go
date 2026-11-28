@@ -464,6 +464,8 @@ func registerAdtyReferralRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodPost, "/withdrawals/:id/pay", authz.AdtyReferralPayout, []gin.HandlerFunc{controller.PayReferralWithdrawal}},
 		{http.MethodPost, "/upload", authz.AdtyReferralPayout, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:referral-upload"), controller.UploadReferralAsset}},
 		{http.MethodPost, "/affiliates/:user_id/update", authz.AdtyReferralAdjust, []gin.HandlerFunc{controller.UpdateReferralAffiliate}},
+		{http.MethodPost, "/commissions/:id/release", authz.AdtyReferralAdjust, []gin.HandlerFunc{controller.PostAdminReferralCommissionRelease}},
+		{http.MethodPost, "/commissions/:id/void", authz.AdtyReferralAdjust, []gin.HandlerFunc{controller.PostAdminReferralCommissionVoid}},
 		{http.MethodPost, "/commission-jobs/retry", authz.AdtyReferralAdjust, []gin.HandlerFunc{controller.RetryReferralCommissionJob}},
 		{http.MethodPost, "/settlements/run", authz.AdtyReferralAdjust, []gin.HandlerFunc{controller.RunReferralSettlement}},
 		{http.MethodGet, "/settings", authz.AdtyReferralSettingsRead, []gin.HandlerFunc{controller.GetReferralSettings}},
@@ -576,7 +578,13 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 		{http.MethodGet, "/referral/affiliates", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteReferralAffiliates}},
 		{http.MethodPost, "/referral/affiliates/:user_id/update", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteReferralAffiliateUpdate}},
 		{http.MethodGet, "/referral/commissions", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteReferralCommissions}},
+		{http.MethodPost, "/referral/commissions/:id/release", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteCommissionRelease}},
+		{http.MethodPost, "/referral/commissions/:id/void", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteCommissionVoid}},
 		{http.MethodGet, "/referral/audit-logs", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteReferralAuditLogs}},
+		// R-49: 老站长推荐开新分站（仅站长管理端可见）
+		{http.MethodGet, "/partner/overview", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerPartnerOverview}},
+		{http.MethodGet, "/partner/sites", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerPartnerSites}},
+		{http.MethodGet, "/partner/earnings", ownerOrdRead, []gin.HandlerFunc{controller.GetAdtyOwnerPartnerEarnings}},
 		{http.MethodGet, "/referral/invites", ownerSetRead, []gin.HandlerFunc{controller.GetAdtyOwnerSiteInvites}},
 		{http.MethodPost, "/referral/invites", ownerSetWrite, []gin.HandlerFunc{controller.PostAdtyOwnerSiteInvite}},
 		{http.MethodPost, "/referral/cover-pending", ownerSetWrite, []gin.HandlerFunc{middleware.UserCriticalRateLimit("CT:site-referral-cover"), controller.PostAdtyOwnerSiteCoverageResume}},
@@ -703,6 +711,22 @@ func registerAdtyResellerRoutes(apiRouter *gin.RouterGroup) {
 	rootWallets.POST("/:id/review", controller.ReviewAdtyAdminSite)
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/sites/:id/owner", "scope", "option:write")
 	rootWallets.POST("/:id/owner", controller.HandoverAdtyAdminSiteOwner)
+	// R-49: 主站公开分站合作入口 + Root 招商意向/推荐关系/每小时结算运维路由
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/partner/public", "any", "")
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/partner/click", "session", "")
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/partner/apply", "session", "")
+	apiRouter.GET("/adty/partner/public", controller.GetAdtyPartnerPublic)
+	apiRouter.POST("/adty/partner/click", middleware.CriticalRateLimit(), middleware.AnonymousRequestBodyLimit(), middleware.ReferralClickCSRFGuard(), controller.PostAdtyPartnerClick)
+	apiRouter.POST("/adty/partner/apply", middleware.CriticalRateLimit(), middleware.AnonymousRequestBodyLimit(), middleware.TurnstileCheck(), controller.PostAdtyPartnerApply)
+
+	middleware.DeclareAdtyAccessTokenRoute("GET", "/api/adty/admin/partner-leads", "scope", "option:read")
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/partner-leads/:id/reject", "scope", "option:write")
+	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/sites/:id/partner-referral", "scope", "option:write")
+	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/hourly-settlement/run", "scope", "option:write")
+	apiRouter.GET("/adty/admin/partner-leads", middleware.RootAuth(), controller.GetAdtyAdminPartnerLeads)
+	apiRouter.POST("/adty/admin/partner-leads/:id/reject", middleware.RootAuth(), controller.PostAdtyAdminPartnerLeadReject)
+	rootWallets.PUT("/:id/partner-referral", controller.PutAdtyAdminSitePartnerReferral)
+	apiRouter.POST("/adty/admin/hourly-settlement/run", middleware.RootAuth(), controller.PostAdtyAdminHourlySettlementRun)
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/vouchers", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("PUT", "/api/adty/admin/vouchers/limit", "scope", "option:write")
 	middleware.DeclareAdtyAccessTokenRoute("POST", "/api/adty/admin/vouchers/:id/freeze", "scope", "option:write")

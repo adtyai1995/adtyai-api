@@ -96,38 +96,16 @@ func adtyReferralSnapshot(userId int) (int, decimal.Decimal) {
 }
 
 func prepareAdtyReferralSnapshotTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
-	// R1-095: Owner business and team top-ups do not generate main-site referral commissions.
-	if ext.IsOwnerBusiness() || ext.TeamId > 0 || ext.Business == model.AdtyBusinessTeamTopup {
+	// R-49: Top-up orders no longer snapshot referral commissions; commissions accrue hourly from real consumption.
+	if ext != nil {
 		ext.ReferralAffiliateId, ext.ReferralRate = 0, decimal.Zero
-		return nil
 	}
-	// Subsite orders never accrue main-site referral commissions; skipping
-	// adtyReferralSnapshotWithDB avoids locking User before AdtySite (R12-014).
-	if ext.SiteId > 0 {
-		ext.ReferralAffiliateId, ext.ReferralRate = 0, decimal.Zero
-		return PrepareAdtySiteInviteCommissionSnapshotTx(tx, topUp, ext)
-	}
-	affiliateID, rate, err := adtyReferralSnapshotWithDB(tx, topUp.UserId, true)
-	if err != nil {
-		return err
-	}
-	ext.ReferralAffiliateId = affiliateID
-	ext.ReferralRate = rate
-	return PrepareAdtySiteInviteCommissionSnapshotTx(tx, topUp, ext)
+	return nil
 }
 
-// adtyReferralAfterCreditTx 在入账的同一个事务里插一条计佣任务。只用 OnConflict DoNothing，
-// 不做可能报错的查询：PostgreSQL 下钩子一出错，整个入账事务都作废（审阅重点 10）。
+// adtyReferralAfterCreditTx is a clean no-op: top-up credits no longer enqueue recharge commission jobs (R-49).
 func adtyReferralAfterCreditTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
-	if ext == nil || ext.IsOwnerBusiness() || ext.TeamId > 0 || ext.Business == model.AdtyBusinessTeamTopup || ext.ReferralAffiliateId == 0 {
-		return nil
-	}
-	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.ReferralCommissionJob{
-		SourceType:    model.ReferralSourceTopup,
-		SourceTradeNo: topUp.TradeNo,
-		AffiliateId:   ext.ReferralAffiliateId,
-		Status:        model.ReferralCommissionJobStatusPending,
-	}).Error
+	return nil
 }
 
 // ProcessAdtyTopUpCommission 处理一个充值的计佣任务：佣金 = 面额（不含加赠）× 快照比例 ÷ 100，
@@ -416,6 +394,9 @@ func referralCommissionConvertedClawedTx(tx *gorm.DB, commissionID int) (decimal
 //
 // 先锁计佣任务行：计佣任务处理时也先锁它，两边串行，不会漏扣或多计。
 func adtyReferralAfterRefundTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
+	if tx == nil || topUp == nil || ext == nil {
+		return nil
+	}
 	ratio := ext.RefundRatio()
 	if !ratio.IsPositive() {
 		return nil
@@ -978,6 +959,355 @@ func init() {
 		}
 	}
 	adtyMasterTasks = append(adtyMasterTasks, startReferralSettlementTask)
+}
+
+// settleMainReferralConsumeHourTx settles main-site referral commissions for one closed hour window
+// based on real paid personal principal consumption (0 freeze, Option A live rate, risk_held on frozen settlement).
+func settleMainReferralConsumeHourTx(hourSlot string, windowEnd int64, now int64) (int, error) {
+	if model.DB == nil {
+		return 0, nil
+	}
+	hasTable, err := model.AdtyTableExists(model.DB, &model.AdtyPrincipalConsumeEvent{})
+	if err != nil || !hasTable {
+		return 0, err
+	}
+	var userIDs []int
+	if err := model.DB.Model(&model.AdtyPrincipalConsumeEvent{}).
+		Where("site_id = 0 AND settled = ? AND created_at < ?", false, windowEnd).
+		Distinct("user_id").
+		Order("user_id ASC").
+		Pluck("user_id", &userIDs).Error; err != nil {
+		return 0, err
+	}
+	settledCount := 0
+	var firstErr error
+	for _, inviteeUserID := range userIDs {
+		didSettle := false
+		txErr := model.DB.Transaction(func(tx *gorm.DB) error {
+			var events []model.AdtyPrincipalConsumeEvent
+			if err := model.AdtyLockForUpdate(tx).
+				Where("site_id = 0 AND user_id = ? AND settled = ? AND created_at < ?", inviteeUserID, false, windowEnd).
+				Order("id ASC").
+				Find(&events).Error; err != nil {
+				return err
+			}
+			if len(events) == 0 {
+				return nil
+			}
+			eventIDs := make([]int64, 0, len(events))
+			netUSD := decimal.Zero
+			for _, evt := range events {
+				eventIDs = append(eventIDs, evt.Id)
+				netUSD = netUSD.Add(evt.AmountUSD)
+			}
+			markSettled := func() error {
+				return tx.Model(&model.AdtyPrincipalConsumeEvent{}).
+					Where("id IN ?", eventIDs).
+					Updates(map[string]any{"settled": true, "hour_slot": hourSlot}).Error
+			}
+			if !Referral.IsEnabled() {
+				return markSettled()
+			}
+			var bindings []model.ReferralBinding
+			if err := tx.Where("invitee_user_id = ?", inviteeUserID).Limit(1).Find(&bindings).Error; err != nil {
+				return err
+			}
+			if len(bindings) == 0 || bindings[0].RiskFlag == model.ReferralRiskSelfInvite || bindings[0].AffiliateId <= 0 || bindings[0].InviterUserId == inviteeUserID {
+				return markSettled()
+			}
+			binding := bindings[0]
+			var invitee model.User
+			if err := tx.Select("id", "site_id", "role").Where("id = ?", inviteeUserID).First(&invitee).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return markSettled()
+				}
+				return err
+			}
+			if invitee.SiteId != 0 || invitee.Role >= common.RoleAdminUser {
+				return markSettled()
+			}
+			var inviteeSiteOwners int64
+			if err := tx.Model(&model.ReferralAffiliate{}).
+				Where("user_id = ? AND site_owner_since > 0", inviteeUserID).
+				Count(&inviteeSiteOwners).Error; err != nil {
+				return err
+			}
+			if inviteeSiteOwners > 0 {
+				return markSettled()
+			}
+			// Canonical referral lock order: Affiliate -> Account.
+			var affiliate model.ReferralAffiliate
+			if err := model.AdtyLockForUpdate(tx).Where("id = ?", binding.AffiliateId).First(&affiliate).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return markSettled()
+				}
+				return err
+			}
+			if affiliate.UserId == inviteeUserID || affiliate.Status != model.ReferralAffiliateStatusApproved || affiliate.SiteOwnerSince > 0 {
+				return markSettled()
+			}
+			var inviter model.User
+			if err := tx.Select("id", "site_id", "status", "role").Where("id = ?", affiliate.UserId).First(&inviter).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return markSettled()
+				}
+				return err
+			}
+			if inviter.Status != common.UserStatusEnabled || inviter.SiteId != 0 || inviter.Role >= common.RoleAdminUser {
+				return markSettled()
+			}
+			// Option A live rate (percentage, e.g. 10 = 10%).
+			rate, ok := AffiliateRate(&affiliate)
+			if !ok || !rate.IsPositive() {
+				return markSettled()
+			}
+			tradeNo := fmt.Sprintf("consume:%s:u%d", hourSlot, inviteeUserID)
+			var existingCount int64
+			if err := tx.Model(&model.ReferralCommission{}).
+				Where("source_type = ? AND source_trade_no = ?", model.ReferralSourceConsume, tradeNo).
+				Count(&existingCount).Error; err != nil {
+				return err
+			}
+			if existingCount > 0 {
+				return markSettled()
+			}
+			rawComm := netUSD.Mul(rate).Div(decimal.NewFromInt(100)).Round(8)
+			effective, _, err := applyAdtyCommissionOffsetTx(
+				tx,
+				model.AdtyCommissionOffsetScopeMainReferral,
+				fmt.Sprintf("mref:%d:%d", affiliate.Id, inviteeUserID),
+				rawComm,
+			)
+			if err != nil {
+				return err
+			}
+			if !effective.IsPositive() {
+				return markSettled()
+			}
+			account, err := lockReferralAccountTx(tx, affiliate.Id)
+			if err != nil {
+				return err
+			}
+			commission := &model.ReferralCommission{
+				AffiliateId:          affiliate.Id,
+				AffiliateUserId:      affiliate.UserId,
+				InviteeUserId:        inviteeUserID,
+				SourceType:           model.ReferralSourceConsume,
+				SourceTradeNo:        tradeNo,
+				OrderType:            "consume",
+				BaseAmount:           moneyF(netUSD),
+				SettlementCurrency:   "USD",
+				SettlementFxRate:     1,
+				SettlementBaseAmount: moneyF(netUSD),
+				Rate:                 moneyF(rate),
+				CommissionAmount:     moneyF(effective),
+			}
+			if affiliate.SettlementEnabled {
+				commission.Status = model.ReferralCommissionStatusAvailable
+				commission.SettleAt = now
+				commission.AvailableAt = now
+				if err := tx.Create(commission).Error; err != nil {
+					return err
+				}
+				if err := AdjustAccountTx(tx, account, decimal.Zero, effective, decimal.Zero, decimal.Zero, model.ReferralCommissionLedger{
+					CommissionId:  commission.Id,
+					Type:          "commission_settle",
+					RefType:       model.ReferralSourceConsume,
+					RefId:         tradeNo,
+					ExternalRefId: fmt.Sprintf("hourly:%s:a%d:u%d", hourSlot, affiliate.Id, inviteeUserID),
+					Remark:        "hourly consumption commission",
+				}); err != nil {
+					return err
+				}
+			} else {
+				commission.Status = model.ReferralCommissionStatusRiskHeld
+				commission.SettleAt = 0
+				commission.AvailableAt = 0
+				if err := tx.Create(commission).Error; err != nil {
+					return err
+				}
+				if err := AdjustAccountTx(tx, account, effective, decimal.Zero, decimal.Zero, decimal.Zero, model.ReferralCommissionLedger{
+					CommissionId:  commission.Id,
+					Type:          "commission_risk_hold",
+					RefType:       model.ReferralSourceConsume,
+					RefId:         tradeNo,
+					ExternalRefId: fmt.Sprintf("hourly-hold:%s:a%d:u%d", hourSlot, affiliate.Id, inviteeUserID),
+					Remark:        "held pending risk review",
+				}); err != nil {
+					return err
+				}
+			}
+			if err := markSettled(); err != nil {
+				return err
+			}
+			didSettle = true
+			return nil
+		})
+		if txErr != nil {
+			common.SysError(common.LogText("main referral hourly settle user=%d slot=%s: %s", inviteeUserID, hourSlot, txErr.Error()))
+			if firstErr == nil {
+				firstErr = txErr
+			}
+			continue
+		}
+		if didSettle {
+			settledCount++
+		}
+	}
+	return settledCount, firstErr
+}
+
+// EnsureAdtyReferralCommissionScope enforces target site scope for a main-site referral commission record.
+func EnsureAdtyReferralCommissionScope(siteID *int, commissionID int) error {
+	if siteID == nil {
+		return nil
+	}
+	var c model.ReferralCommission
+	if err := model.DB.Select("id", "affiliate_user_id").First(&c, commissionID).Error; err != nil {
+		return err
+	}
+	return EnsureAdtyReferralTargetUserScope(siteID, c.AffiliateUserId)
+}
+
+// ReleaseMainReferralRiskHeldCommission releases one risk-held main-site referral commission into available balance.
+func ReleaseMainReferralRiskHeldCommission(commissionID, adminID int, reason, ip, ua string) error {
+	if commissionID <= 0 {
+		return common.NewMessage("Invalid parameters")
+	}
+	now := time.Now().Unix()
+	return model.DB.Transaction(func(tx *gorm.DB) error {
+		var peek model.ReferralCommission
+		if err := tx.Select("id", "affiliate_id").Where("id = ?", commissionID).First(&peek).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return common.NewMessage("Commission record not found")
+			}
+			return err
+		}
+		// Canonical lock order: Affiliate -> Commission -> Account.
+		var affiliate model.ReferralAffiliate
+		if err := model.AdtyLockForUpdate(tx).Where("id = ?", peek.AffiliateId).First(&affiliate).Error; err != nil {
+			return err
+		}
+		var commission model.ReferralCommission
+		if err := model.AdtyLockForUpdate(tx).Where("id = ?", commissionID).First(&commission).Error; err != nil {
+			return err
+		}
+		if commission.AffiliateId != affiliate.Id {
+			return common.NewMessage("Commission state changed concurrently, please retry")
+		}
+		if commission.Status != model.ReferralCommissionStatusRiskHeld {
+			return common.NewMessage("Only risk-held commissions can be released")
+		}
+		account, err := lockReferralAccountTx(tx, commission.AffiliateId)
+		if err != nil {
+			return err
+		}
+		amount, err := GetReferralCommissionAmountTx(tx, commission.Id)
+		if err != nil {
+			return err
+		}
+		if err := tx.Model(&model.ReferralCommission{}).Where("id = ?", commission.Id).Updates(map[string]any{
+			"status":       model.ReferralCommissionStatusAvailable,
+			"settle_at":    now,
+			"available_at": now,
+		}).Error; err != nil {
+			return err
+		}
+		remark := strings.TrimSpace(reason)
+		if remark == "" {
+			remark = "risk-held commission released"
+		}
+		refType := commission.SourceType
+		if refType == "" {
+			refType = model.ReferralSourceConsume
+		}
+		if amount.IsPositive() {
+			if err := AdjustAccountTx(tx, account, amount.Neg(), amount, decimal.Zero, decimal.Zero, model.ReferralCommissionLedger{
+				CommissionId:  commission.Id,
+				Type:          "commission_risk_release",
+				RefType:       refType,
+				RefId:         commission.SourceTradeNo,
+				ExternalRefId: fmt.Sprintf("risk-release:%d", commission.Id),
+				Remark:        truncateText(remark, 1000),
+				Operator:      fmt.Sprint(adminID),
+			}); err != nil {
+				return err
+			}
+		}
+		return recordReferralAuditTx(
+			tx, "commission_risk_release", affiliate.UserId, affiliate.Id, adminID, reason, ip, ua,
+			map[string]any{"commission_id": commission.Id, "status": model.ReferralCommissionStatusRiskHeld, "amount": amount.String()},
+			map[string]any{"commission_id": commission.Id, "status": model.ReferralCommissionStatusAvailable, "amount": amount.String()},
+		)
+	})
+}
+
+// VoidMainReferralRiskHeldCommission voids one risk-held main-site referral commission and deducts pending balance.
+func VoidMainReferralRiskHeldCommission(commissionID, adminID int, reason, ip, ua string) error {
+	if commissionID <= 0 {
+		return common.NewMessage("Invalid parameters")
+	}
+	return model.DB.Transaction(func(tx *gorm.DB) error {
+		var peek model.ReferralCommission
+		if err := tx.Select("id", "affiliate_id").Where("id = ?", commissionID).First(&peek).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return common.NewMessage("Commission record not found")
+			}
+			return err
+		}
+		// Canonical lock order: Affiliate -> Commission -> Account.
+		var affiliate model.ReferralAffiliate
+		if err := model.AdtyLockForUpdate(tx).Where("id = ?", peek.AffiliateId).First(&affiliate).Error; err != nil {
+			return err
+		}
+		var commission model.ReferralCommission
+		if err := model.AdtyLockForUpdate(tx).Where("id = ?", commissionID).First(&commission).Error; err != nil {
+			return err
+		}
+		if commission.AffiliateId != affiliate.Id {
+			return common.NewMessage("Commission state changed concurrently, please retry")
+		}
+		if commission.Status != model.ReferralCommissionStatusRiskHeld {
+			return common.NewMessage("Only risk-held commissions can be voided")
+		}
+		account, err := lockReferralAccountTx(tx, commission.AffiliateId)
+		if err != nil {
+			return err
+		}
+		amount, err := GetReferralCommissionAmountTx(tx, commission.Id)
+		if err != nil {
+			return err
+		}
+		if err := tx.Model(&model.ReferralCommission{}).Where("id = ?", commission.Id).Update("status", model.ReferralCommissionStatusVoid).Error; err != nil {
+			return err
+		}
+		remark := strings.TrimSpace(reason)
+		if remark == "" {
+			remark = "risk-held commission voided"
+		}
+		refType := commission.SourceType
+		if refType == "" {
+			refType = model.ReferralSourceConsume
+		}
+		if amount.IsPositive() {
+			if err := AdjustAccountTx(tx, account, amount.Neg(), decimal.Zero, decimal.Zero, decimal.Zero, model.ReferralCommissionLedger{
+				CommissionId:  commission.Id,
+				Type:          "commission_risk_void",
+				RefType:       refType,
+				RefId:         commission.SourceTradeNo,
+				ExternalRefId: fmt.Sprintf("risk-void:%d", commission.Id),
+				Remark:        truncateText(remark, 1000),
+				Operator:      fmt.Sprint(adminID),
+			}); err != nil {
+				return err
+			}
+		}
+		return recordReferralAuditTx(
+			tx, "commission_risk_void", affiliate.UserId, affiliate.Id, adminID, reason, ip, ua,
+			map[string]any{"commission_id": commission.Id, "status": model.ReferralCommissionStatusRiskHeld, "amount": amount.String()},
+			map[string]any{"commission_id": commission.Id, "status": model.ReferralCommissionStatusVoid, "amount": amount.String()},
+		)
+	})
 }
 
 // startReferralSettlementTask 在主节点启动结算任务：间隔读 REFERRAL_SETTLEMENT_INTERVAL_SECONDS，默认 60，最少 10。

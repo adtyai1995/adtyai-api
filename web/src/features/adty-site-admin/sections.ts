@@ -31,6 +31,7 @@ import type { AuthUser } from '@/stores/auth-store'
  */
 export const SITE_ADMIN_SECTIONS = [
   { id: 'sites', permission: ADTY_PERMISSIONS.SITE_READ },
+  { id: 'partner-leads', permission: ADTY_PERMISSIONS.SITE_READ, rootOnly: true },
   { id: 'overview', permission: ADTY_PERMISSIONS.SITE_READ },
   { id: 'reviews', permission: ADTY_PERMISSIONS.SITE_REVIEW },
   { id: 'domains', permission: ADTY_PERMISSIONS.SITE_SETTINGS_READ },

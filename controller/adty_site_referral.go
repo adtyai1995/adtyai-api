@@ -2,6 +2,7 @@ package controller
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -603,6 +604,58 @@ func PostAdtyOwnerSiteCoverageResume(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, gin.H{"resumed": true})
+}
+
+func PostAdtyOwnerSiteCommissionRelease(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if c.Request.Body != nil {
+		if err := common.DecodeJson(c.Request.Body, &body); err != nil && !errors.Is(err, io.EOF) {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+	}
+	if err := service.ReleaseSiteInviteRiskHeldCommission(site.Id, c.GetInt("id"), id, body.Reason, c.ClientIP(), c.Request.UserAgent()); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"released": true})
+}
+
+func PostAdtyOwnerSiteCommissionVoid(c *gin.Context) {
+	site, ok := adtyOwnerSiteOr403(c)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if c.Request.Body != nil {
+		if err := common.DecodeJson(c.Request.Body, &body); err != nil && !errors.Is(err, io.EOF) {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+	}
+	if err := service.VoidSiteInviteRiskHeldCommission(site.Id, c.GetInt("id"), id, body.Reason, c.ClientIP(), c.Request.UserAgent()); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"voided": true})
 }
 
 func GetAdtyOwnerSiteTeams(c *gin.Context) {

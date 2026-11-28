@@ -52,6 +52,12 @@ func ownerEarningsWalletTx(tx *gorm.DB, siteID, ownerID int, wallet *model.AdtyS
             UNION ALL
             SELECT CASE
                 WHEN l.type IN ? THEN NULLIF(l.operator_id,0)
+                WHEN l.type = 'site_referral_earning' THEN COALESCE(
+                    NULLIF(l.operator_id,0),
+                    (SELECT h.new_owner_user_id FROM adty_site_ownerships h WHERE h.site_id = l.site_id AND h.created_at <= l.created_at ORDER BY h.created_at DESC, h.version DESC LIMIT 1),
+                    (SELECT h.old_owner_user_id FROM adty_site_ownerships h WHERE h.site_id = l.site_id ORDER BY h.version ASC LIMIT 1),
+                    (SELECT s.owner_user_id FROM adty_sites s WHERE s.id = l.site_id)
+                )
                 WHEN l.ref_type IN ('topup','site_invite') AND o.id IS NOT NULL THEN COALESCE(NULLIF(o.site_owner_user_id,0),?)
                 WHEN v.id IS NOT NULL THEN NULLIF(v.issuer_id,0)
                 END, l.delta, l.hold_delta

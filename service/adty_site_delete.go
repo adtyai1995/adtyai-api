@@ -739,6 +739,10 @@ func adtySiteHasBusinessDataTx(tx *gorm.DB, siteID int) (bool, error) {
 		{&model.AdtyUserSiteMigration{}, "source_site_id = ? OR target_site_id = ?", []any{siteID, siteID}, false},
 		{&model.BillingOperation{}, "site_id = ?", []any{siteID}, false},
 		{&model.Token{}, "owner_self_use_site_id = ?", []any{siteID}, true},
+		{&model.AdtySite{}, "referrer_site_id = ?", []any{siteID}, false},
+		{&model.AdtySitePartnerEarning{}, "referrer_site_id = ? OR referred_site_id = ?", []any{siteID, siteID}, false},
+		{&model.AdtyOperatingPrincipalEvent{}, "site_id = ?", []any{siteID}, false},
+		{&model.AdtyPrincipalConsumeEvent{}, "site_id = ?", []any{siteID}, false},
 	}
 	for _, chk := range checks {
 		hasTable, err := model.AdtyTableExists(tx, chk.model)

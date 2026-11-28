@@ -262,6 +262,7 @@ export function AdminReferral({ initialStatus }: ReferralEntry = {}) {
               </TabsContent>
               <TabsContent value='commissions' className='pt-2'>
                 <CommissionsPanel
+                  canAdjust={canAdjust}
                   affiliateFilter={commissionFilterAffiliate}
                   onClearAffiliateFilter={() =>
                     setCommissionFilterAffiliate(null)

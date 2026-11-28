@@ -79,6 +79,10 @@ type ResellerSetting struct {
 	EdgeMainSiteEnabled   bool     `json:"edge_main_site_enabled"`
 	EdgeMainSiteHost      string   `json:"edge_main_site_host"`
 	EdgeMainSiteOriginSNI string   `json:"edge_main_site_origin_sni"`
+
+	// 老站长推荐开新分站（R-49）：官方招商 TG 与默认推荐佣金比例（默认 5%）。
+	PartnerContactTelegram     string   `json:"partner_contact_telegram"`
+	PartnerReferralDefaultRate *float64 `json:"partner_referral_default_rate"`
 }
 
 // ResellerCostTier 是按站点上月客户消费额分档的 d。
@@ -145,7 +149,13 @@ func DefaultResellerSetting() ResellerSetting {
 		TurnstileWidgetSecret:      map[string]string{},
 		EdgeACMEAliasSuffix:        "acme.adtyaicf.top",
 		EdgeNodeIPs:                []string{},
+		PartnerReferralDefaultRate: defaultPartnerReferralRatePtr(),
 	}
+}
+
+func defaultPartnerReferralRatePtr() *float64 {
+	v := 5.0
+	return &v
 }
 
 func init() {
@@ -183,6 +193,7 @@ func GetResellerSetting() *ResellerSetting {
 	snap.MaxSiteBonusExtra = cloneFloat64Ptr(resellerSetting.MaxSiteBonusExtra)
 	snap.TrialGrantMaxUSD = cloneFloat64Ptr(resellerSetting.TrialGrantMaxUSD)
 	snap.TrialGrantDailyUSD = cloneFloat64Ptr(resellerSetting.TrialGrantDailyUSD)
+	snap.PartnerReferralDefaultRate = cloneFloat64Ptr(resellerSetting.PartnerReferralDefaultRate)
 	if resellerSetting.RootDomains != nil {
 		snap.RootDomains = slices.Clone(resellerSetting.RootDomains)
 	}
@@ -472,6 +483,15 @@ func ValidateResellerPatch(s *ResellerSetting, resendConfigured bool, changed ma
 	}
 	if touches("custom_domain_enabled", "cloudflare_apiToken", "cloudflare_zone_id", "cname_target") && s.CustomDomainEnabled && !s.CloudflareConfigured() {
 		return common.NewMessage("Fill in the Cloudflare API token, zone ID and CNAME target before turning custom domains on")
+	}
+	if touches("partner_referral_default_rate") && s.PartnerReferralDefaultRate != nil {
+		v := *s.PartnerReferralDefaultRate
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > 50 {
+			return common.NewMessage("Partner referral default rate must be between 0% and 50%")
+		}
+	}
+	if touches("partner_contact_telegram") && len(strings.TrimSpace(s.PartnerContactTelegram)) > 200 {
+		return common.NewMessage("Official partner Telegram contact is too long")
 	}
 	return nil
 }

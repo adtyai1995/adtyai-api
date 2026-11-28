@@ -34,7 +34,8 @@ func setWebRouter(router *gin.Engine, assets WebAssets, pluginDispatcher, extern
 			if service.AdtySiteForRequest(c) == nil {
 				return
 			}
-			if c.Request.URL.Path == "/site.webmanifest" {
+			p := c.Request.URL.Path
+			if p == "/site.webmanifest" || p == "/partner" || strings.HasPrefix(p, "/partner/") {
 				c.Header("Cache-Control", "private, no-store")
 				c.AbortWithStatus(http.StatusNotFound)
 			}

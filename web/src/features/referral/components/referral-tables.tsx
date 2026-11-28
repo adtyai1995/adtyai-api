@@ -42,8 +42,9 @@ import {
 } from '../api'
 import { formatUsdtAmount, usdtNetworkLabel } from '../lib/address'
 import {
-  COMMISSION_STATUS_LABELS,
   COMMISSION_STATUS_VARIANTS,
+  commissionSourceLabel,
+  commissionStatusLabel,
   WITHDRAWAL_STATUS_LABELS,
   WITHDRAWAL_STATUS_VARIANTS,
   WITHDRAWAL_TARGET_LABELS,
@@ -81,10 +82,19 @@ export function CommissionTable() {
           },
           {
             id: 'order',
-            header: t('Top-up'),
+            header: t('Paid consumption'),
             className: 'text-right',
             cellClassName: 'text-right tabular-nums',
-            cell: (row) => formatUsd(row.base_amount, locale),
+            cell: (row) => (
+              <div className='flex flex-col items-end'>
+                <span>{formatUsd(row.base_amount, locale)}</span>
+                {row.source_type && (
+                  <span className='text-muted-foreground text-xs'>
+                    {commissionSourceLabel(t, row.source_type)}
+                  </span>
+                )}
+              </div>
+            ),
           },
           {
             id: 'rate',
@@ -105,8 +115,9 @@ export function CommissionTable() {
             header: t('Status'),
             cell: (row) => (
               <StatusBadge
-                label={t(COMMISSION_STATUS_LABELS[row.status])}
-                variant={COMMISSION_STATUS_VARIANTS[row.status]}
+                label={commissionStatusLabel(t, row.status)}
+                variant={COMMISSION_STATUS_VARIANTS[row.status] ?? 'neutral'}
+                copyable={false}
               />
             ),
           },
@@ -114,7 +125,9 @@ export function CommissionTable() {
             id: 'settle',
             header: t('Settles at'),
             cell: (row) =>
-              row.status === 'pending' ? formatTimestamp(row.settle_at) : '-',
+              row.status === 'pending' && row.settle_at > 0
+                ? formatTimestamp(row.settle_at)
+                : '-',
           },
         ]}
       />

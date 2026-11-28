@@ -1212,14 +1212,14 @@ func commissionAllocatedTx(tx *gorm.DB, commissionId int) (frozen, withdrawn dec
 	return
 }
 
-// syncCommissionStatusTx 按提现明细推佣金状态。pending、void、clawed_back 不动，否则提现释放或打款时会把它们改回去。
+// syncCommissionStatusTx 按提现明细推佣金状态。pending、risk_held、void、clawed_back 不动，否则提现释放或打款时会把它们改回去。
 func syncCommissionStatusTx(tx *gorm.DB, commissionId int) error {
 	var commission model.ReferralCommission
 	if err := tx.Where("id = ?", commissionId).First(&commission).Error; err != nil {
 		return err
 	}
 	switch commission.Status {
-	case model.ReferralCommissionStatusPending, model.ReferralCommissionStatusVoid, model.ReferralCommissionStatusClawedBack:
+	case model.ReferralCommissionStatusPending, model.ReferralCommissionStatusRiskHeld, model.ReferralCommissionStatusVoid, model.ReferralCommissionStatusClawedBack:
 		return nil
 	}
 	frozen, withdrawn, err := commissionAllocatedTx(tx, commissionId)

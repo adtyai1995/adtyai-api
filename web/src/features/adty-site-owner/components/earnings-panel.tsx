@@ -37,11 +37,13 @@ import { cn } from '@/lib/utils'
 import {
   downloadExport,
   getOwnerEarningLines,
+  getOwnerEarnings,
   siteOwnerKeys,
   type ExportKind,
   type OwnerEarningLine,
 } from '../api'
 import { isNegativeAmount } from '../lib/site-owner'
+import { OwnerStatGrid } from './stat-grid'
 
 const EARNING_LINES_PAGE_SIZE = 50
 const EMPTY_EARNING_LINES: OwnerEarningLine[] = []
@@ -63,6 +65,11 @@ export function EarningsPanel() {
     }),
     queryFn: () => getOwnerEarningLines(page, EARNING_LINES_PAGE_SIZE),
   })
+  const earningsSummary = useQuery({
+    queryKey: siteOwnerKeys.list('earnings', { p: 1, kind: '' }),
+    queryFn: () => getOwnerEarnings(1, ''),
+  })
+  const balances = earningsSummary.data?.balances
   const exporter = useMutation({
     mutationFn: (exportKind: ExportKind) => downloadExport(exportKind),
     onError: (err) => handleServerError(err),
@@ -117,6 +124,43 @@ export function EarningsPanel() {
   return (
     <div className='flex flex-col gap-4'>
       {lines.isError && <ErrorState onRetry={() => void lines.refetch()} />}
+      {balances && (
+        <section className='flex flex-col gap-2'>
+          <OwnerStatGrid
+            label={t('Earnings')}
+            items={[
+              {
+                label: t('Current hour estimate'),
+                value: money(balances.pending_hour_usd),
+                negative: isNegativeAmount(balances.pending_hour_usd),
+              },
+              {
+                label: t('Pending settlement'),
+                value: money(balances.pending_usd),
+                negative: isNegativeAmount(balances.pending_usd),
+              },
+              {
+                label: t('Withdrawable'),
+                value: balances.requires_review
+                  ? t(
+                      'Contact the platform to reconcile this historical site account'
+                    )
+                  : money(balances.available_usd),
+                negative: isNegativeAmount(balances.available_usd),
+              },
+              {
+                label: t('Withdrawn'),
+                value: money(balances.withdrawn_usd),
+              },
+            ]}
+          />
+          <p className='text-muted-foreground text-xs'>
+            {t(
+              'Settled hourly on the hour directly into your Earnings Wallet with no freeze.'
+            )}
+          </p>
+        </section>
+      )}
       <div className='flex flex-col gap-1'>
         <h3 className='text-[15px] leading-snug font-semibold tracking-tight [word-break:keep-all]'>
           {t('Request earnings')}

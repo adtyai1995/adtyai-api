@@ -134,7 +134,14 @@ export function WalletsPanel(props: {
   const { t } = useTranslation()
   return (
     <div className='flex flex-col gap-8'>
-      <OwnerWalletBalances />
+      <div className='flex flex-col gap-2'>
+        <OwnerWalletBalances />
+        <p className='text-muted-foreground text-xs'>
+          {t(
+            'Earnings wallet: site spread and partner referral commissions settle hourly on the hour with no freeze.'
+          )}
+        </p>
+      </div>
       <MarginVoucherRedeemCard />
       <section id='margin'>
         <EarningToMarginPanel

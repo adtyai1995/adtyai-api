@@ -39,16 +39,16 @@ export function AffiliateBanner(props: { open: boolean; rate: number | null }) {
               id='affiliate-title'
               className='text-[clamp(1.9rem,3.4vw,2.8rem)] leading-[1.12] font-extrabold tracking-[-0.03em] text-balance'
             >
-              {t('Invite friends, earn on every top-up')}
+              {t('Invite friends, earn on their consumption')}
             </h2>
             <p className='text-muted-foreground mt-4 max-w-2xl text-[16px] leading-[1.8]'>
               {props.rate !== null
                 ? t(
-                    'Earn {{rate}}% of every top-up the people you invite make, for as long as they stay.',
+                    'Earn {{rate}}% of the paid consumption from people you invite, settled hourly with no freeze.',
                     { rate: props.rate }
                   )
                 : t(
-                    'Earn a commission on every top-up the people you invite make, for as long as they stay.'
+                    'Earn a commission on the paid consumption from people you invite, settled hourly with no freeze.'
                   )}
             </p>
           </div>

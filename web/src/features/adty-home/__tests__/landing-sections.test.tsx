@@ -86,7 +86,7 @@ describe('adty home landing sections', () => {
     renderLanding('https://api.example.com')
 
     expect(
-      screen.queryByText('Invite friends, earn on every top-up')
+      screen.queryByText('Invite friends, earn on their consumption')
     ).toBeNull()
   })
 
@@ -96,11 +96,11 @@ describe('adty home landing sections', () => {
     })
 
     expect(
-      screen.getByText('Invite friends, earn on every top-up')
+      screen.getByText('Invite friends, earn on their consumption')
     ).toBeTruthy()
     expect(
       screen.getByText(
-        'Earn 12% of every top-up the people you invite make, for as long as they stay.'
+        'Earn 12% of the paid consumption from people you invite, settled hourly with no freeze.'
       )
     ).toBeTruthy()
   })

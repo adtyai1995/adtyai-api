@@ -50,20 +50,42 @@ func parseOptionalDecimal(raw *string) (*decimal.Decimal, error) {
 // adtySiteAdminView 是后台列表和明细里的一行：站点加站长、客户数、本月数字和生效的 d。
 type adtySiteAdminView struct {
 	model.AdtySite
-	OwnerUsername       string `json:"owner_username"`
-	Host                string `json:"host"`
-	ApiHost             string `json:"api_host,omitempty"`
-	Customers           int64  `json:"customers"`
-	EffectiveCostFactor string `json:"effective_cost_factor"` // 当前生效的 d（单站 > 档位 > 全局，不低于下限）
+	OwnerUsername         string `json:"owner_username"`
+	Host                  string `json:"host"`
+	ApiHost               string `json:"api_host,omitempty"`
+	Customers             int64  `json:"customers"`
+	EffectiveCostFactor   string `json:"effective_cost_factor"` // 当前生效的 d（单站 > 档位 > 全局，不低于下限）
+	ReferrerSiteSubdomain string `json:"referrer_site_subdomain,omitempty"`
 	service.AdtySiteMonthTotals
 }
 
 func buildSiteAdminViews(sites []model.AdtySite) ([]adtySiteAdminView, error) {
 	ownerIds := make([]int, 0, len(sites))
 	siteIds := make([]int, 0, len(sites))
+	referrerIdSet := map[int]struct{}{}
 	for _, site := range sites {
 		ownerIds = append(ownerIds, site.OwnerUserId)
 		siteIds = append(siteIds, site.Id)
+		if site.ReferrerSiteId > 0 {
+			referrerIdSet[site.ReferrerSiteId] = struct{}{}
+		}
+	}
+	referrerSubdomains := map[int]string{}
+	if len(referrerIdSet) > 0 {
+		refIds := make([]int, 0, len(referrerIdSet))
+		for id := range referrerIdSet {
+			refIds = append(refIds, id)
+		}
+		var refRows []struct {
+			Id        int
+			Subdomain string
+		}
+		if err := model.DB.Model(&model.AdtySite{}).Select("id, subdomain").Where("id IN ?", refIds).Scan(&refRows).Error; err != nil {
+			return nil, err
+		}
+		for _, r := range refRows {
+			referrerSubdomains[r.Id] = r.Subdomain
+		}
 	}
 	names := model.LookupUsernamesByIDs(model.DB, ownerIds)
 	counts := map[int]int64{}
@@ -123,7 +145,7 @@ func buildSiteAdminViews(sites []model.AdtySite) ([]adtySiteAdminView, error) {
 			apiHost = apiHosts[site.Id]
 		}
 		view := adtySiteAdminView{AdtySite: site, OwnerUsername: names[site.OwnerUserId], Host: service.AdtySiteDisplayHost(&site),
-			ApiHost: apiHost, Customers: counts[site.Id], AdtySiteMonthTotals: totals[site.Id]}
+			ApiHost: apiHost, Customers: counts[site.Id], ReferrerSiteSubdomain: referrerSubdomains[site.ReferrerSiteId], AdtySiteMonthTotals: totals[site.Id]}
 		if d, ok := service.AdtySiteCostFactor(&site); ok {
 			view.EffectiveCostFactor = d.String()
 		}
@@ -554,18 +576,22 @@ func GetAdtyAdminSiteOwnerCandidates(c *gin.Context) {
 // CreateAdtyAdminSite 是管理员直接开站（仅 Root）：按 R-32 (#25) 同步创建独立纯管理端站长账号。
 func CreateAdtyAdminSite(c *gin.Context) {
 	var body struct {
-		UserId           int     `json:"user_id"`
-		OwnerUsername    string  `json:"owner_username"`
-		OwnerPassword    string  `json:"owner_password"`
-		OwnerEmail       string  `json:"owner_email"`
-		OwnerDisplayName string  `json:"owner_display_name"`
-		Subdomain        string  `json:"subdomain"`
-		RootDomain       string  `json:"root_domain"`
-		CostFactor       *string `json:"cost_factor"`
-		TierCode         string  `json:"tier_code"`
-		TierMode         string  `json:"tier_mode"`
-		ContactInfo      string  `json:"contact_info"`
-		IdempotencyKey   string  `json:"idempotency_key"`
+		UserId           int               `json:"user_id"`
+		OwnerUsername    string            `json:"owner_username"`
+		OwnerPassword    string            `json:"owner_password"`
+		OwnerEmail       string            `json:"owner_email"`
+		OwnerDisplayName string            `json:"owner_display_name"`
+		Subdomain        string            `json:"subdomain"`
+		RootDomain       string            `json:"root_domain"`
+		CostFactor       *string           `json:"cost_factor"`
+		TierCode         string            `json:"tier_code"`
+		TierMode         string            `json:"tier_mode"`
+		ContactInfo      string            `json:"contact_info"`
+		IdempotencyKey   string            `json:"idempotency_key"`
+		PartnerLeadId    int64             `json:"partner_lead_id"`
+		ReferrerSiteId   int               `json:"referrer_site_id"`
+		ReferrerCode     string            `json:"referrer_code"`
+		ReferrerRate     common.RawMessage `json:"referrer_rate"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
@@ -590,6 +616,11 @@ func CreateAdtyAdminSite(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	referrerRate, err := parseOptionalFlexibleDecimal(body.ReferrerRate)
+	if err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
 	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
 	if key == "" {
 		key = strings.TrimSpace(body.IdempotencyKey)
@@ -598,7 +629,8 @@ func CreateAdtyAdminSite(c *gin.Context) {
 		CostFactor: costFactor, TierCode: body.TierCode, TierMode: body.TierMode,
 		ContactInfo: body.ContactInfo, OperatorId: c.GetInt("id"),
 		ExplicitRoot: strings.ToLower(strings.TrimSpace(body.RootDomain)), IdempotencyKey: key,
-		NewOwner: newOwner,
+		NewOwner: newOwner, PartnerLeadID: body.PartnerLeadId,
+		ReferrerSiteId: body.ReferrerSiteId, ReferrerCode: body.ReferrerCode, ReferrerRate: referrerRate,
 	})
 	if err != nil {
 		if errors.Is(err, model.ErrAdtyIdempotencyConflict) {
@@ -934,6 +966,8 @@ type adtyResellerSettingsView struct {
 	EdgeMainSiteEnabled        bool                                   `json:"edge_main_site_enabled"`
 	EdgeMainSiteHost           string                                 `json:"edge_main_site_host"`
 	EdgeMainSiteOriginSNI      string                                 `json:"edge_main_site_origin_sni"`
+	PartnerContactTelegram     string                                 `json:"partner_contact_telegram"`
+	PartnerReferralDefaultRate *float64                               `json:"partner_referral_default_rate"`
 	TurnstileWidgets           []adty_setting.ResellerTurnstileWidget `json:"turnstile_widgets"`
 	TurnstileWidgetSecret      map[string]string                      `json:"turnstile_widget_secret"`
 	CloudflareTokenConfigured  bool                                   `json:"cloudflare_token_configured"`
@@ -1109,6 +1143,8 @@ func GetAdtyResellerSettings(c *gin.Context) {
 		EdgeMainSiteEnabled:        cfg.EdgeMainSiteEnabled,
 		EdgeMainSiteHost:           cfg.EdgeMainSiteHost,
 		EdgeMainSiteOriginSNI:      cfg.EdgeMainSiteOriginSNI,
+		PartnerContactTelegram:     cfg.PartnerContactTelegram,
+		PartnerReferralDefaultRate: cfg.PartnerReferralDefaultRate,
 		TurnstileWidgets:           cfg.TurnstileWidgets,
 		CloudflareTokenConfigured:  strings.TrimSpace(cfg.CloudflareApiToken) != "",
 		WidgetSecretConfigured:     map[string]bool{},
@@ -1160,7 +1196,7 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		return
 	}
 	if c.GetInt("role") < common.RoleRootUser {
-		for _, key := range []string{adty_setting.ResellerKeyCloudflareTok, adty_setting.ResellerKeyWidgetSecret, "turnstile_widgets", "aliyun_access_key_id", "aliyun_access_key_Secret", "domain_automation_enabled", "aliyun_domain", "domain_mainland_target", "cloudflare_zone_id", "cloudflare_account_id", "cname_target", "fallback_origin", "edge_mainland_enabled", "edge_acme_alias_suffix", "edge_acme_staging", "edge_node_ip", "edge_node_ips", "edge_failover_to_cf", "edge_probe_enabled", "edge_auto_failover", "edge_main_site_enabled", "edge_main_site_host", "edge_main_site_origin_sni", "clear_secrets"} {
+		for _, key := range []string{adty_setting.ResellerKeyCloudflareTok, adty_setting.ResellerKeyWidgetSecret, "turnstile_widgets", "aliyun_access_key_id", "aliyun_access_key_Secret", "domain_automation_enabled", "aliyun_domain", "domain_mainland_target", "cloudflare_zone_id", "cloudflare_account_id", "cname_target", "fallback_origin", "edge_mainland_enabled", "edge_acme_alias_suffix", "edge_acme_staging", "edge_node_ip", "edge_node_ips", "edge_failover_to_cf", "edge_probe_enabled", "edge_auto_failover", "edge_main_site_enabled", "edge_main_site_host", "edge_main_site_origin_sni", "partner_contact_telegram", "partner_referral_default_rate", "clear_secrets"} {
 			if _, present := body[key]; present {
 				denyAdtyAdminAction(c)
 				return
@@ -1287,6 +1323,7 @@ func UpdateAdtyResellerSettings(c *gin.Context) {
 		next.EdgeACMEAliasSuffix = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(next.EdgeACMEAliasSuffix)), ".")
 		next.EdgeMainSiteHost = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(next.EdgeMainSiteHost)), ".")
 		next.EdgeMainSiteOriginSNI = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(next.EdgeMainSiteOriginSNI)), ".")
+		next.PartnerContactTelegram = strings.TrimSpace(next.PartnerContactTelegram)
 		_, touchedEdgeIPsInTx := values["edge_node_ips"]
 		_, touchedEdgeIPInTx := values["edge_node_ip"]
 		if touchedEdgeIPsInTx {

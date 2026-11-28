@@ -37,9 +37,10 @@ func AttachTaskBillingReservation(info *relaycommon.RelayInfo, task *model.Task)
 }
 
 func projectBillingEarnings(key string) {
-	if err := projectAdtySiteEarningEvent(context.Background(), key); err != nil {
-		common.SysError(common.LogText("site earning projection remains pending: %s", err.Error()))
-	}
+	// R-49: Live API requests leave AdtySiteEarningEvent unprojected (Projected=false) so the
+	// hourly settlement engine projects daily/line rows and posts one aggregated wallet ledger
+	// per site per hour without per-request site wallet row contention.
+	_ = key
 }
 
 func projectAdtySiteEarningEvent(ctx context.Context, key string) error {
@@ -72,13 +73,21 @@ func projectAdtySiteEarningEvent(ctx context.Context, key string) error {
 			}
 		}
 		event := rows[0]
-		return projectAdtySiteEarningEventTx(tx, &event)
+		return projectAdtySiteEarningEventWithCreditTx(tx, &event, true)
 	})
 }
 
 func projectAdtySiteEarningEventTx(tx *gorm.DB, event *model.AdtySiteEarningEvent) error {
-	if event.Projected || event.ReviewStatus == model.AdtyEarningNeedsReview {
+	_, _, _, _, err := projectAdtySiteEarningDailyAndLineTx(tx, event, "", time.Now().Unix())
+	return err
+}
+
+func projectAdtySiteEarningEventWithCreditTx(tx *gorm.DB, event *model.AdtySiteEarningEvent, immediateCredit bool) error {
+	if event == nil || event.Projected || event.ReviewStatus == model.AdtyEarningNeedsReview {
 		return nil
+	}
+	if !immediateCredit {
+		return projectAdtySiteEarningEventTx(tx, event)
 	}
 	revenue, platform, earning, err := adtyDurableEarningSplitTx(tx, event)
 	if err != nil {
@@ -93,16 +102,21 @@ func projectAdtySiteEarningEventTx(tx *gorm.DB, event *model.AdtySiteEarningEven
 	if event.ReviewStatus == model.AdtyEarningOriginalSkipped {
 		kind = model.AdtySiteEarningSkipped
 	}
+	nowUnix := time.Now().Unix()
 	if err := upsertAdtySiteEarningTx(tx, event.Day+"+op", adtySiteEarningEntry{
 		SiteId: event.SiteId, SiteOwnerUserId: event.SiteOwnerUserId, UserId: event.UserId, OperationKey: event.OperationKey,
 		Kind: kind, Reason: event.RiskFlag, Quota: int64(event.Quota), Revenue: revenue, Platform: platform, Earning: earning,
+		ImmediateCredit: kind != model.AdtySiteEarningSkipped, MarkAvailable: kind != model.AdtySiteEarningSkipped, SettledAt: nowUnix,
 	}); err != nil {
 		return err
 	}
 	if err := recordDurableAdtySiteEarningLineTx(tx, event, revenue, platform, earning); err != nil {
 		return err
 	}
-	return tx.Model(&model.AdtySiteEarningEvent{}).Where("operation_key = ?", event.OperationKey).Update("projected", true).Error
+	return tx.Model(&model.AdtySiteEarningEvent{}).Where("operation_key = ?", event.OperationKey).Updates(map[string]any{
+		"projected":  true,
+		"settled_at": nowUnix,
+	}).Error
 }
 
 func adtyDurableEarningSplitTx(tx *gorm.DB, event *model.AdtySiteEarningEvent) (revenue, platform, earning decimal.Decimal, err error) {
@@ -129,7 +143,11 @@ func adtyDurableEarningSplitTx(tx *gorm.DB, event *model.AdtySiteEarningEvent) (
 	return
 }
 
-func init() { model.AdtyApplySiteEarningTx = projectAdtySiteEarningEventTx }
+func init() {
+	// R-49: Defer per-request subsite earning projection to the hourly settlement engine so
+	// live API requests never lock or write adty_site_wallets (earnings).
+	model.AdtyApplySiteEarningTx = func(*gorm.DB, *model.AdtySiteEarningEvent) error { return nil }
+}
 
 // RecoverBillingOperations retries durable decisions and expires only unbound
 // reservations whose heartbeat has stopped.
@@ -276,15 +294,8 @@ func RecoverBillingOperations(ctx context.Context, limit int) error {
 			}
 		}
 	}
-	var events []model.AdtySiteEarningEvent
-	if err := model.DB.WithContext(ctx).Where("projected = ? AND (review_status <> ? OR review_status IS NULL)", false, model.AdtyEarningNeedsReview).Order("created_at, operation_key").Limit(limit).Find(&events).Error; err != nil {
-		return err
-	}
-	for _, event := range events {
-		if err := projectAdtySiteEarningEvent(ctx, event.OperationKey); err != nil && first == nil {
-			first = err
-		}
-	}
+	// R-49: Unprojected AdtySiteEarningEvent rows are batch-projected by the hourly settlement
+	// engine (service/adty_hourly_settlement.go) rather than per-event in 15s billing recovery.
 	if err := model.BackfillMissingAdtyBillingHolds(ctx, limit); err != nil && first == nil {
 		first = err
 	}

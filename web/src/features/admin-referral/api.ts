@@ -207,6 +207,12 @@ export const payWithdrawal = (
   body: { txn_no: string; proof_url: string; note: string }
 ) => post(`/withdrawals/${id}/pay`, body)
 
+export const releaseAdminReferralCommission = (id: number, reason?: string) =>
+  post(`/commissions/${id}/release`, { reason: reason?.trim() || '' })
+
+export const voidAdminReferralCommission = (id: number, reason?: string) =>
+  post(`/commissions/${id}/void`, { reason: reason?.trim() || '' })
+
 export const runSettlement = () => post('/settlements/run', {})
 
 /** One referral admin action (model.ReferralAdminAuditLog). */

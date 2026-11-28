@@ -92,6 +92,8 @@ export type ResellerDrafts = Record<RuleKey, string> &
     edge_main_site_enabled: boolean
     /** One IPv4 per line (or comma-separated). */
     edge_node_ips: string
+    partner_contact_telegram: string
+    partner_referral_default_rate: string
     aliyun_id: string
     aliyun_secret: string
     clear_aliyun: boolean
@@ -154,6 +156,11 @@ export function toResellerDrafts(saved: ResellerSettings): ResellerDrafts {
     edge_auto_failover: saved.edge_auto_failover ?? false,
     edge_main_site_enabled: saved.edge_main_site_enabled ?? false,
     edge_node_ips: savedEdgeNodeIPs(saved).join('\n'),
+    partner_contact_telegram: saved.partner_contact_telegram ?? '',
+    partner_referral_default_rate:
+      saved.partner_referral_default_rate == null
+        ? ''
+        : String(saved.partner_referral_default_rate),
     aliyun_id: '',
     aliyun_secret: '',
     clear_aliyun: false,
@@ -245,6 +252,25 @@ export function buildResellerUpdate(
   const edgeIPs = uniqueLines(drafts.edge_node_ips)
   if (!sameList(edgeIPs, savedEdgeNodeIPs(saved))) {
     body.edge_node_ips = edgeIPs
+  }
+  const partnerTelegram = drafts.partner_contact_telegram.trim()
+  if (partnerTelegram !== (saved.partner_contact_telegram ?? '').trim()) {
+    body.partner_contact_telegram = partnerTelegram
+  }
+  const rawPartnerRate = drafts.partner_referral_default_rate.trim()
+  const savedPartnerRate = saved.partner_referral_default_rate ?? null
+  if (rawPartnerRate === '') {
+    if (savedPartnerRate !== null) {
+      body.partner_referral_default_rate = null
+    }
+  } else {
+    const nextPartnerRate = Number(rawPartnerRate)
+    if (
+      Number.isFinite(nextPartnerRate) &&
+      nextPartnerRate !== savedPartnerRate
+    ) {
+      body.partner_referral_default_rate = nextPartnerRate
+    }
   }
   if (drafts.aliyun_id.trim()) {
     body.aliyun_access_key_id = drafts.aliyun_id.trim()

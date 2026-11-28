@@ -63,6 +63,22 @@ export const RULE_KEYS: RuleKey[] = [
   'batch_register_window_hours',
 ]
 
+export const RULE_MIN: Record<RuleKey, number> = {
+  cookie_ttl_days: 1,
+  freeze_days: 0,
+  cancel_window_minutes: 0,
+  self_invite_window_days: 1,
+  batch_register_threshold: 0,
+  batch_register_window_hours: 1,
+}
+
+export function isValidRuleDraft(key: RuleKey, raw: string): boolean {
+  const trimmed = raw.trim()
+  if (trimmed === '') return false
+  const value = Number(trimmed)
+  return Number.isInteger(value) && value >= RULE_MIN[key]
+}
+
 export type Drafts = Record<MoneyKey | RuleKey, string> & { cny_rate: string }
 
 export function toDrafts(settings: ReferralSettings): Drafts {
@@ -71,6 +87,8 @@ export function toDrafts(settings: ReferralSettings): Drafts {
     const value = settings[key]
     drafts[key] = value === null || value === undefined ? '' : String(value)
   }
-  for (const key of RULE_KEYS) drafts[key] = String(settings[key])
+  for (const key of RULE_KEYS) {
+    drafts[key] = String(key === 'freeze_days' ? Math.max(settings[key], 0) : settings[key])
+  }
   return drafts
 }

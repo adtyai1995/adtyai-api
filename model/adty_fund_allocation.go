@@ -463,6 +463,7 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 	// 这里只有「消费」语义（applied > 0 的分摊转实扣），退款走的是 take<=0
 	// 的释放分支，一分都不会计进 principalSpent。
 	principalSpent := int64(0)
+	var principalDeltas []AdtyPrincipalBatchDelta
 	bonusBySource := map[string]int64{}
 	var touchedPrincipalBatchIDs []int64
 	left := applied
@@ -489,6 +490,19 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 		}
 		if shares[i].Kind == "principal" && shares[i].Source != "legacy" {
 			principalSpent += take
+			var batch AdtyFundBatch
+			if err := tx.Select("id", "site_id", "source").Where("id = ?", shares[i].BatchId).Limit(1).Find(&batch).Error; err != nil {
+				return 0, err
+			}
+			if batch.Id > 0 {
+				siteID, err := adtyResolveFundBatchSiteIDTx(tx, &batch)
+				if err != nil {
+					return 0, err
+				}
+				principalDeltas = append(principalDeltas, AdtyPrincipalBatchDelta{
+					BatchId: batch.Id, SiteId: siteID, Source: batch.Source, Quota: take,
+				})
+			}
 		}
 		if isAdtyBonusBatchKind(shares[i].Kind) && shares[i].Source != "" {
 			var batch AdtyFundBatch
@@ -515,6 +529,9 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 			return 0, err
 		}
 		if err := adtyNotifyPrincipalSpentTx(tx, userID, operationID, principalSpent); err != nil {
+			return 0, err
+		}
+		if err := adtyNotifyPrincipalDeltaTx(tx, userID, operationID, principalDeltas); err != nil {
 			return 0, err
 		}
 		if err := migrateTouchedClosedOwnerBatchesTx(tx, userID, touchedPrincipalBatchIDs, "settle:"+operationID); err != nil {
@@ -551,6 +568,19 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 		}
 		if shares[i].Kind == "principal" && shares[i].Source != "legacy" {
 			principalSpent += take
+			var batch AdtyFundBatch
+			if err := tx.Select("id", "site_id", "source").Where("id = ?", shares[i].BatchId).Limit(1).Find(&batch).Error; err != nil {
+				return 0, err
+			}
+			if batch.Id > 0 {
+				siteID, err := adtyResolveFundBatchSiteIDTx(tx, &batch)
+				if err != nil {
+					return 0, err
+				}
+				principalDeltas = append(principalDeltas, AdtyPrincipalBatchDelta{
+					BatchId: batch.Id, SiteId: siteID, Source: batch.Source, Quota: take,
+				})
+			}
 		}
 		if isAdtyBonusBatchKind(shares[i].Kind) && shares[i].Source != "" {
 			var batch AdtyFundBatch
@@ -594,6 +624,9 @@ func SettleAdtyFundAllocationsTx(tx *gorm.DB, userID int, operationID string, ap
 		return 0, err
 	}
 	if err := adtyNotifyPrincipalSpentTx(tx, userID, operationID, principalSpent); err != nil {
+		return 0, err
+	}
+	if err := adtyNotifyPrincipalDeltaTx(tx, userID, operationID, principalDeltas); err != nil {
 		return 0, err
 	}
 	if err := migrateTouchedClosedOwnerBatchesTx(tx, userID, touchedPrincipalBatchIDs, "settle:"+operationID); err != nil {
@@ -733,6 +766,7 @@ func reverseSettledAdtyFundSourcesTx(tx *gorm.DB, userID int, sources []string, 
 	}
 	left := refundQuota
 	principalBySite := map[int]int64{}
+	var principalDeltas []AdtyPrincipalBatchDelta
 	bonusBySource := map[string]int64{}
 	var touchedPrincipalBatchIDs []int64
 	for i := range shares {
@@ -771,6 +805,9 @@ func reverseSettledAdtyFundSourcesTx(tx *gorm.DB, userID int, sources []string, 
 				if siteID > 0 {
 					principalBySite[siteID] += giveBack
 				}
+				principalDeltas = append(principalDeltas, AdtyPrincipalBatchDelta{
+					BatchId: batches[0].Id, SiteId: siteID, Source: batches[0].Source, Quota: -giveBack,
+				})
 			}
 		} else if isAdtyBonusBatchKind(shares[i].Kind) && shares[i].Source != "" {
 			var batches []AdtyFundBatch
@@ -788,6 +825,9 @@ func reverseSettledAdtyFundSourcesTx(tx *gorm.DB, userID int, sources []string, 
 		return err
 	}
 	if err := adtyNotifyPrincipalRefundedTx(tx, userID, reverseOperationID, principalBySite); err != nil {
+		return err
+	}
+	if err := adtyNotifyPrincipalDeltaTx(tx, userID, reverseOperationID, principalDeltas); err != nil {
 		return err
 	}
 	return migrateTouchedClosedOwnerBatchesTx(tx, userID, touchedPrincipalBatchIDs, "refund:"+reverseOperationID)

@@ -77,6 +77,9 @@ type adtySiteEarningEntry struct {
 	Platform        decimal.Decimal
 	Earning         decimal.Decimal
 	OccurredAt      int64
+	ImmediateCredit bool
+	MarkAvailable   bool
+	SettledAt       int64
 }
 
 func adtyImmediateEarningIdemKey(siteID, ownerID int, eventOpKey string) string {
@@ -88,8 +91,9 @@ func adtyImmediateEarningIdemKey(siteID, ownerID int, eventOpKey string) string 
 	return fmt.Sprintf("site-earning-imm:%d:%d:%s", siteID, ownerID, common.NewRequestId())
 }
 
-// upsertAdtySiteEarningTx records confirmed site earnings and credits the site
-// earnings wallet immediately for confirmed usage/refund spread.
+// upsertAdtySiteEarningTx records site earnings in AdtySiteEarningDaily.
+// Immediate earnings-wallet crediting happens ONLY when entry.ImmediateCredit is explicitly true
+// (never during per-request live API usage/refund; hourly settlement aggregates wallet ledgers).
 func upsertAdtySiteEarningTx(tx *gorm.DB, day string, entry adtySiteEarningEntry) error {
 	return tx.Transaction(func(tx *gorm.DB) error {
 		ownerID, err := model.ResolveAdtySiteFinancialOwnerTx(tx, entry.SiteId, entry.SiteOwnerUserId)
@@ -98,12 +102,19 @@ func upsertAdtySiteEarningTx(tx *gorm.DB, day string, entry adtySiteEarningEntry
 		}
 		entry.SiteOwnerUserId = ownerID
 		now := time.Now().Unix()
-		immediateCredit := entry.Kind == model.AdtySiteEarningUsage || entry.Kind == model.AdtySiteEarningRefund
+		isSpreadKind := entry.Kind == model.AdtySiteEarningUsage || entry.Kind == model.AdtySiteEarningRefund
+		immediateCredit := entry.ImmediateCredit && isSpreadKind
+		markAvailable := immediateCredit || (entry.MarkAvailable && isSpreadKind)
 		rowStatus := model.AdtySiteEarningPending
 		settledAt := int64(0)
-		if immediateCredit {
+		if markAvailable {
 			rowStatus = model.AdtySiteEarningAvailable
-			settledAt = now
+			settledAt = entry.SettledAt
+			if settledAt <= 0 {
+				settledAt = now
+			}
+		}
+		if immediateCredit {
 			// R7-004: Pre-lock earnings wallet BEFORE AdtySiteEarningDaily so every
 			// writer obeys canonical AdtySiteWallet(earnings) -> AdtySiteEarningDaily order.
 			if !entry.Earning.IsZero() {
@@ -134,7 +145,7 @@ func upsertAdtySiteEarningTx(tx *gorm.DB, day string, entry adtySiteEarningEntry
 			if len(before) == 0 {
 				continue
 			}
-			if immediateCredit && !strings.Contains(day, "+op") {
+			if markAvailable && !strings.Contains(day, "+op") {
 				var count int64
 				if err := tx.Model(&model.AdtySiteEarningFact{}).Where("daily_id = ?", before[0].Id).Count(&count).Error; err != nil {
 					return err
@@ -206,6 +217,67 @@ func upsertAdtySiteEarningTx(tx *gorm.DB, day string, entry adtySiteEarningEntry
 		}
 		return nil
 	})
+}
+
+// projectAdtySiteEarningDailyAndLineTx projects one durable earning event into AdtySiteEarningDaily
+// (status=available, settled_at=settledAt for non-skipped kinds) and AdtySiteEarningLine, and stamps
+// projected=true, hour_slot, and settled_at on the event WITHOUT posting any per-event wallet ledger.
+func projectAdtySiteEarningDailyAndLineTx(tx *gorm.DB, event *model.AdtySiteEarningEvent, hourSlot string, settledAt int64) (revenue, platform, earning decimal.Decimal, kind string, err error) {
+	if event == nil || event.Projected || event.ReviewStatus == model.AdtyEarningNeedsReview {
+		return decimal.Zero, decimal.Zero, decimal.Zero, "", nil
+	}
+	revenue, platform, earning, err = adtyDurableEarningSplitTx(tx, event)
+	if err != nil {
+		return decimal.Zero, decimal.Zero, decimal.Zero, "", err
+	}
+	kind = model.AdtySiteEarningUsage
+	if event.Quota < 0 {
+		kind = model.AdtySiteEarningRefund
+	}
+	if event.ReviewStatus == model.AdtyEarningOriginalSkipped {
+		kind = model.AdtySiteEarningSkipped
+	}
+	if settledAt <= 0 {
+		settledAt = time.Now().Unix()
+	}
+	if err = upsertAdtySiteEarningTx(tx, event.Day+"+op", adtySiteEarningEntry{
+		SiteId:          event.SiteId,
+		SiteOwnerUserId: event.SiteOwnerUserId,
+		UserId:          event.UserId,
+		OperationKey:    event.OperationKey,
+		Kind:            kind,
+		Reason:          event.RiskFlag,
+		Quota:           int64(event.Quota),
+		Revenue:         revenue,
+		Platform:        platform,
+		Earning:         earning,
+		MarkAvailable:   kind != model.AdtySiteEarningSkipped,
+		ImmediateCredit: false,
+		SettledAt:       settledAt,
+	}); err != nil {
+		return decimal.Zero, decimal.Zero, decimal.Zero, "", err
+	}
+	if err = recordDurableAdtySiteEarningLineTx(tx, event, revenue, platform, earning); err != nil {
+		return decimal.Zero, decimal.Zero, decimal.Zero, "", err
+	}
+	updates := map[string]any{
+		"projected":  true,
+		"settled_at": settledAt,
+	}
+	if strings.TrimSpace(hourSlot) != "" {
+		updates["hour_slot"] = strings.TrimSpace(hourSlot)
+	}
+	if err = tx.Model(&model.AdtySiteEarningEvent{}).
+		Where("operation_key = ?", event.OperationKey).
+		Updates(updates).Error; err != nil {
+		return decimal.Zero, decimal.Zero, decimal.Zero, "", err
+	}
+	event.Projected = true
+	event.SettledAt = settledAt
+	if strings.TrimSpace(hourSlot) != "" {
+		event.HourSlot = strings.TrimSpace(hourSlot)
+	}
+	return revenue, platform, earning, kind, nil
 }
 
 func upsertAdtySiteEarningLineTx(tx *gorm.DB, siteID, ownerID, userID int, modelName, group, requestID string, quota int64, k, d float64) error {
@@ -761,6 +833,7 @@ func ReviewAdtySiteCustomerWithAuditForActor(userId, adminId, actorRole int, den
 					SiteId: row.SiteId, SiteOwnerUserId: row.SiteOwnerUserId, UserId: row.UserId, Kind: kind,
 					OperationKey: fmt.Sprintf("customer-risk-review:%d", row.Id),
 					Reason:       row.Reason, Quota: quota, Revenue: revenue, Platform: platform, Earning: earning,
+					ImmediateCredit: true,
 				}); err != nil {
 					return err
 				}

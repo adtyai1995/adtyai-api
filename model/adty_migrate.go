@@ -242,6 +242,9 @@ func migrateAdtySiteTablesOn(db *gorm.DB) error {
 	if err := BackfillAdtyCloseMailDeadline(db, 0); err != nil {
 		return err
 	}
+	if err := backfillAdtySitePartnerCodes(db); err != nil {
+		return err
+	}
 	// Pre-attempt recalls left a reviewer and reason on a pending withdrawal.
 	// Keep these holds until the original external result is reconciled.
 	if err := db.Model(&AdtySiteWithdrawal{}).Where("attempt_number = 0 AND attempt_open = ? AND (status = ? OR (status = ? AND reviewed_at > 0 AND proof_note <> ''))", false, AdtySiteWithdrawPaying, AdtySiteWithdrawPending).Where("NOT EXISTS (?)", db.Model(&AdtySitePayoutAttempt{}).Select("1").Where("withdrawal_id = adty_site_withdrawals.id")).Update("attempt_open", true).Error; err != nil {

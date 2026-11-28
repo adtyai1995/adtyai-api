@@ -3,17 +3,20 @@ package service
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func init() {
 	model.AdtyAfterPrincipalSpentTx = adtyDebitOperatingPrincipalTx
 	model.AdtyAfterPrincipalRefundedTx = adtyRefundOperatingPrincipalTx
 	model.AdtyAfterPrincipalReducedTx = adtyReduceOperatingPrincipalTx
+	model.AdtyAfterPrincipalDeltaTx = adtyRecordPrincipalConsumeEventsTx
 }
 
 func adtyReduceOperatingPrincipalTx(tx *gorm.DB, siteID int, quota int64, refType, refID, idemKey string) error {
@@ -174,6 +177,23 @@ func adtyResolveOperatingPrincipalSiteIDTx(tx *gorm.DB, userID int, operationKey
 		if len(ledgers) > 0 && ledgers[0].SiteId > 0 {
 			return ledgers[0].SiteId, nil
 		}
+		hasOpEventTable, err := model.AdtyTableExists(tx, &model.AdtyOperatingPrincipalEvent{})
+		if err != nil {
+			return 0, err
+		}
+		if hasOpEventTable {
+			opKeys := []string{operationKey}
+			if rootKey != "" && rootKey != operationKey {
+				opKeys = append(opKeys, rootKey)
+			}
+			var opEvents []model.AdtyOperatingPrincipalEvent
+			if err := tx.Select("site_id").Where("operation_key IN ? AND site_id > 0", opKeys).Order("id DESC").Limit(1).Find(&opEvents).Error; err != nil {
+				return 0, err
+			}
+			if len(opEvents) > 0 && opEvents[0].SiteId > 0 {
+				return opEvents[0].SiteId, nil
+			}
+		}
 	}
 	var user model.User
 	if err := tx.Select("id", "site_id").First(&user, userID).Error; err != nil {
@@ -185,11 +205,33 @@ func adtyResolveOperatingPrincipalSiteIDTx(tx *gorm.DB, userID int, operationKey
 	return 0, nil
 }
 
+func adtyRecordOperatingPrincipalEventTx(tx *gorm.DB, operationKey, direction string, siteID, userID int, quota int64) error {
+	if tx == nil || siteID <= 0 || quota == 0 {
+		return nil
+	}
+	opKey := strings.TrimSpace(operationKey)
+	if opKey == "" {
+		opKey = fmt.Sprintf("direct:%s:%s", direction, common.GetUUID())
+	}
+	event := model.AdtyOperatingPrincipalEvent{
+		OperationKey: opKey,
+		Direction:    direction,
+		SiteId:       siteID,
+		UserId:       userID,
+		Quota:        quota,
+		Settled:      false,
+	}
+	return tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "operation_key"}, {Name: "direction"}, {Name: "site_id"}},
+		DoNothing: true,
+	}).Create(&event).Error
+}
+
 func adtyDebitOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string, principalQuota int64) error {
 	if tx == nil || userID <= 0 || principalQuota <= 0 {
 		return nil
 	}
-	refType, err := adtyOperatingRefType(tx, operationKey, "consume")
+	hasEventTable, err := model.AdtyTableExists(tx, &model.AdtyOperatingPrincipalEvent{})
 	if err != nil {
 		return err
 	}
@@ -207,6 +249,22 @@ func adtyDebitOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string,
 			siteIDs = append(siteIDs, sid)
 		}
 		sort.Ints(siteIDs)
+		if hasEventTable {
+			for _, sid := range siteIDs {
+				q := bySite[sid]
+				if sid <= 0 || q <= 0 {
+					continue
+				}
+				if err := adtyRecordOperatingPrincipalEventTx(tx, operationKey, "spend", sid, userID, -q); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		refType, err := adtyOperatingRefType(tx, operationKey, "consume")
+		if err != nil {
+			return err
+		}
 		for _, sid := range siteIDs {
 			q := bySite[sid]
 			if q <= 0 {
@@ -229,6 +287,13 @@ func adtyDebitOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string,
 	if siteID <= 0 {
 		return nil
 	}
+	if hasEventTable {
+		return adtyRecordOperatingPrincipalEventTx(tx, operationKey, "spend", siteID, userID, -principalQuota)
+	}
+	refType, err := adtyOperatingRefType(tx, operationKey, "consume")
+	if err != nil {
+		return err
+	}
 	key := "operating:consume:" + common.GetUUID()
 	refID := key
 	if operationKey != "" {
@@ -244,10 +309,6 @@ func adtyRefundOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string
 	if tx == nil || userID <= 0 || len(bySite) == 0 {
 		return nil
 	}
-	refType, err := adtyOperatingRefType(tx, operationKey, "refund")
-	if err != nil {
-		return err
-	}
 	siteIDs := make([]int, 0, len(bySite))
 	for sid, q := range bySite {
 		if sid > 0 && q > 0 {
@@ -258,6 +319,23 @@ func adtyRefundOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string
 		return nil
 	}
 	sort.Ints(siteIDs)
+	hasEventTable, err := model.AdtyTableExists(tx, &model.AdtyOperatingPrincipalEvent{})
+	if err != nil {
+		return err
+	}
+	if hasEventTable {
+		for _, sid := range siteIDs {
+			q := bySite[sid]
+			if err := adtyRecordOperatingPrincipalEventTx(tx, operationKey, "refund", sid, userID, q); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	refType, err := adtyOperatingRefType(tx, operationKey, "refund")
+	if err != nil {
+		return err
+	}
 	for _, sid := range siteIDs {
 		q := bySite[sid]
 		key := "operating:refund:" + common.GetUUID()
@@ -270,6 +348,136 @@ func adtyRefundOperatingPrincipalTx(tx *gorm.DB, userID int, operationKey string
 			refID = operationKey
 		}
 		if err := adtyMoveOperatingPrincipalTx(tx, sid, q, "principal_refund", refType, refID, key, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func adtyPrincipalSourceExcludedFromCommission(source string) bool {
+	src := strings.TrimSpace(source)
+	if src == "" || src == "legacy" {
+		return true
+	}
+	for _, prefix := range []string{"VCH", "adjust:", "site-comm-cvt:", "site-comm-wd:", "referral-withdrawal-"} {
+		if strings.HasPrefix(src, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// adtyRecordPrincipalConsumeEventsTx records immutable consumption/refund deltas strictly for
+// real paid personal top-up principal batches (excluding vouchers, adjustments, commission
+// transfers, team top-ups, and owner business orders) so hourly referral settlement can credit
+// commissions based on actual principal consumption (R-49).
+func adtyRecordPrincipalConsumeEventsTx(tx *gorm.DB, userID int, operationKey string, deltas []model.AdtyPrincipalBatchDelta) error {
+	if tx == nil || userID <= 0 || len(deltas) == 0 {
+		return nil
+	}
+	hasEventTable, err := model.AdtyTableExists(tx, &model.AdtyPrincipalConsumeEvent{})
+	if err != nil || !hasEventTable {
+		return err
+	}
+	hasOrderTable, err := model.AdtyTableExists(tx, &model.AdtyTopupOrder{})
+	if err != nil || !hasOrderTable {
+		return err
+	}
+	candidateSet := make(map[string]struct{}, len(deltas))
+	candidates := make([]string, 0, len(deltas))
+	for _, d := range deltas {
+		if d.Quota == 0 {
+			continue
+		}
+		src := strings.TrimSpace(d.Source)
+		if adtyPrincipalSourceExcludedFromCommission(src) {
+			continue
+		}
+		if _, exists := candidateSet[src]; !exists {
+			candidateSet[src] = struct{}{}
+			candidates = append(candidates, src)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	var orders []model.AdtyTopupOrder
+	if err := tx.Select("trade_no", "team_id", "provider", "business").
+		Where("trade_no IN ?", candidates).
+		Find(&orders).Error; err != nil {
+		return err
+	}
+	qualifying := make(map[string]bool, len(orders))
+	for i := range orders {
+		ord := &orders[i]
+		if ord.TeamId == 0 && ord.Business != model.AdtyBusinessTeamTopup &&
+			ord.Provider != model.AdtyVoucherProvider && !ord.IsOwnerBusiness() {
+			qualifying[ord.TradeNo] = true
+		}
+	}
+	if len(qualifying) == 0 {
+		return nil
+	}
+	type aggKey struct {
+		siteID    int
+		direction string
+	}
+	agg := make(map[aggKey]int64)
+	for _, d := range deltas {
+		if d.Quota == 0 {
+			continue
+		}
+		src := strings.TrimSpace(d.Source)
+		if !qualifying[src] {
+			continue
+		}
+		siteID := d.SiteId
+		if siteID < 0 {
+			siteID = 0
+		}
+		dir := "spend"
+		if d.Quota < 0 {
+			dir = "refund"
+		}
+		agg[aggKey{siteID: siteID, direction: dir}] += d.Quota
+	}
+	if len(agg) == 0 {
+		return nil
+	}
+	keys := make([]aggKey, 0, len(agg))
+	for k := range agg {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].siteID != keys[j].siteID {
+			return keys[i].siteID < keys[j].siteID
+		}
+		return keys[i].direction < keys[j].direction
+	})
+	opKey := strings.TrimSpace(operationKey)
+	if opKey == "" {
+		opKey = "direct:" + common.GetUUID()
+	}
+	perUnit := common.QuotaPerUnitDecimal()
+	for _, k := range keys {
+		q := agg[k]
+		if q == 0 {
+			continue
+		}
+		amountUSD := decimal.NewFromInt(q).Div(perUnit).Round(8)
+		row := model.AdtyPrincipalConsumeEvent{
+			OperationKey: opKey,
+			Direction:    k.direction,
+			SiteId:       k.siteID,
+			UserId:       userID,
+			Quota:        q,
+			AmountUSD:    amountUSD,
+			Settled:      false,
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "operation_key"}, {Name: "direction"}, {Name: "site_id"}},
+			DoNothing: true,
+		}).Create(&row).Error; err != nil {
 			return err
 		}
 	}

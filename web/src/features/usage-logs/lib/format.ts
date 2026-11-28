@@ -604,6 +604,15 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'adty.user.quota_adjust': 'Adjusted user quota manually',
   'adty.user.password_reset.challenge': 'Requested password reset verification',
   'adty.site.open': 'Opened reseller site',
+  'adty.partner_lead.reject': 'Rejected partner site application',
+  'adty.site.partner_bind': 'Bound partner referrer to reseller site',
+  'adty.site.partner_rate': 'Updated partner referral commission rate',
+  'adty.site.partner_stop': 'Stopped partner referral commission',
+  'adty.hourly_settlement.run': 'Triggered hourly settlement run',
+  'adty.referral.commission_release':
+    'Released risk-held referral commission {{id}}',
+  'adty.referral.commission_void':
+    'Voided risk-held referral commission {{id}}',
   'adty.site.review': 'Reviewed reseller site application',
   'adty.site.approve': 'Approved reseller site application',
   'adty.site.reject': 'Rejected reseller site application',

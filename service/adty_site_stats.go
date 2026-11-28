@@ -436,6 +436,7 @@ func GetAdtySitesOverview(from, to string) (*AdtySitesOverview, error) {
 type AdtySiteBalances struct {
 	RequiresReview bool            `json:"requires_review,omitempty"`
 	PendingUSD     decimal.Decimal `json:"pending_usd"`
+	PendingHourUSD decimal.Decimal `json:"pending_hour_usd"`
 	SkippedUSD     decimal.Decimal `json:"skipped_usd"`
 	AvailableUSD   decimal.Decimal `json:"available_usd"` // 站点收益钱包可提现余额（balance - frozen_usd）
 	FrozenUSD      decimal.Decimal `json:"frozen_usd"`
@@ -479,6 +480,12 @@ func getAdtySiteBalances(site *model.AdtySite, ownerID int) (*AdtySiteBalances, 
 		case model.AdtySiteEarningUsage, model.AdtySiteEarningRefund:
 			result.PendingUSD = result.PendingUSD.Add(sum.Total)
 		}
+	}
+	if est, estErr := getAdtySiteCurrentHourEstimateScoped(site.Id, ownerID); estErr != nil {
+		return nil, estErr
+	} else {
+		result.PendingHourUSD = est.PendingEarningUSD
+		result.PendingUSD = result.PendingUSD.Add(est.PendingEarningUSD)
 	}
 	if err := withdrawals.Select("COALESCE(SUM(amount_usd),0)").Scan(&result.WithdrawnUSD).Error; err != nil {
 		return nil, err

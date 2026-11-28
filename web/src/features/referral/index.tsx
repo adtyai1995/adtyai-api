@@ -55,12 +55,11 @@ function ReferralRules(props: { profile: ReferralProfile }) {
   const alipayAvailable = withdrawTargetAvailable(profile, 'alipay')
   const rules = [
     t(
-      'You earn {{rate}}% of the top-up face value of every user who signs up through your link, for as long as they top up. Bonus credit earns nothing.',
+      'You earn {{rate}}% of the actual paid-principal consumption of every user who signs up through your link (excludes bonuses, redemption codes, and manual adjustments).',
       { rate: profile.rate || '-' }
     ),
     t(
-      'Commission settles {{days}} days after the top-up. Refunded top-ups void or claw back their commission; balances never go below zero, and any already-withdrawn excess is recorded for recovery.',
-      { days: profile.freeze_days }
+      'Commissions settle hourly on the hour with no freeze. Task refunds offset future commission earnings automatically; risk-flagged settlements are held for review.'
     ),
     t('The last referral link a visitor opens before signing up counts.'),
     t('Inviting yourself, or many sign-ups from one network, earns nothing.'),

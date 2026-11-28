@@ -46,7 +46,14 @@ vi.mock('qrcode.react', () => ({
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string) => key,
+    i18n: { language: 'en', resolvedLanguage: 'en' },
+    t: (key: string, params?: Record<string, string | number>) => {
+      if (!params) return key
+      return Object.entries(params).reduce(
+        (acc, [k, v]) => acc.replaceAll(`{{${k}}}`, String(v)),
+        key
+      )
+    },
   }),
 }))
 
@@ -66,41 +73,71 @@ describe('SiteCustomerReferral invitee identity display', () => {
   })
 
   it('formats invitees as ID / username instead of username (#ID)', async () => {
-    apiGetMock.mockResolvedValueOnce({
-      data: {
-        success: true,
+    apiGetMock.mockImplementation(async (url: string) => {
+      if (url === '/api/adty/site-commissions') {
+        return {
+          data: {
+            success: true,
+            data: {
+              items: [
+                {
+                  id: 11,
+                  site_id: 5,
+                  trade_no: 'CONSUME-2026112810',
+                  face_usd: '12.50',
+                  rate: '0.1',
+                  amount_usd: '1.25',
+                  clawed_usd: '0',
+                  converted_usd: '0',
+                  withdrawn_usd: '0',
+                  frozen_usd: '0',
+                  withdrawable_usd: '0',
+                  status: 'risk_held',
+                  available_at: 0,
+                  created_at: 1700000200,
+                },
+              ],
+            },
+          },
+        }
+      }
+      return {
         data: {
-          site_id: 5,
-          site_name: 'Subsite',
-          site_status: 'active',
-          enabled: true,
-          rate_configured: true,
-          rate: '0.1',
-          rate_percent: '10',
-          observation_days: 7,
-          invite_code: 'INV123',
-          invite_url: 'https://sub.example.com/register?ref=INV123',
-          invited_count: 2,
-          invites: [
-            {
-              invitee_id: 202,
-              invitee_username: 'alice',
-              rate: '0.1',
-              rate_percent: '10',
-              created_at: 1700000000,
-            },
-            {
-              invitee_id: 203,
-              invitee_username: '',
-              rate: '0.1',
-              rate_percent: '10',
-              created_at: 1700000100,
-            },
-          ],
-          has_inviter: false,
-          can_bind: false,
+          success: true,
+          data: {
+            site_id: 5,
+            site_name: 'Demo',
+            site_status: 'active',
+            enabled: true,
+            rate_configured: true,
+            rate: '0.1',
+            rate_percent: '10',
+            observation_days: 0,
+            pending_hour_usd: '2.50',
+            invite_code: 'INV123',
+            invite_url: 'https://sub.example.com/register?ref=INV123',
+            invited_count: 2,
+            invites: [
+              {
+                invitee_id: 202,
+                invitee_username: 'alice',
+                rate: '0.1',
+                rate_percent: '10',
+                created_at: 1700000000,
+              },
+              {
+                invitee_id: 203,
+                invitee_username: '',
+                rate: '0.1',
+                rate_percent: '10',
+                created_at: 1700000100,
+              },
+            ],
+            has_inviter: false,
+            can_bind: false,
+          },
         },
-      },
+      }
     })
 
     const user = userEvent.setup()
@@ -108,6 +145,13 @@ describe('SiteCustomerReferral invitee identity display', () => {
 
     await waitFor(() => {
       expect(screen.getByRole('tab', { name: 'Invited users' })).toBeTruthy()
+    })
+
+    expect(screen.getByText('Current hour estimate')).toBeTruthy()
+    expect(screen.getByText('$2.50')).toBeTruthy()
+    expect(screen.getByText('Settled hourly on the hour')).toBeTruthy()
+    await waitFor(() => {
+      expect(screen.getByText('Risk held')).toBeTruthy()
     })
 
     await user.click(screen.getByRole('tab', { name: 'Invited users' }))

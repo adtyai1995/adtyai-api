@@ -12,7 +12,6 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 const (
@@ -68,110 +67,9 @@ func loadLegacySiteCommissionPolicyTx(tx *gorm.DB) (adtySiteCommissionPolicy, er
 	return adtySiteCommissionPolicy{Cap: capVal, Days: days.IntPart()}, nil
 }
 
-// PrepareAdtySiteInviteCommissionSnapshotTx freezes site invite commission eligibility,
-// rate, amount, and observation period at order creation time inside the order transaction.
+// PrepareAdtySiteInviteCommissionSnapshotTx is a clean no-op: subsite invite commissions now
+// accrue hourly from real principal consumption rather than top-up orders (R-49).
 func PrepareAdtySiteInviteCommissionSnapshotTx(tx *gorm.DB, topUp *model.TopUp, ext *model.AdtyTopupOrder) error {
-	if ext.IsOwnerBusiness() {
-		return nil
-	}
-	if tx == nil || ext == nil || strings.TrimSpace(ext.TradeNo) == "" {
-		return nil
-	}
-	siteID := ext.SiteId
-	userID := ext.UserId
-	if userID <= 0 && topUp != nil {
-		userID = topUp.UserId
-	}
-	if siteID <= 0 {
-		return nil
-	}
-	createdAt := ext.CreatedAt
-	if createdAt <= 0 {
-		createdAt = time.Now().Unix()
-	}
-	snap := adtySiteCommissionOrderSnapshot{
-		Captured:    true,
-		SiteId:      siteID,
-		PayerTeamId: ext.TeamId,
-		InviteeId:   userID,
-		FaceUSD:     ext.FaceUSD,
-		CreatedAt:   createdAt,
-	}
-	if ext.TeamId == 0 && userID > 0 && ext.FaceUSD.IsPositive() {
-		// Canonical lock order: AdtySite -> User -> AdtySiteInvite.
-		var site model.AdtySite
-		if err := model.AdtyLockForUpdate(tx).First(&site, siteID).Error; err != nil {
-			return err
-		}
-		var payer model.User
-		if err := model.AdtyLockForUpdate(tx).Select("id", "site_id").First(&payer, userID).Error; err != nil {
-			return err
-		}
-		if payer.SiteId != siteID {
-			return common.NewMessage("No permission to perform this action")
-		}
-		var invite model.AdtySiteInvite
-		lookup := model.AdtyLockForUpdate(tx).Where("site_id = ? AND invitee_id = ?", siteID, userID).Limit(1).Find(&invite)
-		if lookup.Error != nil {
-			return lookup.Error
-		}
-		if lookup.RowsAffected > 0 && invite.InviterId > 0 && invite.InviterId != userID && invite.RiskFlag != model.ReferralRiskSelfInvite {
-			if ext.CreatedAt <= 0 || invite.CreatedAt <= 0 || invite.CreatedAt <= ext.CreatedAt {
-				snap.InviterId = invite.InviterId
-			}
-		}
-		var siteRate model.AdtySiteReferralRate
-		rateLookup := tx.Where("site_id = ?", siteID).Limit(1).Find(&siteRate)
-		if rateLookup.Error != nil {
-			return rateLookup.Error
-		}
-		snap.Enabled = rateLookup.RowsAffected > 0 && siteRate.Enabled
-		snap.Rate = siteRate.Rate
-		if snap.InviterId > 0 {
-			activeReferrer, userErr := isActiveSiteReferrerUserTx(tx, siteID, snap.InviterId)
-			if userErr != nil {
-				return userErr
-			}
-			if !activeReferrer {
-				snap.InviterId = 0
-			}
-		}
-		if snap.InviterId > 0 {
-			aff, affFound, affErr := loadSiteReferralAffiliateTx(tx, siteID, snap.InviterId)
-			if affErr != nil {
-				return affErr
-			}
-			if affFound {
-				if aff.Status == model.AdtySiteAffiliateStatusDisabled {
-					snap.InviterId = 0
-				} else if aff.RateOverride != nil {
-					override := *aff.RateOverride
-					if override.IsNegative() {
-						override = decimal.Zero
-					} else if override.GreaterThan(adtySiteMaxReferralRate) {
-						override = adtySiteMaxReferralRate
-					}
-					snap.Rate = override
-				}
-			}
-		}
-		snap.PendingCoverageCap = site.MarketingPolicy.PendingCoverageCap
-		if site.MarketingPolicy.ObservationDays != nil {
-			snap.ObservationDays = *site.MarketingPolicy.ObservationDays
-		}
-		if snap.Enabled && snap.PendingCoverageCap != nil && site.MarketingPolicy.ObservationDays != nil && snap.InviterId > 0 && snap.Rate.IsPositive() {
-			amount := SiteInviteCommissionUSD(ext.FaceUSD, snap.Rate)
-			if amount.IsPositive() {
-				snap.AmountUSD = amount
-				snap.Eligible = true
-			}
-		}
-	}
-	encoded, err := common.Marshal(snap)
-	if err != nil {
-		return err
-	}
-	ext.SiteReferralSnapshot = string(encoded)
 	return nil
 }
 
@@ -341,80 +239,10 @@ func RequireAdtySiteCommissionCustomerTx(tx *gorm.DB, userID int) (*model.User, 
 	return &user, nil
 }
 
-// RecordAdtySiteInviteCommissionTx snapshots one site invite commission.
-// It does not spend a wallet. Team top-ups and missing invites record nothing.
+// RecordAdtySiteInviteCommissionTx is a clean no-op: subsite invite commissions now
+// accrue hourly from real principal consumption rather than top-up orders (R-49).
 func RecordAdtySiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder, now time.Time) error {
-	if ext.IsOwnerBusiness() {
-		return nil
-	}
-	if tx == nil || ext == nil || strings.TrimSpace(ext.TradeNo) == "" {
-		return nil
-	}
-	if snap, ok, err := loadAdtySiteCommissionOrderSnapshotTx(ext); err != nil {
-		return err
-	} else if ok {
-		if !snap.Eligible || !snap.Enabled || snap.SiteId <= 0 || snap.PayerTeamId > 0 || snap.InviterId <= 0 || snap.InviteeId <= 0 || snap.InviterId == snap.InviteeId || !snap.Rate.IsPositive() || !snap.AmountUSD.IsPositive() {
-			return nil
-		}
-		row := model.AdtySiteInviteCommission{
-			SiteId: snap.SiteId, InviterId: snap.InviterId, InviteeId: snap.InviteeId, TradeNo: ext.TradeNo,
-			FaceUSD: snap.FaceUSD, Rate: snap.Rate, AmountUSD: snap.AmountUSD, Status: model.AdtySiteCommissionPendingCoverage,
-			PendingCoverageCap: snap.PendingCoverageCap, ObservationDays: snap.ObservationDays, CreatedAt: now.Unix(),
-		}
-		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error
-	}
-	if ext.SiteId <= 0 || ext.TeamId > 0 || ext.UserId <= 0 || !ext.FaceUSD.IsPositive() {
-		return nil
-	}
-	var invite model.AdtySiteInvite
-	lookup := tx.Where("site_id = ? AND invitee_id = ?", ext.SiteId, ext.UserId).Limit(1).Find(&invite)
-	if lookup.Error != nil {
-		return lookup.Error
-	}
-	if lookup.RowsAffected == 0 || invite.InviterId == ext.UserId || !invite.Rate.IsPositive() {
-		return nil
-	}
-	if ext.CreatedAt > 0 && invite.CreatedAt > ext.CreatedAt {
-		return nil
-	}
-	activeReferrer, userErr := isActiveSiteReferrerUserTx(tx, ext.SiteId, invite.InviterId)
-	if userErr != nil {
-		return userErr
-	}
-	if !activeReferrer {
-		return nil
-	}
-	if aff, affFound, affErr := loadSiteReferralAffiliateTx(tx, ext.SiteId, invite.InviterId); affErr != nil {
-		return affErr
-	} else if affFound && aff.Status == model.AdtySiteAffiliateStatusDisabled {
-		return nil
-	}
-	var siteRate model.AdtySiteReferralRate
-	rateLookup := tx.Where("site_id = ?", ext.SiteId).Limit(1).Find(&siteRate)
-	if rateLookup.Error != nil {
-		return rateLookup.Error
-	}
-	if rateLookup.RowsAffected == 0 || siteRate.LegacyEnabled == nil || !*siteRate.LegacyEnabled {
-		return nil
-	}
-	amount := SiteInviteCommissionUSD(ext.FaceUSD, invite.Rate)
-	if !amount.IsPositive() {
-		return nil
-	}
-	var observationDays int64
-	var pendingCap *decimal.Decimal
-	if policy, err := loadLegacySiteCommissionPolicyTx(tx); err == nil {
-		pendingCap = &policy.Cap
-		observationDays = policy.Days
-	} else if !errors.Is(err, ErrAdtySiteReferralUnset) {
-		return err
-	}
-	row := model.AdtySiteInviteCommission{
-		SiteId: ext.SiteId, InviterId: invite.InviterId, InviteeId: ext.UserId, TradeNo: ext.TradeNo,
-		FaceUSD: ext.FaceUSD, Rate: invite.Rate, AmountUSD: amount, Status: model.AdtySiteCommissionPendingCoverage,
-		PendingCoverageCap: pendingCap, ObservationDays: observationDays, CreatedAt: now.Unix(),
-	}
-	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error
+	return nil
 }
 
 func siteCommissionNetTargetUSD(row *model.AdtySiteInviteCommission) decimal.Decimal {
@@ -536,10 +364,10 @@ func coverAdtySiteInviteCommissionTx(tx *gorm.DB, id int64, now time.Time, resum
 			}
 		} else if errors.Is(err, ErrAdtySiteReferralUnset) {
 			cap = site.MarketingPolicy.PendingCoverageCap
-			if cap == nil || (days == 0 && site.MarketingPolicy.ObservationDays == nil) {
+			if cap == nil {
 				return nil
 			}
-			if days == 0 {
+			if days == 0 && site.MarketingPolicy.ObservationDays != nil {
 				days = *site.MarketingPolicy.ObservationDays
 			}
 		} else {
@@ -1482,19 +1310,277 @@ func AdtyUserHasLegacySiteCommissions(userID int) bool {
 }
 
 func adtyRecordSiteInviteCommissionTx(tx *gorm.DB, ext *model.AdtyTopupOrder) error {
-	now := time.Now()
-	if err := RecordAdtySiteInviteCommissionTx(tx, ext, now); err != nil {
-		return err
+	return nil
+}
+
+// settleSiteInviteConsumeHourTx settles subsite customer invite commissions for one closed hour window
+// based on real paid personal principal consumption (0 observation days, Option A live rate, risk_held on frozen settlement).
+func settleSiteInviteConsumeHourTx(hourSlot string, windowEnd int64, now int64, onlySiteID int) (int, error) {
+	if model.DB == nil {
+		return 0, nil
 	}
-	if ext == nil || strings.TrimSpace(ext.TradeNo) == "" {
-		return nil
+	hasTable, err := model.AdtyTableExists(model.DB, &model.AdtyPrincipalConsumeEvent{})
+	if err != nil || !hasTable {
+		return 0, err
 	}
-	var row model.AdtySiteInviteCommission
-	lookup := tx.Where("trade_no = ?", ext.TradeNo).Limit(1).Find(&row)
-	if lookup.Error != nil || lookup.RowsAffected == 0 {
-		return lookup.Error
+	type siteUserPair struct {
+		SiteId int
+		UserId int
 	}
-	return CoverAdtySiteInviteCommissionTx(tx, row.Id, now)
+	q := model.DB.Model(&model.AdtyPrincipalConsumeEvent{}).
+		Select("DISTINCT site_id, user_id").
+		Where("site_id > 0 AND settled = ? AND created_at < ?", false, windowEnd)
+	if onlySiteID > 0 {
+		q = q.Where("site_id = ?", onlySiteID)
+	}
+	var pairs []siteUserPair
+	if err := q.Order("site_id ASC, user_id ASC").Scan(&pairs).Error; err != nil {
+		return 0, err
+	}
+	settledCount := 0
+	var firstErr error
+	for _, pair := range pairs {
+		siteID := pair.SiteId
+		inviteeID := pair.UserId
+		didSettle := false
+		txErr := model.DB.Transaction(func(tx *gorm.DB) error {
+			var events []model.AdtyPrincipalConsumeEvent
+			if err := model.AdtyLockForUpdate(tx).
+				Where("site_id = ? AND user_id = ? AND settled = ? AND created_at < ?", siteID, inviteeID, false, windowEnd).
+				Order("id ASC").
+				Find(&events).Error; err != nil {
+				return err
+			}
+			if len(events) == 0 {
+				return nil
+			}
+			eventIDs := make([]int64, 0, len(events))
+			netUSD := decimal.Zero
+			for _, evt := range events {
+				eventIDs = append(eventIDs, evt.Id)
+				netUSD = netUSD.Add(evt.AmountUSD)
+			}
+			markSettled := func() error {
+				return tx.Model(&model.AdtyPrincipalConsumeEvent{}).
+					Where("id IN ?", eventIDs).
+					Updates(map[string]any{"settled": true, "hour_slot": hourSlot}).Error
+			}
+			var siteRate model.AdtySiteReferralRate
+			rateLookup := tx.Where("site_id = ?", siteID).Limit(1).Find(&siteRate)
+			if rateLookup.Error != nil {
+				return rateLookup.Error
+			}
+			if rateLookup.RowsAffected == 0 || !siteRate.Enabled {
+				return markSettled()
+			}
+			var invite model.AdtySiteInvite
+			invLookup := tx.Where("site_id = ? AND invitee_id = ?", siteID, inviteeID).Limit(1).Find(&invite)
+			if invLookup.Error != nil {
+				return invLookup.Error
+			}
+			if invLookup.RowsAffected == 0 || invite.InviterId <= 0 || invite.InviterId == inviteeID || invite.RiskFlag == model.ReferralRiskSelfInvite {
+				return markSettled()
+			}
+			activeReferrer, err := isActiveSiteReferrerUserTx(tx, siteID, invite.InviterId)
+			if err != nil {
+				return err
+			}
+			if !activeReferrer {
+				return markSettled()
+			}
+			aff, affFound, err := loadSiteReferralAffiliateTx(tx, siteID, invite.InviterId)
+			if err != nil {
+				return err
+			}
+			if affFound && aff.Status == model.AdtySiteAffiliateStatusDisabled {
+				return markSettled()
+			}
+			// Option A live rate (fraction 0..0.30).
+			rate := siteRate.Rate
+			if affFound && aff.RateOverride != nil {
+				override := *aff.RateOverride
+				if override.IsNegative() {
+					override = decimal.Zero
+				} else if override.GreaterThan(adtySiteMaxReferralRate) {
+					override = adtySiteMaxReferralRate
+				}
+				rate = override
+			}
+			if !rate.IsPositive() {
+				return markSettled()
+			}
+			tradeNo := fmt.Sprintf("sconsume:%s:s%d:u%d", hourSlot, siteID, inviteeID)
+			var existingCount int64
+			if err := tx.Model(&model.AdtySiteInviteCommission{}).
+				Where("trade_no = ?", tradeNo).
+				Count(&existingCount).Error; err != nil {
+				return err
+			}
+			if existingCount > 0 {
+				return markSettled()
+			}
+			rawComm := netUSD.Mul(rate).Round(8)
+			effective, _, err := applyAdtyCommissionOffsetTx(
+				tx,
+				model.AdtyCommissionOffsetScopeSiteInvite,
+				fmt.Sprintf("sinv:%d:%d:%d", siteID, invite.InviterId, inviteeID),
+				rawComm,
+			)
+			if err != nil {
+				return err
+			}
+			if !effective.IsPositive() {
+				return markSettled()
+			}
+			var site model.AdtySite
+			if err := tx.First(&site, siteID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return markSettled()
+				}
+				return err
+			}
+			if affFound && !aff.SettlementEnabled {
+				row := model.AdtySiteInviteCommission{
+					SiteId:             siteID,
+					InviterId:          invite.InviterId,
+					InviteeId:          inviteeID,
+					TradeNo:            tradeNo,
+					FaceUSD:            netUSD,
+					Rate:               rate,
+					AmountUSD:          effective,
+					Status:             model.AdtySiteCommissionRiskHeld,
+					PendingCoverageCap: site.MarketingPolicy.PendingCoverageCap,
+					ObservationDays:    0,
+					CreatedAt:          now,
+				}
+				if err := tx.Create(&row).Error; err != nil {
+					return err
+				}
+			} else {
+				row := model.AdtySiteInviteCommission{
+					SiteId:             siteID,
+					InviterId:          invite.InviterId,
+					InviteeId:          inviteeID,
+					TradeNo:            tradeNo,
+					FaceUSD:            netUSD,
+					Rate:               rate,
+					AmountUSD:          effective,
+					Status:             model.AdtySiteCommissionPendingCoverage,
+					PendingCoverageCap: site.MarketingPolicy.PendingCoverageCap,
+					ObservationDays:    0,
+					CreatedAt:          now,
+				}
+				if err := tx.Create(&row).Error; err != nil {
+					return err
+				}
+				if err := coverAdtySiteInviteCommissionTx(tx, row.Id, time.Unix(now, 0), false); err != nil {
+					return err
+				}
+			}
+			if err := markSettled(); err != nil {
+				return err
+			}
+			didSettle = true
+			return nil
+		})
+		if txErr != nil {
+			common.SysError(common.LogText("site invite hourly settle site=%d user=%d slot=%s: %s", siteID, inviteeID, hourSlot, txErr.Error()))
+			if firstErr == nil {
+				firstErr = txErr
+			}
+			continue
+		}
+		if didSettle {
+			settledCount++
+		}
+	}
+	return settledCount, firstErr
+}
+
+// ReleaseSiteInviteRiskHeldCommission transitions one risk-held subsite invite commission to pending_coverage
+// (with 0 observation days) and immediately attempts wallet coverage.
+func ReleaseSiteInviteRiskHeldCommission(siteID, ownerID int, commissionID int64, reason, ip, ua string) error {
+	if siteID <= 0 || ownerID <= 0 || commissionID <= 0 {
+		return common.NewMessage("Invalid parameters")
+	}
+	return model.DB.Transaction(func(tx *gorm.DB) error {
+		site, err := verifyOwnerSiteWritableTx(tx, siteID, ownerID)
+		if err != nil {
+			return err
+		}
+		var row model.AdtySiteInviteCommission
+		if err := model.AdtyLockForUpdate(tx).Where("id = ? AND site_id = ?", commissionID, site.Id).First(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return common.NewMessage("Commission record not found")
+			}
+			return err
+		}
+		if row.Status != model.AdtySiteCommissionRiskHeld {
+			return common.NewMessage("Only risk-held commissions can be released")
+		}
+		updates := map[string]any{
+			"status":           model.AdtySiteCommissionPendingCoverage,
+			"observation_days": int64(0),
+		}
+		if row.PendingCoverageCap == nil && site.MarketingPolicy.PendingCoverageCap != nil {
+			updates["pending_coverage_cap"] = site.MarketingPolicy.PendingCoverageCap
+		}
+		if err := tx.Model(&row).Updates(updates).Error; err != nil {
+			return err
+		}
+		if err := coverAdtySiteInviteCommissionTx(tx, row.Id, time.Now(), true); err != nil {
+			return err
+		}
+		var after model.AdtySiteInviteCommission
+		if err := tx.First(&after, row.Id).Error; err != nil {
+			return err
+		}
+		if after.Status == model.AdtySiteCommissionCovered {
+			if err := tx.Model(&after).Update("status", model.AdtySiteCommissionAvailable).Error; err != nil {
+				return err
+			}
+			after.Status = model.AdtySiteCommissionAvailable
+		}
+		return recordSiteReferralAuditTx(
+			tx, site.Id, "commission_risk_release", row.InviterId, ownerID, reason, ip, ua,
+			map[string]any{"commission_id": row.Id, "status": model.AdtySiteCommissionRiskHeld, "amount_usd": row.AmountUSD.String()},
+			map[string]any{"commission_id": row.Id, "status": after.Status, "amount_usd": row.AmountUSD.String()},
+		)
+	})
+}
+
+// VoidSiteInviteRiskHeldCommission permanently voids one risk-held subsite invite commission.
+func VoidSiteInviteRiskHeldCommission(siteID, ownerID int, commissionID int64, reason, ip, ua string) error {
+	if siteID <= 0 || ownerID <= 0 || commissionID <= 0 {
+		return common.NewMessage("Invalid parameters")
+	}
+	return model.DB.Transaction(func(tx *gorm.DB) error {
+		site, err := verifyOwnerSiteWritableTx(tx, siteID, ownerID)
+		if err != nil {
+			return err
+		}
+		var row model.AdtySiteInviteCommission
+		if err := model.AdtyLockForUpdate(tx).Where("id = ? AND site_id = ?", commissionID, site.Id).First(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return common.NewMessage("Commission record not found")
+			}
+			return err
+		}
+		if row.Status != model.AdtySiteCommissionRiskHeld {
+			return common.NewMessage("Only risk-held commissions can be voided")
+		}
+		if err := tx.Model(&row).Updates(map[string]any{
+			"status":     model.AdtySiteCommissionClawedBack,
+			"clawed_usd": row.AmountUSD,
+		}).Error; err != nil {
+			return err
+		}
+		return recordSiteReferralAuditTx(
+			tx, site.Id, "commission_risk_void", row.InviterId, ownerID, reason, ip, ua,
+			map[string]any{"commission_id": row.Id, "status": model.AdtySiteCommissionRiskHeld, "amount_usd": row.AmountUSD.String()},
+			map[string]any{"commission_id": row.Id, "status": model.AdtySiteCommissionClawedBack, "clawed_usd": row.AmountUSD.String()},
+		)
+	})
 }
 
 // ReleaseAdtySiteInviteCommissions marks covered rows available after observation.

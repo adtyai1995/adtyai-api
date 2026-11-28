@@ -162,55 +162,62 @@ BEpusdt 使用官方 `POST /api/v1/pay/info`，只信任与冻结付款链接同
 
 ## 推广返佣
 
-**做什么**：用户分享推广链接，被邀请的人充值后，推广人按充值面额拿佣金，冻结一段时间后可以提现。只做一级。
+**做什么（`[R-49]` 升级为按消费每小时结）**：用户分享推广链接，被邀请人实际消费其**实付在线充值本金**后，推广人按当前生效比例拿一级佣金；每小时整点自动结算入可提现余额（0 冻结期），前端同步展示当小时未结实时预估。
 
 **规则**：
 
 - **谁有推广链接**：主站用户注册时自动成为推广员（8 位邀请码，直接是已通过）。分站客户不能成为推广员：打开推广页也不会建推广员和邀请码（`service/referral.go` 的 `EnsureAffiliate` 直接拒绝），所以主站用户不会通过分站客户的链接给分站客户计佣。
-- **比例**：全局 `adty_referral_setting.default_rate`（百分数，10 表示 10%，没有默认值）；单个推广员可以单设（由管理员在推广管理后台直接调整，传空就回到全局）。下单时把推广员和比例快照进订单，之后改比例不影响已下的单。
-- **佣金** = 面额 × 快照比例 ÷ 100（8 位小数），不含任何加赠。永久计佣，没有期限。
+- **比例（选项 A 实时生效）**：全局 `adty_referral_setting.default_rate`（百分数，10 表示 10%，没有默认值）；单个推广员可以单设（由管理员在推广管理后台直接调整，传空就回到全局）。每小时结算时按**结算当时生效的比例**计算（管理员中途改比例后，下一小时结算起立即按新比例生效）。
+- **计佣基数与公式**：仅统计被邀请人在主站消耗的**实付个人在线充值本金**（含 `manual_credit` 补单；严格排除充值赠金、过期赠金、兑换码、佣金转余额、管理员手动调额、团队余额与自邀绑定）。每小时佣金 = 当小时净实付本金消费美元 × 生效比例 ÷ 100（8 位小数），永久计佣。任务失败退款在同一小时内直接抵减，跨小时净额为负时写入 `adty_commission_offsets` 自动抵扣后续正收益。充值本身不再产生返佣，充值退款也不再冲回消费返佣。
 - **绑定**：打开 `/r/<邀请码>` 或任意页面带 `?ref=<邀请码>`，写一个签名 cookie `adty_ref`，有效期 `cookie_ttl_days`（默认 30 天），以最后一次点击为准；注册时绑定，绑定后不能改。拒绝自己邀请自己和互相邀请。部署时必须固定 `CRYPTO_SECRET` 或 `SESSION_SECRET`，否则重启后 cookie 全部失效。
-- **冻结和结算**：入账时插一条计佣任务，主节点每 60 秒（环境变量 `REFERRAL_SETTLEMENT_INTERVAL_SECONDS`）跑一轮：先生成待结算佣金（`冻结到 = 现在 + freeze_days`，默认 7 天），再把到期的转成可提现。佣金最多晚一轮才出现。
+- **每小时结算与风控暂扣（`risk_held`）**：主节点每小时整点自动运行统一小时结算引擎（0 冻结期，`freeze_days` 默认 `0`），正常推广员佣金直接入 `AvailableAmount` 立即可提现；若推广员处于风控停止结算状态（`settlement_enabled = false`），每小时仍照常落库状态为 `risk_held`（计入待审挂账，不可提现），管理员核查后可在后台「佣金明细」中执行**释放**（`POST /api/user/admin/referral/commissions/:id/release`）转入可提现或**作废**（`POST .../void`）。
 - **提现**（`/referral` 页的提现抽屉；仅支持 `balance`、`usdt`、`alipay` 三种方式，已移除微信提现，外部提现方式与 USDT 链受 `withdraw_methods` / `withdraw_usdt_networks` 配置控制）：
   - **转入余额（`balance`）**：随时、免费、免审，立即到账，额度 = 金额 × QuotaPerUnit（向下取整），写余额流水 `commission_transfer`。
   - **USDT（`usdt`）**：在 `withdraw_methods` 启用 `usdt` 且选定 `withdraw_usdt_networks` 中已启用的链（TRC20、BEP20、Polygon、X Layer）后填地址，按链校验地址；TRC20使用T开头的34位base58格式，其余三网使用0x开头的40位十六进制地址。X Layer接口及存储代码为`XLAYER`，选择器、二次确认、本人记录及后台审核显示X Layer。实到 = 金额 − `usdt_withdraw_fee`；要达到 `min_withdraw_usd`；人工审核，打款时填交易哈希。格式校验不代表已确认链上地址归属，不会自动发起转账。
   - **支付宝（`alipay`）**：在 `withdraw_methods` 启用 `alipay` 后填写支付宝账号和收款人真实姓名，支付宝收款码为选填，免手续费，要达到 `min_withdraw_usd`；汇率 `withdraw_cny_rate` 由管理员实时改，提交时直接查库，和用户看到的不一样就让用户确认新汇率，一样就锁进提现单；人工审核（微信提现已移除）。
   - 防并发多提：条件更新 `可提现 ≥ 金额`，加幂等键。提交后 `cancel_window_minutes`（默认 30 分钟）内待审核的单可以撤回。驳回要填原因，会解冻并发邮件。
-- **防刷**：被邀请人注册时的 IP 或设备和推广人 `self_invite_window_days`（默认 30 天）内用过的相同，照样绑定但标成自邀、不计佣；同一个推广员 `batch_register_window_hours`（默认 24 小时）内同一个 IP 的绑定达到 `batch_register_threshold`（默认 3）个，停这个推广员的结算。IP 和 UA 只存哈希。
+- **防刷**：被邀请人注册时的 IP 或设备和推广人 `self_invite_window_days`（默认 30 天）内用过的相同，照样绑定但标成自邀、不计佣；同一个推广员 `batch_register_window_hours`（默认 24 小时）内同一个 IP 的绑定达到 `batch_register_threshold`（默认 3）个，停这个推广员的结算（后续小时佣金进入 `risk_held` 待审）。IP 和 UA 只存哈希。
 - **合作伙伴申请/审批已退役**：用户端申请入口与后台审批入口均已下线（`POST /api/user/referral/apply` 与 `POST /api/user/admin/referral/affiliates/:user_id/partner` 返回 410 Gone）；推广员单独比例由管理员在推广管理直接调整。
-- **站长停止计佣**：付款人或推广员开站（站点变成 active）后，他的推广链接照样能打开，但不再绑定、新订单不再带返佣快照；开站前创建的订单保留当时的快照，即使之后才支付也照常计佣。订单创建与开站使用同一用户行锁排序。关站后不自动恢复邀请返佣，要后台「恢复邀请返佣」。站长收益提现不走这套 `referral_*` 账户。分站客户充值不计主站推广佣金；一级邀请佣金见下一节。
-- **退款**：按退掉的本金比例扣回佣金，见「充值退款」。
+- **站长停止计佣**：用户成为分站站长后不再参与普通主站推广返佣；老站长推荐新分站走独立的「推荐开站 5% 供货额佣金」链路（见下一节）。
 
-**算例**：面额 $100（不管送了多少）× 10% = $10 佣金，7 天后转成可提现。USDT 提现 $150、手续费 2：实到 148 USDT。支付宝提现 $50、汇率 7.1：锁定 ¥355.00。
+**算例**：被邀请人当小时实际消费实付充值本金 $100（另消耗赠金 $10 不计入）× 10% = $10 佣金，整点自动入可提现余额，0 冻结期。USDT 提现 $150、手续费 2：实到 148 USDT。支付宝提现 $50、汇率 7.1：锁定 ¥355.00。
 
-**后台**：推广管理（`/admin-referral`）：提供「提现审核」（含关站后分站邀请佣金提现）、「推广员」（调比例、停结算、停提现、恢复邀请返佣、查看佣金明细）、「佣金明细」（按推广员筛选）、「后台操作记录」（审核、推广员调整、调佣金、改提现汇率）、「设置」五个页签，以及「立即结算」按钮（原「计佣任务」「佣金流水」前端页签已移除，后端仍保留 `GET /api/user/admin/referral/commission-jobs`、`POST .../commission-jobs/retry`、`GET .../audit-logs` 等运维接口）。用户侧：`/referral`（推广页和提现）、公开页 `/affiliate`、落地 `/r/$code`。
+**后台**：推广管理（`/admin-referral`）：提供「提现审核」（含关站后分站邀请佣金提现）、「推广员」（调比例、停结算、停提现、恢复邀请返佣、查看佣金明细）、「佣金明细」（支持筛选 `risk_held` 并执行释放/作废）、「后台操作记录」、「设置」五个页签，以及「立即结算」按钮。用户侧：`/referral`（推广页含当小时预估与提现）、公开页 `/affiliate`、落地 `/r/$code`。
 
-**默认**：总开关 `adty_referral_setting.enabled` 默认关；关着时点击、绑定、下单快照、推广佣金提现全部不工作；站长收益走独立的分站提现（见「站长收益提现」），不受这个开关影响。没有内置值的四项：`default_rate`（没设不能打开总开关）、`min_withdraw_usd`（没设不能提到 USDT 和支付宝）、`usdt_withdraw_fee`（没设不能提到 USDT）、`withdraw_cny_rate`（没设不能提到支付宝）。
+**默认**：总开关 `adty_referral_setting.enabled` 默认关；`freeze_days` 默认 `0`。没有内置值的四项：`default_rate`（没设不能打开总开关）、`min_withdraw_usd`、`usdt_withdraw_fee`、`withdraw_cny_rate`。
 
-**表和接口**：`referral_affiliates`、`referral_bindings`、`referral_clicks`、`referral_commission_accounts`、`referral_commissions`、`referral_commission_ledgers`、`referral_commission_jobs`、`referral_withdrawals` 等 12 张表，加上 `adty_user_fingerprints`。公开 `POST /api/adty/referral/click`、`GET /api/adty/referral/public-settings`；用户 `GET /api/user/referral/profile`、`GET`/`POST /api/user/referral/withdrawals`、`POST /api/user/referral/withdrawals/:id/cancel`（旧 `POST /api/user/referral/apply` 已退役返回 410）；后台都在 `/api/user/admin/referral/` 下。
-
-**限制**：
-
-- 上线时要先把批量注册阈值设成 0，真实 IP 验证通过后再改回 3（见上线清单）。代码默认是 3。
-
-任务 6.1–6.8、11.1。合作伙伴申请与审批已退役，单个推广员比例由管理员直接在推广管理调整；方案 11.1 要求「站长首次提现必须人工审核」：现在站长收益走独立提现，每笔都由 Root 审核后打款，不再转进推广佣金余额（见「站长收益提现」）。
+**表和接口**：`referral_*` 12 张表 + `adty_principal_consume_events`、`adty_commission_offsets`、`adty_hourly_settlement_runs`、`adty_user_fingerprints`。新增管理员放行/作废接口 `POST /api/user/admin/referral/commissions/:id/release|void`。
 
 ## 分站邀请佣金
 
-**做什么**：分站客户邀请本站客户充值后，邀请人拿到一级佣金。账户、规则和提现都跟主站 `referral_*`、站长收益提现分开。
+**做什么（`[R-49]` 升级为按消费每小时结）**：分站客户邀请本站客户实际消费其**实付在线充值本金**后，邀请人拿到一级佣金；每小时整点紧随分站差价入账后自动结算（0 观察期），账户、规则和提现都跟主站 `referral_*`、站长收益提现分开。
 
 **规则**：
 
-- **成立**：站长在本站设置一级返佣比例（0–30%）、待覆盖阈值（USD）和观察天数后可开启。每个新订单冻结当时的邀请人、比例、阈值和观察天数。先冻结本站收益。收益不够时，只在 Root 已授权的保证金周期额度内冻结。两边都不够就保持待覆盖，这时不能转余额，也不能提现。观察期从覆盖完成起算，零天表示足额覆盖后立即可用。
+- **成立与比例**：站长在本站设置一级返佣比例（0–30%）和待覆盖阈值（USD）后即可开启（`observation_days` 默认 `0`，不再要求填观察天数）。按结算当时生效比例（选项 A）计算；计佣基数仅统计实付个人在线充值本金消耗（排除赠金、兑换码、手动调额、佣金转余额与团队余额）。先冻结本站收益钱包；收益不够时沿用**方案 B**，在 Root 已授权的保证金周期 90% 额度内冻结垫付；两边都不够保持 `pending_coverage` 待覆盖（不能转余额或提现）。覆盖完成后立即可用（0 观察期）。风控停结的推广员产生 `risk_held` 挂账，站长可在「推广管理」执行**释放**（`POST /api/adty/site/referral/commissions/:id/release`）或**作废**（`POST .../void`）。
 - **转站内余额**：扣掉对应冻结，并在同一事务里按 1 USD = 500000 给邀请人加可消费额度。
-- **现金提现**：可转入余额；外部打款仅为支付宝或 USDT。只提交申请不释放冻结。待审驳回、申请人在主站撤销时限内取消、审核通过后打款失败，冻结都留着。站长标记打款完成后，冻结退回原来的收益或保证金。站点营业期间审核人为该站站长；站点关闭后，存量分站客户邀请佣金提现由具备主站推广读取、审核与打款权限的主站推广财务席位（含 Root）承接审核与打款（`/api/user/admin/referral/closed-site-withdrawals`）。
+- **现金提现（保留现状）**：可转入余额；外部打款由站长决定是否开启支付宝或 USDT。只提交申请不释放冻结。待审驳回、申请人在撤销时限内取消、审核通过后打款失败，冻结都留着。站长标记打款完成后，冻结退回原来的收益或保证金。站点营业期间审核人为该站站长；站点关闭后，存量分站客户邀请佣金提现由具备主站推广读取、审核与打款权限的主站推广财务席位（含 Root）承接审核与打款（`/api/user/admin/referral/closed-site-withdrawals`）。
 - **拆开用**：转余额的部分扣冻结，外部打款的部分释放冻结，两边按金额分别记账。
-- **退款**：按已完成本金比例。还冻着的释放；已转余额的冲回用户余额；已外部打款并释放的，不再扣站长，只记追偿。
-- **未设参数**：站长未配置本站最低提现额、USDT 手续费及人民币汇率时，现金方式拒绝。不抄 `adty_site_withdraw.*`，也不调用 `Referral.CreateWithdrawal`。
+- **跨小时退款抵扣**：任务失败退款按原消费同小时抵减，跨小时净额为负时计入 `adty_commission_offsets` 自动抵扣该邀请人对该被邀请人的后续正佣金。
+- **未设参数**：站长未配置本站最低提现额、USDT 手续费及人民币汇率时，现金方式拒绝。
 
-**后台**：站长在站长中心「推广管理」设置本站规则，按状态筛选和分页审核本站客户的申请。客户在推广页（`/referral`）申请。
+**后台**：站长在站长中心「推广管理」（`/site-owner/commissions`）设置本站规则（开启且售价倍率为 `1.0x` 时展示资金提示），筛选/放行/作废 `risk_held` 佣金，审核本站客户的提现申请。客户在推广页（`/referral`）查看当小时实时预估并申请提现/转余额。
 
-**表和接口**：`adty_site_invite_commissions`、`adty_site_invite_withdrawals`、`adty_site_invite_withdrawal_items`。客户 `GET`/`POST /api/adty/site-commissions/withdrawals`；站长 `GET /api/adty/site/commission-withdrawals`、`POST /api/adty/site/commission-withdrawals/:id/review`、`POST /api/adty/site/commission-withdrawals/:id/paid`；关站后主站承接 `GET /api/user/admin/referral/closed-site-withdrawals`、`POST .../review|failed|paid`（旧全局 `PUT /api/adty/admin/site-invite-withdraw/rules` 已退役返回 410 Gone，由各分站独立配置）。
+**表和接口**：`adty_site_invite_commissions`、`adty_site_invite_withdrawals`、`adty_site_invite_withdrawal_items`、`adty_principal_consume_events`、`adty_commission_offsets`。新增站长风控释放/作废接口 `POST /api/adty/site/referral/commissions/:id/release|void`。
+
+## 老站长推荐开新分站与统一每小时结算引擎（`[R-49]`）
+
+**做什么**：仅限活跃分站站长（A）可通过专属不透明推荐码（`partner_code`）与主站招商链接（`/partner?ref=<code>`）推荐新分站（B）开站，永久按 B 分站每小时「净平台供货成本」的默认 **5%**（由主站出资，0 冻结期）结算进 A 的收益钱包，直至 A 或 B 任一方正式关站。
+
+**白标与隔离规则**：
+
+- **主站公开入口 + 分站 404 隔离**：仅主站顶部导航栏与页脚展示「分站合作（`/partner`）」入口；任何分站域名访问 `/partner`、`/partner/*` 或 `/api/adty/partner/*` 一律返回 HTTP 404，前端同步拦截隐藏，绝不向分站 C 端客户暴露分站体系。
+- **方案二招商流程**：访客打开 `/partner?ref=<code>` 时静默写入 30 天 HMAC 签名 HttpOnly Cookie `adty_partner_ref`（页面不暴露任何推荐分站信息），填写联系方式与预计规模并通过 Turnstile 校验提交意向单（`adty_partner_leads`）；提交成功后页面直接展示配置的官方招商 Telegram（`partner_contact_telegram`），并向 Root 发送站内通知、邮件与管理员 Telegram 机器人告警。
+- **Root 审核、直开与 7 天补绑**：Root 在「分站管理 → 开站申请」（`/site-admin/partner-leads`）查看意向单及锁定推荐站，支持驳回或「通过并开站」（自动预填 `OpenSiteDialog`）；直接开站亦支持手动填推荐码/选推荐站与自定义比例（0–50%，默认 `partner_referral_default_rate = 5%`）。新站开通 7 天内允许 Root 在分站详情页执行**一次性补绑**（不溯及既往），随时可调整比例或附理由停止推荐返佣（均写审计）。
+- **计佣基数、单级不穿透与脱敏**：基数 = B 分站每小时个人消费 + 团队消费 + 站长出资兑换码/USDT 赠金消费对应的净平台供货成本，仅排除主站官方免费赠送的补偿/体验额度（`adjust:*` 与 `expiring_bonus`）。仅一级推荐（不嵌套二级分站，不穿透三级），A 与 B 的分站等级考核 100% 独立。A 在「站长中心 → 推荐开站」（`/site-owner/partner`）仅见脱敏标识（`Site #ID`）、状态、比例、开站/停止时间、当小时预估与累计收益，绝不泄露 B 的域名、客户、订单或加价倍数。
+- **统一每小时整点结算顺序与关站结清**：主节点每小时整点按序原子结算并带 `adty_hourly_settlement_runs` 幂等与重启补跑：① 分站经营钱包本金与收益钱包差价聚合入账（实时 API 请求不再逐笔行锁 `adty_site_wallets`，改为追加不可变 `adty_operating_principal_events` 与 `adty_site_earning_events`）→ ② 老站长推荐 5%（入账流水类型 `site_referral_earning`，同步计入日结单 `partner_referral_earning_usd`）→ ③ 主站推广按消费结 → ④ 分站客户邀请按消费结。进入关站公示期（`closing`）立即停用推荐链接但保留已绑定分站继续计佣；正式关站执行瞬间先调用 `FlushAdtySiteBeforeClose` 立即结清当小时未结全部流水，再写入 `referrer_stopped_at` 停止后续计佣（A 关站不影响 B 正常营业，历史已结收益仍可正常提现）。
+
+**表和接口**：`adty_partner_leads`、`adty_site_partner_earnings`、`adty_operating_principal_events`、`adty_principal_consume_events`、`adty_commission_offsets`、`adty_hourly_settlement_runs`。公开主站：`GET /api/adty/partner/public`、`POST /api/adty/partner/click`、`POST /api/adty/partner/apply`；站长：`GET /api/adty/site/partner/overview|sites|earnings`；Root：`GET /api/adty/admin/partner-leads`、`POST /api/adty/admin/partner-leads/:id/reject`、`PUT /api/adty/admin/sites/:id/partner-referral`、`POST /api/adty/admin/hourly-settlement/run`。
 
 ## 站长分站
 

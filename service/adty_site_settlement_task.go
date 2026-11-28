@@ -1,7 +1,6 @@
 package service
 
 import (
-	"context"
 	"crypto/sha256"
 	"fmt"
 	"slices"
@@ -30,29 +29,17 @@ func adtyEarningDayOf(day string) string {
 
 // RunAdtySiteSettlementOnce 结算到期的站长收益，返回结算了几个站。
 func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
-	var events []model.AdtySiteEarningEvent
-	if err := model.DB.Where("projected = ? AND (review_status <> ? OR review_status IS NULL)", false, model.AdtyEarningNeedsReview).Order("created_at").Limit(1000).Find(&events).Error; err != nil {
-		return 0, err
-	}
-	projectedSites := map[int]struct{}{}
 	var first error
-	for _, event := range events {
-		if err := projectAdtySiteEarningEvent(context.Background(), event.OperationKey); err != nil {
-			// R14-027: Isolate per-event projection errors (e.g. site-level reviewing
-			// restriction) so healthy subsites still project, settle, and resume.
-			common.SysError(common.LogText("project site earning event failed site=%d op=%s: %s", event.SiteId, event.OperationKey, err.Error()))
-			if first == nil {
-				first = err
-			}
-			continue
-		}
-		if event.SiteId > 0 {
-			projectedSites[event.SiteId] = struct{}{}
-		}
+	hourlySettled := 0
+	if summary, err := RunAdtyHourlySettlement(now); err != nil {
+		common.SysError(common.LogText("hourly settlement in site settlement fallback failed: %s", err.Error()))
+		first = err
+	} else if summary != nil {
+		hourlySettled = summary.SitesSettled
 	}
 	loc, _, err := loadAdtyBusinessLocation()
 	if err != nil {
-		return 0, err
+		return hourlySettled, err
 	}
 	cutoff := adtySettleCutoffDay(now.In(loc))
 	var siteIds []int
@@ -61,35 +48,35 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 			[]string{model.AdtySiteEarningPending, model.AdtySiteEarningAvailable},
 			[]string{model.AdtySiteEarningTrial, model.AdtySiteEarningSkipped}).
 		Pluck("site_id", &siteIds).Error; err != nil {
-		return 0, err
+		return hourlySettled, err
 	}
 	// 钩子失败可能一行都没写上。这种站也要进对账，否则漏记的正收益不会被拦住。
 	var failedSites []int
 	if err := model.DB.Model(&model.AdtySite{}).Where("earning_hook_failures > 0").Pluck("id", &failedSites).Error; err != nil {
-		return 0, err
+		return hourlySettled, err
 	}
 	var pendingCoverageSites []int
 	hasCommTable, err := model.AdtyTableExists(model.DB, &model.AdtySiteInviteCommission{})
 	if err != nil {
-		return 0, err
+		return hourlySettled, err
 	}
 	if hasCommTable {
 		if err := model.DB.Model(&model.AdtySiteInviteCommission{}).Distinct("site_id").
 			Where("site_id > 0 AND status = ?", model.AdtySiteCommissionPendingCoverage).
 			Pluck("site_id", &pendingCoverageSites).Error; err != nil {
-			return 0, err
+			return hourlySettled, err
 		}
 	}
 	var pendingGiftSites []int
 	hasGiftTable, err := model.AdtyTableExists(model.DB, &model.AdtyGiftFulfillment{})
 	if err != nil {
-		return 0, err
+		return hourlySettled, err
 	}
 	if hasGiftTable {
 		if err := model.DB.Model(&model.AdtyGiftFulfillment{}).Distinct("site_id").
 			Where("site_id > 0 AND status = ?", model.AdtyGiftFulfillmentPending).
 			Pluck("site_id", &pendingGiftSites).Error; err != nil {
-			return 0, err
+			return hourlySettled, err
 		}
 	}
 	pendingGiftSet := make(map[int]struct{}, len(pendingGiftSites))
@@ -122,7 +109,7 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 			siteIds = append(siteIds, siteId)
 		}
 	}
-	settled := 0
+	settled := hourlySettled
 	for _, siteId := range siteIds {
 		ok, err := settleAdtySite(siteId, cutoff, now.Unix())
 		if err != nil {
@@ -132,10 +119,9 @@ func RunAdtySiteSettlementOnce(now time.Time) (int, error) {
 			}
 			continue
 		}
-		_, wasProjected := projectedSites[siteId]
 		_, hasPendingCoverage := pendingCoverageSet[siteId]
 		_, hasPendingGift := pendingGiftSet[siteId]
-		if ok || wasProjected || hasPendingCoverage || hasPendingGift {
+		if ok || hasPendingCoverage || hasPendingGift {
 			if ok {
 				settled++
 			}
@@ -159,7 +145,7 @@ func settleAdtySite(siteId int, cutoff string, now int64) (bool, error) {
 			return err
 		}
 		var unresolved int64
-		if err := tx.Model(&model.AdtySiteEarningEvent{}).Where("site_id = ? AND (review_status = ? OR projected = ?)", siteId, model.AdtyEarningNeedsReview, false).Count(&unresolved).Error; err != nil {
+		if err := tx.Model(&model.AdtySiteEarningEvent{}).Where("site_id = ? AND review_status = ?", siteId, model.AdtyEarningNeedsReview).Count(&unresolved).Error; err != nil {
 			return err
 		}
 		if unresolved == 0 && site.SettleHoldReason == model.AdtyEarningReviewHoldReason {
@@ -301,7 +287,7 @@ func adtySiteEarningsByOwnerTx(tx *gorm.DB, siteID int, rows []model.AdtySiteEar
 // （消费日志关掉时收益仍可能记上）。日志和已记账的 usage 对不上才暂停正收益。
 func adtyUsageReconcileMismatch(tx *gorm.DB, siteId int, cutoff string) (bool, string, error) {
 	var events []model.AdtySiteEarningEvent
-	if err := tx.Where("site_id = ? AND day <= ?", siteId, cutoff).Find(&events).Error; err != nil {
+	if err := tx.Where("site_id = ? AND projected = ? AND day <= ?", siteId, true, cutoff).Find(&events).Error; err != nil {
 		return false, "", err
 	}
 	if len(events) > 0 {

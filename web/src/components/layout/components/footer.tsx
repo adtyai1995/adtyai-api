@@ -81,6 +81,35 @@ function FooterLinkItem(props: { link: FooterLink }) {
   )
 }
 
+/** Main-site-only partnership entry, hidden on white-label subsites. */
+function PartnershipColumn() {
+  const { t } = useTranslation()
+  const { status } = useStatus()
+  if (subsiteDocument() || status?.adty_site) {
+    return null
+  }
+  return (
+    <nav aria-labelledby='footer-partnership-title' className='min-w-40'>
+      <p
+        id='footer-partnership-title'
+        className='text-muted-foreground text-sm'
+      >
+        {t('Partnership')}
+      </p>
+      <ul className='mt-5 space-y-3.5'>
+        <li>
+          <Link
+            to='/partner'
+            className='text-foreground/85 hover:text-primary text-[15px] transition-colors duration-200'
+          >
+            {t('Become a Partner')}
+          </Link>
+        </li>
+      </ul>
+    </nav>
+  )
+}
+
 /** The site legal pages that are switched on, as one titled footer column. */
 function LegalColumn() {
   const { t } = useTranslation()
@@ -208,6 +237,7 @@ export function Footer(props: FooterProps) {
                   </ul>
                 </div>
               ))}
+            <PartnershipColumn />
             <LegalColumn />
           </div>
         </div>

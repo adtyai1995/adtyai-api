@@ -17,15 +17,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * Monthly commission estimate: people × average top-up × rate%.
+ * Monthly commission estimate: people × average monthly spend × rate%.
  * Returns null for unusable input so the page shows a dash instead of $0.
  */
 export function estimateCommission(
   people: number,
-  averageTopUp: number,
+  averageMonthlySpend: number,
   ratePercent: number
 ): number | null {
-  const values = [people, averageTopUp, ratePercent]
+  const values = [people, averageMonthlySpend, ratePercent]
   if (values.some((value) => !Number.isFinite(value) || value < 0)) return null
-  return Math.round(people * averageTopUp * ratePercent) / 100
+  return Math.round(people * averageMonthlySpend * ratePercent) / 100
 }

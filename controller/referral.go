@@ -63,7 +63,7 @@ func GetAdtyReferralPublicSettings(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{
 		"enabled":                cfg.Enabled,
 		"default_rate":           cfg.DefaultRate,
-		"freeze_days":            cfg.FreezeDays,
+		"freeze_days":            max(cfg.FreezeDays, 0),
 		"min_withdraw_usd":       cfg.MinWithdrawUSD,
 		"usdt_withdraw_fee":      cfg.USDTWithdrawFee,
 		"cookie_ttl_days":        cfg.CookieTTLDays,
@@ -77,6 +77,7 @@ type referralProfile struct {
 	Account              *model.ReferralCommissionAccount `json:"account"`
 	Rate                 string                           `json:"rate"`
 	FreezeDays           int                              `json:"freeze_days"`
+	PendingHourUSD       string                           `json:"pending_hour_usd"`
 	MinWithdrawUSD       *float64                         `json:"min_withdraw_usd"`  // null：未设置
 	USDTWithdrawFee      *float64                         `json:"usdt_withdraw_fee"` // null：未设置
 	WithdrawMethods      []string                         `json:"withdraw_methods"`
@@ -128,12 +129,21 @@ func GetReferralProfile(c *gin.Context) {
 	redactedAffiliate := redactReferralAffiliateForUser(affiliate)
 	profile := referralProfile{
 		Affiliate: redactedAffiliate, Account: &account,
-		FreezeDays: cfg.FreezeDays, MinWithdrawUSD: cfg.MinWithdrawUSD, USDTWithdrawFee: cfg.USDTWithdrawFee,
+		FreezeDays: max(cfg.FreezeDays, 0), MinWithdrawUSD: cfg.MinWithdrawUSD, USDTWithdrawFee: cfg.USDTWithdrawFee,
 		CancelWindowMins: cfg.CancelWindowMinutes, Enabled: cfg.Enabled, SiteOwner: affiliate.SiteOwnerSince > 0,
 	}
 	if rate, ok := service.AffiliateRate(affiliate); ok {
 		profile.Rate = rate.String()
 	}
+	pendingHourUSD, err := service.GetAdtyMainReferralPendingHourUSD(affiliate.Id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if pendingHourUSD.IsNegative() {
+		pendingHourUSD = decimal.Zero
+	}
+	profile.PendingHourUSD = pendingHourUSD.Round(8).String()
 	hasRate := false
 	if rate, updatedAt, err := service.CurrentWithdrawCNYRate(); err == nil {
 		profile.CNYRate, profile.CNYRateUpdatedAt = rate.String(), updatedAt

@@ -16,6 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import type { TFunction } from 'i18next'
+
 import type { StatusVariant } from '@/components/status-badge'
 
 import type {
@@ -34,6 +36,7 @@ export const COMMISSION_STATUS_LABELS: Record<
   string
 > = {
   pending: 'Settling',
+  risk_held: 'Risk held',
   available: 'Withdrawable',
   frozen: 'Withdrawing',
   paid: 'Withdrawn',
@@ -46,11 +49,49 @@ export const COMMISSION_STATUS_VARIANTS: Record<
   StatusVariant
 > = {
   pending: 'warning',
+  risk_held: 'danger',
   available: 'success',
   frozen: 'info',
   paid: 'neutral',
   void: 'neutral',
   clawed_back: 'danger',
+}
+
+/** Literal t() calls so the i18n scanner sees every commission status label. */
+export function commissionStatusLabel(t: TFunction, status: string): string {
+  switch (status) {
+    case 'pending':
+      return t('Settling')
+    case 'risk_held':
+      return t('Risk held')
+    case 'available':
+      return t('Withdrawable')
+    case 'frozen':
+      return t('Withdrawing')
+    case 'paid':
+      return t('Withdrawn')
+    case 'void':
+      return t('Voided')
+    case 'clawed_back':
+      return t('Clawed back')
+    default:
+      return status || '-'
+  }
+}
+
+/** Literal t() calls for commission source kinds. */
+export function commissionSourceLabel(
+  t: TFunction,
+  sourceType?: string
+): string {
+  switch (sourceType) {
+    case 'consume_hourly':
+      return t('Hourly consumption')
+    case 'topup':
+      return t('Top-up')
+    default:
+      return sourceType || '-'
+  }
 }
 
 export const WITHDRAWAL_STATUS_LABELS: Record<

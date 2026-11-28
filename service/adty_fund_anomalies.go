@@ -194,7 +194,21 @@ func detectExistingAdtyFundAnomalies(siteID int) ([]adtyFundAnomalyItem, error) 
 		return nil, err
 	}
 	ownerPrincipal := decimal.NewFromInt(ownerQuota).Div(common.QuotaPerUnitDecimal())
-	operatingGap := ReconcileOperatingWallet(principal.Add(ownerPrincipal), operating)
+	var unsettledOpQuota int64
+	hasOpEventTable, err := model.AdtyTableExists(model.DB, &model.AdtyOperatingPrincipalEvent{})
+	if err != nil {
+		return nil, err
+	}
+	if hasOpEventTable {
+		if err := model.DB.Model(&model.AdtyOperatingPrincipalEvent{}).
+			Where("site_id = ? AND settled = ?", siteID, false).
+			Select("COALESCE(SUM(quota),0)").
+			Scan(&unsettledOpQuota).Error; err != nil {
+			return nil, err
+		}
+	}
+	unsettledOpUSD := decimal.NewFromInt(unsettledOpQuota).Div(common.QuotaPerUnitDecimal()).Round(8)
+	operatingGap := ReconcileOperatingWallet(principal.Add(ownerPrincipal), operating.Add(unsettledOpUSD))
 	if !operatingGap.IsZero() || lotGap != 0 {
 		balanceGap = 1
 	}
@@ -235,13 +249,14 @@ func detectExistingAdtyFundAnomalies(siteID int) ([]adtyFundAnomalyItem, error) 
 				item.Difference = decimal.NewFromInt(lotGap).Div(common.QuotaPerUnitDecimal()).String()
 			}
 			item.Evidence = mustAnomalyEvidence(map[string]any{
-				"operating_wallet":     operating.String(),
-				"customer_principal":   principal.String(),
-				"owner_principal":      ownerPrincipal.String(),
-				"customer_gift":        giftUSD.String(),
-				"fund_batch_gap_quota": lotGap,
-				"operating_gap":        operatingGap.String(),
-				"wallet_mismatches":    walletMismatches,
+				"operating_wallet":           operating.String(),
+				"unsettled_operating_events": unsettledOpUSD.String(),
+				"customer_principal":         principal.String(),
+				"owner_principal":            ownerPrincipal.String(),
+				"customer_gift":              giftUSD.String(),
+				"fund_batch_gap_quota":       lotGap,
+				"operating_gap":              operatingGap.String(),
+				"wallet_mismatches":          walletMismatches,
 			})
 		case AdtyAnomalyOpenShortfallHold:
 			item.Difference = strconv.FormatInt(holds, 10)
@@ -832,7 +847,7 @@ func adtyEarningEventKind(event model.AdtySiteEarningEvent) (string, bool) {
 
 func detectEarningSupplyMismatches(siteID int) ([]adtyFundAnomalyItem, error) {
 	var events []model.AdtySiteEarningEvent
-	if err := model.DB.Where("site_id = ?", siteID).Find(&events).Error; err != nil {
+	if err := model.DB.Where("site_id = ? AND projected = ?", siteID, true).Find(&events).Error; err != nil {
 		return nil, err
 	}
 	var items []adtyFundAnomalyItem

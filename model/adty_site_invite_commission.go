@@ -12,6 +12,7 @@ import (
 
 const (
 	AdtySiteCommissionPendingCoverage = "pending_coverage"
+	AdtySiteCommissionRiskHeld        = "risk_held"
 	AdtySiteCommissionCovered         = "covered"
 	AdtySiteCommissionAvailable       = "available"
 	AdtySiteCommissionClawedBack      = "clawed_back"

@@ -28,6 +28,7 @@ import { useAuthStore } from '@/stores/auth-store'
 
 import { BusinessTimezonePanel } from './components/business-timezone-panel'
 import { OverviewPanel } from './components/overview-panel'
+import { PartnerLeadsPanel } from './components/partner-leads-panel'
 import { PausedSiteRepairPanel } from './components/paused-site-repair-panel'
 import { ReviewsPanel } from './components/reviews-panel'
 import { SettingsPanel } from './components/settings-panel'
@@ -52,6 +53,7 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
   const canWriteSecrets = user?.role === 100
   const labels: Record<SiteAdminSectionId, string> = {
     sites: t('Sites'),
+    'partner-leads': t('Partner applications'),
     overview: t('Overview'),
     reviews: t('Risk reviews and reports'),
     settings: t('Supply settings'),
@@ -110,6 +112,16 @@ export function SiteAdmin(props: { section: SiteAdminSectionId }) {
                   void navigate({
                     to: '/site-admin/$section',
                     params: { section },
+                  })
+                }
+              />
+            </TabsContent>
+            <TabsContent value='partner-leads' className='min-w-0 pt-2'>
+              <PartnerLeadsPanel
+                onOpened={(site) =>
+                  void navigate({
+                    to: '/site-admin/sites/$siteId',
+                    params: { siteId: String(site.id) },
                   })
                 }
               />

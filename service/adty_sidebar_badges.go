@@ -26,6 +26,7 @@ const (
 	AdtyBadgeOwnerTicketsPending                  = "owner_tickets_pending"
 	AdtyBadgeTicketsWaitingUser                   = "tickets_waiting_user"
 	AdtyBadgePaymentOrphansPendingReview          = "payment_orphans_pending_review"
+	AdtyBadgePendingPartnerLeads                  = "pending_partner_leads"
 )
 
 // AdtySidebarBadgeConfirmedKinds is the closed set of kinds the badge API may
@@ -45,6 +46,7 @@ func AdtySidebarBadgeConfirmedKinds() []string {
 		AdtyBadgeOwnerTicketsPending,
 		AdtyBadgeTicketsWaitingUser,
 		AdtyBadgePaymentOrphansPendingReview,
+		AdtyBadgePendingPartnerLeads,
 	}
 }
 
@@ -148,6 +150,17 @@ func CollectAdtySidebarBadges(userID int, requestSite *model.AdtySite, tokenScop
 				AdtyBadgeFundAnomaliesOpen,
 				badgeAfterSeen(model.DB.Model(&model.AdtyAnomalyDisposition{}).Where("status IN ?", []string{"open", "reviewing"}), "created_at", seenMap[AdtyBadgeFundAnomaliesOpen]),
 			)
+			if hasPartnerLeads, tblErr := model.AdtyTableExists(model.DB, &model.AdtyPartnerLead{}); tblErr != nil {
+				common.SysError(common.LogText("sidebar badge %s table check failed: %s", AdtyBadgePendingPartnerLeads, tblErr.Error()))
+				counts[AdtyBadgePendingPartnerLeads] = 0
+			} else if hasPartnerLeads {
+				counts[AdtyBadgePendingPartnerLeads] = countBadgeOrZero(
+					AdtyBadgePendingPartnerLeads,
+					badgeAfterSeen(model.DB.Model(&model.AdtyPartnerLead{}).Where("status = ?", model.AdtyPartnerLeadStatusPending), "created_at", seenMap[AdtyBadgePendingPartnerLeads]),
+				)
+			} else {
+				counts[AdtyBadgePendingPartnerLeads] = 0
+			}
 		}
 	}
 	if actor.OwnerSiteId > 0 && tokenAllows(AccessTokenResourceSiteOwnerOrder+":read") {

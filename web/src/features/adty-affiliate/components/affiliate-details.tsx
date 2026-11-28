@@ -57,29 +57,32 @@ export function AffiliateDetails(props: AffiliateDetailsProps) {
       ),
     },
     {
-      title: t('Friends sign up and top up'),
+      title: t('Friends sign up and use the API'),
       body: t(
         'Anyone who signs up within {{days}} days of opening your link becomes your referral.',
         { days: settings.cookie_ttl_days }
       ),
     },
     {
-      title: t('You earn on every top-up'),
+      title: t('You earn on their paid consumption'),
       body: t(
-        'You get {{rate}}% of each top-up amount, for every top-up they ever make.',
+        'You get {{rate}}% of their actual paid-principal consumption, settled hourly on the hour with no freeze.',
         { rate }
       ),
     },
   ]
 
   const rules = [
-    t('Commission: {{rate}}% of the amount paid, excluding top-up bonuses.', {
-      rate,
-    }),
-    t('Commissions become withdrawable {{days}} days after the top-up.', {
-      days: settings.freeze_days,
-    }),
-    t('Refunded top-ups cancel or take back their commission.'),
+    t(
+      'Commission: {{rate}}% of actual paid-principal consumption (excludes bonuses, redemption codes, and manual adjustments).',
+      {
+        rate,
+      }
+    ),
+    t(
+      'Commissions settle hourly on the hour and become withdrawable immediately with no freeze.'
+    ),
+    t('Task refunds offset future commission earnings automatically.'),
     t(
       'Withdraw to your account balance at any time with no minimum and no fee.'
     ),
@@ -176,7 +179,7 @@ export function AffiliateDetails(props: AffiliateDetailsProps) {
               </div>
               <div className='space-y-2'>
                 <Label htmlFor='affiliate-average'>
-                  {t('Average monthly top-up (USD)')}
+                  {t('Average monthly spend (USD)')}
                 </Label>
                 <Input
                   id='affiliate-average'
@@ -198,7 +201,7 @@ export function AffiliateDetails(props: AffiliateDetailsProps) {
                 {estimate === null ? '-' : formatUsd(estimate, locale)}
               </p>
               <p className='text-muted-foreground text-xs'>
-                {t('People × average top-up × {{rate}}%', { rate })}
+                {t('People × average monthly spend × {{rate}}%', { rate })}
               </p>
             </div>
           </CardContent>

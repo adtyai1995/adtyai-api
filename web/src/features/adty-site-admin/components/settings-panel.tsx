@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, Plus, Trash2 } from 'lucide-react'
+import { ChevronRight, Play, Plus, Trash2 } from 'lucide-react'
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -38,6 +38,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import {
   getResellerSettings,
   checkDomainProvider,
+  runHourlySettlementNow,
   saveResellerSettings,
   siteAdminKeys,
 } from '../api'
@@ -134,6 +135,10 @@ function resellerFieldLabel(key: string, t: (k: string) => string): string {
       return t('Main site edge hostname')
     case 'edge_main_site_origin_sni':
       return t('Main site origin SNI (optional)')
+    case 'partner_contact_telegram':
+      return t('Official partner Telegram')
+    case 'partner_referral_default_rate':
+      return t('Default partner referral rate (%)')
     case 'turnstile_widgets':
       return t('Turnstile widgets')
     case 'turnstile_widget_secret':
@@ -265,6 +270,8 @@ export function SettingsPanel(props: {
         delete permitted.edge_main_site_enabled
         delete permitted.edge_main_site_host
         delete permitted.edge_main_site_origin_sni
+        delete permitted.partner_contact_telegram
+        delete permitted.partner_referral_default_rate
         delete permitted.turnstile_widgets
         delete permitted.turnstile_widget_secret
         delete permitted.clear_secrets
@@ -295,6 +302,33 @@ export function SettingsPanel(props: {
           'Provider configuration is readable; write access and public HTTPS still require verification'
         )
       ),
+    onError: (error) => handleServerError(error),
+  })
+  const runSettlement = useMutation({
+    mutationFn: () => {
+      if (
+        !props.canWriteSecrets ||
+        useAuthStore.getState().auth.user?.role !== 100
+      ) {
+        throw new Error(t('No permission to perform this action'))
+      }
+      return runHourlySettlementNow()
+    },
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: siteAdminKeys.all })
+      toast.success(
+        t(
+          'Hourly settlement completed ({{slot}}): {{sites}} sites, {{partners}} partner commissions, {{mainRef}} main referrals, {{siteRef}} site referrals.',
+          {
+            slot: result.hour_slot,
+            sites: result.sites_settled,
+            partners: result.partner_settled,
+            mainRef: result.main_ref_settled,
+            siteRef: result.site_ref_settled,
+          }
+        )
+      )
+    },
     onError: (error) => handleServerError(error),
   })
 
@@ -330,6 +364,16 @@ export function SettingsPanel(props: {
   const canEnable = tierReady && rootsSet
   const cfReady = cloudflareReady(saved, drafts)
   const edgeReady = edgeMainlandReady(saved, drafts)
+  const rawPartnerRate = drafts.partner_referral_default_rate.trim()
+  const parsedPartnerRate =
+    rawPartnerRate === '' ? null : Number(rawPartnerRate)
+  const partnerRateError =
+    parsedPartnerRate !== null &&
+    (!Number.isFinite(parsedPartnerRate) ||
+      parsedPartnerRate < 0 ||
+      parsedPartnerRate > 50)
+      ? t('Partner referral default rate must be between 0% and 50%')
+      : ''
 
   const ruleLabels: Record<RuleKey, string> = {
     markup_increase_delay_hours: t(
@@ -369,7 +413,7 @@ export function SettingsPanel(props: {
       className='flex flex-col gap-4'
       onSubmit={(event) => {
         event.preventDefault()
-        if (disabled || conflicts.length) return
+        if (disabled || conflicts.length || partnerRateError) return
         save.mutate(buildResellerUpdate(baseline, drafts))
       }}
     >
@@ -448,6 +492,75 @@ export function SettingsPanel(props: {
               </div>
             )}
           </div>
+        </SettingsSection>
+      )}
+
+      {props.section === 'supply' && (
+        <SettingsSection
+          title={t('Partner referral program')}
+          description={t(
+            "Configure the official partner contact and the default permanent commission rate paid on referred subsites' net platform supply cost."
+          )}
+        >
+          <fieldset className='grid max-w-3xl gap-4 sm:grid-cols-2'>
+            <legend className='sr-only'>{t('Partner referral program')}</legend>
+            <TextField
+              label={t('Official partner Telegram')}
+              placeholder='@your_partner_desk'
+              value={drafts.partner_contact_telegram}
+              disabled={secretsDisabled}
+              onChange={(value) => set('partner_contact_telegram', value)}
+            >
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'Shown after an applicant submits a partner application on the main site.'
+                )}
+              </p>
+            </TextField>
+            <TextField
+              label={t('Default partner referral rate (%)')}
+              type='number'
+              placeholder='5'
+              inputClassName='sm:max-w-44'
+              value={drafts.partner_referral_default_rate}
+              disabled={secretsDisabled}
+              onChange={(value) => set('partner_referral_default_rate', value)}
+            >
+              {partnerRateError ? (
+                <p className='text-destructive text-xs'>{partnerRateError}</p>
+              ) : (
+                <p className='text-muted-foreground text-xs'>
+                  {t(
+                    '0–50%. Default is 5% permanent supply commission on referred subsites.'
+                  )}
+                </p>
+              )}
+            </TextField>
+          </fieldset>
+          {props.canWriteSecrets && (
+            <div className='border-border mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4'>
+              <div className='flex flex-col gap-0.5'>
+                <span className='text-sm font-medium'>
+                  {t('Hourly settlement')}
+                </span>
+                <span className='text-muted-foreground text-xs'>
+                  {t(
+                    'Run an immediate hourly settlement cycle for site spread, partner commissions, and referral payouts.'
+                  )}
+                </span>
+              </div>
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                disabled={runSettlement.isPending}
+                onClick={() => runSettlement.mutate()}
+              >
+                <Play className='size-3.5' aria-hidden />
+                {t('Run hourly settlement now')}
+              </Button>
+            </div>
+          )}
         </SettingsSection>
       )}
 
@@ -976,6 +1089,7 @@ export function SettingsPanel(props: {
             disabled={
               save.isPending ||
               conflicts.length > 0 ||
+              partnerRateError !== '' ||
               Object.keys(buildResellerUpdate(baseline, drafts)).length === 0
             }
           >

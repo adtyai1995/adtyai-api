@@ -74,8 +74,16 @@ type AdtySite struct {
 	CloseExecuteAt   int64  `json:"close_execute_at" gorm:"index"`
 	CloseTransferTo  int    `json:"close_transfer_to"` // 新关站只记 0（由主站继承）；历史已转到其他站的已关闭行可能仍非 0
 	CloseClawBack    bool   `json:"close_claw_back"`
-	CloseReason      string `json:"close_reason" gorm:"type:text"`
-	ClosedAt         int64  `json:"closed_at"`
+	CloseReason         string           `json:"close_reason" gorm:"type:text"`
+	ClosedAt            int64            `json:"closed_at"`
+	// 老站长推荐开新分站（R-49）：纯随机脱敏推荐码 + 单层推荐分站关系（不穿透二级）。
+	PartnerCode        *string          `json:"partner_code,omitempty" gorm:"uniqueIndex;type:varchar(24)"`
+	ReferrerSiteId     int              `json:"referrer_site_id" gorm:"index;not null;default:0"`
+	ReferrerRate       *decimal.Decimal `json:"referrer_rate" gorm:"type:decimal(10,6)"`
+	ReferrerBoundAt    int64            `json:"referrer_bound_at" gorm:"not null;default:0"`
+	ReferrerLateBound  bool             `json:"referrer_late_bound" gorm:"not null;default:false"`
+	ReferrerStoppedAt  int64            `json:"referrer_stopped_at" gorm:"not null;default:0"`
+	ReferrerStopReason string           `json:"referrer_stop_reason" gorm:"type:text"`
 	// 日结算对不上消费日志时暂停正收益，等管理员核对后恢复。负收益照常结算。
 	SettleHoldReason string `json:"settle_hold_reason" gorm:"type:text"`
 	// 收益钩子写库失败的次数。只记数，不重试；日结算对账会拦住漏记的正收益。
@@ -430,7 +438,8 @@ func AdtySiteTables() []any {
 		&AdtySiteEarningDaily{}, &AdtySiteEarningLine{}, &AdtySiteEarningFact{}, &AdtySiteTrialGrant{}, &AdtySiteReport{}, &AdtySiteLookup{}, &AdtySiteSenderDomain{}, &AdtySenderDomainCleanup{},
 		&AdtySiteTier{}, &AdtySiteTierEvaluation{}, &AdtySiteTierPrincipalAdjustment{}, &AdtySiteWallet{}, &AdtySiteWalletLedger{}, &AdtySiteWithdrawal{}, &AdtySitePayoutAttempt{}, &AdtySiteStaff{}, &AdtySiteOwnership{},
 		&AdtySiteSettlementSheet{}, &AdtySettlementCoverageAdjustment{}, &AdtySettlementRevision{}, &AdtySettlementScan{}, &AdtySiteCloseMailBatch{}, &AdtySiteCloseMailRecipient{}, &AdtySiteCloseMailAttempt{}, &AdtyDomainCloudResource{},
-		&AdtySiteReferralAffiliate{}, &AdtySiteReferralAuditLog{}, &AdtySiteMailConfig{}, &AdtyEdgeCert{}, &AdtyEdgeACMEAccount{}, &AdtyEdgeState{}}
+		&AdtySiteReferralAffiliate{}, &AdtySiteReferralAuditLog{}, &AdtySiteMailConfig{}, &AdtyEdgeCert{}, &AdtyEdgeACMEAccount{}, &AdtyEdgeState{},
+		&AdtyPartnerLead{}, &AdtySitePartnerEarning{}, &AdtyOperatingPrincipalEvent{}, &AdtyPrincipalConsumeEvent{}, &AdtyCommissionOffset{}, &AdtyHourlySettlementRun{}}
 }
 
 // AdtySetUsersSiteTx 把 fromSite 的客户全部改到 toSite（0 是主站），同事务撤销旧Key。

@@ -35,6 +35,9 @@ import type {
   OwnerEarnings,
   OwnerLog,
   OwnerPage,
+  OwnerPartnerEarningItem,
+  OwnerPartnerOverview,
+  OwnerPartnerSiteItem,
   OwnerSite,
   OwnerTopUp,
   PricingResult,
@@ -556,6 +559,7 @@ export type SettlementSheet = {
   consumption_usd: string
   supply_cost_usd: string
   spread_usd: string
+  partner_referral_earning_usd?: string
   gift_reserve_usd: string
   gift_funding_usd: string
   gift_release_usd: string
@@ -577,6 +581,8 @@ export type SettlementSheet = {
   adjustment_usd: string
   anomaly_count: number
 }
+
+export type SiteSettlementSheet = SettlementSheet
 
 export async function getOwnerSettlementSheets(p:number, day:string,siteId?:number):Promise<SettlementPage> {
  const res=await api.get<ApiResponse<SettlementPage>>(`${BASE}/settlement-sheets`,{params:{p,page_size:20,business_day:day||undefined,...archivedQuery(siteId)}})
@@ -1094,4 +1100,33 @@ export async function downloadExport(kind: ExportKind): Promise<void> {
   link.download = `site-${kind}.csv`
   link.click()
   URL.revokeObjectURL(url)
+}
+
+export async function getOwnerPartnerOverview(): Promise<OwnerPartnerOverview> {
+  const res = await api.get<ApiResponse<OwnerPartnerOverview>>(
+    `${BASE}/partner/overview`
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function getOwnerPartnerSites(
+  page = 1,
+  pageSize = OWNER_PAGE_SIZE
+): Promise<OwnerPage<OwnerPartnerSiteItem>> {
+  const res = await api.get<ApiResponse<OwnerPage<OwnerPartnerSiteItem>>>(
+    `${BASE}/partner/sites`,
+    { params: { p: page, page_size: pageSize } }
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function getOwnerPartnerEarnings(
+  page = 1,
+  pageSize = OWNER_PAGE_SIZE
+): Promise<OwnerPage<OwnerPartnerEarningItem>> {
+  const res = await api.get<ApiResponse<OwnerPage<OwnerPartnerEarningItem>>>(
+    `${BASE}/partner/earnings`,
+    { params: { p: page, page_size: pageSize } }
+  )
+  return requireServerSuccess(res.data).data
 }

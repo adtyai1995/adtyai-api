@@ -52,6 +52,7 @@ describe('useTopNavLinks', () => {
   afterEach(() => {
     cleanup()
     mockStatus = {}
+    delete document.documentElement.dataset.adtySiteId
     useAuthStore.getState().auth.reset('complete')
   })
 
@@ -127,5 +128,38 @@ describe('useTopNavLinks', () => {
       href: 'https://docs.sub.example',
       external: true,
     })
+  })
+
+  it('shows Become a Partner only on the main site for non-staff users unless disabled', () => {
+    const mainLinks = collectLinks()
+    expect(mainLinks.find((link) => link.id === 'partner')).toEqual({
+      id: 'partner',
+      title: 'Become a Partner',
+      href: '/partner',
+    })
+
+    cleanup()
+    mockStatus = { adty_site: { id: 1, name: 'Subsite' } }
+    expect(collectLinks().find((link) => link.id === 'partner')).toBeUndefined()
+
+    cleanup()
+    mockStatus = {}
+    document.documentElement.dataset.adtySiteId = '42'
+    expect(collectLinks().find((link) => link.id === 'partner')).toBeUndefined()
+    delete document.documentElement.dataset.adtySiteId
+
+    cleanup()
+    useAuthStore.getState().auth.setUser({
+      id: 9,
+      username: 'staff',
+      role: ROLE.USER,
+      staff_site_id: 5,
+    })
+    expect(collectLinks().find((link) => link.id === 'partner')).toBeUndefined()
+
+    cleanup()
+    useAuthStore.getState().auth.reset('complete')
+    mockStatus = { HeaderNavModules: JSON.stringify({ partner: false }) }
+    expect(collectLinks().find((link) => link.id === 'partner')).toBeUndefined()
   })
 })

@@ -99,6 +99,14 @@ export type AdminSite = {
   close_reason: string
   closed_at: number
   archived_hidden_at?: number
+  partner_code?: string | null
+  referrer_site_id?: number
+  referrer_site_subdomain?: string
+  referrer_rate?: string | null
+  referrer_bound_at?: number
+  referrer_late_bound?: boolean
+  referrer_stopped_at?: number
+  referrer_stop_reason?: string
   customers: number
   month_topup_usd?: string
   month_revenue_usd?: string
@@ -270,6 +278,8 @@ export type ResellerSettings = {
   edge_main_site_enabled?: boolean
   edge_main_site_host?: string
   edge_main_site_origin_sni?: string
+  partner_contact_telegram?: string
+  partner_referral_default_rate?: number | null
   turnstile_widgets: TurnstileWidget[] | null
   turnstile_widget_secret: Record<string, string> | null
   cloudflare_token_configured: boolean
@@ -458,4 +468,50 @@ export type AdminSiteTierPrincipalAdjustResult = {
   adjustment: TierPrincipalAdjustment
   site: AdminSite
   replayed?: boolean
+}
+
+export type PartnerLeadItem = {
+  id: number
+  referrer_site_id: number
+  referral_code: string
+  referrer_site_subdomain?: string
+  referrer_site_name?: string
+  contact_name: string
+  contact_channel: string
+  contact_value: string
+  estimated_volume: string
+  note: string
+  status: 'pending' | 'approved' | 'rejected'
+  opened_site_id: number
+  opened_site_subdomain?: string
+  reviewed_by: number
+  reviewed_by_username?: string
+  reviewed_at: number
+  review_note: string
+  created_at: number
+}
+
+export type OpenSitePayload = {
+  owner_username: string
+  owner_password: string
+  owner_email?: string
+  owner_display_name?: string
+  subdomain: string
+  root_domain?: string
+  cost_factor?: string
+  tier_code?: string
+  tier_mode?: 'auto' | 'manual'
+  contact_info?: string
+  partner_lead_id?: number
+  referrer_site_id?: number
+  referrer_code?: string
+  referrer_rate?: string
+}
+
+export type HourlySettlementRunResult = {
+  hour_slot: string
+  sites_settled: number
+  partner_settled: number
+  main_ref_settled: number
+  site_ref_settled: number
 }

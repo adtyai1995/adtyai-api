@@ -84,7 +84,7 @@ export function AffiliateProgram() {
           {!settings.isPending && !settings.isError && open && (
             <p className='text-muted-foreground mx-auto max-w-2xl text-lg'>
               {t(
-                'Earn {{rate}}% of every top-up made by the people you invite, for as long as they stay.',
+                'Earn {{rate}}% of the paid consumption made by the people you invite, settled hourly with no freeze.',
                 { rate }
               )}
             </p>

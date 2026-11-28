@@ -57,8 +57,10 @@ import {
   canonicalWithdrawMethods,
   canonicalWithdrawNetworks,
   CASH_WITHDRAW_METHODS,
+  isValidRuleDraft,
   MONEY_KEYS,
   RULE_KEYS,
+  RULE_MIN,
   toDrafts,
   type CashWithdrawMethod,
   type Drafts,
@@ -256,8 +258,19 @@ export function SettingsPanel(props: { canWrite: boolean }) {
       !(cnyRateNum > 0))
       ? t('Not set')
       : ''
-  const hasWithdrawValidationError = Boolean(
-    usdtChainError || minMissingError || feeMissingError || cnyRateMissingError
+  const ruleErrors: Partial<Record<RuleKey, string>> = {}
+  for (const key of RULE_KEYS) {
+    if (!isValidRuleDraft(key, drafts[key])) {
+      ruleErrors[key] = t('Invalid parameters')
+    }
+  }
+  const hasRuleValidationError = Object.keys(ruleErrors).length > 0
+  const hasValidationError = Boolean(
+    usdtChainError ||
+      minMissingError ||
+      feeMissingError ||
+      cnyRateMissingError ||
+      hasRuleValidationError
   )
 
   const toggleMethod = (method: CashWithdrawMethod, checked: boolean) => {
@@ -283,7 +296,7 @@ export function SettingsPanel(props: { canWrite: boolean }) {
       className='flex flex-col gap-6'
       onSubmit={(event) => {
         event.preventDefault()
-        if (disabled || hasWithdrawValidationError) return
+        if (disabled || hasValidationError) return
         save.mutate(
           buildReferralSettingsUpdate(
             saved,
@@ -295,7 +308,12 @@ export function SettingsPanel(props: { canWrite: boolean }) {
         )
       }}
     >
-      <SettingsSection title={t('Referral program')}>
+      <SettingsSection
+        title={t('Referral program')}
+        description={t(
+          'Commissions are calculated on actual paid-principal consumption using the live rate and settled hourly on the hour.'
+        )}
+      >
         <div className='flex max-w-xl items-center justify-between gap-4'>
           <div className='flex flex-col gap-0.5'>
             <Label htmlFor='referral-enabled'>{t('Referral program')}</Label>
@@ -329,8 +347,14 @@ export function SettingsPanel(props: { canWrite: boolean }) {
               placeholder={t('Not set')}
               onChange={(event) => set('default_rate', event.target.value)}
             />
-            {rateMissing && (
+            {rateMissing ? (
               <p className='text-warning text-xs'>{t('Not set')}</p>
+            ) : (
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'Live rate applied to future hourly paid-principal consumption settlements.'
+                )}
+              </p>
             )}
           </div>
           <div className='space-y-2'>
@@ -485,11 +509,23 @@ export function SettingsPanel(props: { canWrite: boolean }) {
                 className='sm:max-w-44'
                 disabled={disabled}
                 type='number'
-                min={0}
+                min={RULE_MIN[key]}
                 step={1}
+                aria-invalid={Boolean(ruleErrors[key])}
                 value={drafts[key]}
                 onChange={(event) => set(key, event.target.value)}
               />
+              {ruleErrors[key] ? (
+                <p className='text-destructive text-xs'>{ruleErrors[key]}</p>
+              ) : (
+                key === 'freeze_days' && (
+                  <p className='text-muted-foreground text-xs'>
+                    {t(
+                      'Consumption-based commissions settle hourly with 0 freeze. Non-zero values only apply to legacy top-up commissions.'
+                    )}
+                  </p>
+                )
+              )}
             </div>
           ))}
         </div>
@@ -499,7 +535,7 @@ export function SettingsPanel(props: { canWrite: boolean }) {
         <Button
           variant='brand'
           type='submit'
-          disabled={disabled || hasWithdrawValidationError}
+          disabled={disabled || hasValidationError}
         >
           {t('Save Changes')}
         </Button>

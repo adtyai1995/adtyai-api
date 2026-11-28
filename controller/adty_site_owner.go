@@ -250,7 +250,14 @@ func GetAdtyOwnerStats(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, adtyOwnerVisibleStats(stats))
+	out := adtyOwnerVisibleStats(stats)
+	if est, estErr := service.GetAdtySiteCurrentHourEstimate(site.Id); estErr == nil {
+		out.PendingHour = est
+	}
+	if partnerPending, _, pErr := service.GetAdtySitePartnerPendingHourUSD(site.Id); pErr == nil {
+		out.PendingHourPartnerUSD = partnerPending
+	}
+	common.ApiSuccess(c, out)
 }
 
 // adtyOwnerDayStats 是站长可见的按日经营数据：不含充值汇总。
@@ -268,10 +275,12 @@ type adtyOwnerDayStats struct {
 }
 
 type adtyOwnerStats struct {
-	From   string              `json:"from"`
-	To     string              `json:"to"`
-	Total  adtyOwnerDayStats   `json:"total"`
-	Series []adtyOwnerDayStats `json:"series"`
+	From                  string                       `json:"from"`
+	To                    string                       `json:"to"`
+	Total                 adtyOwnerDayStats            `json:"total"`
+	Series                []adtyOwnerDayStats          `json:"series"`
+	PendingHour           service.AdtySiteHourEstimate `json:"pending_hour"`
+	PendingHourPartnerUSD decimal.Decimal              `json:"pending_hour_partner_usd"`
 }
 
 func adtyOwnerDayStatsOf(day service.AdtySiteDayStats) adtyOwnerDayStats {

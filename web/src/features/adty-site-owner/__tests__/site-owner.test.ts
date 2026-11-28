@@ -107,6 +107,7 @@ describe('adty-site-owner/sections (R-33 #1)', () => {
       'pricing',
       'bonus',
       'commissions',
+      'partner',
       'earnings',
       'withdrawals',
       'settlements',
